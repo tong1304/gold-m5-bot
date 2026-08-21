@@ -14,7 +14,7 @@ def _interval_seconds():
 
 
 def _symbols():
-    raw = os.getenv("LIVE_SIGNAL_SYMBOLS", "XAU/USD")
+    raw = os.getenv("LIVE_SIGNAL_SYMBOLS", "BTC/USDT")
     return [s.strip().upper() for s in raw.split(",") if s.strip()]
 
 
@@ -24,14 +24,7 @@ def run_scan_cycle():
         try:
             results.append(live_scanner.scan_once(symbol))
         except Exception as exc:
-            results.append({
-                "status": "scan_error",
-                "symbol": symbol,
-                "error_type": type(exc).__name__,
-                "message": str(exc),
-                "telegram_alert_sent": False,
-                "live_orders_allowed": False,
-            })
+            results.append({"status":"scan_error","symbol":symbol,"error_type":type(exc).__name__,"message":str(exc),"telegram_alert_sent":False,"live_orders_allowed":False})
     return results
 
 
@@ -47,7 +40,7 @@ def start():
     if _RUNNING and _THREAD and _THREAD.is_alive():
         return False
     _RUNNING = True
-    _THREAD = threading.Thread(target=_loop, name="m5-signal-scanner", daemon=True)
+    _THREAD = threading.Thread(target=_loop, name="m5-binance-signal-scanner", daemon=True)
     _THREAD.start()
     return True
 
@@ -58,10 +51,4 @@ def stop():
 
 
 def status():
-    return {
-        "running": bool(_RUNNING and _THREAD and _THREAD.is_alive()),
-        "interval_seconds": _interval_seconds(),
-        "symbols": _symbols(),
-        "live_orders_allowed": False,
-        "timestamp": datetime.now(timezone.utc).isoformat(),
-    }
+    return {"running": bool(_RUNNING and _THREAD and _THREAD.is_alive()),"interval_seconds": _interval_seconds(),"symbols": _symbols(),"exchange":"Binance","timeframe":"M5","live_orders_allowed":False,"timestamp":datetime.now(timezone.utc).isoformat()}
