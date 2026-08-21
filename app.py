@@ -1,4 +1,3 @@
-```python
 """
 XAUUSD M5 STATISTICAL SIGNAL + TELEGRAM
 ========================================
@@ -2474,4 +2473,3 @@ def main():
 if __name__ == "__main__":
 
     main()
-```
