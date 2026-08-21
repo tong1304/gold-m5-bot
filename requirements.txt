@@ -1,4 +1,3 @@
 ```text
-# XAUUSD M5 Signal Engine
-# ใช้ Python Standard Library เป็นหลัก
+# No external Python packages required
 ```
