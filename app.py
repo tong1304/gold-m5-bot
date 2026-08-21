@@ -1,5 +1,7 @@
 import os
 import threading
+import json
+import traceback
 from urllib.parse import parse_qs
 
 import engine_v42 as engine
@@ -30,7 +32,9 @@ engine.ENGINE_VERSION = "4.3"
 def activate(symbol):
     symbol = (symbol or os.getenv("SYMBOL", "XAU/USD")).strip().upper()
     if symbol not in SUPPORTED_SYMBOLS:
-        raise ValueError(f"Unsupported symbol: {symbol}. Supported: {', '.join(SUPPORTED_SYMBOLS)}")
+        raise ValueError(
+            f"Unsupported symbol: {symbol}. Supported: {', '.join(SUPPORTED_SYMBOLS)}"
+        )
     cfg = BASE[symbol]
     engine.SYMBOL = symbol
     engine.MINIMUM_ATR = cfg["MINIMUM_ATR"]
@@ -48,6 +52,7 @@ class MultiSymbolMiddleware:
     def __call__(self, environ, start_response):
         params = parse_qs(environ.get("QUERY_STRING", ""), keep_blank_values=True)
         requested = params.get("symbol", [os.getenv("SYMBOL", "XAU/USD")])[0]
+
         with SYMBOL_LOCK:
             previous = {
                 "SYMBOL": engine.SYMBOL,
@@ -58,12 +63,38 @@ class MultiSymbolMiddleware:
                 "SLIPPAGE": engine.SLIPPAGE,
             }
             try:
-                activate(requested)
+                symbol = activate(requested)
                 return self.app(environ, start_response)
             except ValueError as exc:
-                import json
-                body = json.dumps({"status": "error", "message": str(exc)}).encode()
-                start_response("400 BAD REQUEST", [("Content-Type", "application/json"), ("Content-Length", str(len(body)))])
+                body = json.dumps({
+                    "status": "error",
+                    "engine_version": "4.3",
+                    "symbol": requested,
+                    "message": str(exc),
+                }).encode()
+                start_response("400 BAD REQUEST", [
+                    ("Content-Type", "application/json"),
+                    ("Content-Length", str(len(body))),
+                ])
+                return [body]
+            except Exception as exc:
+                # Do not let WSGI/Render turn a useful diagnostic into a generic
+                # Internal Server Error page. Flask route errors are still handled
+                # by engine_v42; this catches failures in the multi-symbol wrapper.
+                body = json.dumps({
+                    "status": "error",
+                    "engine_version": "4.3",
+                    "symbol": requested,
+                    "message": str(exc),
+                    "trace": traceback.format_exc(),
+                }).encode()
+                try:
+                    start_response("500 INTERNAL SERVER ERROR", [
+                        ("Content-Type", "application/json"),
+                        ("Content-Length", str(len(body))),
+                    ])
+                except Exception:
+                    pass
                 return [body]
             finally:
                 for key, value in previous.items():
