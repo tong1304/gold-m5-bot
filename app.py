@@ -1,6 +1,6 @@
 import os
 import math
-import threading
+import traceback
 from datetime import datetime, timezone
 
 import requests
@@ -39,53 +39,44 @@ TELEGRAM_CHAT_ID = os.getenv(
 # ============================================================
 
 SYMBOL = "XAU/USD"
-
 TIMEFRAME = "5min"
-
-DISPLAY_TIMEFRAME = "M5"
 
 CANDLE_LIMIT = 1000
 
-REQUEST_TIMEOUT = 30
-
-
-# ============================================================
-# INDICATOR CONFIG
-# ============================================================
-
-EMA_FAST_PERIOD = 20
-
-EMA_SLOW_PERIOD = 50
+EMA_FAST = 20
+EMA_SLOW = 50
 
 RSI_PERIOD = 14
-
 ATR_PERIOD = 14
-
-SR_LOOKBACK = 50
-
-
-# ============================================================
-# SIGNAL CONFIG
-# ============================================================
-
-MIN_SCORE = 70.0
-
-MIN_RISK_REWARD = 1.30
 
 MIN_ATR = 0.50
 
-MAX_ENTRY_DISTANCE_ATR = 0.80
+MIN_RISK_REWARD = 1.30
 
-SIGNAL_COOLDOWN_BARS = 1
+MIN_SCORE = 70.0
+
+FORWARD_BARS = 12
+
+SIGNAL_COOLDOWN = True
 
 
 # ============================================================
-# TRADE CONFIG
+# PATTERNS
 # ============================================================
 
-SL_ATR_MULTIPLIER = 1.20
-
-TP_ATR_MULTIPLIER = 1.80
+PATTERN_NAMES = [
+    "Bullish Engulfing",
+    "Bearish Engulfing",
+    "Hammer",
+    "Shooting Star",
+    "Morning Star",
+    "Evening Star",
+    "Bullish Breakout",
+    "Bearish Breakout",
+    "Pullback",
+    "Double Bottom",
+    "Double Top",
+]
 
 
 # ============================================================
@@ -93,17 +84,13 @@ TP_ATR_MULTIPLIER = 1.80
 # ============================================================
 
 STATE = {
-    "status": "starting",
+    "started_at": None,
     "last_update": None,
     "last_signal": None,
     "last_signal_key": None,
     "last_error": None,
-    "startup_notification_sent": False,
-    "telegram_last_error": None,
+    "startup_sent": False,
 }
-
-
-STARTUP_LOCK = threading.Lock()
 
 
 # ============================================================
@@ -111,51 +98,22 @@ STARTUP_LOCK = threading.Lock()
 # ============================================================
 
 def utc_now():
-
-    return datetime.now(
-        timezone.utc
-    )
+    return datetime.now(timezone.utc)
 
 
 # ============================================================
-# HELPERS
+# NUMBER HELPERS
 # ============================================================
 
 def round_price(value):
-
-    if value is None:
-        return None
-
-    return round(
-        float(value),
-        2
-    )
+    return round(float(value), 2)
 
 
-def clamp(
-    value,
-    minimum=0.0,
-    maximum=100.0
-):
-
-    return max(
-        minimum,
-        min(
-            maximum,
-            float(value)
-        )
-    )
-
-
-def safe_float(value):
-
+def safe_float(value, default=0.0):
     try:
-
         return float(value)
-
     except Exception:
-
-        return 0.0
+        return default
 
 
 # ============================================================
@@ -163,17 +121,16 @@ def safe_float(value):
 # ============================================================
 
 def get_candles():
+    """
+    Download XAU/USD M5 candles from Twelve Data.
+    """
 
     if not TWELVE_DATA_API_KEY:
-
         raise RuntimeError(
             "TWELVE_DATA_API_KEY is not configured"
         )
 
-    url = (
-        "https://api.twelvedata.com/"
-        "time_series"
-    )
+    url = "https://api.twelvedata.com/time_series"
 
     params = {
         "symbol": SYMBOL,
@@ -187,7 +144,7 @@ def get_candles():
     response = requests.get(
         url,
         params=params,
-        timeout=REQUEST_TIMEOUT
+        timeout=30,
     )
 
     response.raise_for_status()
@@ -195,20 +152,16 @@ def get_candles():
     data = response.json()
 
     if data.get("status") == "error":
-
         raise RuntimeError(
             data.get(
                 "message",
-                "Twelve Data API error"
+                "Twelve Data API error",
             )
         )
 
-    values = data.get(
-        "values"
-    )
+    values = data.get("values")
 
     if not values:
-
         raise RuntimeError(
             "No candle data received"
         )
@@ -220,45 +173,20 @@ def get_candles():
         try:
 
             candles.append({
-
-                "datetime":
-                    item["datetime"],
-
-                "open":
-                    float(
-                        item["open"]
-                    ),
-
-                "high":
-                    float(
-                        item["high"]
-                    ),
-
-                "low":
-                    float(
-                        item["low"]
-                    ),
-
-                "close":
-                    float(
-                        item["close"]
-                    )
-
+                "datetime": item["datetime"],
+                "open": float(item["open"]),
+                "high": float(item["high"]),
+                "low": float(item["low"]),
+                "close": float(item["close"]),
             })
 
         except Exception:
-
             continue
 
+    # Twelve Data normally returns newest first.
     candles.reverse()
 
-    minimum_required = max(
-        100,
-        EMA_SLOW_PERIOD + 30
-    )
-
-    if len(candles) < minimum_required:
-
+    if len(candles) < 100:
         raise RuntimeError(
             "Not enough M5 candles"
         )
@@ -270,83 +198,63 @@ def get_candles():
 # EMA
 # ============================================================
 
-def calculate_ema(
-    values,
-    period
-):
+def calculate_ema(values, period):
+    """
+    Calculate EMA series.
+    """
 
     if not values:
-
         return []
 
     if len(values) < period:
-
         return [None] * len(values)
 
-    multiplier = (
-        2.0
-        / (period + 1.0)
-    )
+    multiplier = 2.0 / (period + 1.0)
 
-    result = [None] * len(values)
+    ema = [None] * len(values)
 
-    sma = sum(
+    initial = sum(
         values[:period]
     ) / period
 
-    result[
-        period - 1
-    ] = sma
-
-    previous = sma
+    ema[period - 1] = initial
 
     for i in range(
         period,
-        len(values)
+        len(values),
     ):
 
-        current = (
-            values[i]
-            * multiplier
-            +
-            previous
-            * (1.0 - multiplier)
-        )
+        ema[i] = (
+            values[i] - ema[i - 1]
+        ) * multiplier + ema[i - 1]
 
-        result[i] = current
-
-        previous = current
-
-    return result
+    return ema
 
 
 # ============================================================
 # RSI
 # ============================================================
 
-def calculate_rsi(
-    values,
-    period=14
+def calculate_rsi_series(
+    closes,
+    period=14,
 ):
+    """
+    Wilder-style RSI.
+    """
 
-    if len(values) <= period:
+    result = [None] * len(closes)
 
-        return [None] * len(values)
-
-    result = [None] * len(values)
+    if len(closes) <= period:
+        return result
 
     gains = []
-
     losses = []
 
-    for i in range(
-        1,
-        period + 1
-    ):
+    for i in range(1, len(closes)):
 
         change = (
-            values[i]
-            - values[i - 1]
+            closes[i] - closes[i - 1]
         )
 
         gains.append(
@@ -357,86 +265,67 @@ def calculate_rsi(
             max(-change, 0.0)
         )
 
-    average_gain = (
-        sum(gains)
+    avg_gain = (
+        sum(gains[:period])
         / period
     )
 
-    average_loss = (
-        sum(losses)
+    avg_loss = (
+        sum(losses[:period])
         / period
     )
 
-    if average_loss == 0:
-
+    if avg_loss == 0:
         result[period] = 100.0
 
     else:
 
-        rs = (
-            average_gain
-            / average_loss
-        )
+        rs = avg_gain / avg_loss
 
         result[period] = (
             100.0
-            -
-            100.0
-            / (1.0 + rs)
+            - (
+                100.0
+                / (1.0 + rs)
+            )
         )
 
     for i in range(
         period + 1,
-        len(values)
+        len(closes),
     ):
 
-        change = (
-            values[i]
-            - values[i - 1]
-        )
-
-        gain = max(
-            change,
-            0.0
-        )
-
-        loss = max(
-            -change,
-            0.0
-        )
-
-        average_gain = (
+        avg_gain = (
             (
-                average_gain
-                * (period - 1)
+                avg_gain * (period - 1)
             )
-            + gain
+            + gains[i - 1]
         ) / period
 
-        average_loss = (
+        avg_loss = (
             (
-                average_loss
-                * (period - 1)
+                avg_loss * (period - 1)
             )
-            + loss
+            + losses[i - 1]
         ) / period
 
-        if average_loss == 0:
+        if avg_loss == 0:
 
             result[i] = 100.0
 
         else:
 
             rs = (
-                average_gain
-                / average_loss
+                avg_gain
+                / avg_loss
             )
 
             result[i] = (
                 100.0
-                -
-                100.0
-                / (1.0 + rs)
+                - (
+                    100.0
+                    / (1.0 + rs)
+                )
             )
 
     return result
@@ -446,69 +335,129 @@ def calculate_rsi(
 # ATR
 # ============================================================
 
-def calculate_atr(
+def calculate_atr_series(
     candles,
-    period=14
+    period=14,
 ):
+    """
+    ATR series.
+    """
+
+    result = [None] * len(candles)
 
     if len(candles) <= period:
-
-        return 0.0
+        return result
 
     true_ranges = []
 
     for i in range(
-        1,
         len(candles)
     ):
 
-        current = candles[i]
+        candle = candles[i]
 
-        previous = candles[
-            i - 1
-        ]
+        high = candle["high"]
+        low = candle["low"]
 
-        high = current["high"]
+        if i == 0:
 
-        low = current["low"]
+            tr = high - low
 
-        previous_close = (
-            previous["close"]
-        )
+        else:
 
-        tr1 = (
-            high - low
-        )
-
-        tr2 = abs(
-            high
-            - previous_close
-        )
-
-        tr3 = abs(
-            low
-            - previous_close
-        )
-
-        true_ranges.append(
-            max(
-                tr1,
-                tr2,
-                tr3
+            previous_close = (
+                candles[i - 1]["close"]
             )
+
+            tr = max(
+                high - low,
+                abs(
+                    high
+                    - previous_close
+                ),
+                abs(
+                    low
+                    - previous_close
+                ),
+            )
+
+        true_ranges.append(tr)
+
+    atr = (
+        sum(
+            true_ranges[:period]
         )
+        / period
+    )
 
-    recent = true_ranges[
-        -period:
-    ]
+    result[period - 1] = atr
 
-    if not recent:
+    for i in range(
+        period,
+        len(candles),
+    ):
 
-        return 0.0
+        atr = (
+            (
+                atr * (period - 1)
+            )
+            + true_ranges[i]
+        ) / period
 
+        result[i] = atr
+
+    return result
+
+
+# ============================================================
+# CANDLE HELPERS
+# ============================================================
+
+def candle_body(candle):
+    return abs(
+        candle["close"]
+        - candle["open"]
+    )
+
+
+def candle_range(candle):
     return (
-        sum(recent)
-        / len(recent)
+        candle["high"]
+        - candle["low"]
+    )
+
+
+def upper_wick(candle):
+    return (
+        candle["high"]
+        - max(
+            candle["open"],
+            candle["close"],
+        )
+    )
+
+
+def lower_wick(candle):
+    return (
+        min(
+            candle["open"],
+            candle["close"],
+        )
+        - candle["low"]
+    )
+
+
+def is_bullish(candle):
+    return (
+        candle["close"]
+        > candle["open"]
+    )
+
+
+def is_bearish(candle):
+    return (
+        candle["close"]
+        < candle["open"]
     )
 
 
@@ -518,245 +467,141 @@ def calculate_atr(
 
 def calculate_support_resistance(
     candles,
-    lookback=50
+    lookback=50,
 ):
+    if len(candles) < 10:
+        return None, None
 
-    if len(candles) < lookback:
-
-        lookback = len(candles)
-
-    window = candles[
+    recent = candles[
         -lookback:
     ]
 
     support = min(
-        candle["low"]
-        for candle in window
+        c["low"]
+        for c in recent
     )
 
     resistance = max(
-        candle["high"]
-        for candle in window
+        c["high"]
+        for c in recent
     )
 
-    return (
-        support,
-        resistance
-    )
+    return support, resistance
 
 
 # ============================================================
-# CANDLE UTILITIES
-# ============================================================
-
-def candle_body(candle):
-
-    return abs(
-        candle["close"]
-        - candle["open"]
-    )
-
-
-def candle_range(candle):
-
-    return (
-        candle["high"]
-        - candle["low"]
-    )
-
-
-def upper_wick(candle):
-
-    return (
-        candle["high"]
-        -
-        max(
-            candle["open"],
-            candle["close"]
-        )
-    )
-
-
-def lower_wick(candle):
-
-    return (
-        min(
-            candle["open"],
-            candle["close"]
-        )
-        -
-        candle["low"]
-    )
-
-
-def bullish(candle):
-
-    return (
-        candle["close"]
-        > candle["open"]
-    )
-
-
-def bearish(candle):
-
-    return (
-        candle["close"]
-        < candle["open"]
-    )
-
-
-# ============================================================
-# PATTERN 1 - BULLISH ENGULFING
+# PATTERN DETECTION
 # ============================================================
 
 def detect_bullish_engulfing(
-    candles
+    candles,
 ):
-
     if len(candles) < 2:
-
         return False
 
-    a = candles[-2]
+    prev = candles[-2]
+    curr = candles[-1]
 
-    b = candles[-1]
+    if not (
+        is_bearish(prev)
+        and is_bullish(curr)
+    ):
+        return False
 
     return (
-        bearish(a)
-        and
-        bullish(b)
-        and
-        b["open"] <= a["close"]
-        and
-        b["close"] >= a["open"]
-        and
-        candle_body(b)
-        > candle_body(a)
+        curr["open"] <= prev["close"]
+        and curr["close"] >= prev["open"]
+        and candle_body(curr)
+        >= candle_body(prev)
     )
 
-
-# ============================================================
-# PATTERN 2 - BEARISH ENGULFING
-# ============================================================
 
 def detect_bearish_engulfing(
-    candles
+    candles,
 ):
-
     if len(candles) < 2:
-
         return False
 
-    a = candles[-2]
+    prev = candles[-2]
+    curr = candles[-1]
 
-    b = candles[-1]
+    if not (
+        is_bullish(prev)
+        and is_bearish(curr)
+    ):
+        return False
 
     return (
-        bullish(a)
-        and
-        bearish(b)
-        and
-        b["open"] >= a["close"]
-        and
-        b["close"] <= a["open"]
-        and
-        candle_body(b)
-        > candle_body(a)
+        curr["open"] >= prev["close"]
+        and curr["close"] <= prev["open"]
+        and candle_body(curr)
+        >= candle_body(prev)
     )
 
 
-# ============================================================
-# PATTERN 3 - HAMMER
-# ============================================================
-
-def detect_hammer(
-    candles
-):
-
-    if not candles:
-
+def detect_hammer(candles):
+    if len(candles) < 1:
         return False
 
     c = candles[-1]
 
     body = candle_body(c)
-
     rng = candle_range(c)
 
     if rng <= 0:
-
         return False
 
     lower = lower_wick(c)
-
     upper = upper_wick(c)
 
     return (
         lower >= body * 2.0
-        and
-        upper <= body * 0.8
-        and
-        body / rng <= 0.45
+        and upper <= max(
+            body * 0.75,
+            rng * 0.20,
+        )
+        and body / rng <= 0.45
     )
 
 
-# ============================================================
-# PATTERN 4 - SHOOTING STAR
-# ============================================================
-
-def detect_shooting_star(
-    candles
-):
-
-    if not candles:
-
+def detect_shooting_star(candles):
+    if len(candles) < 1:
         return False
 
     c = candles[-1]
 
     body = candle_body(c)
-
     rng = candle_range(c)
 
     if rng <= 0:
-
         return False
 
-    lower = lower_wick(c)
-
     upper = upper_wick(c)
+    lower = lower_wick(c)
 
     return (
         upper >= body * 2.0
-        and
-        lower <= body * 0.8
-        and
-        body / rng <= 0.45
+        and lower <= max(
+            body * 0.75,
+            rng * 0.20,
+        )
+        and body / rng <= 0.45
     )
 
 
-# ============================================================
-# PATTERN 5 - MORNING STAR
-# ============================================================
-
-def detect_morning_star(
-    candles
-):
-
+def detect_morning_star(candles):
     if len(candles) < 3:
-
         return False
 
     a = candles[-3]
-
     b = candles[-2]
-
     c = candles[-1]
 
-    range_b = candle_range(b)
+    body_a = candle_body(a)
+    body_b = candle_body(b)
+    body_c = candle_body(c)
 
-    if range_b <= 0:
-
+    if body_a <= 0:
         return False
 
     midpoint_a = (
@@ -765,35 +610,28 @@ def detect_morning_star(
     ) / 2.0
 
     return (
-        bearish(a)
-        and
-        candle_body(b)
-        < candle_body(a) * 0.50
-        and
-        bullish(c)
-        and
-        c["close"]
-        > midpoint_a
+        is_bearish(a)
+        and body_b <= body_a * 0.50
+        and is_bullish(c)
+        and body_c >= body_a * 0.50
+        and c["close"] > midpoint_a
     )
 
 
-# ============================================================
-# PATTERN 6 - EVENING STAR
-# ============================================================
-
-def detect_evening_star(
-    candles
-):
-
+def detect_evening_star(candles):
     if len(candles) < 3:
-
         return False
 
     a = candles[-3]
-
     b = candles[-2]
-
     c = candles[-1]
+
+    body_a = candle_body(a)
+    body_b = candle_body(b)
+    body_c = candle_body(c)
+
+    if body_a <= 0:
+        return False
 
     midpoint_a = (
         a["open"]
@@ -801,797 +639,1169 @@ def detect_evening_star(
     ) / 2.0
 
     return (
-        bullish(a)
-        and
-        candle_body(b)
-        < candle_body(a) * 0.50
-        and
-        bearish(c)
-        and
-        c["close"]
-        < midpoint_a
+        is_bullish(a)
+        and body_b <= body_a * 0.50
+        and is_bearish(c)
+        and body_c >= body_a * 0.50
+        and c["close"] < midpoint_a
     )
 
 
-# ============================================================
-# PATTERN 7 - BREAKOUT
-# ============================================================
-
-def detect_breakout(
-    candles
+def detect_bullish_breakout(
+    candles,
+    lookback=20,
 ):
-
-    if len(candles) < 25:
-
-        return None
-
-    previous = candles[
-        -21:-1
-    ]
+    if len(candles) < lookback + 1:
+        return False
 
     current = candles[-1]
+
+    previous = candles[
+        -lookback - 1:-1
+    ]
 
     resistance = max(
         c["high"]
         for c in previous
     )
 
+    return (
+        current["close"]
+        > resistance
+    )
+
+
+def detect_bearish_breakout(
+    candles,
+    lookback=20,
+):
+    if len(candles) < lookback + 1:
+        return False
+
+    current = candles[-1]
+
+    previous = candles[
+        -lookback - 1:-1
+    ]
+
     support = min(
         c["low"]
         for c in previous
     )
 
-    if current["close"] > resistance:
+    return (
+        current["close"]
+        < support
+    )
 
-        return "BUY"
-
-    if current["close"] < support:
-
-        return "SELL"
-
-    return None
-
-
-# ============================================================
-# PATTERN 8 - PULLBACK
-# ============================================================
 
 def detect_pullback(
     candles,
-    ema_fast,
-    ema_slow
+    ema20,
+    ema50,
 ):
-
     if len(candles) < 5:
-
         return None
 
-    if (
-        ema_fast is None
-        or
-        ema_slow is None
-    ):
-
+    if ema20 is None or ema50 is None:
         return None
 
-    current = candles[-1]
+    recent = candles[-5:]
 
-    previous = candles[-2]
+    last = recent[-1]
 
-    if (
-        ema_fast > ema_slow
-        and
-        current["close"]
-        > ema_fast
-        and
-        previous["low"]
-        <= ema_fast
-        and
-        bullish(current)
-    ):
+    # Uptrend pullback
+    if ema20 > ema50:
 
-        return "BUY"
+        touched = any(
+            c["low"]
+            <= ema20 * 1.002
+            and c["high"]
+            >= ema20 * 0.998
+            for c in recent[:-1]
+        )
 
-    if (
-        ema_fast < ema_slow
-        and
-        current["close"]
-        < ema_fast
-        and
-        previous["high"]
-        >= ema_fast
-        and
-        bearish(current)
-    ):
+        bullish_reaction = (
+            is_bullish(last)
+            and last["close"]
+            > ema20
+        )
 
-        return "SELL"
+        if (
+            touched
+            and bullish_reaction
+        ):
+            return "BUY"
+
+    # Downtrend pullback
+    if ema20 < ema50:
+
+        touched = any(
+            c["high"]
+            >= ema20 * 0.998
+            and c["low"]
+            <= ema20 * 1.002
+            for c in recent[:-1]
+        )
+
+        bearish_reaction = (
+            is_bearish(last)
+            and last["close"]
+            < ema20
+        )
+
+        if (
+            touched
+            and bearish_reaction
+        ):
+            return "SELL"
 
     return None
 
 
-# ============================================================
-# PATTERN 9 - DOUBLE BOTTOM
-# ============================================================
-
 def detect_double_bottom(
     candles,
-    atr
 ):
-
-    if len(candles) < 30:
-
+    if len(candles) < 20:
         return False
 
-    recent = candles[
-        -30:
-    ]
+    recent = candles[-20:]
 
     lows = [
         c["low"]
         for c in recent
     ]
 
-    first_low = min(
-        lows[:15]
+    first_low_index = lows.index(
+        min(lows[:10])
     )
 
-    second_low = min(
-        lows[15:]
+    second_low_index = (
+        10
+        + lows[10:].index(
+            min(lows[10:])
+        )
     )
 
-    tolerance = max(
-        atr * 0.50,
-        first_low * 0.001
+    first_low = lows[
+        first_low_index
+    ]
+
+    second_low = lows[
+        second_low_index
+    ]
+
+    tolerance = (
+        max(
+            first_low,
+            second_low,
+        )
+        * 0.0015
+    )
+
+    if abs(
+        first_low
+        - second_low
+    ) > tolerance:
+        return False
+
+    middle_high = max(
+        c["high"]
+        for c in recent[
+            first_low_index:
+            second_low_index + 1
+        ]
     )
 
     return (
-        abs(
-            first_low
-            - second_low
-        )
-        <= tolerance
-        and
         candles[-1]["close"]
-        > second_low
+        > middle_high
     )
 
 
-# ============================================================
-# PATTERN 10 - DOUBLE TOP
-# ============================================================
-
 def detect_double_top(
     candles,
-    atr
 ):
-
-    if len(candles) < 30:
-
+    if len(candles) < 20:
         return False
 
-    recent = candles[
-        -30:
-    ]
+    recent = candles[-20:]
 
     highs = [
         c["high"]
         for c in recent
     ]
 
-    first_high = max(
-        highs[:15]
+    first_high_index = highs.index(
+        max(highs[:10])
     )
 
-    second_high = max(
-        highs[15:]
+    second_high_index = (
+        10
+        + highs[10:].index(
+            max(highs[10:])
+        )
     )
 
-    tolerance = max(
-        atr * 0.50,
-        first_high * 0.001
+    first_high = highs[
+        first_high_index
+    ]
+
+    second_high = highs[
+        second_high_index
+    ]
+
+    tolerance = (
+        max(
+            first_high,
+            second_high,
+        )
+        * 0.0015
+    )
+
+    if abs(
+        first_high
+        - second_high
+    ) > tolerance:
+        return False
+
+    middle_low = min(
+        c["low"]
+        for c in recent[
+            first_high_index:
+            second_high_index + 1
+        ]
     )
 
     return (
-        abs(
-            first_high
-            - second_high
-        )
-        <= tolerance
-        and
         candles[-1]["close"]
-        < second_high
+        < middle_low
     )
 
 
 # ============================================================
-# PATTERN RECOGNITION
+# PATTERN RECOGNITION ENGINE
 # ============================================================
 
-def recognize_patterns(
+def detect_patterns(
     candles,
-    ema_fast,
-    ema_slow,
-    atr
+    ema20,
+    ema50,
 ):
-
     patterns = []
+    directional_patterns = []
 
     directions = []
 
-    if detect_bullish_engulfing(
-        candles
-    ):
-
+    if detect_bullish_engulfing(candles):
         patterns.append(
             "Bullish Engulfing"
         )
-
-        directions.append(
-            "BUY"
+        directional_patterns.append(
+            "Bullish Engulfing"
         )
+        directions.append("BUY")
 
-    if detect_bearish_engulfing(
-        candles
-    ):
-
+    if detect_bearish_engulfing(candles):
         patterns.append(
             "Bearish Engulfing"
         )
-
-        directions.append(
-            "SELL"
+        directional_patterns.append(
+            "Bearish Engulfing"
         )
+        directions.append("SELL")
 
-    if detect_hammer(
-        candles
-    ):
-
-        patterns.append(
+    if detect_hammer(candles):
+        patterns.append("Hammer")
+        directional_patterns.append(
             "Hammer"
         )
+        directions.append("BUY")
 
-        directions.append(
-            "BUY"
-        )
-
-    if detect_shooting_star(
-        candles
-    ):
-
+    if detect_shooting_star(candles):
         patterns.append(
             "Shooting Star"
         )
-
-        directions.append(
-            "SELL"
+        directional_patterns.append(
+            "Shooting Star"
         )
+        directions.append("SELL")
 
-    if detect_morning_star(
-        candles
-    ):
-
+    if detect_morning_star(candles):
         patterns.append(
             "Morning Star"
         )
-
-        directions.append(
-            "BUY"
+        directional_patterns.append(
+            "Morning Star"
         )
+        directions.append("BUY")
 
-    if detect_evening_star(
-        candles
-    ):
-
+    if detect_evening_star(candles):
         patterns.append(
             "Evening Star"
         )
-
-        directions.append(
-            "SELL"
+        directional_patterns.append(
+            "Evening Star"
         )
+        directions.append("SELL")
 
-    breakout = detect_breakout(
-        candles
-    )
-
-    if breakout == "BUY":
-
+    if detect_bullish_breakout(candles):
         patterns.append(
             "Bullish Breakout"
         )
-
-        directions.append(
-            "BUY"
+        directional_patterns.append(
+            "Bullish Breakout"
         )
+        directions.append("BUY")
 
-    elif breakout == "SELL":
-
+    if detect_bearish_breakout(candles):
         patterns.append(
             "Bearish Breakout"
         )
-
-        directions.append(
-            "SELL"
+        directional_patterns.append(
+            "Bearish Breakout"
         )
+        directions.append("SELL")
 
     pullback = detect_pullback(
         candles,
-        ema_fast,
-        ema_slow
+        ema20,
+        ema50,
     )
 
     if pullback == "BUY":
 
-        patterns.append(
-            "Bullish Pullback"
+        patterns.append("Pullback")
+        directional_patterns.append(
+            "Pullback"
         )
-
-        directions.append(
-            "BUY"
-        )
+        directions.append("BUY")
 
     elif pullback == "SELL":
 
-        patterns.append(
-            "Bearish Pullback"
+        patterns.append("Pullback")
+        directional_patterns.append(
+            "Pullback"
         )
+        directions.append("SELL")
 
-        directions.append(
-            "SELL"
-        )
-
-    if detect_double_bottom(
-        candles,
-        atr
-    ):
+    if detect_double_bottom(candles):
 
         patterns.append(
             "Double Bottom"
         )
 
-        directions.append(
-            "BUY"
+        directional_patterns.append(
+            "Double Bottom"
         )
 
-    if detect_double_top(
-        candles,
-        atr
-    ):
+        directions.append("BUY")
+
+    if detect_double_top(candles):
 
         patterns.append(
             "Double Top"
         )
 
-        directions.append(
-            "SELL"
+        directional_patterns.append(
+            "Double Top"
         )
 
-    buy_count = directions.count(
-        "BUY"
-    )
+        directions.append("SELL")
 
-    sell_count = directions.count(
-        "SELL"
-    )
+    buy_count = directions.count("BUY")
+    sell_count = directions.count("SELL")
 
     if buy_count > sell_count:
-
-        candidate = "BUY"
+        candidate_direction = "BUY"
 
     elif sell_count > buy_count:
-
-        candidate = "SELL"
+        candidate_direction = "SELL"
 
     else:
-
-        candidate = "NO_TRADE"
+        candidate_direction = None
 
     return {
         "patterns": patterns,
+        "directional_patterns":
+            directional_patterns,
         "directions": directions,
-        "buy_patterns": buy_count,
-        "sell_patterns": sell_count,
-        "candidate_direction": candidate,
+        "candidate_direction":
+            candidate_direction,
+        "buy_pattern_count":
+            buy_count,
+        "sell_pattern_count":
+            sell_count,
     }
 
 
 # ============================================================
-# TREND
+# MARKET ANALYSIS
 # ============================================================
 
-def determine_trend(
-    close,
-    ema_fast,
-    ema_slow
+def analyze_market(
+    candles,
 ):
+    closes = [
+        c["close"]
+        for c in candles
+    ]
 
-    if (
-        ema_fast is None
-        or
-        ema_slow is None
-    ):
+    ema20_series = calculate_ema(
+        closes,
+        EMA_FAST,
+    )
 
-        return "UNKNOWN"
+    ema50_series = calculate_ema(
+        closes,
+        EMA_SLOW,
+    )
 
-    if (
-        close > ema_fast
-        and
-        ema_fast > ema_slow
-    ):
+    rsi_series = calculate_rsi_series(
+        closes,
+        RSI_PERIOD,
+    )
 
-        return "UPTREND"
+    atr_series = calculate_atr_series(
+        candles,
+        ATR_PERIOD,
+    )
 
-    if (
-        close < ema_fast
-        and
-        ema_fast < ema_slow
-    ):
+    ema20 = ema20_series[-1]
+    ema50 = ema50_series[-1]
+    rsi = rsi_series[-1]
+    atr = atr_series[-1]
 
-        return "DOWNTREND"
+    if ema20 is None:
+        ema20 = closes[-1]
 
-    return "SIDEWAYS"
-
-
-# ============================================================
-# MOMENTUM
-# ============================================================
-
-def determine_momentum(
-    rsi
-):
+    if ema50 is None:
+        ema50 = closes[-1]
 
     if rsi is None:
+        rsi = 50.0
 
-        return "UNKNOWN"
+    if atr is None:
+        atr = 0.0
 
-    if rsi >= 60:
+    current_close = closes[-1]
 
-        return "BULLISH"
+    previous_close = (
+        closes[-2]
+        if len(closes) >= 2
+        else current_close
+    )
 
-    if rsi <= 40:
+    # --------------------------------------------------------
+    # TREND
+    # --------------------------------------------------------
 
-        return "BEARISH"
+    if (
+        ema20 > ema50
+        and current_close > ema20
+    ):
 
-    return "NEUTRAL"
+        trend = "UPTREND"
+
+    elif (
+        ema20 < ema50
+        and current_close < ema20
+    ):
+
+        trend = "DOWNTREND"
+
+    else:
+
+        trend = "SIDEWAYS"
+
+    # --------------------------------------------------------
+    # MOMENTUM
+    # --------------------------------------------------------
+
+    momentum_change = (
+        current_close
+        - previous_close
+    )
+
+    if momentum_change > 0:
+        momentum = "BULLISH"
+
+    elif momentum_change < 0:
+        momentum = "BEARISH"
+
+    else:
+        momentum = "NEUTRAL"
+
+    support, resistance = (
+        calculate_support_resistance(
+            candles,
+            50,
+        )
+    )
+
+    patterns = detect_patterns(
+        candles,
+        ema20,
+        ema50,
+    )
+
+    return {
+        "ema20": ema20,
+        "ema50": ema50,
+        "rsi": rsi,
+        "atr": atr,
+        "trend": trend,
+        "momentum": momentum,
+        "support": support,
+        "resistance": resistance,
+        "patterns": patterns,
+    }
 
 
 # ============================================================
-# SCORE ENGINE
+# PATTERN WEIGHTS
 # ============================================================
 
-def calculate_direction_score(
-    direction,
-    patterns,
-    trend,
-    momentum,
-    rsi,
-    close,
-    support,
-    resistance,
-    atr
+PATTERN_WEIGHTS = {
+    "Bullish Engulfing": 18,
+    "Bearish Engulfing": 18,
+    "Hammer": 15,
+    "Shooting Star": 15,
+    "Morning Star": 20,
+    "Evening Star": 20,
+    "Bullish Breakout": 22,
+    "Bearish Breakout": 22,
+    "Pullback": 20,
+    "Double Bottom": 20,
+    "Double Top": 20,
+}
+
+
+# ============================================================
+# CONFIRMATION
+# ============================================================
+
+def confirmation_analysis(
+    candles,
+    analysis,
 ):
+    patterns_data = analysis["patterns"]
+
+    candidate = (
+        patterns_data[
+            "candidate_direction"
+        ]
+    )
+
+    patterns = (
+        patterns_data["patterns"]
+    )
+
+    if candidate not in [
+        "BUY",
+        "SELL",
+    ]:
+        return {
+            "valid": False,
+            "candidate_direction":
+                None,
+            "score": 0.0,
+            "reasons": [
+                "No clear directional pattern"
+            ],
+            "checks": {},
+        }
 
     score = 0.0
 
     reasons = []
 
-    pattern_count = len(
-        patterns
+    checks = {
+        "pattern": False,
+        "trend": False,
+        "momentum": False,
+        "rsi": False,
+        "location": False,
+        "volatility": False,
+        "trigger": False,
+    }
+
+    # --------------------------------------------------------
+    # PATTERN SCORE
+    # --------------------------------------------------------
+
+    directional_patterns = (
+        patterns_data[
+            "directional_patterns"
+        ]
     )
 
-    if pattern_count > 0:
+    pattern_score = 0
 
-        pattern_score = min(
-            30.0,
-            pattern_count * 12.0
-        )
+    for pattern in directional_patterns:
+
+        if (
+            pattern
+            in PATTERN_WEIGHTS
+        ):
+            pattern_score += (
+                PATTERN_WEIGHTS[
+                    pattern
+                ]
+            )
+
+    pattern_score = min(
+        pattern_score,
+        30,
+    )
+
+    if pattern_score > 0:
+
+        checks["pattern"] = True
 
         score += pattern_score
 
         reasons.append(
-            f"{pattern_count} pattern(s) detected"
+            f"{len(patterns)} pattern(s) detected"
         )
 
-    if direction == "BUY":
+    # --------------------------------------------------------
+    # TREND
+    # --------------------------------------------------------
+
+    trend = analysis["trend"]
+
+    if candidate == "BUY":
 
         if trend == "UPTREND":
 
+            checks["trend"] = True
             score += 20
 
             reasons.append(
-                "Uptrend"
-            )
-
-        elif trend == "SIDEWAYS":
-
-            score += 8
-
-            reasons.append(
-                "Sideways market"
+                "Aligned with uptrend"
             )
 
         elif trend == "DOWNTREND":
 
-            score -= 15
+            score -= 10
 
             reasons.append(
                 "Against downtrend"
             )
 
-        if momentum == "BULLISH":
-
-            score += 20
-
-            reasons.append(
-                "Bullish momentum"
-            )
-
-        elif momentum == "NEUTRAL":
-
-            score += 8
-
-        elif momentum == "BEARISH":
-
-            score -= 10
-
-        if (
-            rsi is not None
-            and
-            rsi < 70
-        ):
+        else:
 
             score += 5
 
-        if atr > 0:
-
-            distance_to_support = (
-                close - support
+            reasons.append(
+                "Sideways market"
             )
 
-            if (
-                distance_to_support
-                <= atr * 1.5
-            ):
-
-                score += 10
-
-                reasons.append(
-                    "Near support"
-                )
-
-            if (
-                resistance > close
-                and
-                (
-                    resistance - close
-                )
-                <= atr * 1.0
-            ):
-
-                score -= 5
-
-                reasons.append(
-                    "Near resistance"
-                )
-
-    elif direction == "SELL":
+    else:
 
         if trend == "DOWNTREND":
 
+            checks["trend"] = True
             score += 20
 
             reasons.append(
-                "Downtrend"
+                "Aligned with downtrend"
             )
-
-        elif trend == "SIDEWAYS":
-
-            score += 8
 
         elif trend == "UPTREND":
 
-            score -= 15
+            score -= 10
 
             reasons.append(
                 "Against uptrend"
             )
 
-        if momentum == "BEARISH":
-
-            score += 20
-
-            reasons.append(
-                "Bearish momentum"
-            )
-
-        elif momentum == "NEUTRAL":
-
-            score += 8
-
-        elif momentum == "BULLISH":
-
-            score -= 10
-
-        if (
-            rsi is not None
-            and
-            rsi > 30
-        ):
+        else:
 
             score += 5
 
-        if atr > 0:
-
-            distance_to_resistance = (
-                resistance - close
+            reasons.append(
+                "Sideways market"
             )
 
-            if (
-                distance_to_resistance
-                <= atr * 1.5
-            ):
+    # --------------------------------------------------------
+    # MOMENTUM
+    # --------------------------------------------------------
 
-                score += 10
+    momentum = analysis["momentum"]
 
-                reasons.append(
-                    "Near resistance"
-                )
+    if (
+        candidate == "BUY"
+        and momentum == "BULLISH"
+    ):
 
-            if (
-                close > support
-                and
-                (
-                    close - support
-                )
-                <= atr * 1.0
-            ):
+        checks["momentum"] = True
+        score += 15
 
-                score -= 5
+        reasons.append(
+            "Bullish momentum confirmed"
+        )
 
-                reasons.append(
-                    "Near support"
-                )
+    elif (
+        candidate == "SELL"
+        and momentum == "BEARISH"
+    ):
 
-    return (
-        round(
-            clamp(score),
-            2
-        ),
-        reasons
+        checks["momentum"] = True
+        score += 15
+
+        reasons.append(
+            "Bearish momentum confirmed"
+        )
+
+    else:
+
+        score -= 5
+
+        reasons.append(
+            "Momentum not confirmed"
+        )
+
+    # --------------------------------------------------------
+    # RSI
+    # --------------------------------------------------------
+
+    rsi = analysis["rsi"]
+
+    if candidate == "BUY":
+
+        if (
+            45 <= rsi <= 70
+        ):
+
+            checks["rsi"] = True
+            score += 10
+
+            reasons.append(
+                "RSI supports BUY"
+            )
+
+        elif rsi < 30:
+
+            checks["rsi"] = True
+            score += 7
+
+            reasons.append(
+                "RSI oversold"
+            )
+
+        else:
+
+            reasons.append(
+                "RSI weak for BUY"
+            )
+
+    else:
+
+        if (
+            30 <= rsi <= 55
+        ):
+
+            checks["rsi"] = True
+            score += 10
+
+            reasons.append(
+                "RSI supports SELL"
+            )
+
+        elif rsi > 70:
+
+            checks["rsi"] = True
+            score += 7
+
+            reasons.append(
+                "RSI overbought"
+            )
+
+        else:
+
+            reasons.append(
+                "RSI weak for SELL"
+            )
+
+    # --------------------------------------------------------
+    # SUPPORT / RESISTANCE
+    # --------------------------------------------------------
+
+    close = candles[-1]["close"]
+
+    support = analysis["support"]
+    resistance = analysis["resistance"]
+    atr = analysis["atr"]
+
+    if atr <= 0:
+        atr = close * 0.001
+
+    if candidate == "BUY":
+
+        if (
+            resistance
+            and close >= resistance - atr * 0.5
+        ):
+
+            checks["location"] = True
+            score += 10
+
+            reasons.append(
+                "Near resistance / breakout zone"
+            )
+
+        elif (
+            support
+            and close <= support + atr * 1.5
+        ):
+
+            checks["location"] = True
+            score += 10
+
+            reasons.append(
+                "Near support"
+            )
+
+        else:
+
+            score += 3
+
+            reasons.append(
+                "Neutral price location"
+            )
+
+    else:
+
+        if (
+            resistance
+            and close >= resistance - atr * 1.5
+        ):
+
+            checks["location"] = True
+            score += 10
+
+            reasons.append(
+                "Near resistance"
+            )
+
+        elif (
+            support
+            and close <= support + atr * 0.5
+        ):
+
+            checks["location"] = True
+            score += 10
+
+            reasons.append(
+                "Near support / breakdown zone"
+            )
+
+        else:
+
+            score += 3
+
+            reasons.append(
+                "Neutral price location"
+            )
+
+    # --------------------------------------------------------
+    # VOLATILITY
+    # --------------------------------------------------------
+
+    if atr >= MIN_ATR:
+
+        checks["volatility"] = True
+        score += 5
+
+        reasons.append(
+            "ATR sufficient"
+        )
+
+    else:
+
+        reasons.append(
+            "ATR too low"
+        )
+
+    # --------------------------------------------------------
+    # TRIGGER
+    # --------------------------------------------------------
+
+    current = candles[-1]
+
+    previous = (
+        candles[-2]
+        if len(candles) >= 2
+        else current
     )
+
+    if candidate == "BUY":
+
+        bullish_trigger = (
+            is_bullish(current)
+            and current["close"]
+            > previous["high"]
+        )
+
+        breakout = (
+            resistance is not None
+            and current["close"]
+            > resistance
+        )
+
+        engulfing_trigger = (
+            "Bullish Engulfing"
+            in patterns
+            or "Morning Star"
+            in patterns
+            or "Hammer"
+            in patterns
+        )
+
+        if (
+            bullish_trigger
+            or breakout
+            or engulfing_trigger
+        ):
+
+            checks["trigger"] = True
+            score += 10
+
+            reasons.append(
+                "BUY entry trigger confirmed"
+            )
+
+        else:
+
+            reasons.append(
+                "Waiting for BUY trigger"
+            )
+
+    else:
+
+        bearish_trigger = (
+            is_bearish(current)
+            and current["close"]
+            < previous["low"]
+        )
+
+        breakdown = (
+            support is not None
+            and current["close"]
+            < support
+        )
+
+        reversal_trigger = (
+            "Bearish Engulfing"
+            in patterns
+            or "Evening Star"
+            in patterns
+            or "Shooting Star"
+            in patterns
+        )
+
+        if (
+            bearish_trigger
+            or breakdown
+            or reversal_trigger
+        ):
+
+            checks["trigger"] = True
+            score += 10
+
+            reasons.append(
+                "SELL entry trigger confirmed"
+            )
+
+        else:
+
+            reasons.append(
+                "Waiting for SELL trigger"
+            )
+
+    # --------------------------------------------------------
+    # NORMALIZE
+    # --------------------------------------------------------
+
+    score = max(
+        0.0,
+        min(
+            score,
+            100.0,
+        ),
+    )
+
+    # --------------------------------------------------------
+    # FINAL VALIDATION
+    # --------------------------------------------------------
+
+    mandatory = (
+        checks["pattern"]
+        and checks["volatility"]
+        and checks["trigger"]
+    )
+
+    valid = (
+        mandatory
+        and score >= MIN_SCORE
+    )
+
+    return {
+        "valid": valid,
+        "candidate_direction":
+            candidate,
+        "score": round(
+            score,
+            2,
+        ),
+        "reasons": reasons,
+        "checks": checks,
+    }
 
 
 # ============================================================
-# TRADE LEVELS
+# ENTRY / TP / SL
 # ============================================================
 
 def calculate_trade_levels(
+    candles,
     direction,
-    entry,
     atr,
     support,
-    resistance
+    resistance,
 ):
+    """
+    Structure + ATR based trade levels.
+    """
+
+    entry = candles[-1]["close"]
 
     if atr <= 0:
+        atr = entry * 0.001
 
-        return (
-            None,
-            None,
-            0.0
-        )
+    minimum_distance = max(
+        atr,
+        entry * 0.0005,
+    )
 
     if direction == "BUY":
 
+        structure_sl = None
+
+        if support is not None:
+            structure_sl = (
+                support
+                - atr * 0.20
+            )
+
         atr_sl = (
             entry
-            -
-            atr * SL_ATR_MULTIPLIER
+            - minimum_distance
         )
 
-        structural_sl = (
-            support
-            -
-            atr * 0.15
-        )
-
-        stop_loss = min(
-            atr_sl,
-            structural_sl
-        )
+        if structure_sl is not None:
+            stop_loss = min(
+                atr_sl,
+                structure_sl,
+            )
+        else:
+            stop_loss = atr_sl
 
         risk = (
             entry
             - stop_loss
         )
 
+        if risk <= 0:
+            risk = minimum_distance
+            stop_loss = (
+                entry - risk
+            )
+
         take_profit = (
             entry
-            + risk
-            * 1.50
+            + risk * MIN_RISK_REWARD
         )
 
-        if (
-            resistance > entry
-            and
-            resistance
-            < take_profit
-        ):
+    else:
 
-            take_profit = resistance
+        structure_sl = None
 
-    elif direction == "SELL":
+        if resistance is not None:
+            structure_sl = (
+                resistance
+                + atr * 0.20
+            )
 
         atr_sl = (
             entry
-            +
-            atr * SL_ATR_MULTIPLIER
+            + minimum_distance
         )
 
-        structural_sl = (
-            resistance
-            +
-            atr * 0.15
-        )
-
-        stop_loss = max(
-            atr_sl,
-            structural_sl
-        )
+        if structure_sl is not None:
+            stop_loss = max(
+                atr_sl,
+                structure_sl,
+            )
+        else:
+            stop_loss = atr_sl
 
         risk = (
             stop_loss
             - entry
         )
 
+        if risk <= 0:
+            risk = minimum_distance
+            stop_loss = (
+                entry + risk
+            )
+
         take_profit = (
             entry
-            - risk
-            * 1.50
+            - risk * MIN_RISK_REWARD
         )
 
-        if (
-            support < entry
-            and
-            support > take_profit
-        ):
+    risk_distance = abs(
+        entry - stop_loss
+    )
 
-            take_profit = support
+    reward_distance = abs(
+        take_profit - entry
+    )
 
+    if risk_distance <= 0:
+        risk_reward = 0.0
     else:
-
-        return (
-            None,
-            None,
-            0.0
+        risk_reward = (
+            reward_distance
+            / risk_distance
         )
 
-    if risk <= 0:
-
-        return (
-            None,
-            None,
-            0.0
-        )
-
-    reward = abs(
-        take_profit
-        - entry
-    )
-
-    risk_reward = (
-        reward
-        / risk
-    )
-
-    return (
-        round_price(stop_loss),
-        round_price(take_profit),
-        round(
-            risk_reward,
-            2
-        )
-    )
+    return {
+        "entry": round_price(entry),
+        "stop_loss":
+            round_price(stop_loss),
+        "take_profit":
+            round_price(take_profit),
+        "risk_distance":
+            round(
+                risk_distance,
+                4,
+            ),
+        "reward_distance":
+            round(
+                reward_distance,
+                4,
+            ),
+        "risk_reward":
+            round(
+                risk_reward,
+                2,
+            ),
+    }
 
 
 # ============================================================
@@ -1599,311 +1809,391 @@ def calculate_trade_levels(
 # ============================================================
 
 def generate_signal(
-    candles
+    candles,
 ):
-
-    if len(candles) < 100:
-
-        raise RuntimeError(
-            "Not enough candles for analysis"
-        )
-
-    closes = [
-        c["close"]
-        for c in candles
-    ]
-
-    ema20_values = calculate_ema(
-        closes,
-        EMA_FAST_PERIOD
-    )
-
-    ema50_values = calculate_ema(
-        closes,
-        EMA_SLOW_PERIOD
-    )
-
-    rsi_values = calculate_rsi(
-        closes,
-        RSI_PERIOD
-    )
-
-    ema20 = ema20_values[-1]
-
-    ema50 = ema50_values[-1]
-
-    rsi = rsi_values[-1]
-
-    atr = calculate_atr(
-        candles,
-        ATR_PERIOD
-    )
-
     latest = candles[-1]
 
-    entry = latest[
-        "close"
-    ]
-
-    support, resistance = (
-        calculate_support_resistance(
-            candles,
-            SR_LOOKBACK
-        )
+    analysis = analyze_market(
+        candles
     )
 
-    trend = determine_trend(
-        entry,
-        ema20,
-        ema50
-    )
-
-    momentum = determine_momentum(
-        rsi
-    )
-
-    recognition = recognize_patterns(
-        candles,
-        ema20,
-        ema50,
-        atr
-    )
-
-    candidate = recognition[
-        "candidate_direction"
-    ]
-
-    patterns = recognition[
+    patterns_data = analysis[
         "patterns"
     ]
 
-    if candidate == "BUY":
+    patterns = patterns_data[
+        "patterns"
+    ]
 
-        directional_patterns = [
-            p
-            for p in patterns
-            if (
-                "Bullish" in p
-                or
-                p in [
-                    "Hammer",
-                    "Morning Star",
-                    "Double Bottom"
-                ]
-            )
-        ]
+    candidate = patterns_data[
+        "candidate_direction"
+    ]
 
-    elif candidate == "SELL":
-
-        directional_patterns = [
-            p
-            for p in patterns
-            if (
-                "Bearish" in p
-                or
-                p in [
-                    "Shooting Star",
-                    "Evening Star",
-                    "Double Top"
-                ]
-            )
-        ]
-
-    else:
-
-        directional_patterns = []
-
-    score, reasons = (
-        calculate_direction_score(
-            candidate,
-            directional_patterns,
-            trend,
-            momentum,
-            rsi,
-            entry,
-            support,
-            resistance,
-            atr
+    confirmation = (
+        confirmation_analysis(
+            candles,
+            analysis,
         )
     )
 
-    stop_loss = None
+    # --------------------------------------------------------
+    # NO PATTERN
+    # --------------------------------------------------------
 
-    take_profit = None
+    if not patterns:
 
-    risk_reward = 0.0
+        return {
+            "timestamp":
+                latest["datetime"],
+            "symbol":
+                SYMBOL,
+            "timeframe":
+                "M5",
+            "signal":
+                "NO_TRADE",
+            "status":
+                "NO_PATTERN",
+            "valid":
+                False,
+            "patterns": [],
+            "directional_patterns": [],
+            "candidate_direction":
+                None,
+            "score":
+                0.0,
+            "confidence":
+                0.0,
+            "confirmation":
+                confirmation,
+            "entry":
+                None,
+            "stop_loss":
+                None,
+            "take_profit":
+                None,
+            "risk_reward":
+                0.0,
+            "atr":
+                round(
+                    analysis["atr"],
+                    4,
+                ),
+            "ema20":
+                round(
+                    analysis["ema20"],
+                    2,
+                ),
+            "ema50":
+                round(
+                    analysis["ema50"],
+                    2,
+                ),
+            "rsi":
+                round(
+                    analysis["rsi"],
+                    2,
+                ),
+            "trend":
+                analysis["trend"],
+            "momentum":
+                analysis["momentum"],
+            "support":
+                round_price(
+                    analysis["support"]
+                )
+                if analysis["support"]
+                else None,
+            "resistance":
+                round_price(
+                    analysis["resistance"]
+                )
+                if analysis["resistance"]
+                else None,
+            "reasons":
+                [
+                    "No recognized pattern"
+                ],
+            "method":
+                "Pattern Recognition + Confirmation + Entry",
+            "data_source":
+                "Twelve Data XAU/USD",
+        }
 
-    if candidate in [
-        "BUY",
-        "SELL"
-    ]:
+    # --------------------------------------------------------
+    # PATTERN FOUND BUT NOT CONFIRMED
+    # --------------------------------------------------------
 
-        (
-            stop_loss,
-            take_profit,
-            risk_reward
-        ) = calculate_trade_levels(
-            candidate,
-            entry,
-            atr,
-            support,
-            resistance
-        )
+    if not confirmation["valid"]:
 
-    valid = (
-        candidate in [
-            "BUY",
-            "SELL"
-        ]
-        and
-        len(directional_patterns) > 0
-        and
-        score >= MIN_SCORE
-        and
-        atr >= MIN_ATR
-        and
-        risk_reward >= MIN_RISK_REWARD
+        return {
+            "timestamp":
+                latest["datetime"],
+            "symbol":
+                SYMBOL,
+            "timeframe":
+                "M5",
+            "signal":
+                "WAIT_CONFIRMATION",
+            "status":
+                "PATTERN_DETECTED",
+            "valid":
+                False,
+            "patterns":
+                patterns,
+            "directional_patterns":
+                patterns_data[
+                    "directional_patterns"
+                ],
+            "candidate_direction":
+                candidate,
+            "score":
+                confirmation["score"],
+            "confidence":
+                confirmation["score"],
+            "confirmation":
+                confirmation,
+            "entry":
+                None,
+            "stop_loss":
+                None,
+            "take_profit":
+                None,
+            "risk_reward":
+                0.0,
+            "atr":
+                round(
+                    analysis["atr"],
+                    4,
+                ),
+            "ema20":
+                round(
+                    analysis["ema20"],
+                    2,
+                ),
+            "ema50":
+                round(
+                    analysis["ema50"],
+                    2,
+                ),
+            "rsi":
+                round(
+                    analysis["rsi"],
+                    2,
+                ),
+            "trend":
+                analysis["trend"],
+            "momentum":
+                analysis["momentum"],
+            "support":
+                round_price(
+                    analysis["support"]
+                )
+                if analysis["support"]
+                else None,
+            "resistance":
+                round_price(
+                    analysis["resistance"]
+                )
+                if analysis["resistance"]
+                else None,
+            "reasons":
+                confirmation[
+                    "reasons"
+                ],
+            "method":
+                "Pattern Recognition + Confirmation + Entry",
+            "data_source":
+                "Twelve Data XAU/USD",
+        }
+
+    # --------------------------------------------------------
+    # CALCULATE TRADE
+    # --------------------------------------------------------
+
+    levels = calculate_trade_levels(
+        candles,
+        candidate,
+        analysis["atr"],
+        analysis["support"],
+        analysis["resistance"],
     )
 
-    if valid:
+    # --------------------------------------------------------
+    # RISK REWARD CHECK
+    # --------------------------------------------------------
 
-        final_signal = candidate
+    if (
+        levels["risk_reward"]
+        < MIN_RISK_REWARD
+    ):
 
-    else:
+        return {
+            "timestamp":
+                latest["datetime"],
+            "symbol":
+                SYMBOL,
+            "timeframe":
+                "M5",
+            "signal":
+                "NO_TRADE",
+            "status":
+                "BAD_RISK_REWARD",
+            "valid":
+                False,
+            "patterns":
+                patterns,
+            "directional_patterns":
+                patterns_data[
+                    "directional_patterns"
+                ],
+            "candidate_direction":
+                candidate,
+            "score":
+                confirmation["score"],
+            "confidence":
+                confirmation["score"],
+            "confirmation":
+                confirmation,
+            "entry":
+                levels["entry"],
+            "stop_loss":
+                levels["stop_loss"],
+            "take_profit":
+                levels["take_profit"],
+            "risk_reward":
+                levels["risk_reward"],
+            "atr":
+                round(
+                    analysis["atr"],
+                    4,
+                ),
+            "ema20":
+                round(
+                    analysis["ema20"],
+                    2,
+                ),
+            "ema50":
+                round(
+                    analysis["ema50"],
+                    2,
+                ),
+            "rsi":
+                round(
+                    analysis["rsi"],
+                    2,
+                ),
+            "trend":
+                analysis["trend"],
+            "momentum":
+                analysis["momentum"],
+            "support":
+                round_price(
+                    analysis["support"]
+                )
+                if analysis["support"]
+                else None,
+            "resistance":
+                round_price(
+                    analysis["resistance"]
+                )
+                if analysis["resistance"]
+                else None,
+            "reasons":
+                confirmation[
+                    "reasons"
+                ]
+                + [
+                    "Risk/Reward below minimum"
+                ],
+            "method":
+                "Pattern Recognition + Confirmation + Entry",
+            "data_source":
+                "Twelve Data XAU/USD",
+        }
 
-        final_signal = "NO_TRADE"
-
-        stop_loss = None
-
-        take_profit = None
-
-    confidence = score
+    # --------------------------------------------------------
+    # FINAL SIGNAL
+    # --------------------------------------------------------
 
     return {
-
         "timestamp":
             latest["datetime"],
-
         "symbol":
             SYMBOL,
-
         "timeframe":
-            DISPLAY_TIMEFRAME,
-
+            "M5",
         "signal":
-            final_signal,
-
-        "candidate_direction":
             candidate,
-
-        "confidence":
-            round(
-                confidence,
-                2
-            ),
-
-        "score":
-            round(
-                score,
-                2
-            ),
-
-        "entry":
-            round_price(entry),
-
-        "stop_loss":
-            stop_loss,
-
-        "take_profit":
-            take_profit,
-
-        "risk_reward":
-            risk_reward,
-
-        "atr":
-            round(
-                atr,
-                4
-            ),
-
-        "rsi":
-            (
-                round(
-                    rsi,
-                    2
-                )
-                if rsi is not None
-                else None
-            ),
-
-        "ema20":
-            (
-                round(
-                    ema20,
-                    2
-                )
-                if ema20 is not None
-                else None
-            ),
-
-        "ema50":
-            (
-                round(
-                    ema50,
-                    2
-                )
-                if ema50 is not None
-                else None
-            ),
-
-        "support":
-            round_price(
-                support
-            ),
-
-        "resistance":
-            round_price(
-                resistance
-            ),
-
-        "trend":
-            trend,
-
-        "momentum":
-            momentum,
-
+        "status":
+            "SIGNAL_CONFIRMED",
+        "valid":
+            True,
         "patterns":
             patterns,
-
         "directional_patterns":
-            directional_patterns,
-
-        "pattern_count":
-            len(patterns),
-
+            patterns_data[
+                "directional_patterns"
+            ],
+        "candidate_direction":
+            candidate,
+        "score":
+            confirmation["score"],
+        "confidence":
+            confirmation["score"],
+        "confirmation":
+            confirmation,
+        "entry":
+            levels["entry"],
+        "stop_loss":
+            levels["stop_loss"],
+        "take_profit":
+            levels["take_profit"],
+        "risk_reward":
+            levels["risk_reward"],
+        "atr":
+            round(
+                analysis["atr"],
+                4,
+            ),
+        "ema20":
+            round(
+                analysis["ema20"],
+                2,
+            ),
+        "ema50":
+            round(
+                analysis["ema50"],
+                2,
+            ),
+        "rsi":
+            round(
+                analysis["rsi"],
+                2,
+            ),
+        "trend":
+            analysis["trend"],
+        "momentum":
+            analysis["momentum"],
+        "support":
+            round_price(
+                analysis["support"]
+            )
+            if analysis["support"]
+            else None,
+        "resistance":
+            round_price(
+                analysis["resistance"]
+            )
+            if analysis["resistance"]
+            else None,
         "reasons":
-            reasons,
-
-        "valid":
-            valid,
-
+            confirmation[
+                "reasons"
+            ],
         "method":
-            "M5 Pattern Recognition + Trend + Momentum + Support/Resistance",
-
+            "Pattern Recognition + Confirmation + Entry",
         "data_source":
             "Twelve Data XAU/USD",
-
-        "rules": {
-
-            "minimum_score":
-                MIN_SCORE,
-
-            "minimum_risk_reward":
-                MIN_RISK_REWARD,
-
-            "minimum_atr":
-                MIN_ATR
-        }
     }
 
 
@@ -1911,22 +2201,17 @@ def generate_signal(
 # TELEGRAM
 # ============================================================
 
-def send_telegram(
-    message
-):
-
+def send_telegram(message):
     if not TELEGRAM_BOT_TOKEN:
-
         return (
             False,
-            "TELEGRAM_BOT_TOKEN is not configured"
+            "TELEGRAM_BOT_TOKEN is not configured",
         )
 
     if not TELEGRAM_CHAT_ID:
-
         return (
             False,
-            "TELEGRAM_CHAT_ID is not configured"
+            "TELEGRAM_CHAT_ID is not configured",
         )
 
     url = (
@@ -1936,18 +2221,12 @@ def send_telegram(
     )
 
     payload = {
-
         "chat_id":
             TELEGRAM_CHAT_ID,
-
         "text":
             message,
-
         "parse_mode":
             "HTML",
-
-        "disable_web_page_preview":
-            True
     }
 
     try:
@@ -1955,7 +2234,7 @@ def send_telegram(
         response = requests.post(
             url,
             json=payload,
-            timeout=20
+            timeout=20,
         )
 
         response.raise_for_status()
@@ -1964,244 +2243,209 @@ def send_telegram(
 
         if not result.get(
             "ok",
-            False
+            False,
         ):
 
             return (
                 False,
                 result.get(
                     "description",
-                    "Telegram API error"
-                )
+                    "Telegram API error",
+                ),
             )
-
-        STATE[
-            "telegram_last_error"
-        ] = None
 
         return (
             True,
-            None
+            None,
         )
 
     except Exception as exc:
 
-        STATE[
-            "telegram_last_error"
-        ] = str(exc)
-
         return (
             False,
-            str(exc)
+            str(exc),
         )
 
 
 # ============================================================
-# TELEGRAM STARTUP MESSAGE
+# TELEGRAM STARTUP
 # ============================================================
 
 def send_startup_notification():
+    """
+    Send startup message once per running worker.
+    """
 
-    with STARTUP_LOCK:
+    if STATE["startup_sent"]:
+        return True
 
-        if STATE[
-            "startup_notification_sent"
-        ]:
-
-            return True
-
-        if not TELEGRAM_BOT_TOKEN:
-
-            print(
-                "Telegram startup skipped: "
-                "TELEGRAM_BOT_TOKEN not configured"
-            )
-
-            return False
-
-        if not TELEGRAM_CHAT_ID:
-
-            print(
-                "Telegram startup skipped: "
-                "TELEGRAM_CHAT_ID not configured"
-            )
-
-            return False
-
-        message = (
-
-            "🟢 <b>XAUUSD M5 BOT ONLINE</b>\n"
-            "\n"
-
-            "ระบบเริ่มทำงานเรียบร้อยแล้ว\n"
-            "\n"
-
-            f"<b>Symbol:</b> {SYMBOL}\n"
-            "<b>Timeframe:</b> M5\n"
-            "<b>Data:</b> Twelve Data\n"
-            "\n"
-
-            "<b>ระบบวิเคราะห์:</b>\n"
-            "• Pattern Recognition\n"
-            "• Trend / EMA20 / EMA50\n"
-            "• RSI Momentum\n"
-            "• Support / Resistance\n"
-            "• Breakout / Pullback\n"
-            "• Candlestick Patterns\n"
-            "• Risk / Reward\n"
-            "• Automatic TP / SL\n"
-            "\n"
-
-            "<b>Patterns:</b> 10 รูปแบบ\n"
-            "\n"
-
-            f"<b>Minimum Score:</b> "
-            f"{MIN_SCORE:.0f}\n"
-
-            f"<b>Minimum Risk/Reward:</b> "
-            f"{MIN_RISK_REWARD:.2f}\n"
-            "\n"
-
-            "สถานะ: <b>READY</b> 🟢\n"
-            "\n"
-
-            "ระบบจะส่ง Telegram "
-            "เมื่อพบจุดเข้าออเดอร์ที่ผ่านเงื่อนไข"
+    if not TELEGRAM_BOT_TOKEN:
+        print(
+            "Telegram startup skipped: "
+            "TELEGRAM_BOT_TOKEN not configured"
         )
+        return False
 
-        ok, error = send_telegram(
-            message
+    if not TELEGRAM_CHAT_ID:
+        print(
+            "Telegram startup skipped: "
+            "TELEGRAM_CHAT_ID not configured"
         )
+        return False
 
-        if ok:
+    message = (
+        "🟢 <b>XAUUSD M5 BOT ONLINE</b>\n"
+        "\n"
+        "ระบบเริ่มทำงานเรียบร้อยแล้ว\n"
+        "\n"
+        f"<b>Symbol:</b> {SYMBOL}\n"
+        "<b>Timeframe:</b> M5\n"
+        "<b>Data:</b> Twelve Data\n"
+        "\n"
+        "<b>System:</b>\n"
+        "Pattern Recognition\n"
+        "→ Confirmation\n"
+        "→ Entry\n"
+        "→ TP / SL\n"
+        "\n"
+        "<b>Patterns:</b> 11\n"
+        "<b>Minimum Score:</b> "
+        f"{MIN_SCORE:.0f}\n"
+        "<b>Minimum RR:</b> "
+        f"{MIN_RISK_REWARD:.2f}\n"
+        "\n"
+        "พร้อมวิเคราะห์ตลาดและส่งสัญญาณ"
+    )
 
-            STATE[
-                "startup_notification_sent"
-            ] = True
+    ok, error = send_telegram(
+        message
+    )
 
-            print(
-                "Telegram welcome message "
-                "sent successfully"
-            )
+    if ok:
 
-            return True
+        STATE["startup_sent"] = True
 
         print(
-            "Telegram startup failed:",
-            error
+            "Telegram startup notification "
+            "sent successfully"
         )
 
-        return False
+        return True
+
+    print(
+        "Telegram startup notification failed:",
+        error,
+    )
+
+    return False
 
 
 # ============================================================
-# TELEGRAM SIGNAL MESSAGE
+# TELEGRAM SIGNAL FORMAT
 # ============================================================
 
 def format_signal_message(
-    signal
+    signal,
 ):
-
-    direction = signal[
-        "signal"
-    ]
-
-    if direction not in [
-        "BUY",
-        "SELL"
-    ]:
-
-        return None
+    direction = signal["signal"]
 
     if direction == "BUY":
-
         emoji = "🟢"
 
-    else:
-
+    elif direction == "SELL":
         emoji = "🔴"
 
-    patterns = signal[
-        "directional_patterns"
-    ]
+    else:
+        return None
 
-    pattern_text = (
-        ", ".join(patterns)
-        if patterns
-        else "None"
+    patterns = ", ".join(
+        signal["patterns"]
     )
 
-    reasons = signal[
-        "reasons"
-    ]
-
-    reason_text = (
-        "\n".join(
-            "• " + str(x)
-            for x in reasons
-        )
-        if reasons
-        else "• Pattern confirmed"
-    )
+    checks = signal[
+        "confirmation"
+    ]["checks"]
 
     return (
-
-        f"{emoji} <b>XAUUSD M5 SIGNAL</b>\n"
+        f"{emoji} <b>XAUUSD M5 "
+        f"{direction} SIGNAL</b>\n"
         "\n"
-
-        f"<b>SIGNAL:</b> {direction}\n"
-
-        f"<b>Confidence:</b> "
-        f"{signal['confidence']:.2f}%\n"
-
-        f"<b>Score:</b> "
-        f"{signal['score']:.2f}\n"
-
         f"<b>Pattern:</b> "
-        f"{pattern_text}\n"
+        f"{patterns}\n"
+        f"<b>Direction:</b> "
+        f"{direction}\n"
         "\n"
-
         f"<b>ENTRY:</b> "
         f"{signal['entry']:.2f}\n"
-
-        f"<b>TP:</b> "
-        f"{signal['take_profit']:.2f}\n"
-
         f"<b>SL:</b> "
         f"{signal['stop_loss']:.2f}\n"
-
-        f"<b>R/R:</b> "
-        f"{signal['risk_reward']:.2f}\n"
+        f"<b>TP:</b> "
+        f"{signal['take_profit']:.2f}\n"
+        f"<b>RR:</b> "
+        f"1:{signal['risk_reward']:.2f}\n"
         "\n"
-
+        f"<b>Score:</b> "
+        f"{signal['score']:.2f}\n"
+        f"<b>RSI:</b> "
+        f"{signal['rsi']:.2f}\n"
         f"<b>Trend:</b> "
         f"{signal['trend']}\n"
-
         f"<b>Momentum:</b> "
         f"{signal['momentum']}\n"
-
-        f"<b>RSI:</b> "
-        f"{signal['rsi']}\n"
-
-        f"<b>EMA20:</b> "
-        f"{signal['ema20']:.2f}\n"
-
-        f"<b>EMA50:</b> "
-        f"{signal['ema50']:.2f}\n"
-
-        f"<b>ATR:</b> "
-        f"{signal['atr']:.4f}\n"
         "\n"
-
-        "<b>เหตุผล:</b>\n"
-        f"{reason_text}\n"
+        "<b>Confirmation</b>\n"
+        f"{'✅' if checks['pattern'] else '❌'} Pattern\n"
+        f"{'✅' if checks['trend'] else '❌'} Trend\n"
+        f"{'✅' if checks['momentum'] else '❌'} Momentum\n"
+        f"{'✅' if checks['rsi'] else '❌'} RSI\n"
+        f"{'✅' if checks['location'] else '❌'} Location\n"
+        f"{'✅' if checks['volatility'] else '❌'} ATR\n"
+        f"{'✅' if checks['trigger'] else '❌'} Entry Trigger\n"
         "\n"
-
         f"<b>Time:</b> "
         f"{signal['timestamp']}\n"
         "\n"
+        "<i>Pattern Recognition System</i>"
+    )
 
-        "<i>Pattern Recognition Trading System</i>"
+
+# ============================================================
+# TELEGRAM WAIT MESSAGE
+# ============================================================
+
+def format_wait_message(
+    signal,
+):
+    if signal["signal"] != "WAIT_CONFIRMATION":
+        return None
+
+    patterns = ", ".join(
+        signal["patterns"]
+    )
+
+    return (
+        "⚠️ <b>XAUUSD M5 "
+        "PATTERN DETECTED</b>\n"
+        "\n"
+        f"<b>Pattern:</b> "
+        f"{patterns}\n"
+        f"<b>Candidate:</b> "
+        f"{signal['candidate_direction']}\n"
+        "\n"
+        f"<b>Score:</b> "
+        f"{signal['score']:.2f}\n"
+        f"<b>Trend:</b> "
+        f"{signal['trend']}\n"
+        f"<b>Momentum:</b> "
+        f"{signal['momentum']}\n"
+        f"<b>RSI:</b> "
+        f"{signal['rsi']:.2f}\n"
+        "\n"
+        "<b>STATUS:</b> "
+        "WAIT CONFIRMATION\n"
+        "\n"
+        "ระบบยังไม่ส่ง Entry "
+        "เพราะเงื่อนไขยังไม่ครบ"
     )
 
 
@@ -2210,79 +2454,136 @@ def format_signal_message(
 # ============================================================
 
 def run_signal(
-    send_notification=True
+    send_notification=True,
 ):
-
     candles = get_candles()
 
     signal = generate_signal(
         candles
     )
 
-    STATE[
-        "last_update"
-    ] = utc_now().isoformat()
+    STATE["last_update"] = (
+        utc_now().isoformat()
+    )
 
-    STATE[
-        "last_error"
-    ] = None
+    STATE["last_error"] = None
 
-    STATE[
-        "status"
-    ] = "online"
+    # --------------------------------------------------------
+    # TELEGRAM
+    # --------------------------------------------------------
 
-    if (
-        send_notification
-        and
-        signal["signal"]
-        in [
-            "BUY",
-            "SELL"
+    if send_notification:
+
+        direction = signal[
+            "signal"
         ]
-    ):
 
-        signal_key = (
-            str(
-                signal["timestamp"]
-            )
-            + "_"
-            + signal["signal"]
-        )
+        if direction in [
+            "BUY",
+            "SELL",
+        ]:
 
-        if (
-            STATE[
-                "last_signal_key"
-            ]
-            != signal_key
-        ):
-
-            message = (
-                format_signal_message(
-                    signal
+            signal_key = (
+                str(
+                    signal["timestamp"]
+                )
+                + "_"
+                + direction
+                + "_"
+                + "_".join(
+                    signal["patterns"]
                 )
             )
 
-            if message:
+            if (
+                STATE[
+                    "last_signal_key"
+                ]
+                != signal_key
+            ):
 
-                ok, error = (
-                    send_telegram(
-                        message
+                message = (
+                    format_signal_message(
+                        signal
                     )
                 )
 
-                if not ok:
+                if message:
 
-                    STATE[
-                        "last_error"
-                    ] = error
+                    ok, error = (
+                        send_telegram(
+                            message
+                        )
+                    )
 
-            STATE[
-                "last_signal_key"
-            ] = signal_key
+                    if not ok:
 
-    STATE[
-        "last_signal"
-    ] = signal
+                        STATE[
+                            "last_error"
+                        ] = error
+
+                STATE[
+                    "last_signal_key"
+                ] = signal_key
+
+        # WAIT_CONFIRMATION
+        #
+        # ไม่ส่งซ้ำทุก request
+        # ส่งเฉพาะเมื่อสถานะ Pattern เปลี่ยน
+
+        elif (
+            direction
+            == "WAIT_CONFIRMATION"
+        ):
+
+            wait_key = (
+                str(
+                    signal["timestamp"]
+                )
+                + "_WAIT_"
+                + "_".join(
+                    signal["patterns"]
+                )
+                + "_"
+                + str(
+                    signal[
+                        "candidate_direction"
+                    ]
+                )
+            )
+
+            if (
+                STATE[
+                    "last_signal_key"
+                ]
+                != wait_key
+            ):
+
+                message = (
+                    format_wait_message(
+                        signal
+                    )
+                )
+
+                if message:
+
+                    ok, error = (
+                        send_telegram(
+                            message
+                        )
+                    )
+
+                    if not ok:
+
+                        STATE[
+                            "last_error"
+                        ] = error
+
+                STATE[
+                    "last_signal_key"
+                ] = wait_key
+
+    STATE["last_signal"] = signal
 
     return signal
 
@@ -2293,6 +2594,11 @@ def run_signal(
 
 @app.route("/")
 def home():
+
+    # Ensure startup notification
+    # is attempted when service receives
+    # first request.
+    send_startup_notification()
 
     return jsonify({
 
@@ -2312,41 +2618,50 @@ def home():
             SYMBOL,
 
         "timeframe":
-            DISPLAY_TIMEFRAME,
+            "M5",
 
         "telegram":
             bool(
                 TELEGRAM_BOT_TOKEN
-                and
-                TELEGRAM_CHAT_ID
+                and TELEGRAM_CHAT_ID
             ),
 
-        "patterns": [
+        "patterns":
+            PATTERN_NAMES,
 
-            "Bullish Engulfing",
-            "Bearish Engulfing",
-            "Hammer",
-            "Shooting Star",
-            "Morning Star",
-            "Evening Star",
-            "Bullish Breakout",
-            "Bearish Breakout",
-            "Pullback",
-            "Double Bottom",
-            "Double Top"
+        "architecture":
+            [
+                "Pattern Recognition",
+                "Confirmation",
+                "Entry",
+                "TP/SL",
+                "Telegram",
+            ],
 
-        ],
+        "rules":
+            {
+                "minimum_score":
+                    MIN_SCORE,
 
-        "endpoints": [
+                "minimum_risk_reward":
+                    MIN_RISK_REWARD,
 
-            "/",
-            "/health",
-            "/signal",
-            "/backtest",
-            "/test-data",
-            "/test-telegram"
+                "minimum_atr":
+                    MIN_ATR,
 
-        ]
+                "forward_bars":
+                    FORWARD_BARS,
+            },
+
+        "endpoints":
+            [
+                "/",
+                "/health",
+                "/signal",
+                "/backtest",
+                "/test-data",
+                "/test-telegram",
+            ],
     })
 
 
@@ -2360,61 +2675,91 @@ def health():
     return jsonify({
 
         "status":
-            STATE["status"],
+            "healthy",
 
         "service":
             "XAUUSD M5 Pattern Recognition Bot",
-
-        "data_source":
-            "Twelve Data",
 
         "symbol":
             SYMBOL,
 
         "timeframe":
-            DISPLAY_TIMEFRAME,
+            "M5",
+
+        "data_source":
+            "Twelve Data",
+
+        "telegram":
+            bool(
+                TELEGRAM_BOT_TOKEN
+                and TELEGRAM_CHAT_ID
+            ),
 
         "twelve_data":
             bool(
                 TWELVE_DATA_API_KEY
             ),
 
-        "telegram":
-            bool(
-                TELEGRAM_BOT_TOKEN
-                and
-                TELEGRAM_CHAT_ID
-            ),
+        "startup_sent":
+            STATE["startup_sent"],
 
-        "startup_notification":
-            STATE[
-                "startup_notification_sent"
-            ],
+        "started_at":
+            STATE["started_at"],
 
         "last_update":
-            STATE[
-                "last_update"
-            ],
+            STATE["last_update"],
 
         "last_signal":
-            STATE[
-                "last_signal"
-            ],
+            STATE["last_signal"],
 
         "last_error":
-            STATE[
-                "last_error"
-            ],
-
-        "telegram_error":
-            STATE[
-                "telegram_last_error"
-            ]
+            STATE["last_error"],
     })
 
 
 # ============================================================
-# TEST TWELVE DATA
+# SIGNAL
+# ============================================================
+
+@app.route("/signal")
+def signal_endpoint():
+
+    try:
+
+        send_startup_notification()
+
+        signal = run_signal(
+            send_notification=True
+        )
+
+        return jsonify(signal)
+
+    except Exception as exc:
+
+        STATE["last_error"] = str(
+            exc
+        )
+
+        print(
+            traceback.format_exc()
+        )
+
+        return jsonify({
+
+            "status":
+                "error",
+
+            "signal":
+                "ERROR",
+
+            "error":
+                str(exc),
+
+        }), 500
+
+
+# ============================================================
+# TEST DATA
 # ============================================================
 
 @app.route("/test-data")
@@ -2438,13 +2783,13 @@ def test_data():
                 SYMBOL,
 
             "timeframe":
-                DISPLAY_TIMEFRAME,
+                "M5",
 
             "candles":
                 len(candles),
 
             "latest":
-                latest
+                latest,
 
         })
 
@@ -2456,7 +2801,7 @@ def test_data():
                 "error",
 
             "message":
-                str(exc)
+                str(exc),
 
         }), 500
 
@@ -2469,19 +2814,14 @@ def test_data():
 def test_telegram():
 
     message = (
-
-        "🟢 <b>XAUUSD M5 BOT TEST</b>\n"
+        "🟢 <b>TELEGRAM TEST</b>\n"
         "\n"
-
-        "Telegram connection ทำงานปกติ\n"
+        "XAUUSD M5 Pattern Recognition Bot\n"
         "\n"
-
-        f"<b>Symbol:</b> {SYMBOL}\n"
-        "<b>Timeframe:</b> M5\n"
-        "<b>Status:</b> ONLINE\n"
+        "Telegram connection is working.\n"
         "\n"
-
-        "Pattern Recognition System พร้อมทำงาน"
+        "Pattern → Confirmation → "
+        "Entry → TP/SL"
     )
 
     ok, error = send_telegram(
@@ -2499,7 +2839,7 @@ def test_telegram():
                 "Telegram test message sent successfully",
 
             "telegram":
-                True
+                True,
 
         })
 
@@ -2512,50 +2852,9 @@ def test_telegram():
             error,
 
         "telegram":
-            False
+            False,
 
     }), 500
-
-
-# ============================================================
-# SIGNAL
-# ============================================================
-
-@app.route("/signal")
-def signal_endpoint():
-
-    try:
-
-        # พยายามส่ง welcome message
-        # ถ้ายังไม่ได้ส่ง
-        send_startup_notification()
-
-        signal = run_signal(
-            send_notification=True
-        )
-
-        return jsonify(
-            signal
-        )
-
-    except Exception as exc:
-
-        STATE[
-            "last_error"
-        ] = str(exc)
-
-        return jsonify({
-
-            "status":
-                "error",
-
-            "signal":
-                "ERROR",
-
-            "error":
-                str(exc)
-
-        }), 500
 
 
 # ============================================================
@@ -2569,16 +2868,22 @@ def backtest():
 
         candles = get_candles()
 
-        total_candles = len(
-            candles
+        total = len(candles)
+
+        # ----------------------------------------------------
+        # Start after enough indicator data
+        # ----------------------------------------------------
+
+        start = max(
+            EMA_SLOW + 20,
+            RSI_PERIOD + 20,
+            ATR_PERIOD + 20,
+            80,
         )
 
-        test_count = min(
-            150,
-            total_candles - 120
-        )
+        end = total - FORWARD_BARS - 1
 
-        if test_count <= 0:
+        if end <= start:
 
             return jsonify({
 
@@ -2586,45 +2891,52 @@ def backtest():
                     "error",
 
                 "error":
-                    "Not enough candles"
+                    "Not enough candles",
 
             }), 400
 
-        start_index = (
-            total_candles
-            - test_count
+        # Keep runtime reasonable
+        max_points = min(
+            200,
+            end - start,
         )
 
+        start = (
+            end
+            - max_points
+        )
+
+        signals = 0
         wins = 0
-
         losses = 0
-
         timeouts = 0
 
         buy_signals = 0
-
         sell_signals = 0
 
         total_profit = 0.0
-
         total_loss = 0.0
 
-        trades = []
+        trade_results = []
 
-        forward_bars = 12
+        score_values = []
+
+        rr_values = []
+
+        pattern_counts = {}
+
+        # ----------------------------------------------------
+        # Walk forward
+        # ----------------------------------------------------
 
         for i in range(
-            start_index,
-            total_candles - 1
+            start,
+            end,
         ):
 
-            historical = candles[
-                :i
-            ]
-
-            if len(historical) < 100:
-
-                continue
+            historical = (
+                candles[: i + 1]
+            )
 
             try:
 
@@ -2636,59 +2948,90 @@ def backtest():
 
                 continue
 
-            direction = signal[
+            direction = signal.get(
                 "signal"
-            ]
+            )
 
             if direction not in [
                 "BUY",
-                "SELL"
+                "SELL",
             ]:
-
                 continue
 
-            entry = signal[
+            if not signal.get(
+                "valid",
+                False,
+            ):
+                continue
+
+            entry = signal.get(
                 "entry"
-            ]
+            )
 
-            stop_loss = signal[
+            stop_loss = signal.get(
                 "stop_loss"
-            ]
+            )
 
-            take_profit = signal[
+            take_profit = signal.get(
                 "take_profit"
-            ]
+            )
 
             if (
-                stop_loss is None
-                or
-                take_profit is None
+                entry is None
+                or stop_loss is None
+                or take_profit is None
             ):
-
                 continue
 
+            signals += 1
+
             if direction == "BUY":
-
                 buy_signals += 1
-
             else:
-
                 sell_signals += 1
 
-            max_index = min(
-                i + forward_bars,
-                total_candles - 1
+            score_values.append(
+                signal["score"]
             )
+
+            rr_values.append(
+                signal["risk_reward"]
+            )
+
+            for pattern in signal[
+                "patterns"
+            ]:
+
+                pattern_counts[
+                    pattern
+                ] = (
+                    pattern_counts.get(
+                        pattern,
+                        0,
+                    )
+                    + 1
+                )
 
             result = "TIMEOUT"
 
             exit_price = None
+            exit_index = None
 
-            exit_index = max_index
+            mfe = 0.0
+            mae = 0.0
+
+            # ------------------------------------------------
+            # Future candles
+            # ------------------------------------------------
 
             for j in range(
-                i,
-                max_index + 1
+                i + 1,
+                min(
+                    i
+                    + 1
+                    + FORWARD_BARS,
+                    total,
+                ),
             ):
 
                 candle = candles[j]
@@ -2703,6 +3046,24 @@ def backtest():
 
                 if direction == "BUY":
 
+                    favorable = (
+                        high - entry
+                    ) / entry * 100.0
+
+                    adverse = (
+                        entry - low
+                    ) / entry * 100.0
+
+                    mfe = max(
+                        mfe,
+                        favorable,
+                    )
+
+                    mae = max(
+                        mae,
+                        adverse,
+                    )
+
                     hit_sl = (
                         low
                         <= stop_loss
@@ -2713,7 +3074,58 @@ def backtest():
                         >= take_profit
                     )
 
+                    # Conservative:
+                    # If both occur inside
+                    # one candle, SL first.
+                    if hit_sl and hit_tp:
+
+                        result = "LOSS"
+                        exit_price = (
+                            stop_loss
+                        )
+                        exit_index = j
+
+                        break
+
+                    if hit_sl:
+
+                        result = "LOSS"
+                        exit_price = (
+                            stop_loss
+                        )
+                        exit_index = j
+
+                        break
+
+                    if hit_tp:
+
+                        result = "WIN"
+                        exit_price = (
+                            take_profit
+                        )
+                        exit_index = j
+
+                        break
+
                 else:
+
+                    favorable = (
+                        entry - low
+                    ) / entry * 100.0
+
+                    adverse = (
+                        high - entry
+                    ) / entry * 100.0
+
+                    mfe = max(
+                        mfe,
+                        favorable,
+                    )
+
+                    mae = max(
+                        mae,
+                        adverse,
+                    )
 
                     hit_sl = (
                         high
@@ -2725,51 +3137,66 @@ def backtest():
                         <= take_profit
                     )
 
-                # Conservative rule:
-                # ถ้า TP และ SL เกิดในแท่งเดียวกัน
-                # ถือว่า SL ก่อน
-                if hit_sl:
+                    if hit_sl and hit_tp:
 
-                    result = "LOSS"
+                        result = "LOSS"
+                        exit_price = (
+                            stop_loss
+                        )
+                        exit_index = j
 
-                    exit_price = (
-                        stop_loss
-                    )
+                        break
 
-                    exit_index = j
+                    if hit_sl:
 
-                    break
+                        result = "LOSS"
+                        exit_price = (
+                            stop_loss
+                        )
+                        exit_index = j
 
-                if hit_tp:
+                        break
 
-                    result = "WIN"
+                    if hit_tp:
 
-                    exit_price = (
-                        take_profit
-                    )
+                        result = "WIN"
+                        exit_price = (
+                            take_profit
+                        )
+                        exit_index = j
 
-                    exit_index = j
+                        break
 
-                    break
+            # ------------------------------------------------
+            # Timeout
+            # ------------------------------------------------
 
             if result == "TIMEOUT":
+
+                exit_index = min(
+                    i
+                    + FORWARD_BARS,
+                    total - 1,
+                )
 
                 exit_price = candles[
                     exit_index
                 ]["close"]
 
+            # ------------------------------------------------
+            # PNL
+            # ------------------------------------------------
+
             if direction == "BUY":
 
                 pnl = (
-                    exit_price
-                    - entry
+                    exit_price - entry
                 ) / entry * 100.0
 
             else:
 
                 pnl = (
-                    entry
-                    - exit_price
+                    entry - exit_price
                 ) / entry * 100.0
 
             if result == "WIN":
@@ -2778,7 +3205,7 @@ def backtest():
 
                 total_profit += max(
                     pnl,
-                    0
+                    0,
                 )
 
             elif result == "LOSS":
@@ -2788,7 +3215,7 @@ def backtest():
                 total_loss += abs(
                     min(
                         pnl,
-                        0
+                        0,
                     )
                 )
 
@@ -2796,7 +3223,7 @@ def backtest():
 
                 timeouts += 1
 
-            trades.append({
+            trade_results.append({
 
                 "timestamp":
                     candles[i][
@@ -2806,15 +3233,16 @@ def backtest():
                 "signal":
                     direction,
 
-                "pattern":
+                "patterns":
                     signal[
-                        "directional_patterns"
+                        "patterns"
                     ],
 
                 "score":
-                    signal[
-                        "score"
-                    ],
+                    round(
+                        signal["score"],
+                        2,
+                    ),
 
                 "entry":
                     round_price(
@@ -2831,6 +3259,11 @@ def backtest():
                         take_profit
                     ),
 
+                "risk_reward":
+                    signal[
+                        "risk_reward"
+                    ],
+
                 "result":
                     result,
 
@@ -2842,47 +3275,58 @@ def backtest():
                 "pnl_percent":
                     round(
                         pnl,
-                        4
+                        4,
+                    ),
+
+                "mfe_percent":
+                    round(
+                        mfe,
+                        4,
+                    ),
+
+                "mae_percent":
+                    round(
+                        mae,
+                        4,
                     ),
 
                 "bars_held":
-                    exit_index
-                    - i
-                    + 1
+                    (
+                        exit_index - i
+                        if exit_index
+                        is not None
+                        else None
+                    ),
             })
 
-        total_trades = (
-            wins
-            + losses
-            + timeouts
-        )
+        # ====================================================
+        # PERFORMANCE
+        # ====================================================
 
-        if total_trades > 0:
+        if signals > 0:
 
             win_rate = (
                 wins
-                / total_trades
+                / signals
                 * 100.0
             )
 
             loss_rate = (
                 losses
-                / total_trades
+                / signals
                 * 100.0
             )
 
             timeout_rate = (
                 timeouts
-                / total_trades
+                / signals
                 * 100.0
             )
 
         else:
 
             win_rate = 0.0
-
             loss_rate = 0.0
-
             timeout_rate = 0.0
 
         net_profit = (
@@ -2891,9 +3335,8 @@ def backtest():
         )
 
         expectancy = (
-            net_profit
-            / total_trades
-            if total_trades > 0
+            net_profit / signals
+            if signals > 0
             else 0.0
         )
 
@@ -2915,16 +3358,14 @@ def backtest():
             profit_factor = 0.0
 
         # ====================================================
-        # MAX DRAWDOWN
+        # DRAWDOWN
         # ====================================================
 
         equity = 0.0
-
         peak = 0.0
-
         max_drawdown = 0.0
 
-        for trade in trades:
+        for trade in trade_results:
 
             equity += trade[
                 "pnl_percent"
@@ -2932,41 +3373,82 @@ def backtest():
 
             peak = max(
                 peak,
-                equity
+                equity,
             )
 
             drawdown = (
-                peak
-                - equity
+                peak - equity
             )
 
             max_drawdown = max(
                 max_drawdown,
-                drawdown
+                drawdown,
             )
+
+        # ====================================================
+        # AVERAGES
+        # ====================================================
+
+        average_score = (
+            sum(score_values)
+            / len(score_values)
+            if score_values
+            else 0.0
+        )
+
+        average_rr = (
+            sum(rr_values)
+            / len(rr_values)
+            if rr_values
+            else 0.0
+        )
+
+        average_mfe = (
+            sum(
+                x["mfe_percent"]
+                for x in trade_results
+            )
+            / len(trade_results)
+            if trade_results
+            else 0.0
+        )
+
+        average_mae = (
+            sum(
+                x["mae_percent"]
+                for x in trade_results
+            )
+            / len(trade_results)
+            if trade_results
+            else 0.0
+        )
+
+        # ====================================================
+        # RESPONSE
+        # ====================================================
 
         return jsonify({
 
             "status":
                 "completed",
 
+            "system":
+                "Pattern Recognition",
+
             "symbol":
                 SYMBOL,
 
             "timeframe":
-                DISPLAY_TIMEFRAME,
-
-            "method":
-                "Pattern Recognition",
+                "M5",
 
             "data_source":
                 "Twelve Data XAU/USD",
 
             "candles_available":
-                total_candles,
+                total,
 
             "test_points":
-                test_count,
+                max_points,
 
             "rules": {
 
@@ -2976,20 +3458,23 @@ def backtest():
                 "minimum_risk_reward":
                     MIN_RISK_REWARD,
 
+                "minimum_atr":
+                    MIN_ATR,
+
                 "forward_bars":
-                    forward_bars
+                    FORWARD_BARS,
             },
 
             "signals": {
 
                 "total":
-                    total_trades,
+                    signals,
 
                 "buy":
                     buy_signals,
 
                 "sell":
-                    sell_signals
+                    sell_signals,
             },
 
             "results": {
@@ -3001,7 +3486,7 @@ def backtest():
                     losses,
 
                 "timeouts":
-                    timeouts
+                    timeouts,
             },
 
             "performance": {
@@ -3009,44 +3494,44 @@ def backtest():
                 "win_rate_percent":
                     round(
                         win_rate,
-                        2
+                        2,
                     ),
 
                 "loss_rate_percent":
                     round(
                         loss_rate,
-                        2
+                        2,
                     ),
 
                 "timeout_rate_percent":
                     round(
                         timeout_rate,
-                        2
+                        2,
                     ),
 
                 "total_profit_percent":
                     round(
                         total_profit,
-                        4
+                        4,
                     ),
 
                 "total_loss_percent":
                     round(
                         total_loss,
-                        4
+                        4,
                     ),
 
                 "net_profit_percent":
                     round(
                         net_profit,
-                        4
+                        4,
                     ),
 
                 "profit_factor":
                     (
                         round(
                             profit_factor,
-                            4
+                            4,
                         )
                         if math.isfinite(
                             profit_factor
@@ -3057,26 +3542,58 @@ def backtest():
                 "expectancy_percent":
                     round(
                         expectancy,
-                        4
+                        4,
                     ),
 
                 "max_drawdown_percent":
                     round(
                         max_drawdown,
-                        4
-                    )
+                        4,
+                    ),
+
+                "average_mfe_percent":
+                    round(
+                        average_mfe,
+                        4,
+                    ),
+
+                "average_mae_percent":
+                    round(
+                        average_mae,
+                        4,
+                    ),
+
+                "average_score":
+                    round(
+                        average_score,
+                        2,
+                    ),
+
+                "average_risk_reward":
+                    round(
+                        average_rr,
+                        2,
+                    ),
             },
 
+            "pattern_frequency":
+                pattern_counts,
+
             "recent_trades":
-                trades[-20:],
+                trade_results[-20:],
 
             "warning":
                 "Historical simulation only. "
-                "Spread, slippage, commission and "
-                "execution differences are not included."
+                "Spread, slippage, execution delay "
+                "and broker-specific pricing are "
+                "not included.",
         })
 
     except Exception as exc:
+
+        print(
+            traceback.format_exc()
+        )
 
         return jsonify({
 
@@ -3084,7 +3601,7 @@ def backtest():
                 "error",
 
             "error":
-                str(exc)
+                str(exc),
 
         }), 500
 
@@ -3095,81 +3612,74 @@ def backtest():
 
 def initialize_application():
 
-    print(
-        "=" * 60
+    STATE["started_at"] = (
+        utc_now().isoformat()
     )
 
+    print("=" * 60)
     print(
         "XAUUSD M5 PATTERN RECOGNITION BOT"
     )
+    print("=" * 60)
 
     print(
-        "=" * 60
+        "System: Pattern Recognition"
     )
 
     print(
-        "Symbol:",
-        SYMBOL
+        "Pipeline:"
     )
 
     print(
-        "Timeframe:",
-        DISPLAY_TIMEFRAME
+        "Pattern → Confirmation → "
+        "Entry → TP/SL → Telegram"
     )
 
     print(
-        "Data:",
-        "Twelve Data"
-    )
-
-    print(
-        "Pattern Recognition:",
-        "ENABLED"
+        "Twelve Data:",
+        bool(
+            TWELVE_DATA_API_KEY
+        ),
     )
 
     print(
         "Telegram:",
         bool(
             TELEGRAM_BOT_TOKEN
-            and
-            TELEGRAM_CHAT_ID
-        )
+            and TELEGRAM_CHAT_ID
+        ),
     )
 
-    print(
-        "=" * 60
-    )
+    print("=" * 60)
 
-    STATE[
-        "status"
-    ] = "online"
+    # Important:
+    # This is executed when the worker starts.
+    # It is intentionally attempted here so the
+    # Telegram welcome message does not depend
+    # exclusively on /signal being called.
 
-    # สำคัญ:
-    # ส่งข้อความต้อนรับทันทีตอน app โหลด
     send_startup_notification()
-
-
-# ============================================================
-# INITIALIZE
-# ============================================================
-
-initialize_application()
 
 
 # ============================================================
 # MAIN
 # ============================================================
 
+# Gunicorn imports app.py.
+# This executes startup initialization.
+initialize_application()
+
+
 if __name__ == "__main__":
 
     port = int(
         os.getenv(
             "PORT",
-            "10000"
+            "10000",
         )
     )
 
     app.run(
         host="0.0.0.0",
-        port=port
+        port=port,
     )
