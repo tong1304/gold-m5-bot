@@ -12,28 +12,18 @@ requests.post = lambda *args, **kwargs: type("_StartupResponse", (), {"ok": Fals
 import engine_v5 as engine
 requests.post = _original_requests_post
 
-SUPPORTED_SYMBOLS = ("XAU/USD", "BTC/USD")
+SUPPORTED_SYMBOLS = ("BTC/USDT",)
 SYMBOL_LOCK = threading.RLock()
-SCHEDULER_LOCK = threading.RLock()
 
 BASE = {
-    "XAU/USD": {
-        "MINIMUM_ATR": float(os.getenv("XAU_MINIMUM_ATR", str(engine.MINIMUM_ATR))),
-        "MIN_STOP_ATR": float(os.getenv("XAU_MIN_STOP_ATR", str(engine.MIN_STOP_ATR))),
-        "MAX_STOP_ATR": float(os.getenv("XAU_MAX_STOP_ATR", str(engine.MAX_STOP_ATR))),
-        "SPREAD": float(os.getenv("XAU_SPREAD", str(engine.SPREAD))),
-        "SLIPPAGE": float(os.getenv("XAU_SLIPPAGE", str(engine.SLIPPAGE))),
-        "HISTORY_POINTS": int(os.getenv("XAU_HISTORY_POINTS", str(engine.SIGNAL_HISTORY_POINTS))),
-        "BACKTEST_POINTS": int(os.getenv("XAU_BACKTEST_POINTS", "200")),
-    },
-    "BTC/USD": {
+    "BTC/USDT": {
         "MINIMUM_ATR": float(os.getenv("BTC_MINIMUM_ATR", "20.0")),
         "MIN_STOP_ATR": float(os.getenv("BTC_MIN_STOP_ATR", "1.0")),
         "MAX_STOP_ATR": float(os.getenv("BTC_MAX_STOP_ATR", "3.0")),
         "SPREAD": float(os.getenv("BTC_SPREAD", "5.0")),
         "SLIPPAGE": float(os.getenv("BTC_SLIPPAGE", "2.0")),
-        "HISTORY_POINTS": int(os.getenv("BTC_HISTORY_POINTS", "80")),
-        "BACKTEST_POINTS": int(os.getenv("BTC_BACKTEST_POINTS", "80")),
+        "HISTORY_POINTS": int(os.getenv("BTC_HISTORY_POINTS", "200")),
+        "BACKTEST_POINTS": int(os.getenv("BTC_BACKTEST_POINTS", "200")),
     },
 }
 
@@ -50,33 +40,11 @@ def _runtime_risk_guard(**kwargs):
     )
 engine.evaluate_live_risk_guard = _runtime_risk_guard
 
-_original_jsonify = engine.jsonify
-
-def _telegram_alerting_jsonify(*args, **kwargs):
-    payload = args[0] if args and isinstance(args[0], dict) else None
-    if payload and payload.get("valid") and payload.get("signal") in ("BUY", "SELL"):
-        levels = payload.get("trade_levels") or {}
-        message = (
-            f"<b>🚨 XAU/USD SIGNAL v5</b>\n\n"
-            f"<b>Direction:</b> {payload.get('signal')}\n"
-            f"<b>Timeframe:</b> M5\n"
-            f"<b>Score:</b> {payload.get('score')}\n"
-            f"<b>Entry:</b> NEXT CANDLE OPEN (THEORETICAL)\n"
-            f"<b>Projected SL:</b> {levels.get('sl')}\n"
-            f"<b>Projected TP:</b> {levels.get('tp')}\n"
-            f"<b>RR:</b> {levels.get('risk_reward')}\n"
-            f"<b>Pattern:</b> {', '.join(payload.get('patterns') or [])}\n"
-            f"<b>Safety:</b> PAPER VALIDATION ONLY"
-        )
-        payload["telegram"] = engine.send_telegram(message)
-    return _original_jsonify(*args, **kwargs)
-engine.jsonify = _telegram_alerting_jsonify
-
 
 def activate(symbol):
-    symbol = (symbol or os.getenv("SYMBOL", "XAU/USD")).strip().upper()
+    symbol = (symbol or os.getenv("SYMBOL", "BTC/USDT")).strip().upper()
     if symbol not in SUPPORTED_SYMBOLS:
-        raise ValueError(f"Unsupported symbol: {symbol}")
+        raise ValueError(f"Unsupported Binance symbol: {symbol}")
     cfg = BASE[symbol]
     for target in (engine, engine.base):
         target.SYMBOL = symbol
@@ -118,22 +86,23 @@ def symbols():
     return _json_response({
         "status": "ok",
         "engine_version": engine.ENGINE_VERSION,
+        "exchange": "Binance",
         "symbols": list(SUPPORTED_SYMBOLS),
-        "timeframe": engine.TIMEFRAME,
-        "usage": "Use ?symbol=XAU/USD or ?symbol=BTC/USD",
+        "timeframe": "M5",
+        "market_data": "CCXT public OHLCV",
+        "live_orders_allowed": False,
     })
 
 
 @engine.app.route("/validation")
 def validation():
-    symbol = (request.args.get("symbol") or "XAU/USD").strip().upper()
+    symbol = (request.args.get("symbol") or "BTC/USDT").strip().upper()
     if symbol not in SUPPORTED_SYMBOLS:
-        return _json_response({"status":"error","engine_version":engine.ENGINE_VERSION,"message":f"Unsupported symbol: {symbol}","supported_symbols":list(SUPPORTED_SYMBOLS),"live_orders_allowed":False}, 400)
+        return _json_response({"status":"error","message":f"Unsupported Binance symbol: {symbol}","supported_symbols":list(SUPPORTED_SYMBOLS),"live_orders_allowed":False}, 400)
     try:
-        bars = int(request.args.get("bars", "1000"))
+        bars = max(100, min(int(request.args.get("bars", "1000")), 1000))
     except (TypeError, ValueError):
-        return _json_response({"status":"error","engine_version":engine.ENGINE_VERSION,"message":"bars must be an integer between 100 and 5000","live_orders_allowed":False}, 400)
-    bars = max(100, min(bars, 5000))
+        return _json_response({"status":"error","message":"bars must be an integer between 100 and 1000","live_orders_allowed":False}, 400)
     try:
         import validate_v5
         with SYMBOL_LOCK:
@@ -144,19 +113,19 @@ def validation():
         report["live_orders_allowed"] = False
         return _json_response(report, 200)
     except Exception as exc:
-        return _json_response({"status":"validation_error","engine_version":engine.ENGINE_VERSION,"symbol":symbol,"bars":bars,"error_type":type(exc).__name__,"message":str(exc),"live_orders_allowed":False,"next_step":"Use /validation/diagnostics?symbol=XAU/USD&bars=1000"}, 502)
+        return _json_response({"status":"validation_error","engine_version":engine.ENGINE_VERSION,"exchange":"Binance","symbol":symbol,"bars":bars,"error_type":type(exc).__name__,"message":str(exc),"live_orders_allowed":False,"next_step":"Use /validation/diagnostics?symbol=BTC/USDT&bars=1000"}, 502)
 
 
 @engine.app.route("/validation/diagnostics")
 def validation_diagnostics():
-    symbol = (request.args.get("symbol") or "XAU/USD").strip().upper()
+    symbol = (request.args.get("symbol") or "BTC/USDT").strip().upper()
     try:
-        bars = max(100, min(int(request.args.get("bars", "1000")), 5000))
+        bars = max(100, min(int(request.args.get("bars", "1000")), 1000))
     except (TypeError, ValueError):
         bars = 1000
-    result = {"status":"ok","engine_version":engine.ENGINE_VERSION,"symbol":symbol,"bars":bars,"live_orders_allowed":False,"stages":{}}
+    result = {"status":"ok","engine_version":engine.ENGINE_VERSION,"exchange":"Binance","symbol":symbol,"bars":bars,"live_orders_allowed":False,"stages":{}}
     if symbol not in SUPPORTED_SYMBOLS:
-        result.update({"status":"error","message":f"Unsupported symbol: {symbol}"})
+        result.update({"status":"error","message":f"Unsupported Binance symbol: {symbol}"})
         return _json_response(result, 400)
     try:
         activate(symbol)
@@ -164,11 +133,12 @@ def validation_diagnostics():
         import validate_v5
         result["stages"]["import_validate_v5"] = {"ok":True}
         df = validate_v5.fetch_candles(symbol, "5min", bars)
-        result["stages"]["fetch_candles"] = {"ok":True,"rows":len(df)}
-        df = engine.base.remove_incomplete_last_candle(df)
+        result["stages"]["fetch_binance_ohlcv"] = {"ok":True,"rows":len(df)}
+        from binance_data import BinanceMarketData
+        df = BinanceMarketData.remove_incomplete_last_candle(df, timeframe_minutes=5)
         result["stages"]["closed_candles"] = {"ok":True,"rows":len(df)}
         if len(df) < 100:
-            raise RuntimeError(f"Only {len(df)} closed candles returned")
+            raise RuntimeError(f"Only {len(df)} closed Binance candles returned")
         df = engine.base.calculate_indicators(df)
         result["stages"]["indicators"] = {"ok":True,"rows":len(df)}
         index = len(df) - int(engine.FORWARD_BARS) - 2
@@ -184,9 +154,9 @@ def validation_diagnostics():
 
 @engine.app.route("/signal")
 def live_signal():
-    symbol = (request.args.get("symbol") or "XAU/USD").strip().upper()
+    symbol = (request.args.get("symbol") or "BTC/USDT").strip().upper()
     if symbol not in SUPPORTED_SYMBOLS:
-        return _json_response({"status":"error","message":f"Unsupported symbol: {symbol}","live_orders_allowed":False}, 400)
+        return _json_response({"status":"error","message":f"Unsupported Binance symbol: {symbol}","live_orders_allowed":False}, 400)
     try:
         import live_scanner
         with SYMBOL_LOCK:
@@ -194,7 +164,7 @@ def live_signal():
             result = live_scanner.scan_once(symbol)
         return _json_response(result, 200)
     except Exception as exc:
-        return _json_response({"status":"signal_error","engine_version":engine.ENGINE_VERSION,"symbol":symbol,"error_type":type(exc).__name__,"message":str(exc),"telegram_alert_sent":False,"live_orders_allowed":False}, 502)
+        return _json_response({"status":"signal_error","engine_version":engine.ENGINE_VERSION,"exchange":"Binance","symbol":symbol,"error_type":type(exc).__name__,"message":str(exc),"telegram_alert_sent":False,"live_orders_allowed":False}, 502)
 
 
 @engine.app.route("/scheduler/status")
@@ -211,7 +181,7 @@ class MultiSymbolMiddleware:
         self.application = application
     def __call__(self, environ, start_response):
         params = parse_qs(environ.get("QUERY_STRING", ""), keep_blank_values=True)
-        requested = params.get("symbol", [os.getenv("SYMBOL", "XAU/USD")])[0]
+        requested = params.get("symbol", [os.getenv("SYMBOL", "BTC/USDT")])[0]
         with SYMBOL_LOCK:
             names = ("SYMBOL","MINIMUM_ATR","MIN_STOP_ATR","MAX_STOP_ATR","SPREAD","SLIPPAGE","SIGNAL_HISTORY_POINTS")
             previous = {name:getattr(engine,name) for name in names}
@@ -220,11 +190,11 @@ class MultiSymbolMiddleware:
                 activate(requested)
                 return self.application(environ, start_response)
             except ValueError as exc:
-                body = json.dumps(_json_safe({"status":"error","engine_version":engine.ENGINE_VERSION,"symbol":requested,"message":str(exc),"live_orders_allowed":False})).encode()
+                body = json.dumps(_json_safe({"status":"error","engine_version":engine.ENGINE_VERSION,"exchange":"Binance","symbol":requested,"message":str(exc),"live_orders_allowed":False})).encode()
                 start_response("400 BAD REQUEST",[("Content-Type","application/json"),("Content-Length",str(len(body)))])
                 return [body]
             except Exception as exc:
-                body = json.dumps(_json_safe({"status":"application_error","engine_version":getattr(engine,"ENGINE_VERSION","unknown"),"symbol":requested,"error_type":type(exc).__name__,"message":str(exc),"live_orders_allowed":False})).encode()
+                body = json.dumps(_json_safe({"status":"application_error","engine_version":getattr(engine,"ENGINE_VERSION","unknown"),"exchange":"Binance","symbol":requested,"error_type":type(exc).__name__,"message":str(exc),"live_orders_allowed":False})).encode()
                 start_response("500 INTERNAL SERVER ERROR",[("Content-Type","application/json"),("Content-Length",str(len(body)))])
                 return [body]
             finally:
@@ -233,8 +203,6 @@ class MultiSymbolMiddleware:
 
 app = MultiSymbolMiddleware(engine.app)
 
-# Start the scanner only when explicitly enabled. This avoids duplicate scanners
-# across Gunicorn workers and keeps the default deployment in PAPER/manual mode.
 if os.getenv("ENABLE_SIGNAL_SCHEDULER", "false").strip().lower() == "true":
     try:
         import scheduler
