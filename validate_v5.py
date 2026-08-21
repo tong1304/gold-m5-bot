@@ -39,8 +39,29 @@ def fetch_candles(symbol: str, interval: str, outputsize: int) -> pd.DataFrame:
     df["datetime"] = pd.to_datetime(df["datetime"], utc=True)
     for column in ("open", "high", "low", "close"):
         df[column] = pd.to_numeric(df[column], errors="coerce")
-    df = df.dropna(subset=["datetime", "open", "high", "low", "close"]).sort_values("datetime").reset_index(drop=True)
-    return df
+    return (
+        df.dropna(subset=["datetime", "open", "high", "low", "close"])
+        .sort_values("datetime")
+        .reset_index(drop=True)
+    )
+
+
+def _normalize_signal(signal):
+    """Normalize legacy engine output without silently dropping valid signals."""
+    if not isinstance(signal, dict):
+        return None
+    raw_direction = signal.get("direction") or signal.get("signal")
+    direction = str(raw_direction or "").upper().strip()
+    if direction not in ("BUY", "SELL"):
+        return None
+    levels = signal.get("levels") or signal.get("trade_levels") or {}
+    return {
+        "direction": direction,
+        "levels": levels if isinstance(levels, dict) else {},
+        "score": signal.get("score"),
+        "pattern": signal.get("pattern") or signal.get("patterns"),
+        "regime": signal.get("regime"),
+    }
 
 
 def run(symbol: str, bars: int) -> dict:
@@ -48,24 +69,47 @@ def run(symbol: str, bars: int) -> dict:
     if len(df) < 100:
         raise RuntimeError(f"Only {len(df)} valid candles returned")
 
-    # Use the existing signal engine for setup detection. v5 owns execution and accounting.
     trades = []
+    diagnostics = {
+        "candidate_candles": 0,
+        "engine_calls": 0,
+        "engine_exceptions": 0,
+        "signals_seen": 0,
+        "buy_signals": 0,
+        "sell_signals": 0,
+        "trades_accepted": 0,
+        "trades_rejected_by_execution": 0,
+    }
+
     start = max(50, len(df) - bars + 1)
-    for i in range(start, len(df) - int(engine.FORWARD_BARS) - 2):
+    end = len(df) - int(engine.FORWARD_BARS) - 2
+    for i in range(start, max(start, end)):
+        diagnostics["candidate_candles"] += 1
+        diagnostics["engine_calls"] += 1
         try:
-            signal = base.generate_signal(df.iloc[: i + 1].copy())
+            raw_signal = base.generate_signal(df.iloc[: i + 1].copy())
         except Exception:
+            diagnostics["engine_exceptions"] += 1
             continue
-        if not signal or signal.get("direction") not in ("BUY", "SELL"):
+
+        signal = _normalize_signal(raw_signal)
+        if not signal:
             continue
+
+        diagnostics["signals_seen"] += 1
         direction = signal["direction"]
-        levels = signal.get("levels") or {}
-        trade = engine.simulate_trade(df, i, direction, levels)
-        if trade:
-            trade["score"] = signal.get("score")
-            trade["pattern"] = signal.get("pattern")
-            trade["regime"] = signal.get("regime")
-            trades.append(trade)
+        diagnostics["buy_signals" if direction == "BUY" else "sell_signals"] += 1
+
+        trade = engine.simulate_trade(df, i, direction, signal["levels"])
+        if not trade:
+            diagnostics["trades_rejected_by_execution"] += 1
+            continue
+
+        trade["score"] = signal["score"]
+        trade["pattern"] = signal["pattern"]
+        trade["regime"] = signal["regime"]
+        trades.append(trade)
+        diagnostics["trades_accepted"] += 1
 
     stats = engine.calculate_trade_statistics(trades)
     probability = engine.empirical_probability(trades)
@@ -87,6 +131,7 @@ def run(symbol: str, bars: int) -> dict:
         "candles": len(df),
         "data_start": df.iloc[0]["datetime"].isoformat(),
         "data_end": df.iloc[-1]["datetime"].isoformat(),
+        "diagnostics": diagnostics,
         "statistics": stats,
         "resolved_probability": probability,
         "by_side": by_side,
