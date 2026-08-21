@@ -48,6 +48,7 @@ MAX_MATCHES = 40
 
 MIN_SIMILARITY = 0.60
 
+
 # ============================================================
 # SIGNAL RULES
 # ============================================================
@@ -57,6 +58,15 @@ MIN_PROBABILITY = 70.0
 MIN_SCORE = 65.0
 
 MIN_MATCHES = 20
+
+
+# ============================================================
+# BACKTEST
+# ============================================================
+
+FORWARD_BARS = 12
+
+MAX_BACKTEST_POINTS = 150
 
 
 # ============================================================
@@ -457,11 +467,18 @@ def find_matches(
             direction = "FLAT"
 
         matches.append({
-            "index": i,
-            "similarity": similarity,
+
+            "index":
+                i,
+
+            "similarity":
+                similarity,
+
             "movement_percent":
                 movement_percent,
-            "direction": direction
+
+            "direction":
+                direction
         })
 
     matches.sort(
@@ -486,14 +503,30 @@ def historical_statistics(
     if not matches:
 
         return {
-            "sample_size": 0,
-            "buy_probability": 0.0,
-            "sell_probability": 0.0,
-            "flat_probability": 0.0,
-            "average_similarity": 0.0,
-            "best_similarity": 0.0,
-            "expected_up_percent": 0.0,
-            "expected_down_percent": 0.0
+
+            "sample_size":
+                0,
+
+            "buy_probability":
+                0.0,
+
+            "sell_probability":
+                0.0,
+
+            "flat_probability":
+                0.0,
+
+            "average_similarity":
+                0.0,
+
+            "best_similarity":
+                0.0,
+
+            "expected_up_percent":
+                0.0,
+
+            "expected_down_percent":
+                0.0
         }
 
     buy_count = 0
@@ -591,35 +624,51 @@ def historical_statistics(
     )
 
     return {
-        "sample_size": total,
-        "buy_probability": round(
-            buy_probability,
-            2
-        ),
-        "sell_probability": round(
-            sell_probability,
-            2
-        ),
-        "flat_probability": round(
-            flat_probability,
-            2
-        ),
-        "average_similarity": round(
-            average_similarity,
-            4
-        ),
-        "best_similarity": round(
-            best_similarity,
-            4
-        ),
-        "expected_up_percent": round(
-            expected_up,
-            4
-        ),
-        "expected_down_percent": round(
-            expected_down,
-            4
-        )
+
+        "sample_size":
+            total,
+
+        "buy_probability":
+            round(
+                buy_probability,
+                2
+            ),
+
+        "sell_probability":
+            round(
+                sell_probability,
+                2
+            ),
+
+        "flat_probability":
+            round(
+                flat_probability,
+                2
+            ),
+
+        "average_similarity":
+            round(
+                average_similarity,
+                4
+            ),
+
+        "best_similarity":
+            round(
+                best_similarity,
+                4
+            ),
+
+        "expected_up_percent":
+            round(
+                expected_up,
+                4
+            ),
+
+        "expected_down_percent":
+            round(
+                expected_down,
+                4
+            )
     }
 
 
@@ -655,10 +704,14 @@ def calculate_score(
     score = (
         probability_component
         * 0.60
+
         +
+
         sample_component
         * 0.15
+
         +
+
         similarity_component
         * 0.25
     )
@@ -752,9 +805,18 @@ def calculate_trade_levels(
         )
 
     return (
-        round_price(entry),
-        round_price(stop_loss),
-        round_price(take_profit)
+
+        round_price(
+            entry
+        ),
+
+        round_price(
+            stop_loss
+        ),
+
+        round_price(
+            take_profit
+        )
     )
 
 
@@ -791,28 +853,53 @@ def generate_signal(
     if not matches:
 
         return {
-            "timestamp": latest[
-                "datetime"
-            ],
-            "symbol": SYMBOL,
-            "timeframe": "M5",
-            "signal": "NO_TRADE",
-            "score": 0.0,
-            "probability": 0.0,
-            "entry": round_price(
-                entry
-            ),
-            "stop_loss": None,
-            "take_profit": None,
-            "atr": round(
-                atr,
-                4
-            ),
+
+            "timestamp":
+                latest[
+                    "datetime"
+                ],
+
+            "symbol":
+                SYMBOL,
+
+            "timeframe":
+                "M5",
+
+            "signal":
+                "NO_TRADE",
+
+            "score":
+                0.0,
+
+            "probability":
+                0.0,
+
+            "entry":
+                round_price(
+                    entry
+                ),
+
+            "stop_loss":
+                None,
+
+            "take_profit":
+                None,
+
+            "atr":
+                round(
+                    atr,
+                    4
+                ),
+
             "historical_statistics":
                 statistics,
-            "matched_patterns": 0,
+
+            "matched_patterns":
+                0,
+
             "method":
                 "M5 historical pattern matching",
+
             "data_source":
                 "Twelve Data XAU/USD"
         }
@@ -856,45 +943,82 @@ def generate_signal(
     )
 
     valid = (
+
         direction
-        in ["BUY", "SELL"]
-        and probability
+        in [
+            "BUY",
+            "SELL"
+        ]
+
+        and
+
+        probability
         >= MIN_PROBABILITY
-        and score
+
+        and
+
+        score
         >= MIN_SCORE
-        and len(matches)
+
+        and
+
+        len(matches)
         >= MIN_MATCHES
     )
 
     if not valid:
 
         return {
-            "timestamp": latest[
-                "datetime"
-            ],
-            "symbol": SYMBOL,
-            "timeframe": "M5",
-            "signal": "NO_TRADE",
-            "score": score,
-            "probability": round(
-                probability,
-                2
-            ),
-            "entry": round_price(
-                entry
-            ),
-            "stop_loss": None,
-            "take_profit": None,
-            "atr": round(
-                atr,
-                4
-            ),
+
+            "timestamp":
+                latest[
+                    "datetime"
+                ],
+
+            "symbol":
+                SYMBOL,
+
+            "timeframe":
+                "M5",
+
+            "signal":
+                "NO_TRADE",
+
+            "score":
+                score,
+
+            "probability":
+                round(
+                    probability,
+                    2
+                ),
+
+            "entry":
+                round_price(
+                    entry
+                ),
+
+            "stop_loss":
+                None,
+
+            "take_profit":
+                None,
+
+            "atr":
+                round(
+                    atr,
+                    4
+                ),
+
             "historical_statistics":
                 statistics,
+
             "matched_patterns":
                 len(matches),
+
             "method":
                 "M5 historical pattern matching",
+
             "data_source":
                 "Twelve Data XAU/USD"
         }
@@ -911,30 +1035,54 @@ def generate_signal(
     )
 
     return {
-        "timestamp": latest[
-            "datetime"
-        ],
-        "symbol": SYMBOL,
-        "timeframe": "M5",
-        "signal": direction,
-        "score": score,
-        "probability": round(
-            probability,
-            2
-        ),
-        "entry": entry,
-        "stop_loss": stop_loss,
-        "take_profit": take_profit,
-        "atr": round(
-            atr,
-            4
-        ),
+
+        "timestamp":
+            latest[
+                "datetime"
+            ],
+
+        "symbol":
+            SYMBOL,
+
+        "timeframe":
+            "M5",
+
+        "signal":
+            direction,
+
+        "score":
+            score,
+
+        "probability":
+            round(
+                probability,
+                2
+            ),
+
+        "entry":
+            entry,
+
+        "stop_loss":
+            stop_loss,
+
+        "take_profit":
+            take_profit,
+
+        "atr":
+            round(
+                atr,
+                4
+            ),
+
         "historical_statistics":
             statistics,
+
         "matched_patterns":
             len(matches),
+
         "method":
             "M5 historical pattern matching",
+
         "data_source":
             "Twelve Data XAU/USD"
     }
@@ -969,9 +1117,15 @@ def send_telegram(
     )
 
     payload = {
-        "chat_id": TELEGRAM_CHAT_ID,
-        "text": message,
-        "parse_mode": "HTML"
+
+        "chat_id":
+            TELEGRAM_CHAT_ID,
+
+        "text":
+            message,
+
+        "parse_mode":
+            "HTML"
     }
 
     try:
@@ -992,7 +1146,9 @@ def send_telegram(
         ):
 
             return (
+
                 False,
+
                 result.get(
                     "description",
                     "Telegram API error"
@@ -1013,7 +1169,7 @@ def send_telegram(
 
 
 # ============================================================
-# TELEGRAM STARTUP
+# TELEGRAM STARTUP WELCOME
 # ============================================================
 
 def send_startup_notification():
@@ -1043,27 +1199,59 @@ def send_startup_notification():
         return
 
     message = (
+
         "🟢 <b>XAUUSD M5 BOT ONLINE</b>\n"
         "\n"
-        "ระบบเริ่มทำงานเรียบร้อยแล้ว\n"
+
+        "👋 <b>ยินดีต้อนรับเข้าสู่ระบบวิเคราะห์ทองคำ</b>\n"
         "\n"
-        f"<b>Symbol:</b> {SYMBOL}\n"
-        "<b>Timeframe:</b> M5\n"
-        "<b>Data:</b> Twelve Data\n"
+
+        "ระบบเริ่มทำงานเรียบร้อยแล้ว ✅\n"
         "\n"
-        f"<b>Minimum Probability:</b> "
+
+        f"📊 <b>Symbol:</b> {SYMBOL}\n"
+        "⏱ <b>Timeframe:</b> M5\n"
+        "📡 <b>Data:</b> Twelve Data\n"
+        "\n"
+
+        "🤖 <b>ระบบพร้อมวิเคราะห์</b>\n"
+        "• BUY\n"
+        "• SELL\n"
+        "• NO TRADE\n"
+        "\n"
+
+        "📈 <b>ระบบใช้การวิเคราะห์</b>\n"
+        "• Historical Pattern Matching\n"
+        "• Probability\n"
+        "• Pattern Similarity\n"
+        "• Signal Score\n"
+        "• ATR\n"
+        "\n"
+
+        "🎯 <b>Signal ที่ผ่านเกณฑ์จะได้รับ</b>\n"
+        "• Entry\n"
+        "• Take Profit (TP)\n"
+        "• Stop Loss (SL)\n"
+        "\n"
+
+        f"📌 <b>Minimum Probability:</b> "
         f"{MIN_PROBABILITY:.0f}%\n"
-        f"<b>Minimum Score:</b> "
+
+        f"📌 <b>Minimum Score:</b> "
         f"{MIN_SCORE:.0f}\n"
-        f"<b>Minimum Patterns:</b> "
+
+        f"📌 <b>Minimum Patterns:</b> "
         f"{MIN_MATCHES}\n"
-        f"<b>Minimum Similarity:</b> "
+
+        f"📌 <b>Minimum Similarity:</b> "
         f"{MIN_SIMILARITY:.2f}\n"
+
         "\n"
-        "พร้อมวิเคราะห์ BUY / SELL\n"
+
+        "🚀 <b>ระบบพร้อมทำงานแล้ว</b>\n"
         "\n"
-        "Entry / TP / SL\n"
-        "จะถูกคำนวณเมื่อ Signal ผ่านเกณฑ์"
+
+        "<i>Historical Pattern Matching System</i>"
     )
 
     ok, error = send_telegram(
@@ -1075,13 +1263,13 @@ def send_startup_notification():
         STARTUP_NOTIFICATION_SENT = True
 
         print(
-            "Telegram startup notification sent"
+            "Telegram welcome message sent successfully"
         )
 
     else:
 
         print(
-            "Telegram startup notification failed:",
+            "Telegram welcome message failed:",
             error
         )
 
@@ -1115,36 +1303,55 @@ def format_signal_message(
     ]
 
     return (
+
         f"{emoji} <b>XAUUSD M5 SIGNAL</b>\n"
         "\n"
+
         f"<b>SIGNAL:</b> {direction}\n"
+
         f"<b>Probability:</b> "
         f"{signal['probability']:.2f}%\n"
+
         f"<b>Score:</b> "
         f"{signal['score']:.2f}\n"
+
         "\n"
+
         f"<b>ENTRY:</b> "
         f"{signal['entry']:.2f}\n"
+
         f"<b>TP:</b> "
         f"{signal['take_profit']:.2f}\n"
+
         f"<b>SL:</b> "
         f"{signal['stop_loss']:.2f}\n"
+
         "\n"
+
         f"<b>Patterns:</b> "
         f"{signal['matched_patterns']}\n"
+
         f"<b>Average Similarity:</b> "
         f"{stats['average_similarity']:.4f}\n"
+
         f"<b>Best Similarity:</b> "
         f"{stats['best_similarity']:.4f}\n"
+
         "\n"
+
         f"<b>BUY Probability:</b> "
         f"{stats['buy_probability']:.2f}%\n"
+
         f"<b>SELL Probability:</b> "
         f"{stats['sell_probability']:.2f}%\n"
+
         "\n"
+
         f"<b>Time:</b> "
         f"{signal['timestamp']}\n"
+
         "\n"
+
         "<i>Historical Pattern Matching</i>"
     )
 
@@ -1172,24 +1379,38 @@ def run_signal(
     ] = None
 
     if (
+
         send_notification
-        and signal["signal"]
-        in ["BUY", "SELL"]
+
+        and
+
+        signal["signal"]
+        in [
+            "BUY",
+            "SELL"
+        ]
     ):
 
         signal_key = (
+
             str(
                 signal["timestamp"]
             )
+
             + "_"
+
             + signal["signal"]
         )
 
         if (
+
             STATE[
                 "last_signal_key"
             ]
-            != signal_key
+
+            !=
+
+            signal_key
         ):
 
             message = (
@@ -1221,6 +1442,16 @@ def run_signal(
     ] = signal
 
     return signal
+
+
+# ============================================================
+# STARTUP HOOK
+# ============================================================
+
+@app.before_request
+def startup_hook():
+
+    send_startup_notification()
 
 
 # ============================================================
@@ -1269,9 +1500,13 @@ def home():
         },
 
         "endpoints": [
+
             "/",
+
             "/health",
+
             "/signal",
+
             "/backtest"
         ]
     })
@@ -1338,10 +1573,6 @@ def signal_endpoint():
 
     try:
 
-        # Startup notification
-        # จะส่งเมื่อ request แรกเข้ามา
-        send_startup_notification()
-
         signal = run_signal(
             send_notification=True
         )
@@ -1383,7 +1614,9 @@ def backtest():
         )
 
         start = max(
+
             PATTERN_LENGTH * 2 + 20,
+
             80
         )
 
@@ -1392,45 +1625,58 @@ def backtest():
         )
 
         max_test_points = min(
-            150,
+
+            MAX_BACKTEST_POINTS,
+
             end - start
         )
 
         if max_test_points <= 0:
 
             return jsonify({
+
                 "error":
                     "Not enough candles"
+
             }), 400
 
         start = (
+
             end
             - max_test_points
         )
 
         signals = 0
+
         buy_signals = 0
+
         sell_signals = 0
 
         wins = 0
+
         losses = 0
+
         timeouts = 0
 
         tp_hits = 0
+
         sl_hits = 0
 
         total_profit_percent = 0.0
+
         total_loss_percent = 0.0
 
         mfe_values = []
+
         mae_values = []
 
         probability_values = []
+
         score_values = []
 
         trade_results = []
 
-        forward_bars = 12
+        forward_bars = FORWARD_BARS
 
         for i in range(
             start,
@@ -1456,7 +1702,9 @@ def backtest():
             )
 
             if direction not in [
+
                 "BUY",
+
                 "SELL"
             ]:
 
@@ -1489,9 +1737,16 @@ def backtest():
             )
 
             if (
+
                 entry is None
-                or stop_loss is None
-                or take_profit is None
+
+                or
+
+                stop_loss is None
+
+                or
+
+                take_profit is None
             ):
 
                 continue
@@ -1514,16 +1769,22 @@ def backtest():
 
                 sell_signals += 1
 
-            entry = float(entry)
+            entry = float(
+                entry
+            )
+
             stop_loss = float(
                 stop_loss
             )
+
             take_profit = float(
                 take_profit
             )
 
             max_index = min(
+
                 i + forward_bars,
+
                 len(candles) - 1
             )
 
@@ -1534,6 +1795,7 @@ def backtest():
             exit_index = None
 
             mfe = 0.0
+
             mae = 0.0
 
             for j in range(
@@ -1554,20 +1816,28 @@ def backtest():
                 if direction == "BUY":
 
                     favorable = (
+
                         high - entry
+
                     ) / entry * 100.0
 
                     adverse = (
+
                         entry - low
+
                     ) / entry * 100.0
 
                     mfe = max(
+
                         mfe,
+
                         favorable
                     )
 
                     mae = max(
+
                         mae,
+
                         adverse
                     )
 
@@ -1579,9 +1849,6 @@ def backtest():
                         high >= take_profit
                     )
 
-                    # Conservative:
-                    # ถ้าแท่งเดียวโดน TP/SL
-                    # ให้ถือว่า SL ก่อน
                     if hit_sl and hit_tp:
 
                         result = "LOSS"
@@ -1621,20 +1888,28 @@ def backtest():
                 else:
 
                     favorable = (
+
                         entry - low
+
                     ) / entry * 100.0
 
                     adverse = (
+
                         high - entry
+
                     ) / entry * 100.0
 
                     mfe = max(
+
                         mfe,
+
                         favorable
                     )
 
                     mae = max(
+
                         mae,
+
                         adverse
                     )
 
@@ -1687,6 +1962,7 @@ def backtest():
                 exit_index = max_index
 
                 exit_price = float(
+
                     candles[
                         exit_index
                     ]["close"]
@@ -1695,13 +1971,17 @@ def backtest():
             if direction == "BUY":
 
                 pnl_percent = (
+
                     exit_price - entry
+
                 ) / entry * 100.0
 
             else:
 
                 pnl_percent = (
+
                     entry - exit_price
+
                 ) / entry * 100.0
 
             mfe_values.append(
@@ -1715,23 +1995,28 @@ def backtest():
             if result == "WIN":
 
                 wins += 1
+
                 tp_hits += 1
 
-                total_profit_percent += (
-                    max(
-                        pnl_percent,
-                        0
-                    )
+                total_profit_percent += max(
+
+                    pnl_percent,
+
+                    0
                 )
 
             elif result == "LOSS":
 
                 losses += 1
+
                 sl_hits += 1
 
                 total_loss_percent += abs(
+
                     min(
+
                         pnl_percent,
+
                         0
                     )
                 )
@@ -1809,9 +2094,12 @@ def backtest():
 
                 "bars_held":
                     (
+
                         exit_index - i + 1
+
                         if exit_index
                         is not None
+
                         else None
                     )
             })
@@ -1823,18 +2111,21 @@ def backtest():
         if signals > 0:
 
             win_rate = (
+
                 wins
                 / signals
                 * 100.0
             )
 
             loss_rate = (
+
                 losses
                 / signals
                 * 100.0
             )
 
             timeout_rate = (
+
                 timeouts
                 / signals
                 * 100.0
@@ -1843,40 +2134,55 @@ def backtest():
         else:
 
             win_rate = 0.0
+
             loss_rate = 0.0
+
             timeout_rate = 0.0
 
         average_mfe = (
+
             sum(mfe_values)
             / len(mfe_values)
+
             if mfe_values
+
             else 0.0
         )
 
         average_mae = (
+
             sum(mae_values)
             / len(mae_values)
+
             if mae_values
+
             else 0.0
         )
 
         average_probability = (
+
             sum(probability_values)
             / len(probability_values)
+
             if probability_values
+
             else 0.0
         )
 
         average_score = (
+
             sum(score_values)
             / len(score_values)
+
             if score_values
+
             else 0.0
         )
 
         if total_loss_percent > 0:
 
             profit_factor = (
+
                 total_profit_percent
                 / total_loss_percent
             )
@@ -1892,14 +2198,18 @@ def backtest():
             profit_factor = 0.0
 
         net_profit_percent = (
+
             total_profit_percent
             - total_loss_percent
         )
 
         expectancy = (
+
             net_profit_percent
             / signals
+
             if signals > 0
+
             else 0.0
         )
 
@@ -1908,7 +2218,9 @@ def backtest():
         # ====================================================
 
         equity = 0.0
+
         peak_equity = 0.0
+
         max_drawdown = 0.0
 
         for trade in trade_results:
@@ -1918,17 +2230,22 @@ def backtest():
             ]
 
             peak_equity = max(
+
                 peak_equity,
+
                 equity
             )
 
             drawdown = (
+
                 peak_equity
                 - equity
             )
 
             max_drawdown = max(
+
                 max_drawdown,
+
                 drawdown
             )
 
@@ -2044,13 +2361,16 @@ def backtest():
 
                 "profit_factor":
                     (
+
                         round(
                             profit_factor,
                             4
                         )
+
                         if math.isfinite(
                             profit_factor
                         )
+
                         else "infinite"
                     ),
 
@@ -2112,6 +2432,7 @@ def backtest():
 
             "error":
                 str(exc)
+
         }), 500
 
 
@@ -2131,6 +2452,8 @@ if __name__ == "__main__":
     )
 
     app.run(
+
         host="0.0.0.0",
+
         port=port
     )
