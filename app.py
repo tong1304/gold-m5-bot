@@ -2,17 +2,19 @@
 XAUUSD M5 STATISTICAL SIGNAL + TELEGRAM
 ========================================
 
-ระบบ:
-- วิเคราะห์ XAUUSD M5
-- Historical Pattern Matching
+Features:
+- XAUUSD M5 market data
+- Historical pattern matching
 - EMA20 / EMA50
 - RSI
 - ATR
 - Momentum
 - Dynamic SL
 - Dynamic TP
-- BUY / SELL
+- BUY / SELL signals
 - Telegram notification
+- Backtest endpoint
+- Render-compatible HTTP server
 
 Environment Variables:
 
@@ -20,23 +22,24 @@ TELEGRAM_BOT_TOKEN
 TELEGRAM_CHAT_ID
 PORT
 
-Render Start Command:
+Start Command:
 
 python app.py
 """
 
 import json
 import math
-import statistics
 import os
-import time
+import statistics
 import threading
+import time
+
 from datetime import datetime, timezone
-from urllib.request import (
-    Request,
-    urlopen
-)
+
+from urllib.request import Request, urlopen
 from urllib.parse import urlencode
+
+from http.server import BaseHTTPRequestHandler, HTTPServer
 
 
 # ============================================================
@@ -78,7 +81,7 @@ MIN_SCORE = 65
 
 
 # ============================================================
-# TELEGRAM CONFIG
+# TELEGRAM
 # ============================================================
 
 TELEGRAM_BOT_TOKEN = os.environ.get(
@@ -102,12 +105,12 @@ SIGNAL_LOCK = threading.Lock()
 
 
 # ============================================================
-# HTTP
+# HTTP GET
 # ============================================================
 
 def http_get(url, timeout=20):
 
-    req = Request(
+    request = Request(
         url,
         headers={
             "User-Agent": "Mozilla/5.0"
@@ -115,7 +118,7 @@ def http_get(url, timeout=20):
     )
 
     with urlopen(
-        req,
+        request,
         timeout=timeout
     ) as response:
 
@@ -131,17 +134,21 @@ def http_get(url, timeout=20):
 def send_telegram(message):
 
     if not TELEGRAM_BOT_TOKEN:
+
         print(
             "Telegram disabled: "
-            "TELEGRAM_BOT_TOKEN not set"
+            "TELEGRAM_BOT_TOKEN is not set"
         )
+
         return False
 
     if not TELEGRAM_CHAT_ID:
+
         print(
             "Telegram disabled: "
-            "TELEGRAM_CHAT_ID not set"
+            "TELEGRAM_CHAT_ID is not set"
         )
+
         return False
 
     url = (
@@ -161,14 +168,15 @@ def send_telegram(message):
         "parse_mode":
             "HTML"
 
-    }).encode("utf-8")
+    }).encode(
+        "utf-8"
+    )
 
     try:
 
-        req = Request(
+        request = Request(
             url,
             data=payload,
-
             headers={
                 "Content-Type":
                     "application/x-www-form-urlencoded"
@@ -176,7 +184,7 @@ def send_telegram(message):
         )
 
         with urlopen(
-            req,
+            request,
             timeout=20
         ) as response:
 
@@ -189,30 +197,30 @@ def send_telegram(message):
         if result.get("ok"):
 
             print(
-                "Telegram message sent"
+                "Telegram message sent successfully"
             )
 
             return True
 
         print(
-            "Telegram error:",
+            "Telegram returned error:",
             result
         )
 
         return False
 
-    except Exception as e:
+    except Exception as error:
 
         print(
             "Telegram exception:",
-            e
+            error
         )
 
         return False
 
 
 # ============================================================
-# FORMAT TELEGRAM SIGNAL
+# TELEGRAM MESSAGE
 # ============================================================
 
 def format_signal_message(signal):
@@ -223,25 +231,27 @@ def format_signal_message(signal):
 
         icon = "🟢"
 
+        probability = signal[
+            "historical_statistics"
+        ][
+            "buy_probability"
+        ]
+
     else:
 
         icon = "🔴"
 
-    probability_key = (
-        "buy_probability"
-        if direction == "BUY"
-        else "sell_probability"
-    )
-
-    probability = signal[
-        "historical_statistics"
-    ][probability_key]
+        probability = signal[
+            "historical_statistics"
+        ][
+            "sell_probability"
+        ]
 
     timestamp = datetime.fromisoformat(
         signal["timestamp"]
     )
 
-    local_time = timestamp.strftime(
+    timestamp_text = timestamp.strftime(
         "%Y-%m-%d %H:%M:%S UTC"
     )
 
@@ -264,14 +274,16 @@ def format_signal_message(signal):
 
 <b>ATR:</b> {signal["atr"]}
 
-<b>เวลา:</b> {local_time}
+<b>Historical Patterns:</b> {signal["matched_patterns"]}
+
+<b>เวลา:</b> {timestamp_text}
 """.strip()
 
     return message
 
 
 # ============================================================
-# YAHOO DATA
+# YAHOO FINANCE DATA
 # ============================================================
 
 def get_yahoo_data(
@@ -306,93 +318,131 @@ def get_yahoo_data(
 
     data = json.loads(raw)
 
-    result = data[
-        "chart"
-    ][
-        "result"
-    ]
+    chart = data.get(
+        "chart",
+        {}
+    )
 
-    if not result:
+    results = chart.get(
+        "result"
+    )
+
+    if not results:
 
         raise Exception(
-            "Yahoo returned no data"
+            "Yahoo Finance returned no data"
         )
 
-    result = result[0]
+    result = results[0]
 
-    timestamps = result[
-        "timestamp"
-    ]
+    timestamps = result.get(
+        "timestamp",
+        []
+    )
 
-    quote = result[
-        "indicators"
-    ][
-        "quote"
-    ][0]
+    indicators = result.get(
+        "indicators",
+        {}
+    )
+
+    quotes = indicators.get(
+        "quote",
+        []
+    )
+
+    if not quotes:
+
+        raise Exception(
+            "Yahoo Finance returned no quote data"
+        )
+
+    quote = quotes[0]
 
     rows = []
 
-    for i, ts in enumerate(
+    opens = quote.get(
+        "open",
+        []
+    )
+
+    highs = quote.get(
+        "high",
+        []
+    )
+
+    lows = quote.get(
+        "low",
+        []
+    )
+
+    closes = quote.get(
+        "close",
+        []
+    )
+
+    volumes = quote.get(
+        "volume",
+        []
+    )
+
+    for i, timestamp in enumerate(
         timestamps
     ):
 
-        o = quote[
-            "open"
-        ][i]
+        try:
 
-        h = quote[
-            "high"
-        ][i]
+            open_price = opens[i]
 
-        l = quote[
-            "low"
-        ][i]
+            high_price = highs[i]
 
-        c = quote[
-            "close"
-        ][i]
+            low_price = lows[i]
 
-        volumes = quote.get(
-            "volume",
-            [None] * len(timestamps)
-        )
+            close_price = closes[i]
 
-        v = volumes[i]
+        except IndexError:
+
+            continue
 
         if None in (
-            o,
-            h,
-            l,
-            c
+            open_price,
+            high_price,
+            low_price,
+            close_price
         ):
 
             continue
+
+        volume = 0
+
+        if i < len(volumes):
+
+            volume = volumes[i] or 0
 
         rows.append({
 
             "time":
                 datetime.fromtimestamp(
-                    ts,
+                    timestamp,
                     timezone.utc
                 ).isoformat(),
 
             "timestamp":
-                ts,
+                timestamp,
 
             "open":
-                float(o),
+                float(open_price),
 
             "high":
-                float(h),
+                float(high_price),
 
             "low":
-                float(l),
+                float(low_price),
 
             "close":
-                float(c),
+                float(close_price),
 
             "volume":
-                float(v or 0)
+                float(volume)
         })
 
     return rows
@@ -423,9 +473,15 @@ def get_market_data():
                         data[-LOOKBACK:]
                 }
 
-        except Exception as e:
+        except Exception as error:
 
-            last_error = str(e)
+            last_error = str(error)
+
+            print(
+                "Data source error:",
+                symbol,
+                error
+            )
 
     raise Exception(
         "Unable to retrieve gold market data: "
@@ -440,36 +496,36 @@ def get_market_data():
 def mean(values):
 
     if not values:
+
         return 0.0
 
-    return sum(values) / len(values)
-
-
-def std(values):
-
-    if len(values) < 2:
-        return 0.0
-
-    return statistics.stdev(
-        values
+    return (
+        sum(values)
+        / len(values)
     )
 
 
-def ema(values, period):
+def ema(
+    values,
+    period
+):
 
     if not values:
+
         return []
 
     result = []
 
     multiplier = (
-        2.0 /
-        (period + 1)
+        2.0
+        / (period + 1)
     )
 
     current = values[0]
 
-    result.append(current)
+    result.append(
+        current
+    )
 
     for value in values[1:]:
 
@@ -542,14 +598,13 @@ def rsi(
     else:
 
         rs = (
-            avg_gain /
-            avg_loss
+            avg_gain
+            / avg_loss
         )
 
         result[period] = (
             100
-            - 100 /
-            (1 + rs)
+            - 100 / (1 + rs)
         )
 
     for i in range(
@@ -597,14 +652,13 @@ def rsi(
         else:
 
             rs = (
-                avg_gain /
-                avg_loss
+                avg_gain
+                / avg_loss
             )
 
             result[i] = (
                 100
-                - 100 /
-                (1 + rs)
+                - 100 / (1 + rs)
             )
 
     return result
@@ -625,7 +679,9 @@ def atr(
             0.0
         ] * len(data)
 
-    tr = [0.0]
+    true_ranges = [
+        0.0
+    ]
 
     for i in range(
         1,
@@ -661,7 +717,7 @@ def atr(
             )
         )
 
-        tr.append(
+        true_ranges.append(
             true_range
         )
 
@@ -669,48 +725,44 @@ def atr(
         0.0
     ] * len(data)
 
-    current = mean(
-        tr[
-            1:
-            period + 1
-        ]
-    )
+    if len(data) > period:
 
-    if period < len(result):
-
-        result[period] = (
-            current
+        current = mean(
+            true_ranges[
+                1:
+                period + 1
+            ]
         )
 
-    for i in range(
-        period + 1,
-        len(data)
-    ):
+        result[period] = current
 
-        current = (
-            (
-                current
-                * (period - 1)
-                + tr[i]
+        for i in range(
+            period + 1,
+            len(data)
+        ):
+
+            current = (
+                (
+                    current
+                    * (period - 1)
+                    + true_ranges[i]
+                )
+                / period
             )
-            / period
-        )
 
-        result[i] = (
-            current
-        )
+            result[i] = current
 
-    for i in range(
-        period
-    ):
+        for i in range(
+            period
+        ):
 
-        result[i] = current
+            result[i] = current
 
     return result
 
 
 # ============================================================
-# SWING
+# SWING HIGH / LOW
 # ============================================================
 
 def swing_high(
@@ -737,6 +789,7 @@ def swing_high(
     ):
 
         if i == index:
+
             continue
 
         if data[i][
@@ -772,6 +825,7 @@ def swing_low(
     ):
 
         if i == index:
+
             continue
 
         if data[i][
@@ -790,8 +844,8 @@ def swing_low(
 def build_features(data):
 
     closes = [
-        x["close"]
-        for x in data
+        item["close"]
+        for item in data
     ]
 
     ema20 = ema(
@@ -820,42 +874,44 @@ def build_features(data):
         len(data)
     ):
 
-        close = data[i][
-            "close"
-        ]
+        candle = data[i]
 
-        open_ = data[i][
+        open_price = candle[
             "open"
         ]
 
-        high = data[i][
+        high = candle[
             "high"
         ]
 
-        low = data[i][
+        low = candle[
             "low"
+        ]
+
+        close = candle[
+            "close"
         ]
 
         candle_range = max(
             high - low,
-            1e-9
+            0.00000001
         )
 
         body = abs(
-            close - open_
+            close - open_price
         )
 
         upper_wick = (
             high
             - max(
-                open_,
+                open_price,
                 close
             )
         )
 
         lower_wick = (
             min(
-                open_,
+                open_price,
                 close
             )
             - low
@@ -918,9 +974,7 @@ def build_features(data):
             "trend":
 
                 1
-                if ema20[i]
-                > ema50[i]
-
+                if ema20[i] > ema50[i]
                 else -1
         })
 
@@ -969,15 +1023,18 @@ def normalize_vector(
 
     result = []
 
-    for x in vector:
+    for value in vector:
 
-        x = max(
-            -3,
-            min(3, x)
+        value = max(
+            -3.0,
+            min(
+                3.0,
+                value
+            )
         )
 
         result.append(
-            x
+            value
         )
 
     return result
@@ -990,7 +1047,7 @@ def vector_distance(
 
     if len(a) != len(b):
 
-        return 999999
+        return 999999.0
 
     total = 0.0
 
@@ -1020,8 +1077,8 @@ def pattern_similarity(
     )
 
     return (
-        1.0 /
-        (1.0 + distance)
+        1.0
+        / (1.0 + distance)
     )
 
 
@@ -1029,8 +1086,6 @@ def create_pattern(
     features,
     end_index
 ):
-
-    vectors = []
 
     start = (
         end_index
@@ -1042,24 +1097,26 @@ def create_pattern(
 
         return None
 
+    vector = []
+
     for i in range(
         start,
         end_index + 1
     ):
 
-        vectors.extend(
+        vector.extend(
             candle_vector(
                 features[i]
             )
         )
 
     return normalize_vector(
-        vectors
+        vector
     )
 
 
 # ============================================================
-# HISTORICAL MATCH
+# HISTORICAL PATTERN MATCHING
 # ============================================================
 
 def historical_patterns(
@@ -1128,18 +1185,20 @@ def historical_patterns(
             continue
 
         future_high = max(
-            x["high"]
-            for x in future
+            item["high"]
+            for item in future
         )
 
         future_low = min(
-            x["low"]
-            for x in future
+            item["low"]
+            for item in future
         )
 
         future_close = future[
             -1
-        ]["close"]
+        ][
+            "close"
+        ]
 
         up_move = (
             future_high
@@ -1157,7 +1216,6 @@ def historical_patterns(
         )
 
         direction = (
-
             1
             if close_move > 0
             else -1
@@ -1185,8 +1243,8 @@ def historical_patterns(
         })
 
     matches.sort(
-        key=lambda x:
-            x["similarity"],
+        key=lambda item:
+            item["similarity"],
         reverse=True
     )
 
@@ -1206,7 +1264,8 @@ def calculate_statistics(
 
     if (
         not matches
-        or atr_value <= 0
+        or
+        atr_value <= 0
     ):
 
         return {
@@ -1245,23 +1304,17 @@ def calculate_statistics(
             ] ** 3
         )
 
-        total_weight += (
-            weight
-        )
+        total_weight += weight
 
         if match[
             "direction"
         ] == 1:
 
-            buy_weight += (
-                weight
-            )
+            buy_weight += weight
 
         else:
 
-            sell_weight += (
-                weight
-            )
+            sell_weight += weight
 
         weighted_up += (
             match[
@@ -1316,15 +1369,13 @@ def calculate_statistics(
 
         "buy_probability":
             round(
-                buy_probability
-                * 100,
+                buy_probability * 100,
                 2
             ),
 
         "sell_probability":
             round(
-                sell_probability
-                * 100,
+                sell_probability * 100,
                 2
             ),
 
@@ -1405,7 +1456,7 @@ def find_recent_swing_low(
 
 
 # ============================================================
-# SIGNAL
+# SIGNAL GENERATION
 # ============================================================
 
 def generate_signal(
@@ -1428,11 +1479,11 @@ def generate_signal(
         index
     ]
 
-    f = features[
+    feature = features[
         index
     ]
 
-    atr_value = f[
+    atr_value = feature[
         "atr"
     ]
 
@@ -1466,9 +1517,9 @@ def generate_signal(
     # TREND
     # --------------------------------------------------------
 
-    if f[
+    if feature[
         "ema20"
-    ] > f[
+    ] > feature[
         "ema50"
     ]:
 
@@ -1483,13 +1534,13 @@ def generate_signal(
     # --------------------------------------------------------
 
     if (
-        50 <= f["rsi"] <= 68
+        50 <= feature["rsi"] <= 68
     ):
 
         score_buy += 15
 
     if (
-        32 <= f["rsi"] <= 50
+        32 <= feature["rsi"] <= 50
     ):
 
         score_sell += 15
@@ -1498,13 +1549,13 @@ def generate_signal(
     # MOMENTUM
     # --------------------------------------------------------
 
-    if f[
+    if feature[
         "momentum"
     ] > 0.3:
 
         score_buy += 15
 
-    if f[
+    if feature[
         "momentum"
     ] < -0.3:
 
@@ -1549,29 +1600,28 @@ def generate_signal(
 
     if (
         bullish
-        and body
-        > atr_value * 0.25
+        and
+        body > atr_value * 0.25
     ):
 
         score_buy += 10
 
     if (
         bearish
-        and body
-        > atr_value * 0.25
+        and
+        body > atr_value * 0.25
     ):
 
         score_sell += 10
 
     # --------------------------------------------------------
-    # SIGNAL
+    # DECIDE SIGNAL
     # --------------------------------------------------------
 
     if (
         score_buy >= MIN_SCORE
         and
-        score_buy
-        > score_sell + 8
+        score_buy > score_sell + 8
     ):
 
         direction = "BUY"
@@ -1581,8 +1631,7 @@ def generate_signal(
     elif (
         score_sell >= MIN_SCORE
         and
-        score_sell
-        > score_buy + 8
+        score_sell > score_buy + 8
     ):
 
         direction = "SELL"
@@ -1627,10 +1676,7 @@ def generate_signal(
             - atr_value * 1.25
         )
 
-        if (
-            swing_low_value
-            is not None
-        ):
+        if swing_low_value is not None:
 
             structure_sl = (
                 swing_low_value
@@ -1652,7 +1698,7 @@ def generate_signal(
             - stop_loss
         )
 
-        historical_target = (
+        target = (
             entry
             + atr_value
             * max(
@@ -1663,14 +1709,10 @@ def generate_signal(
             )
         )
 
-        target = historical_target
-
         if risk > 0:
 
             target = max(
-
                 target,
-
                 entry
                 + risk * MIN_RR
             )
@@ -1686,10 +1728,7 @@ def generate_signal(
             + atr_value * 1.25
         )
 
-        if (
-            swing_high_value
-            is not None
-        ):
+        if swing_high_value is not None:
 
             structure_sl = (
                 swing_high_value
@@ -1711,7 +1750,7 @@ def generate_signal(
             - entry
         )
 
-        historical_target = (
+        target = (
             entry
             - atr_value
             * max(
@@ -1722,14 +1761,10 @@ def generate_signal(
             )
         )
 
-        target = historical_target
-
         if risk > 0:
 
             target = min(
-
                 target,
-
                 entry
                 - risk * MIN_RR
             )
@@ -1740,14 +1775,10 @@ def generate_signal(
 
         target = None
 
-    digits = 2
-
     return {
 
         "timestamp":
-            candle[
-                "time"
-            ],
+            candle["time"],
 
         "symbol":
             "XAUUSD",
@@ -1767,17 +1798,16 @@ def generate_signal(
         "entry":
             round(
                 entry,
-                digits
+                2
             ),
 
         "stop_loss":
             (
                 round(
                     stop_loss,
-                    digits
+                    2
                 )
-                if stop_loss
-                is not None
+                if stop_loss is not None
                 else None
             ),
 
@@ -1785,35 +1815,34 @@ def generate_signal(
             (
                 round(
                     target,
-                    digits
+                    2
                 )
-                if target
-                is not None
+                if target is not None
                 else None
             ),
 
         "atr":
             round(
                 atr_value,
-                digits
+                2
             ),
 
         "rsi":
             round(
-                f["rsi"],
+                feature["rsi"],
                 2
             ),
 
         "ema20":
             round(
-                f["ema20"],
-                digits
+                feature["ema20"],
+                2
             ),
 
         "ema50":
             round(
-                f["ema50"],
-                digits
+                feature["ema50"],
+                2
             ),
 
         "historical_statistics":
@@ -1828,7 +1857,7 @@ def generate_signal(
 
 
 # ============================================================
-# SEND ONLY NEW SIGNAL
+# PROCESS SIGNAL
 # ============================================================
 
 def process_signal():
@@ -1864,10 +1893,6 @@ def process_signal():
 
             return signal
 
-        # ----------------------------------------------------
-        # SIGNAL ID
-        # ----------------------------------------------------
-
         signal_id = (
             signal["timestamp"]
             + "_"
@@ -1876,22 +1901,16 @@ def process_signal():
 
         with SIGNAL_LOCK:
 
-            if (
-                signal_id
-                == LAST_SIGNAL_ID
-            ):
+            if signal_id == LAST_SIGNAL_ID:
 
                 print(
-                    "Signal already sent"
+                    "Signal already sent. "
+                    "Telegram skipped."
                 )
 
                 return signal
 
             LAST_SIGNAL_ID = signal_id
-
-        # ----------------------------------------------------
-        # TELEGRAM
-        # ----------------------------------------------------
 
         message = (
             format_signal_message(
@@ -1905,11 +1924,11 @@ def process_signal():
 
         return signal
 
-    except Exception as e:
+    except Exception as error:
 
         print(
-            "Signal error:",
-            e
+            "Signal processing error:",
+            error
         )
 
         return {
@@ -1918,7 +1937,7 @@ def process_signal():
                 "ERROR",
 
             "error":
-                str(e)
+                str(error)
         }
 
 
@@ -1938,15 +1957,12 @@ def signal_loop():
 
             process_signal()
 
-        except Exception as e:
+        except Exception as error:
 
             print(
-                "Loop error:",
-                e
+                "Signal loop error:",
+                error
             )
-
-        # M5
-        # ตรวจประมาณทุก 60 วินาที
 
         time.sleep(
             60
@@ -1957,7 +1973,9 @@ def signal_loop():
 # BACKTEST
 # ============================================================
 
-def backtest(data):
+def backtest(
+    data
+):
 
     if len(data) < 400:
 
@@ -2008,33 +2026,21 @@ def backtest(data):
         )
 
         if (
-            stats[
-                "buy_probability"
-            ] >= 62
+            stats["buy_probability"] >= 62
             and
-            stats[
-                "buy_probability"
-            ]
+            stats["buy_probability"]
             >
-            stats[
-                "sell_probability"
-            ] + 8
+            stats["sell_probability"] + 8
         ):
 
             direction = "BUY"
 
         elif (
-            stats[
-                "sell_probability"
-            ] >= 62
+            stats["sell_probability"] >= 62
             and
-            stats[
-                "sell_probability"
-            ]
+            stats["sell_probability"]
             >
-            stats[
-                "buy_probability"
-            ] + 8
+            stats["buy_probability"] + 8
         ):
 
             direction = "SELL"
@@ -2090,9 +2096,7 @@ def backtest(data):
             i + 1,
 
             min(
-                i + 1
-                + FORWARD_BARS,
-
+                i + 1 + FORWARD_BARS,
                 len(data)
             )
         ):
@@ -2166,6 +2170,9 @@ def backtest(data):
             "tp":
                 tp,
 
+            "exit":
+                exit_price,
+
             "result":
                 result
         })
@@ -2174,22 +2181,18 @@ def backtest(data):
 
         1
 
-        for x in trades
+        for trade in trades
 
-        if x[
-            "result"
-        ] == "WIN"
+        if trade["result"] == "WIN"
     )
 
     losses = sum(
 
         1
 
-        for x in trades
+        for trade in trades
 
-        if x[
-            "result"
-        ] == "LOSS"
+        if trade["result"] == "LOSS"
     )
 
     total = (
@@ -2237,19 +2240,14 @@ def backtest(data):
 # WEB SERVER
 # ============================================================
 
-from http.server import (
-    BaseHTTPRequestHandler,
-    HTTPServer
-)
-
-
 class Handler(
     BaseHTTPRequestHandler
 ):
 
     def send_json(
         self,
-        payload
+        payload,
+        status_code=200
     ):
 
         body = json.dumps(
@@ -2264,7 +2262,7 @@ class Handler(
         )
 
         self.send_response(
-            200
+            status_code
         )
 
         self.send_header(
@@ -2277,17 +2275,86 @@ class Handler(
             str(len(body))
         )
 
+        self.send_header(
+            "Cache-Control",
+            "no-store"
+        )
+
         self.end_headers()
 
         self.wfile.write(
             body
         )
 
+    # --------------------------------------------------------
+    # HEAD
+    # --------------------------------------------------------
+
+    def do_HEAD(self):
+
+        path = self.path.split(
+            "?",
+            1
+        )[0]
+
+        if path in (
+            "/",
+            "/health",
+            "/signal",
+            "/backtest"
+        ):
+
+            self.send_response(
+                200
+            )
+
+            self.send_header(
+                "Content-Type",
+                "application/json"
+            )
+
+            self.end_headers()
+
+        else:
+
+            self.send_response(
+                404
+            )
+
+            self.end_headers()
+
+    # --------------------------------------------------------
+    # GET
+    # --------------------------------------------------------
+
     def do_GET(self):
 
         try:
 
-            if self.path == "/":
+            # IMPORTANT:
+            # Remove query parameters such as:
+            #
+            # /signal?utm_source=chatgpt.com
+            #
+            # so they do not cause a 404.
+
+            path = self.path.split(
+                "?",
+                1
+            )[0]
+
+            print(
+                "GET request:",
+                self.path,
+                "=>",
+                path
+            )
+
+            # ------------------------------------------------
+            # HOME
+            # ------------------------------------------------
+
+            if path == "/":
 
                 self.send_json({
 
@@ -2296,6 +2363,13 @@ class Handler(
 
                     "status":
                         "online",
+
+                    "telegram":
+                        bool(
+                            TELEGRAM_BOT_TOKEN
+                            and
+                            TELEGRAM_CHAT_ID
+                        ),
 
                     "endpoints": [
 
@@ -2310,7 +2384,11 @@ class Handler(
 
                 return
 
-            if self.path == "/health":
+            # ------------------------------------------------
+            # HEALTH
+            # ------------------------------------------------
+
+            if path == "/health":
 
                 self.send_json({
 
@@ -2332,7 +2410,11 @@ class Handler(
 
                 return
 
-            if self.path == "/signal":
+            # ------------------------------------------------
+            # SIGNAL
+            # ------------------------------------------------
+
+            if path == "/signal":
 
                 result = process_signal()
 
@@ -2342,11 +2424,13 @@ class Handler(
 
                 return
 
-            if self.path == "/backtest":
+            # ------------------------------------------------
+            # BACKTEST
+            # ------------------------------------------------
 
-                market = (
-                    get_market_data()
-                )
+            if path == "/backtest":
+
+                market = get_market_data()
 
                 result = backtest(
                     market["data"]
@@ -2364,42 +2448,67 @@ class Handler(
 
                 return
 
-            self.send_response(
-                404
-            )
+            # ------------------------------------------------
+            # NOT FOUND
+            # ------------------------------------------------
 
-            self.end_headers()
-
-        except Exception as e:
-
-            self.send_response(
-                500
-            )
-
-            body = json.dumps({
+            self.send_json({
 
                 "error":
-                    str(e)
+                    "Endpoint not found",
 
-            }).encode(
-                "utf-8"
+                "path":
+                    path,
+
+                "available_endpoints": [
+
+                    "/",
+
+                    "/signal",
+
+                    "/backtest",
+
+                    "/health"
+
+                ]
+
+            }, 404)
+
+        except Exception as error:
+
+            print(
+                "HTTP error:",
+                error
             )
 
-            self.send_header(
-                "Content-Type",
-                "application/json"
-            )
+            self.send_json({
 
-            self.send_header(
-                "Content-Length",
-                str(len(body))
-            )
+                "signal":
+                    "ERROR",
 
-            self.end_headers()
+                "error":
+                    str(error)
 
-            self.wfile.write(
-                body
+            }, 500)
+
+    # --------------------------------------------------------
+    # LOG
+    # --------------------------------------------------------
+
+    def log_message(
+        self,
+        format_string,
+        *args
+    ):
+
+        print(
+            "%s - - [%s] %s"
+            % (
+                self.address_string(),
+                self.log_date_time_string(),
+                format_string % args
             )
+        )
 
 
 # ============================================================
@@ -2415,36 +2524,13 @@ def main():
         )
     )
 
-    # --------------------------------------------------------
-    # START TELEGRAM SIGNAL LOOP
-    # --------------------------------------------------------
-
-    thread = threading.Thread(
-        target=signal_loop,
-        daemon=True
-    )
-
-    thread.start()
-
-    # --------------------------------------------------------
-    # WEB SERVER
-    # --------------------------------------------------------
-
-    server = HTTPServer(
-        (
-            "0.0.0.0",
-            port
-        ),
-        Handler
-    )
-
-    print("=" * 60)
+    print("=" * 70)
 
     print(
         "XAUUSD M5 TELEGRAM SIGNAL ENGINE"
     )
 
-    print("=" * 60)
+    print("=" * 70)
 
     print(
         "PORT:",
@@ -2457,6 +2543,16 @@ def main():
     )
 
     print(
+        "LOOKBACK:",
+        LOOKBACK
+    )
+
+    print(
+        "PATTERN LENGTH:",
+        PATTERN_LENGTH
+    )
+
+    print(
         "TELEGRAM:",
         bool(
             TELEGRAM_BOT_TOKEN
@@ -2465,10 +2561,48 @@ def main():
         )
     )
 
-    print("=" * 60)
+    print("=" * 70)
+
+    # --------------------------------------------------------
+    # START SIGNAL LOOP
+    # --------------------------------------------------------
+
+    signal_thread = threading.Thread(
+        target=signal_loop,
+        daemon=True
+    )
+
+    signal_thread.start()
+
+    # --------------------------------------------------------
+    # START HTTP SERVER
+    # --------------------------------------------------------
+
+    server = HTTPServer(
+        (
+            "0.0.0.0",
+            port
+        ),
+        Handler
+    )
+
+    print(
+        "HTTP server started."
+    )
+
+    print(
+        "Server listening on port",
+        port
+    )
+
+    print("=" * 70)
 
     server.serve_forever()
 
+
+# ============================================================
+# ENTRY POINT
+# ============================================================
 
 if __name__ == "__main__":
 
