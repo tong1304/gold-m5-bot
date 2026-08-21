@@ -12,8 +12,8 @@ _LAST_ALERT_KEY = None
 BINANCE = BinanceMarketData()
 
 
-def _config(symbol):
-    return {"symbol": symbol, "timeframe": "5m", "history": int(os.getenv("LIVE_SIGNAL_HISTORY", str(engine.SIGNAL_HISTORY_POINTS)))}
+def _config(symbol, timeframe):
+    return {"symbol": symbol, "timeframe": timeframe, "history": int(os.getenv("LIVE_SIGNAL_HISTORY", str(engine.SIGNAL_HISTORY_POINTS)))}
 
 
 def _risk_block_reason(result):
@@ -28,7 +28,38 @@ def _risk_block_reason(result):
     return None
 
 
-def _format_signal(symbol, signal, result, levels, pattern_result, confluence_result):
+def _tf_bias(df, timeframe):
+    df = base.calculate_indicators(df.copy())
+    i = len(df) - 1
+    close = float(df.close.iloc[i])
+    ema20 = float(df.close.ewm(span=20, adjust=False).mean().iloc[i])
+    ema50 = float(df.close.ewm(span=50, adjust=False).mean().iloc[i])
+    if close > ema20 and ema20 > ema50:
+        bias = "BUY"
+    elif close < ema20 and ema20 < ema50:
+        bias = "SELL"
+    else:
+        bias = "NEUTRAL"
+    patterns = detect_all(df, i)
+    conf = confluence(patterns["patterns"], minimum=2)
+    # Only use the confluence direction if it agrees with the structural EMA bias.
+    if bias in ("BUY", "SELL") and conf["signal"] == bias:
+        confirmed = bias
+    else:
+        confirmed = bias
+    return {
+        "timeframe": timeframe,
+        "bias": confirmed,
+        "close": close,
+        "ema20": ema20,
+        "ema50": ema50,
+        "pattern_count": patterns["pattern_count"],
+        "patterns": patterns["patterns"],
+        "confluence": conf,
+    }
+
+
+def _format_signal(symbol, signal, result, levels, pattern_result, confluence_result, mtf):
     direction = "🟢 BUY — ซื้อ" if signal == "BUY" else "🔴 SELL — ขาย"
     evidence = confluence_result["buy_evidence"] if signal == "BUY" else confluence_result["sell_evidence"]
     evidence_lines = "\n".join(f"• {p['name']}" for p in evidence[:8]) or "• สัญญาณผ่านเกณฑ์ระบบ"
@@ -36,13 +67,15 @@ def _format_signal(symbol, signal, result, levels, pattern_result, confluence_re
     return (
         "🚨 <b>พบสัญญาณเข้าออเดอร์</b>\n\n"
         f"{direction}\n\n📊 <b>สินทรัพย์:</b> {symbol}\n⏱ <b>กรอบเวลาเข้า:</b> M5\n\n"
+        "🧭 <b>ยืนยันหลายไทม์เฟรม</b>\n"
+        f"H1: {mtf['H1']['bias']} | M15: {mtf['M15']['bias']} | M5: {signal}\n\n"
         f"💰 <b>จุดเข้า:</b> {levels.get('entry', 'แท่งถัดไปเปิดราคา')}\n"
         f"🛑 <b>Stop Loss:</b> {levels.get('sl')}\n🎯 <b>Take Profit:</b> {levels.get('tp')}\n\n"
         f"📐 <b>Risk/Reward:</b> {levels.get('risk_reward')}\n"
-        f"⭐ <b>คะแนนความสอดคล้อง:</b> {confluence_result['score']}/100\n"
-        f"🔎 <b>จำนวนหลักฐาน:</b> {len(evidence)}\n"
+        f"⭐ <b>คะแนนความสอดคล้อง M5:</b> {confluence_result['score']}/100\n"
+        f"🔎 <b>หลักฐาน M5:</b> {len(evidence)}\n"
         f"🧩 <b>หมวดที่สนับสนุน:</b> {', '.join(categories) if categories else 'ไม่มี'}\n\n"
-        "📌 <b>รูปแบบที่ตรวจพบ:</b>\n" f"{evidence_lines}\n\n"
+        "📌 <b>รูปแบบ M5:</b>\n" f"{evidence_lines}\n\n"
         "⚠️ <b>การเปิดออเดอร์: MANUAL</b>\n"
         "👉 กรุณาตรวจสอบราคาตลาดก่อนกดออเดอร์\n🤖 <b>ระบบไม่เปิดออเดอร์อัตโนมัติ</b>"
     )
@@ -65,25 +98,33 @@ def scan_once(symbol="BTC/USDT"):
     with _SCAN_LOCK:
         engine.SYMBOL = symbol
         base.SYMBOL = symbol
-        cfg = _config(symbol)
-        df = BINANCE.fetch_candles(symbol, cfg["timeframe"], cfg["history"])
-        df = BINANCE.remove_incomplete_last_candle(df, timeframe_minutes=5)
-        if len(df) < 100:
-            raise RuntimeError(f"มีแท่ง M5 ที่ปิดแล้วเพียง {len(df)} แท่ง ซึ่งไม่เพียงพอ")
-        df = base.calculate_indicators(df)
-        index = len(df) - 1
-        candle = df.iloc[index]
+        # M5 triggers the scan. H1 and M15 are confirmation frames.
+        frames = {}
+        for tf in ("1h", "15m", "5m"):
+            cfg = _config(symbol, tf)
+            df = BINANCE.fetch_candles(symbol, tf, cfg["history"])
+            df = BINANCE.remove_incomplete_last_candle(df, timeframe_minutes={"1h":60,"15m":15,"5m":5}[tf])
+            if len(df) < 100:
+                raise RuntimeError(f"ข้อมูล {tf} ที่ปิดแล้วไม่เพียงพอ: {len(df)} แท่ง")
+            frames[tf] = df
+
+        h1 = _tf_bias(frames["1h"], "H1")
+        m15 = _tf_bias(frames["15m"], "M15")
+        m5_df = base.calculate_indicators(frames["5m"])
+        index = len(m5_df) - 1
+        candle = m5_df.iloc[index]
         candle_time = str(candle.get("datetime", candle.name))
-        pattern_result = detect_all(df, index)
+        pattern_result = detect_all(m5_df, index)
         conf = confluence(pattern_result["patterns"], minimum=3)
-        result = base.analyze_candle(df, index)
+        result = base.analyze_candle(m5_df, index)
         if not isinstance(result, dict):
             raise RuntimeError("ผลการวิเคราะห์ไม่ถูกต้อง")
-        signal = conf["signal"] if conf["signal"] != "NO_TRADE" else result.get("signal")
-        # New pattern layer is authoritative only when it has sufficient cross-category evidence.
-        if conf["signal"] == "NO_TRADE":
-            signal = "NO_TRADE"
-        valid = signal in ("BUY", "SELL") and bool(result.get("valid"))
+
+        m5_signal = conf["signal"]
+        # Higher timeframes are directional filters. Conflicting H1/M15/M5 = no trade.
+        aligned = m5_signal in ("BUY", "SELL") and h1["bias"] == m5_signal and m15["bias"] == m5_signal
+        signal = m5_signal if aligned else "NO_TRADE"
+        valid = aligned and bool(result.get("valid"))
         key = f"{symbol}|{candle_time}|{signal}"
         alerted = False
         telegram_result = None
@@ -92,16 +133,18 @@ def scan_once(symbol="BTC/USDT"):
         if risk_reason and signal in ("BUY", "SELL") and key != _LAST_ALERT_KEY:
             telegram_result = engine.send_telegram(_format_risk_block(symbol, signal, result, risk_reason))
         elif valid and key != _LAST_ALERT_KEY:
-            telegram_result = engine.send_telegram(_format_signal(symbol, signal, result, levels, pattern_result, conf))
+            telegram_result = engine.send_telegram(_format_signal(symbol, signal, result, levels, pattern_result, conf, {"H1":h1,"M15":m15}))
         if isinstance(telegram_result, dict) and telegram_result.get("success"):
             _LAST_ALERT_KEY = key
             alerted = True
+
         return {
             "status":"ok", "engine_version":engine.ENGINE_VERSION, "exchange":"Binance", "market_type":"spot",
             "symbol":symbol, "timeframe":"M5", "closed_candle":candle_time, "signal":signal, "valid":valid,
             "score":conf["score"], "engine_score":result.get("score"), "trade_levels":result.get("trade_levels"),
-            "pattern_count":pattern_result["pattern_count"], "patterns":pattern_result["patterns"],
-            "confluence":conf, "telegram_alert_sent":alerted, "telegram_result":telegram_result,
+            "pattern_count":pattern_result["pattern_count"], "patterns":pattern_result["patterns"], "confluence":conf,
+            "multi_timeframe":{"H1":h1,"M15":m15,"M5":{"signal":m5_signal,"valid":bool(result.get("valid"))}},
+            "alignment":aligned, "telegram_alert_sent":alerted, "telegram_result":telegram_result,
             "risk_blocked":bool(risk_reason), "risk_block_reason":risk_reason, "live_orders_allowed":False,
             "generated_at":datetime.now(timezone.utc).isoformat(),
         }
