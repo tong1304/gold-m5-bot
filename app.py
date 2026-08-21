@@ -37,6 +37,24 @@ BASE = {
 }
 
 
+_original_risk_guard = engine.evaluate_live_risk_guard
+
+
+def _runtime_risk_guard(**kwargs):
+    """Feed externally maintained live-risk state into the v5 fail-closed guard."""
+    return _original_risk_guard(
+        **kwargs,
+        price_jump_atr=float(os.getenv("LIVE_PRICE_JUMP_ATR", "0")),
+        daily_loss_r=float(os.getenv("LIVE_DAILY_LOSS_R", "0")),
+        consecutive_losses=int(os.getenv("LIVE_CONSECUTIVE_LOSSES", "0")),
+        trades_today=int(os.getenv("LIVE_TRADES_TODAY", "0")),
+        slippage=float(os.getenv("LIVE_SLIPPAGE", str(engine.SLIPPAGE))),
+    )
+
+
+engine.evaluate_live_risk_guard = _runtime_risk_guard
+
+
 def _telegram_alerting_jsonify(*args, **kwargs):
     """Preserve the existing Telegram workflow without changing v5 route logic."""
     payload = args[0] if args and isinstance(args[0], dict) else None
