@@ -17,15 +17,17 @@ def send_startup_notification(symbol="BTC/USDT", engine_version="5.0"):
         if not token or not chat_id:
             return False
         message = (
-            "🚀 <b>BOT SYSTEM ONLINE</b>\n\n"
-            f"<b>Exchange:</b> Binance\n"
-            f"<b>Symbol:</b> {symbol}\n"
-            "<b>Timeframe:</b> M5\n"
-            f"<b>Engine:</b> v{engine_version}\n"
-            "<b>Market Data:</b> Connected\n"
-            "<b>Mode:</b> MANUAL ENTRY\n"
-            "<b>Auto Order:</b> DISABLED\n\n"
-            "System is ready to scan for signals."
+            "🚀 <b>ระบบเทรดออนไลน์</b>\n\n"
+            "<b>ตลาด:</b> Binance\n"
+            f"<b>สินทรัพย์:</b> {symbol}\n"
+            "<b>กรอบเวลา:</b> M5\n"
+            f"<b>ระบบวิเคราะห์:</b> V{engine_version}\n\n"
+            "📡 <b>ข้อมูลตลาด:</b> เชื่อมต่อแล้ว\n"
+            "📲 <b>Telegram:</b> เชื่อมต่อแล้ว\n\n"
+            "<b>โหมด:</b> แจ้งสัญญาณเท่านั้น\n"
+            "🖐️ <b>การเปิดออเดอร์:</b> คุณเป็นผู้กดเอง\n"
+            "🤖 <b>เปิดออเดอร์อัตโนมัติ:</b> ปิด\n\n"
+            "✅ ระบบพร้อมค้นหาจุดเข้าออเดอร์"
         )
         try:
             response = requests.post(
