@@ -108,28 +108,17 @@ def symbols():
 
 @engine.app.route("/validation")
 def validation():
-    """Run the v5 paper-validation backtest directly from a browser.
-
-    Examples:
-      /validation?symbol=XAU/USD&bars=1000
-      /validation?symbol=XAU/USD&bars=4000
-
-    This endpoint only reads market data and calculates a report. It never places
-    an order. Bars are deliberately capped to protect the public service from
-    accidentally expensive requests.
-    """
-    requested = (parse_qs(os.environ.get("_VALIDATION_DEFAULT_QUERY", "")).get("symbol", ["XAU/USD"])[0])
-    # Query-string parsing is normally handled by the WSGI middleware. Importing
-    # Flask's request here avoids coupling the validation runner to global state.
+    """Run the v5 paper-validation backtest directly from a browser."""
     from flask import request
 
-    symbol = (request.args.get("symbol") or requested).strip().upper()
+    symbol = (request.args.get("symbol") or "XAU/USD").strip().upper()
     if symbol not in SUPPORTED_SYMBOLS:
         return {
             "status": "error",
             "engine_version": engine.ENGINE_VERSION,
             "message": f"Unsupported symbol: {symbol}",
             "supported_symbols": list(SUPPORTED_SYMBOLS),
+            "live_orders_allowed": False,
         }, 400
 
     try:
@@ -139,31 +128,96 @@ def validation():
             "status": "error",
             "engine_version": engine.ENGINE_VERSION,
             "message": "bars must be an integer between 100 and 5000",
+            "live_orders_allowed": False,
         }, 400
 
     bars = max(100, min(bars, 5000))
 
     try:
-        # validate_v5 owns the Twelve Data fetch and paper-only simulation.
         import validate_v5
-
         with SYMBOL_LOCK:
             activate(symbol)
             report = validate_v5.run(symbol, bars)
-
         report["endpoint"] = "/validation"
         report["request"] = {"symbol": symbol, "bars": bars}
         report["live_orders_allowed"] = False
         return report, 200
     except Exception as exc:
-        # Never expose internal traceback, filesystem paths, or exception type.
+        # Safe diagnostic: expose the exception message/type, never a traceback.
         return {
-            "status": "error",
+            "status": "validation_error",
             "engine_version": engine.ENGINE_VERSION,
             "symbol": symbol,
+            "bars": bars,
+            "error_type": type(exc).__name__,
             "message": str(exc),
             "live_orders_allowed": False,
+            "next_step": "Use /validation/diagnostics?symbol=XAU/USD&bars=1000 for staged diagnostics.",
         }, 502
+
+
+@engine.app.route("/validation/diagnostics")
+def validation_diagnostics():
+    """Run validation in stages so deployment/runtime failures are observable."""
+    from flask import request
+
+    symbol = (request.args.get("symbol") or "XAU/USD").strip().upper()
+    try:
+        bars = max(100, min(int(request.args.get("bars", "1000")), 5000))
+    except (TypeError, ValueError):
+        bars = 1000
+
+    result = {
+        "status": "ok",
+        "engine_version": engine.ENGINE_VERSION,
+        "symbol": symbol,
+        "bars": bars,
+        "live_orders_allowed": False,
+        "stages": {},
+    }
+
+    if symbol not in SUPPORTED_SYMBOLS:
+        result["status"] = "error"
+        result["message"] = f"Unsupported symbol: {symbol}"
+        return result, 400
+
+    try:
+        activate(symbol)
+        result["stages"]["activate"] = {"ok": True}
+
+        import validate_v5
+        result["stages"]["import_validate_v5"] = {"ok": True}
+
+        df = validate_v5.fetch_candles(symbol, "5min", bars)
+        result["stages"]["fetch_candles"] = {"ok": True, "rows": len(df)}
+
+        df = engine.base.remove_incomplete_last_candle(df)
+        result["stages"]["closed_candles"] = {"ok": True, "rows": len(df)}
+
+        if len(df) < 100:
+            raise RuntimeError(f"Only {len(df)} closed candles returned")
+
+        df = engine.base.calculate_indicators(df)
+        result["stages"]["indicators"] = {"ok": True, "rows": len(df)}
+
+        index = len(df) - int(engine.FORWARD_BARS) - 2
+        index = max(50, min(index, len(df) - 1))
+        analyzed = engine.base.analyze_candle(df, index)
+        result["stages"]["analyze_candle"] = {
+            "ok": True,
+            "index": index,
+            "valid": analyzed.get("valid") if isinstance(analyzed, dict) else None,
+            "signal": analyzed.get("signal") if isinstance(analyzed, dict) else None,
+            "score": analyzed.get("score") if isinstance(analyzed, dict) else None,
+        }
+
+        result["status"] = "diagnostics_ok"
+        return result, 200
+    except Exception as exc:
+        result["status"] = "diagnostics_error"
+        result["error_type"] = type(exc).__name__
+        result["message"] = str(exc)
+        return result, 502
 
 
 class MultiSymbolMiddleware:
@@ -192,8 +246,24 @@ class MultiSymbolMiddleware:
                     "engine_version": engine.ENGINE_VERSION,
                     "symbol": requested,
                     "message": str(exc),
+                    "live_orders_allowed": False,
                 }).encode()
                 start_response("400 BAD REQUEST", [
+                    ("Content-Type", "application/json"),
+                    ("Content-Length", str(len(body))),
+                ])
+                return [body]
+            except Exception as exc:
+                # Prevent Flask/Gunicorn HTML 500 pages and expose a safe runtime diagnostic.
+                body = json.dumps({
+                    "status": "application_error",
+                    "engine_version": getattr(engine, "ENGINE_VERSION", "unknown"),
+                    "symbol": requested,
+                    "error_type": type(exc).__name__,
+                    "message": str(exc),
+                    "live_orders_allowed": False,
+                }).encode()
+                start_response("500 INTERNAL SERVER ERROR", [
                     ("Content-Type", "application/json"),
                     ("Content-Length", str(len(body))),
                 ])
