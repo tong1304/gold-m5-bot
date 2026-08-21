@@ -4,9 +4,8 @@ import threading
 from urllib.parse import parse_qs
 
 import requests
+from flask import Response, request
 
-# engine_v42 sends its legacy startup notification at import time.
-# Suppress only that import-time HTTP call; runtime Telegram sending remains intact.
 _original_requests_post = requests.post
 requests.post = lambda *args, **kwargs: type("_StartupResponse", (), {"ok": False, "text": "legacy startup suppressed"})()
 import engine_v5 as engine
@@ -38,9 +37,7 @@ BASE = {
 
 _original_risk_guard = engine.evaluate_live_risk_guard
 
-
 def _runtime_risk_guard(**kwargs):
-    """Feed externally maintained live-risk state into the v5 fail-closed guard."""
     return _original_risk_guard(
         **kwargs,
         price_jump_atr=float(os.getenv("LIVE_PRICE_JUMP_ATR", "0")),
@@ -49,13 +46,11 @@ def _runtime_risk_guard(**kwargs):
         trades_today=int(os.getenv("LIVE_TRADES_TODAY", "0")),
         slippage=float(os.getenv("LIVE_SLIPPAGE", str(engine.SLIPPAGE))),
     )
-
-
 engine.evaluate_live_risk_guard = _runtime_risk_guard
 
+_original_jsonify = engine.jsonify
 
 def _telegram_alerting_jsonify(*args, **kwargs):
-    """Preserve the existing Telegram workflow without changing v5 route logic."""
     payload = args[0] if args and isinstance(args[0], dict) else None
     if payload and payload.get("valid") and payload.get("signal") in ("BUY", "SELL"):
         levels = payload.get("trade_levels") or {}
@@ -73,9 +68,6 @@ def _telegram_alerting_jsonify(*args, **kwargs):
         )
         payload["telegram"] = engine.send_telegram(message)
     return _original_jsonify(*args, **kwargs)
-
-
-_original_jsonify = engine.jsonify
 engine.jsonify = _telegram_alerting_jsonify
 
 
@@ -95,44 +87,34 @@ def activate(symbol):
     return symbol
 
 
+def _json_response(payload, status=200):
+    # Flask's default JSON provider can fail on numpy/pandas scalar values.
+    # Normalize everything through stdlib JSON before returning a response.
+    body = json.dumps(payload, ensure_ascii=False, default=str, allow_nan=False)
+    return Response(body, status=status, mimetype="application/json")
+
+
 @engine.app.route("/symbols")
 def symbols():
-    return {
+    return _json_response({
         "status": "ok",
         "engine_version": engine.ENGINE_VERSION,
         "symbols": list(SUPPORTED_SYMBOLS),
         "timeframe": engine.TIMEFRAME,
         "usage": "Use ?symbol=XAU/USD or ?symbol=BTC/USD",
-    }
+    })
 
 
 @engine.app.route("/validation")
 def validation():
-    """Run the v5 paper-validation backtest directly from a browser."""
-    from flask import request
-
     symbol = (request.args.get("symbol") or "XAU/USD").strip().upper()
     if symbol not in SUPPORTED_SYMBOLS:
-        return {
-            "status": "error",
-            "engine_version": engine.ENGINE_VERSION,
-            "message": f"Unsupported symbol: {symbol}",
-            "supported_symbols": list(SUPPORTED_SYMBOLS),
-            "live_orders_allowed": False,
-        }, 400
-
+        return _json_response({"status":"error","engine_version":engine.ENGINE_VERSION,"message":f"Unsupported symbol: {symbol}","supported_symbols":list(SUPPORTED_SYMBOLS),"live_orders_allowed":False}, 400)
     try:
         bars = int(request.args.get("bars", "1000"))
     except (TypeError, ValueError):
-        return {
-            "status": "error",
-            "engine_version": engine.ENGINE_VERSION,
-            "message": "bars must be an integer between 100 and 5000",
-            "live_orders_allowed": False,
-        }, 400
-
+        return _json_response({"status":"error","engine_version":engine.ENGINE_VERSION,"message":"bars must be an integer between 100 and 5000","live_orders_allowed":False}, 400)
     bars = max(100, min(bars, 5000))
-
     try:
         import validate_v5
         with SYMBOL_LOCK:
@@ -141,142 +123,72 @@ def validation():
         report["endpoint"] = "/validation"
         report["request"] = {"symbol": symbol, "bars": bars}
         report["live_orders_allowed"] = False
-        return report, 200
+        return _json_response(report, 200)
     except Exception as exc:
-        # Safe diagnostic: expose the exception message/type, never a traceback.
-        return {
-            "status": "validation_error",
-            "engine_version": engine.ENGINE_VERSION,
-            "symbol": symbol,
-            "bars": bars,
-            "error_type": type(exc).__name__,
-            "message": str(exc),
-            "live_orders_allowed": False,
-            "next_step": "Use /validation/diagnostics?symbol=XAU/USD&bars=1000 for staged diagnostics.",
-        }, 502
+        return _json_response({"status":"validation_error","engine_version":engine.ENGINE_VERSION,"symbol":symbol,"bars":bars,"error_type":type(exc).__name__,"message":str(exc),"live_orders_allowed":False,"next_step":"Use /validation/diagnostics?symbol=XAU/USD&bars=1000"}, 502)
 
 
 @engine.app.route("/validation/diagnostics")
 def validation_diagnostics():
-    """Run validation in stages so deployment/runtime failures are observable."""
-    from flask import request
-
     symbol = (request.args.get("symbol") or "XAU/USD").strip().upper()
     try:
         bars = max(100, min(int(request.args.get("bars", "1000")), 5000))
     except (TypeError, ValueError):
         bars = 1000
-
-    result = {
-        "status": "ok",
-        "engine_version": engine.ENGINE_VERSION,
-        "symbol": symbol,
-        "bars": bars,
-        "live_orders_allowed": False,
-        "stages": {},
-    }
-
+    result = {"status":"ok","engine_version":engine.ENGINE_VERSION,"symbol":symbol,"bars":bars,"live_orders_allowed":False,"stages":{}}
     if symbol not in SUPPORTED_SYMBOLS:
-        result["status"] = "error"
-        result["message"] = f"Unsupported symbol: {symbol}"
-        return result, 400
-
+        result.update({"status":"error","message":f"Unsupported symbol: {symbol}"})
+        return _json_response(result, 400)
     try:
         activate(symbol)
-        result["stages"]["activate"] = {"ok": True}
-
+        result["stages"]["activate"] = {"ok":True}
         import validate_v5
-        result["stages"]["import_validate_v5"] = {"ok": True}
-
+        result["stages"]["import_validate_v5"] = {"ok":True}
         df = validate_v5.fetch_candles(symbol, "5min", bars)
-        result["stages"]["fetch_candles"] = {"ok": True, "rows": len(df)}
-
+        result["stages"]["fetch_candles"] = {"ok":True,"rows":len(df)}
         df = engine.base.remove_incomplete_last_candle(df)
-        result["stages"]["closed_candles"] = {"ok": True, "rows": len(df)}
-
+        result["stages"]["closed_candles"] = {"ok":True,"rows":len(df)}
         if len(df) < 100:
             raise RuntimeError(f"Only {len(df)} closed candles returned")
-
         df = engine.base.calculate_indicators(df)
-        result["stages"]["indicators"] = {"ok": True, "rows": len(df)}
-
+        result["stages"]["indicators"] = {"ok":True,"rows":len(df)}
         index = len(df) - int(engine.FORWARD_BARS) - 2
-        index = max(50, min(index, len(df) - 1))
+        index = max(50, min(index, len(df)-1))
         analyzed = engine.base.analyze_candle(df, index)
-        result["stages"]["analyze_candle"] = {
-            "ok": True,
-            "index": index,
-            "valid": analyzed.get("valid") if isinstance(analyzed, dict) else None,
-            "signal": analyzed.get("signal") if isinstance(analyzed, dict) else None,
-            "score": analyzed.get("score") if isinstance(analyzed, dict) else None,
-        }
-
+        result["stages"]["analyze_candle"] = {"ok":True,"index":index,"valid":analyzed.get("valid") if isinstance(analyzed,dict) else None,"signal":analyzed.get("signal") if isinstance(analyzed,dict) else None,"score":analyzed.get("score") if isinstance(analyzed,dict) else None}
         result["status"] = "diagnostics_ok"
-        return result, 200
+        return _json_response(result, 200)
     except Exception as exc:
-        result["status"] = "diagnostics_error"
-        result["error_type"] = type(exc).__name__
-        result["message"] = str(exc)
-        return result, 502
+        result.update({"status":"diagnostics_error","error_type":type(exc).__name__,"message":str(exc)})
+        return _json_response(result, 502)
 
 
 class MultiSymbolMiddleware:
-    """Serialize access to the legacy engine's mutable symbol globals."""
-
     def __init__(self, application):
         self.application = application
-
     def __call__(self, environ, start_response):
         params = parse_qs(environ.get("QUERY_STRING", ""), keep_blank_values=True)
         requested = params.get("symbol", [os.getenv("SYMBOL", "XAU/USD")])[0]
-
         with SYMBOL_LOCK:
-            names = (
-                "SYMBOL", "MINIMUM_ATR", "MIN_STOP_ATR", "MAX_STOP_ATR",
-                "SPREAD", "SLIPPAGE", "SIGNAL_HISTORY_POINTS"
-            )
-            previous = {name: getattr(engine, name) for name in names}
-            previous_base = {name: getattr(engine.base, name) for name in names}
+            names = ("SYMBOL","MINIMUM_ATR","MIN_STOP_ATR","MAX_STOP_ATR","SPREAD","SLIPPAGE","SIGNAL_HISTORY_POINTS")
+            previous = {name:getattr(engine,name) for name in names}
+            previous_base = {name:getattr(engine.base,name) for name in names}
             try:
                 activate(requested)
                 return self.application(environ, start_response)
             except ValueError as exc:
-                body = json.dumps({
-                    "status": "error",
-                    "engine_version": engine.ENGINE_VERSION,
-                    "symbol": requested,
-                    "message": str(exc),
-                    "live_orders_allowed": False,
-                }).encode()
-                start_response("400 BAD REQUEST", [
-                    ("Content-Type", "application/json"),
-                    ("Content-Length", str(len(body))),
-                ])
+                body = json.dumps({"status":"error","engine_version":engine.ENGINE_VERSION,"symbol":requested,"message":str(exc),"live_orders_allowed":False}).encode()
+                start_response("400 BAD REQUEST",[("Content-Type","application/json"),("Content-Length",str(len(body)))])
                 return [body]
             except Exception as exc:
-                # Prevent Flask/Gunicorn HTML 500 pages and expose a safe runtime diagnostic.
-                body = json.dumps({
-                    "status": "application_error",
-                    "engine_version": getattr(engine, "ENGINE_VERSION", "unknown"),
-                    "symbol": requested,
-                    "error_type": type(exc).__name__,
-                    "message": str(exc),
-                    "live_orders_allowed": False,
-                }).encode()
-                start_response("500 INTERNAL SERVER ERROR", [
-                    ("Content-Type", "application/json"),
-                    ("Content-Length", str(len(body))),
-                ])
+                body = json.dumps({"status":"application_error","engine_version":getattr(engine,"ENGINE_VERSION","unknown"),"symbol":requested,"error_type":type(exc).__name__,"message":str(exc),"live_orders_allowed":False}).encode()
+                start_response("500 INTERNAL SERVER ERROR",[("Content-Type","application/json"),("Content-Length",str(len(body)))])
                 return [body]
             finally:
-                for name, value in previous.items():
-                    setattr(engine, name, value)
-                for name, value in previous_base.items():
-                    setattr(engine.base, name, value)
-
+                for name,value in previous.items(): setattr(engine,name,value)
+                for name,value in previous_base.items(): setattr(engine.base,name,value)
 
 app = MultiSymbolMiddleware(engine.app)
-
 
 if __name__ == "__main__":
     port = int(os.getenv("PORT", "10000"))
