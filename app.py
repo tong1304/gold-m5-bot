@@ -36,7 +36,6 @@ BASE = {
     },
 }
 
-
 _original_risk_guard = engine.evaluate_live_risk_guard
 
 
@@ -105,6 +104,66 @@ def symbols():
         "timeframe": engine.TIMEFRAME,
         "usage": "Use ?symbol=XAU/USD or ?symbol=BTC/USD",
     }
+
+
+@engine.app.route("/validation")
+def validation():
+    """Run the v5 paper-validation backtest directly from a browser.
+
+    Examples:
+      /validation?symbol=XAU/USD&bars=1000
+      /validation?symbol=XAU/USD&bars=4000
+
+    This endpoint only reads market data and calculates a report. It never places
+    an order. Bars are deliberately capped to protect the public service from
+    accidentally expensive requests.
+    """
+    requested = (parse_qs(os.environ.get("_VALIDATION_DEFAULT_QUERY", "")).get("symbol", ["XAU/USD"])[0])
+    # Query-string parsing is normally handled by the WSGI middleware. Importing
+    # Flask's request here avoids coupling the validation runner to global state.
+    from flask import request
+
+    symbol = (request.args.get("symbol") or requested).strip().upper()
+    if symbol not in SUPPORTED_SYMBOLS:
+        return {
+            "status": "error",
+            "engine_version": engine.ENGINE_VERSION,
+            "message": f"Unsupported symbol: {symbol}",
+            "supported_symbols": list(SUPPORTED_SYMBOLS),
+        }, 400
+
+    try:
+        bars = int(request.args.get("bars", "1000"))
+    except (TypeError, ValueError):
+        return {
+            "status": "error",
+            "engine_version": engine.ENGINE_VERSION,
+            "message": "bars must be an integer between 100 and 5000",
+        }, 400
+
+    bars = max(100, min(bars, 5000))
+
+    try:
+        # validate_v5 owns the Twelve Data fetch and paper-only simulation.
+        import validate_v5
+
+        with SYMBOL_LOCK:
+            activate(symbol)
+            report = validate_v5.run(symbol, bars)
+
+        report["endpoint"] = "/validation"
+        report["request"] = {"symbol": symbol, "bars": bars}
+        report["live_orders_allowed"] = False
+        return report, 200
+    except Exception as exc:
+        # Never expose internal traceback, filesystem paths, or exception type.
+        return {
+            "status": "error",
+            "engine_version": engine.ENGINE_VERSION,
+            "symbol": symbol,
+            "message": str(exc),
+            "live_orders_allowed": False,
+        }, 502
 
 
 class MultiSymbolMiddleware:
