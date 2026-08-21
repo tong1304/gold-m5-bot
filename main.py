@@ -21,7 +21,7 @@ def run_web_server():
 # --- 2. CONFIGURATION ---
 SYMBOL = "GC=F"         # Gold Futures / XAUUSD
 TIMEFRAME = "5m"        # ไทม์เฟรม 5 นาที
-CHECK_INTERVAL = 60     # สแกนทุก 1 นาที (เช็กความไวสำหรับ M5)
+CHECK_INTERVAL = 180    # สแกนทุก 3 นาที (ป้องกัน YF Rate Limit)
 
 BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
@@ -34,7 +34,7 @@ def send_telegram(message):
     except Exception as e:
         print(f"Error sending message: {e}")
 
-# --- 3. NEWS FILTER SYSTEM (เช็กข่าว USD) ---
+# --- 3. NEWS FILTER SYSTEM ---
 def check_high_impact_news(buffer_minutes=30):
     url = "https://n3.forexfactory1.com/ff_calendar_thisweek.json"
     try:
@@ -61,18 +61,14 @@ def check_high_impact_news(buffer_minutes=30):
 
 # --- 4. SUPERTREND CALCULATION ---
 def calculate_supertrend(df, period=10, multiplier=3):
-    high = df['High']
-    low = df['Low']
-    close = df['Close']
+    high, low, close = df['High'], df['Low'], df['Close']
     
-    # ATR Calculation
-    price_diff1 = high - low
-    price_diff2 = abs(high - close.shift(1))
-    price_diff3 = abs(low - close.shift(1))
-    tr = pd.concat([price_diff1, price_diff2, price_diff3], axis=1).max(axis=1)
+    tr1 = high - low
+    tr2 = abs(high - close.shift(1))
+    tr3 = abs(low - close.shift(1))
+    tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
     atr = tr.ewm(span=period, adjust=False).mean()
     
-    # Basic Upper/Lower Bands
     hl2 = (high + low) / 2
     basic_upper = hl2 + (multiplier * atr)
     basic_lower = hl2 - (multiplier * atr)
@@ -83,26 +79,13 @@ def calculate_supertrend(df, period=10, multiplier=3):
     direction = pd.Series(1, index=df.index)
     
     for i in range(1, len(df)):
-        if basic_upper.iloc[i] < final_upper.iloc[i-1] or close.iloc[i-1] > final_upper.iloc[i-1]:
-            final_upper.iloc[i] = basic_upper.iloc[i]
-        else:
-            final_upper.iloc[i] = final_upper.iloc[i-1]
-            
-        if basic_lower.iloc[i] > final_lower.iloc[i-1] or close.iloc[i-1] < final_lower.iloc[i-1]:
-            final_lower.iloc[i] = basic_lower.iloc[i]
-        else:
-            final_lower.iloc[i] = final_lower.iloc[i-1]
-            
+        final_upper.iloc[i] = basic_upper.iloc[i] if (basic_upper.iloc[i] < final_upper.iloc[i-1] or close.iloc[i-1] > final_upper.iloc[i-1]) else final_upper.iloc[i-1]
+        final_lower.iloc[i] = basic_lower.iloc[i] if (basic_lower.iloc[i] > final_lower.iloc[i-1] or close.iloc[i-1] < final_lower.iloc[i-1]) else final_lower.iloc[i-1]
+        
         if supertrend.iloc[i-1] == final_upper.iloc[i-1]:
-            if close.iloc[i] > final_upper.iloc[i]:
-                direction.iloc[i] = 1
-            else:
-                direction.iloc[i] = -1
+            direction.iloc[i] = 1 if close.iloc[i] > final_upper.iloc[i] else -1
         else:
-            if close.iloc[i] < final_lower.iloc[i]:
-                direction.iloc[i] = -1
-            else:
-                direction.iloc[i] = 1
+            direction.iloc[i] = -1 if close.iloc[i] < final_lower.iloc[i] else 1
                 
         supertrend.iloc[i] = final_lower.iloc[i] if direction.iloc[i] == 1 else final_upper.iloc[i]
         
@@ -124,17 +107,15 @@ def scan_gold_m5():
         # Indicators
         df['EMA9'] = df['Close'].ewm(span=9, adjust=False).mean()
         df['EMA21'] = df['Close'].ewm(span=21, adjust=False).mean()
-        df['Vol_SMA20'] = df['Volume'].rolling(window=20).mean()
         df['Supertrend'], df['ST_Dir'] = calculate_supertrend(df)
 
         # ATR 14 Dynamic Risk
-        high_low = df['High'] - df['Low']
-        high_cp = (df['High'] - df['Close'].shift(1)).abs()
-        low_cp = (df['Low'] - df['Close'].shift(1)).abs()
-        tr = pd.concat([high_low, high_cp, low_cp], axis=1).max(axis=1)
+        tr1 = df['High'] - df['Low']
+        tr2 = abs(df['High'] - df['Close'].shift(1))
+        tr3 = abs(df['Low'] - df['Close'].shift(1))
+        tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
         df['ATR'] = tr.rolling(window=14).mean()
 
-        # Last closed candle (-2) & previous (-3)
         close_price = df['Close'].iloc[-2]
         
         prev_ema9 = df['EMA9'].iloc[-3]
@@ -143,19 +124,14 @@ def scan_gold_m5():
         curr_ema21 = df['EMA21'].iloc[-2]
 
         st_direction = df['ST_Dir'].iloc[-2]
-        curr_volume = df['Volume'].iloc[-2]
-        avg_volume = df['Vol_SMA20'].iloc[-2]
         atr_val = df['ATR'].iloc[-2]
 
         entry_price = round(close_price, 2)
         sl_distance = atr_val * 1.5
-        tp_distance = sl_distance * 1.5  # RR 1:1.5 สำหรับ Scalping M5
+        tp_distance = sl_distance * 1.5  # RR 1:1.5
 
-        # 🟢 BUY SIGNAL (EMA9 ตัดขึ้น 21 + Supertrend ขาขึ้น + Volume ซื้อแน่น)
-        if (prev_ema9 <= prev_ema21 and curr_ema9 > curr_ema21) and \
-           (st_direction == 1) and \
-           (curr_volume > avg_volume):
-
+        # 🟢 BUY SIGNAL
+        if (prev_ema9 <= prev_ema21 and curr_ema9 > curr_ema21) and (st_direction == 1):
             sl_price = round(entry_price - sl_distance, 2)
             tp_price = round(entry_price + tp_distance, 2)
 
@@ -166,17 +142,14 @@ def scan_gold_m5():
                 f"🎯 *Entry:* `{entry_price}`\n"
                 f"🛑 *Stop Loss:* `{sl_price}`\n"
                 f"🎯 *Take Profit:* `{tp_price}`\n\n"
-                f"📊 *เงื่อนไข:* EMA9/21 Cross + Supertrend Up + High Volume\n"
+                f"📊 *เงื่อนไข:* EMA9/21 Cross + Supertrend Up\n"
                 f"⏰ _Timeframe: M5 | RR: 1:1.5_"
             )
             send_telegram(msg)
             print("Sent Gold M5 Buy Signal!")
 
-        # 🔴 SELL SIGNAL (EMA9 ตัดลง 21 + Supertrend ขาลง + Volume ขายแน่น)
-        elif (prev_ema9 >= prev_ema21 and curr_ema9 < curr_ema21) and \
-             (st_direction == -1) and \
-             (curr_volume > avg_volume):
-
+        # 🔴 SELL SIGNAL
+        elif (prev_ema9 >= prev_ema21 and curr_ema9 < curr_ema21) and (st_direction == -1):
             sl_price = round(entry_price + sl_distance, 2)
             tp_price = round(entry_price - tp_distance, 2)
 
@@ -187,7 +160,7 @@ def scan_gold_m5():
                 f"🎯 *Entry:* `{entry_price}`\n"
                 f"🛑 *Stop Loss:* `{sl_price}`\n"
                 f"🎯 *Take Profit:* `{tp_price}`\n\n"
-                f"📊 *เงื่อนไข:* EMA9/21 Cross + Supertrend Down + High Volume\n"
+                f"📊 *เงื่อนไข:* EMA9/21 Cross + Supertrend Down\n"
                 f"⏰ _Timeframe: M5 | RR: 1:1.5_"
             )
             send_telegram(msg)
@@ -200,7 +173,7 @@ def scan_gold_m5():
 if __name__ == "__main__":
     threading.Thread(target=run_web_server, daemon=True).start()
     print("Gold M5 Scalper Bot is starting...")
-    send_telegram("🏆 *บอทสแกนทองคำระยะสั้น M5 (Gold Scalper) เริ่มทำงานแล้ว!*")
+    send_telegram("🏆 *บอทสแกนทองคำ M5 (ฟรี 100%) เริ่มทำงานเรียบร้อยแล้ว!*")
     
     while True:
         try:
