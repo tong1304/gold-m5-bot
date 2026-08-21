@@ -14,6 +14,7 @@ requests.post = _original_requests_post
 
 SUPPORTED_SYMBOLS = ("XAU/USD", "BTC/USD")
 SYMBOL_LOCK = threading.RLock()
+SCHEDULER_LOCK = threading.RLock()
 
 BASE = {
     "XAU/USD": {
@@ -193,15 +194,16 @@ def live_signal():
             result = live_scanner.scan_once(symbol)
         return _json_response(result, 200)
     except Exception as exc:
-        return _json_response({
-            "status":"signal_error",
-            "engine_version":engine.ENGINE_VERSION,
-            "symbol":symbol,
-            "error_type":type(exc).__name__,
-            "message":str(exc),
-            "telegram_alert_sent":False,
-            "live_orders_allowed":False,
-        }, 502)
+        return _json_response({"status":"signal_error","engine_version":engine.ENGINE_VERSION,"symbol":symbol,"error_type":type(exc).__name__,"message":str(exc),"telegram_alert_sent":False,"live_orders_allowed":False}, 502)
+
+
+@engine.app.route("/scheduler/status")
+def scheduler_status():
+    try:
+        import scheduler
+        return _json_response({"status":"ok", **scheduler.status()}, 200)
+    except Exception as exc:
+        return _json_response({"status":"scheduler_error","error_type":type(exc).__name__,"message":str(exc),"live_orders_allowed":False}, 502)
 
 
 class MultiSymbolMiddleware:
@@ -230,6 +232,15 @@ class MultiSymbolMiddleware:
                 for name,value in previous_base.items(): setattr(engine.base,name,value)
 
 app = MultiSymbolMiddleware(engine.app)
+
+# Start the scanner only when explicitly enabled. This avoids duplicate scanners
+# across Gunicorn workers and keeps the default deployment in PAPER/manual mode.
+if os.getenv("ENABLE_SIGNAL_SCHEDULER", "false").strip().lower() == "true":
+    try:
+        import scheduler
+        scheduler.start()
+    except Exception:
+        pass
 
 if __name__ == "__main__":
     port = int(os.getenv("PORT", "10000"))
