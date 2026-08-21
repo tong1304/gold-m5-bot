@@ -3,7 +3,14 @@ import json
 import threading
 from urllib.parse import parse_qs
 
+import requests
+
+# engine_v42 sends its legacy startup notification at import time.
+# Suppress only that import-time HTTP call; runtime Telegram sending remains intact.
+_original_requests_post = requests.post
+requests.post = lambda *args, **kwargs: type("_StartupResponse", (), {"ok": False, "text": "legacy startup suppressed"})()
 import engine_v5 as engine
+requests.post = _original_requests_post
 
 SUPPORTED_SYMBOLS = ("XAU/USD", "BTC/USD")
 SYMBOL_LOCK = threading.RLock()
