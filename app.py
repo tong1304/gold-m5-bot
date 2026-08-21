@@ -89,7 +89,6 @@ def activate(symbol):
 
 
 def _json_safe(value):
-    """Recursively convert pandas/numpy scalars and non-finite numbers to JSON-safe values."""
     if value is None or isinstance(value, (str, bool, int)):
         return value
     if isinstance(value, float):
@@ -98,10 +97,8 @@ def _json_safe(value):
         return {str(k): _json_safe(v) for k, v in value.items()}
     if isinstance(value, (list, tuple, set)):
         return [_json_safe(v) for v in value]
-    # numpy/pandas scalar compatibility without importing numpy/pandas in app.py.
     try:
-        item = value.item()
-        return _json_safe(item)
+        return _json_safe(value.item())
     except (AttributeError, TypeError, ValueError):
         pass
     try:
@@ -111,8 +108,7 @@ def _json_safe(value):
 
 
 def _json_response(payload, status=200):
-    safe_payload = _json_safe(payload)
-    body = json.dumps(safe_payload, ensure_ascii=False, allow_nan=False)
+    body = json.dumps(_json_safe(payload), ensure_ascii=False, allow_nan=False)
     return Response(body, status=status, mimetype="application/json")
 
 
@@ -183,6 +179,29 @@ def validation_diagnostics():
     except Exception as exc:
         result.update({"status":"diagnostics_error","error_type":type(exc).__name__,"message":str(exc)})
         return _json_response(result, 502)
+
+
+@engine.app.route("/signal")
+def live_signal():
+    symbol = (request.args.get("symbol") or "XAU/USD").strip().upper()
+    if symbol not in SUPPORTED_SYMBOLS:
+        return _json_response({"status":"error","message":f"Unsupported symbol: {symbol}","live_orders_allowed":False}, 400)
+    try:
+        import live_scanner
+        with SYMBOL_LOCK:
+            activate(symbol)
+            result = live_scanner.scan_once(symbol)
+        return _json_response(result, 200)
+    except Exception as exc:
+        return _json_response({
+            "status":"signal_error",
+            "engine_version":engine.ENGINE_VERSION,
+            "symbol":symbol,
+            "error_type":type(exc).__name__,
+            "message":str(exc),
+            "telegram_alert_sent":False,
+            "live_orders_allowed":False,
+        }, 502)
 
 
 class MultiSymbolMiddleware:
