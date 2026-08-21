@@ -1,1156 +1,593 @@
 import os
-import json
-import math
 import time
 import threading
 from datetime import datetime, timezone
-from urllib.parse import urlencode
-from urllib.request import Request, urlopen
-from http.server import BaseHTTPRequestHandler, HTTPServer
 
+import numpy as np
+import pandas as pd
+import requests
+from flask import Flask, jsonify
 
 # ============================================================
 # CONFIG
 # ============================================================
 
+app = Flask(__name__)
+
+TWELVE_DATA_API_KEY = os.getenv("TWELVE_DATA_API_KEY", "").strip()
+
+TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
+TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "").strip()
+
 SYMBOL = "XAU/USD"
-TIMEFRAME = "5min"
+INTERVAL = "5min"
 
-PORT = int(os.environ.get("PORT", "10000"))
+# จำนวนแท่งที่ดึงจาก Twelve Data
+CANDLE_LIMIT = 1000
 
-TWELVE_DATA_API_KEY = os.environ.get(
-    "TWELVE_DATA_API_KEY",
-    ""
-).strip()
+# จำนวนแท่งที่ใช้สร้าง Pattern
+PATTERN_LENGTH = 12
 
-TELEGRAM_BOT_TOKEN = os.environ.get(
-    "TELEGRAM_BOT_TOKEN",
-    ""
-).strip()
+# จำนวน Pattern ที่นำมาวิเคราะห์
+MAX_MATCHES = 40
 
-TELEGRAM_CHAT_ID = os.environ.get(
-    "TELEGRAM_CHAT_ID",
-    ""
-).strip()
+# ความคล้ายขั้นต่ำ
+MIN_SIMILARITY = 0.60
 
+# ------------------------------------------------------------
+# Signal settings
+# ------------------------------------------------------------
 
-# Pattern settings
-CANDLE_HISTORY = int(
-    os.environ.get("CANDLE_HISTORY", "1000")
-)
+# ผู้ใช้ต้องการ Score >= 65
+MIN_SCORE = 65.0
 
-PATTERN_LENGTH = int(
-    os.environ.get("PATTERN_LENGTH", "12")
-)
+# Probability ขั้นต่ำสำหรับการออกออเดอร์
+MIN_PROBABILITY = 70.0
 
-TOP_MATCHES = int(
-    os.environ.get("TOP_MATCHES", "40")
-)
+# Pattern อย่างน้อย
+MIN_MATCHES = 20
 
-MIN_MATCHES = int(
-    os.environ.get("MIN_MATCHES", "10")
-)
-
-MIN_SCORE = float(
-    os.environ.get("MIN_SCORE", "68")
-)
-
-MIN_PROBABILITY = float(
-    os.environ.get("MIN_PROBABILITY", "60")
-)
-
-MIN_RR = float(
-    os.environ.get("MIN_RR", "1.5")
-)
-
-FORWARD_BARS = int(
-    os.environ.get("FORWARD_BARS", "12")
-)
-
-POLL_SECONDS = int(
-    os.environ.get("POLL_SECONDS", "60")
-)
-
-# Risk settings
-SL_ATR_MULTIPLIER = float(
-    os.environ.get("SL_ATR_MULTIPLIER", "1.25")
-)
-
-TP_ATR_MULTIPLIER = float(
-    os.environ.get("TP_ATR_MULTIPLIER", "2.0")
-)
-
+# ATR multiplier สำหรับ safety SL
+SL_ATR_MULTIPLIER = 1.0
 
 # ============================================================
-# GLOBAL STATE
+# STATE
 # ============================================================
 
-CACHE = {
-    "candles": [],
-    "last_update": None,
+state = {
     "last_signal": None,
-    "last_signal_key": None,
-    "telegram_sent": False,
-    "error": None,
+    "last_update": None,
+    "last_error": None,
 }
 
-LOCK = threading.Lock()
-
 
 # ============================================================
-# HTTP GET
+# UTILITY
 # ============================================================
 
-def http_get(url, timeout=30):
+def utc_now():
+    return datetime.now(timezone.utc)
 
-    request = Request(
-        url,
-        headers={
-            "User-Agent":
-                "XAUUSD-M5-Signal-Bot/1.0"
-        }
-    )
 
-    with urlopen(
-        request,
-        timeout=timeout
-    ) as response:
-
-        return response.read().decode(
-            "utf-8"
-        )
+def safe_float(value, default=0.0):
+    try:
+        return float(value)
+    except Exception:
+        return default
 
 
 # ============================================================
 # TWELVE DATA
 # ============================================================
 
-def twelve_data_request(
-    interval="5min",
-    outputsize=1000
-):
-
+def get_candles():
     if not TWELVE_DATA_API_KEY:
+        raise RuntimeError("TWELVE_DATA_API_KEY is not configured")
 
-        raise Exception(
-            "TWELVE_DATA_API_KEY is not configured"
+    url = "https://api.twelvedata.com/time_series"
+
+    params = {
+        "symbol": SYMBOL,
+        "interval": INTERVAL,
+        "outputsize": CANDLE_LIMIT,
+        "apikey": TWELVE_DATA_API_KEY,
+        "format": "JSON",
+        "timezone": "UTC",
+    }
+
+    response = requests.get(
+        url,
+        params=params,
+        timeout=30,
+    )
+
+    response.raise_for_status()
+
+    data = response.json()
+
+    if "status" in data and data["status"] == "error":
+        raise RuntimeError(
+            data.get("message", "Twelve Data API error")
         )
 
-    params = urlencode({
-
-        "symbol":
-            SYMBOL,
-
-        "interval":
-            interval,
-
-        "outputsize":
-            outputsize,
-
-        "timezone":
-            "UTC",
-
-        "apikey":
-            TWELVE_DATA_API_KEY
-
-    })
-
-    url = (
-        "https://api.twelvedata.com/time_series?"
-        + params
-    )
-
-    raw = http_get(
-        url
-    )
-
-    data = json.loads(
-        raw
-    )
-
-    if data.get("status") == "error":
-
-        raise Exception(
-            data.get(
-                "message",
-                "Twelve Data API error"
-            )
-        )
-
-    values = data.get(
-        "values",
-        []
-    )
+    values = data.get("values")
 
     if not values:
+        raise RuntimeError("No candle data received from Twelve Data")
 
-        raise Exception(
-            "Twelve Data returned no candle data"
-        )
+    df = pd.DataFrame(values)
 
-    candles = []
-
-    for row in values:
-
-        try:
-
-            candles.append({
-
-                "time":
-                    str(
-                        row["datetime"]
-                    ),
-
-                "open":
-                    float(
-                        row["open"]
-                    ),
-
-                "high":
-                    float(
-                        row["high"]
-                    ),
-
-                "low":
-                    float(
-                        row["low"]
-                    ),
-
-                "close":
-                    float(
-                        row["close"]
-                    ),
-
-                "volume":
-                    float(
-                        row.get(
-                            "volume",
-                            0
-                        ) or 0
-                    )
-            })
-
-        except Exception:
-
-            continue
-
-    candles.sort(
-        key=lambda x:
-            x["time"]
-    )
-
-    return candles
-
-
-# ============================================================
-# GET MARKET DATA
-# ============================================================
-
-def get_market_data():
-
-    candles = twelve_data_request(
-        interval=TIMEFRAME,
-        outputsize=CANDLE_HISTORY
-    )
-
-    if len(candles) < 250:
-
-        raise Exception(
-            "Not enough XAU/USD M5 candles"
-        )
-
-    # Remove duplicate timestamps
-    unique = {}
-
-    for candle in candles:
-
-        unique[
-            candle["time"]
-        ] = candle
-
-    candles = list(
-        unique.values()
-    )
-
-    candles.sort(
-        key=lambda x:
-            x["time"]
-    )
-
-    return candles[
-        -CANDLE_HISTORY:
+    required = [
+        "datetime",
+        "open",
+        "high",
+        "low",
+        "close",
     ]
 
+    for column in required:
+        if column not in df.columns:
+            raise RuntimeError(
+                f"Missing candle column: {column}"
+            )
 
-# ============================================================
-# MATH
-# ============================================================
-
-def mean(values):
-
-    if not values:
-
-        return 0.0
-
-    return sum(
-        values
-    ) / len(values)
-
-
-def ema(values, period):
-
-    if not values:
-
-        return []
-
-    alpha = (
-        2.0
-        / (
-            period
-            + 1
+    for column in [
+        "open",
+        "high",
+        "low",
+        "close",
+    ]:
+        df[column] = pd.to_numeric(
+            df[column],
+            errors="coerce",
         )
+
+    df["datetime"] = pd.to_datetime(
+        df["datetime"],
+        errors="coerce",
     )
 
-    result = [
-        values[0]
-    ]
-
-    current = values[0]
-
-    for value in values[1:]:
-
-        current = (
-            current
-            + alpha
-            * (
-                value
-                - current
-            )
-        )
-
-        result.append(
-            current
-        )
-
-    return result
-
-
-# ============================================================
-# RSI
-# ============================================================
-
-def calculate_rsi(
-    closes,
-    period=14
-):
-
-    result = [
-        50.0
-    ] * len(
-        closes
+    df = df.dropna(
+        subset=[
+            "datetime",
+            "open",
+            "high",
+            "low",
+            "close",
+        ]
     )
 
-    if len(closes) <= period:
+    # Twelve Data returns newest first
+    df = df.sort_values("datetime")
 
-        return result
+    df = df.reset_index(drop=True)
 
-    gains = []
-    losses = []
-
-    for i in range(
-        1,
-        period + 1
-    ):
-
-        change = (
-            closes[i]
-            - closes[i - 1]
-        )
-
-        gains.append(
-            max(
-                change,
-                0
-            )
-        )
-
-        losses.append(
-            max(
-                -change,
-                0
-            )
-        )
-
-    avg_gain = mean(
-        gains
-    )
-
-    avg_loss = mean(
-        losses
-    )
-
-    for i in range(
-        period,
-        len(closes)
-    ):
-
-        if i > period:
-
-            change = (
-                closes[i]
-                - closes[i - 1]
-            )
-
-            gain = max(
-                change,
-                0
-            )
-
-            loss = max(
-                -change,
-                0
-            )
-
-            avg_gain = (
-                (
-                    avg_gain
-                    * (
-                        period - 1
-                    )
-                )
-                + gain
-            ) / period
-
-            avg_loss = (
-                (
-                    avg_loss
-                    * (
-                        period - 1
-                    )
-                )
-                + loss
-            ) / period
-
-        if avg_loss == 0:
-
-            result[i] = 100.0
-
-        else:
-
-            rs = (
-                avg_gain
-                / avg_loss
-            )
-
-            result[i] = (
-                100
-                - (
-                    100
-                    / (
-                        1
-                        + rs
-                    )
-                )
-            )
-
-    return result
+    return df
 
 
 # ============================================================
 # ATR
 # ============================================================
 
-def calculate_atr(
-    candles,
-    period=14
-):
+def calculate_atr(df, period=14):
+    high = df["high"]
+    low = df["low"]
+    close = df["close"]
 
-    if len(candles) < period + 2:
+    previous_close = close.shift(1)
 
-        return [
-            0.0
-        ] * len(candles)
+    tr1 = high - low
+    tr2 = (high - previous_close).abs()
+    tr3 = (low - previous_close).abs()
 
-    tr = [
-        0.0
-    ]
+    true_range = pd.concat(
+        [tr1, tr2, tr3],
+        axis=1,
+    ).max(axis=1)
 
-    for i in range(
-        1,
-        len(candles)
-    ):
-
-        high = candles[i]["high"]
-        low = candles[i]["low"]
-
-        previous_close = (
-            candles[i - 1]["close"]
-        )
-
-        true_range = max(
-
-            high - low,
-
-            abs(
-                high
-                - previous_close
-            ),
-
-            abs(
-                low
-                - previous_close
-            )
-        )
-
-        tr.append(
-            true_range
-        )
-
-    atr = [
-        0.0
-    ] * len(candles)
-
-    current = mean(
-        tr[
-            1:
-            period + 1
-        ]
-    )
-
-    atr[period] = current
-
-    for i in range(
-        period + 1,
-        len(candles)
-    ):
-
-        current = (
-            (
-                current
-                * (
-                    period - 1
-                )
-            )
-            + tr[i]
-        ) / period
-
-        atr[i] = current
+    atr = true_range.rolling(
+        period
+    ).mean()
 
     return atr
 
 
 # ============================================================
-# INDICATORS
+# PATTERN CREATION
 # ============================================================
 
-def calculate_indicators(
-    candles
-):
+def create_pattern(df):
+    """
+    สร้าง Pattern จากกราฟราคาโดย normalize
+    เพื่อให้เปรียบเทียบรูปทรงของกราฟได้
+    แม้ราคาจะอยู่คนละระดับ
+    """
 
-    closes = [
-        c["close"]
-        for c in candles
-    ]
+    closes = df["close"].values.astype(float)
 
-    ema20 = ema(
-        closes,
-        20
-    )
-
-    ema50 = ema(
-        closes,
-        50
-    )
-
-    rsi = calculate_rsi(
-        closes,
-        14
-    )
-
-    atr = calculate_atr(
-        candles,
-        14
-    )
-
-    indicators = []
-
-    for i in range(
-        len(candles)
-    ):
-
-        momentum = 0.0
-
-        if i >= 5 and atr[i] > 0:
-
-            momentum = (
-                closes[i]
-                - closes[i - 5]
-            ) / atr[i]
-
-        indicators.append({
-
-            "ema20":
-                ema20[i],
-
-            "ema50":
-                ema50[i],
-
-            "rsi":
-                rsi[i],
-
-            "atr":
-                atr[i],
-
-            "momentum":
-                momentum
-        })
-
-    return indicators
-
-
-# ============================================================
-# CANDLE FEATURE
-# ============================================================
-
-def candle_feature(candle):
-
-    o = candle["open"]
-    h = candle["high"]
-    l = candle["low"]
-    c = candle["close"]
-
-    rng = max(
-        h - l,
-        0.000001
-    )
-
-    body = (
-        abs(
-            c - o
-        )
-        / rng
-    )
-
-    upper_wick = (
-        h
-        - max(
-            o,
-            c
-        )
-    ) / rng
-
-    lower_wick = (
-        min(
-            o,
-            c
-        )
-        - l
-    ) / rng
-
-    direction = (
-        1.0
-        if c > o
-        else -1.0
-        if c < o
-        else 0.0
-    )
-
-    return [
-
-        body,
-
-        upper_wick,
-
-        lower_wick,
-
-        direction
-    ]
-
-
-# ============================================================
-# PATTERN VECTOR
-# ============================================================
-
-def build_pattern_vector(
-    candles,
-    indicators,
-    index
-):
-
-    start = (
-        index
-        - PATTERN_LENGTH
-        + 1
-    )
-
-    if start < 0:
-
+    if len(closes) < PATTERN_LENGTH:
         return None
 
-    vector = []
+    closes = closes[-PATTERN_LENGTH:]
 
-    for i in range(
-        start,
-        index + 1
-    ):
+    base = closes[0]
 
-        vector.extend(
-            candle_feature(
-                candles[i]
-            )
-        )
+    if base == 0:
+        return None
 
-        vector.append(
-            max(
-                -3.0,
-                min(
-                    3.0,
-                    indicators[i][
-                        "momentum"
-                    ]
-                )
-            )
-        )
+    normalized = (
+        closes / base
+    ) - 1.0
 
-        vector.append(
-            indicators[i][
-                "rsi"
-            ] / 100.0
-        )
-
-        vector.append(
-
-            1.0
-
-            if
-            indicators[i][
-                "ema20"
-            ]
-            >
-            indicators[i][
-                "ema50"
-            ]
-
-            else
-
-            -1.0
-        )
-
-    return vector
+    return normalized
 
 
 # ============================================================
-# DISTANCE / SIMILARITY
+# PATTERN SIMILARITY
 # ============================================================
 
-def distance(a, b):
+def pattern_similarity(pattern_a, pattern_b):
+    if pattern_a is None or pattern_b is None:
+        return 0.0
 
-    if (
-        a is None
-        or
-        b is None
-        or
-        len(a) != len(b)
-    ):
+    if len(pattern_a) != len(pattern_b):
+        return 0.0
 
-        return 999999.0
-
-    total = 0.0
-
-    for x, y in zip(
-        a,
-        b
-    ):
-
-        total += (
-            x - y
-        ) ** 2
-
-    return math.sqrt(
-        total
-        / len(a)
+    distance = np.sqrt(
+        np.mean(
+            (pattern_a - pattern_b) ** 2
+        )
     )
 
-
-def similarity(a, b):
-
-    d = distance(
-        a,
-        b
+    # Convert distance to similarity
+    similarity = np.exp(
+        -distance * 25.0
     )
 
-    return (
-        1.0
-        / (
-            1.0
-            + d
+    return float(
+        np.clip(
+            similarity,
+            0.0,
+            1.0,
         )
     )
 
 
 # ============================================================
-# HISTORICAL PATTERN MATCHING
+# HISTORICAL PATTERN SEARCH
 # ============================================================
 
-def find_matches(
-    candles,
-    indicators,
-    current_index
-):
+def find_historical_patterns(df):
+    current_pattern = create_pattern(df)
 
-    current_vector = (
-        build_pattern_vector(
-            candles,
-            indicators,
-            current_index
-        )
-    )
-
-    if current_vector is None:
-
+    if current_pattern is None:
         return []
 
     matches = []
 
-    first = (
-        PATTERN_LENGTH
-        + 30
-    )
-
-    last = (
-        current_index
-        - FORWARD_BARS
+    # ต้องเหลือแท่งหลัง Pattern
+    # เพื่อดูว่า Pattern ในอดีตไปทางไหน
+    start_index = PATTERN_LENGTH
+    end_index = (
+        len(df)
+        - PATTERN_LENGTH
         - 1
     )
 
-    # Limit scan to prevent excessive CPU
-    first = max(
-        first,
-        last - 900
-    )
-
     for i in range(
-        first,
-        last + 1
+        start_index,
+        end_index + 1,
     ):
 
-        historical_vector = (
-            build_pattern_vector(
-                candles,
-                indicators,
-                i
-            )
+        historical_window = df.iloc[
+            i - PATTERN_LENGTH:i
+        ]
+
+        historical_pattern = create_pattern(
+            historical_window
         )
 
-        if historical_vector is None:
-
+        if historical_pattern is None:
             continue
 
-        sim = similarity(
-            current_vector,
-            historical_vector
+        similarity = pattern_similarity(
+            current_pattern,
+            historical_pattern,
         )
 
-        entry = candles[i][
-            "close"
-        ]
-
-        future = candles[
-            i + 1:
-            i + 1 + FORWARD_BARS
-        ]
-
-        if len(
-            future
-        ) < FORWARD_BARS:
-
+        if similarity < MIN_SIMILARITY:
             continue
 
-        highest = max(
-            c["high"]
-            for c in future
+        historical_close = safe_float(
+            df.iloc[i - 1]["close"]
         )
 
-        lowest = min(
-            c["low"]
-            for c in future
+        next_close = safe_float(
+            df.iloc[i]["close"]
         )
 
-        final_close = future[
-            -1
-        ][
-            "close"
-        ]
+        if historical_close <= 0:
+            continue
 
-        up_move = (
-            highest
-            - entry
+        movement = (
+            next_close
+            - historical_close
+        ) / historical_close * 100.0
+
+        if movement > 0:
+            direction = "BUY"
+        elif movement < 0:
+            direction = "SELL"
+        else:
+            direction = "FLAT"
+
+        matches.append(
+            {
+                "index": i,
+                "similarity": similarity,
+                "movement_percent": movement,
+                "direction": direction,
+            }
         )
-
-        down_move = (
-            entry
-            - lowest
-        )
-
-        close_move = (
-            final_close
-            - entry
-        )
-
-        direction = (
-            "BUY"
-            if close_move > 0
-            else "SELL"
-        )
-
-        matches.append({
-
-            "index":
-                i,
-
-            "similarity":
-                sim,
-
-            "direction":
-                direction,
-
-            "up_move":
-                up_move,
-
-            "down_move":
-                down_move,
-
-            "close_move":
-                close_move
-        })
 
     matches.sort(
-        key=lambda x:
-            x["similarity"],
-        reverse=True
+        key=lambda x: x["similarity"],
+        reverse=True,
     )
 
-    return matches[
-        :TOP_MATCHES
+    return matches[:MAX_MATCHES]
+
+
+# ============================================================
+# HISTORICAL STATISTICS
+# ============================================================
+
+def calculate_statistics(matches):
+    if not matches:
+        return {
+            "sample_size": 0,
+            "buy_probability": 0.0,
+            "sell_probability": 0.0,
+            "flat_probability": 0.0,
+            "average_similarity": 0.0,
+            "best_similarity": 0.0,
+            "expected_up_percent": 0.0,
+            "expected_down_percent": 0.0,
+        }
+
+    buy = [
+        x
+        for x in matches
+        if x["direction"] == "BUY"
     ]
 
+    sell = [
+        x
+        for x in matches
+        if x["direction"] == "SELL"
+    ]
 
-# ============================================================
-# STATISTICS
-# ============================================================
+    flat = [
+        x
+        for x in matches
+        if x["direction"] == "FLAT"
+    ]
 
-def calculate_statistics(
-    matches,
-    atr
-):
+    total = len(matches)
 
-    if len(matches) < MIN_MATCHES:
+    buy_probability = (
+        len(buy) / total * 100
+    )
 
-        return {
+    sell_probability = (
+        len(sell) / total * 100
+    )
 
-            "sample_size":
-                len(matches),
+    flat_probability = (
+        len(flat) / total * 100
+    )
 
-            "buy_probability":
-                0.0,
+    positive_moves = [
+        x["movement_percent"]
+        for x in matches
+        if x["movement_percent"] > 0
+    ]
 
-            "sell_probability":
-                0.0,
+    negative_moves = [
+        x["movement_percent"]
+        for x in matches
+        if x["movement_percent"] < 0
+    ]
 
-            "expected_up_atr":
-                0.0,
+    expected_up = (
+        float(np.mean(positive_moves))
+        if positive_moves
+        else 0.0
+    )
 
-            "expected_down_atr":
-                0.0,
-
-            "average_similarity":
-                0.0,
-
-            "best_similarity":
-                0.0
-        }
-
-    buy_weight = 0.0
-    sell_weight = 0.0
-
-    total_weight = 0.0
-
-    up_weighted = 0.0
-    down_weighted = 0.0
-
-    similarities = []
-
-    for match in matches:
-
-        weight = (
-            match["similarity"]
-            ** 3
-        )
-
-        total_weight += weight
-
-        similarities.append(
-            match["similarity"]
-        )
-
-        if match[
-            "direction"
-        ] == "BUY":
-
-            buy_weight += weight
-
-        else:
-
-            sell_weight += weight
-
-        if atr > 0:
-
-            up_weighted += (
-                match["up_move"]
-                / atr
-                * weight
-            )
-
-            down_weighted += (
-                match["down_move"]
-                / atr
-                * weight
-            )
-
-    if total_weight == 0:
-
-        return {
-
-            "sample_size":
-                len(matches),
-
-            "buy_probability":
-                0.0,
-
-            "sell_probability":
-                0.0,
-
-            "expected_up_atr":
-                0.0,
-
-            "expected_down_atr":
-                0.0,
-
-            "average_similarity":
-                0.0,
-
-            "best_similarity":
-                0.0
-        }
+    expected_down = (
+        abs(float(np.mean(negative_moves)))
+        if negative_moves
+        else 0.0
+    )
 
     return {
-
-        "sample_size":
-            len(matches),
-
-        "buy_probability":
-            round(
-                buy_weight
-                / total_weight
-                * 100,
-                2
+        "sample_size": total,
+        "buy_probability": round(
+            buy_probability,
+            2,
+        ),
+        "sell_probability": round(
+            sell_probability,
+            2,
+        ),
+        "flat_probability": round(
+            flat_probability,
+            2,
+        ),
+        "average_similarity": round(
+            float(
+                np.mean(
+                    [
+                        x["similarity"]
+                        for x in matches
+                    ]
+                )
             ),
-
-        "sell_probability":
-            round(
-                sell_weight
-                / total_weight
-                * 100,
-                2
+            4,
+        ),
+        "best_similarity": round(
+            max(
+                x["similarity"]
+                for x in matches
             ),
-
-        "expected_up_atr":
-            round(
-                up_weighted
-                / total_weight,
-                3
-            ),
-
-        "expected_down_atr":
-            round(
-                down_weighted
-                / total_weight,
-                3
-            ),
-
-        "average_similarity":
-            round(
-                mean(
-                    similarities
-                ),
-                4
-            ),
-
-        "best_similarity":
-            round(
-                max(
-                    similarities
-                ),
-                4
-            )
+            4,
+        ),
+        "expected_up_percent": round(
+            expected_up,
+            4,
+        ),
+        "expected_down_percent": round(
+            expected_down,
+            4,
+        ),
     }
 
 
 # ============================================================
-# SWING HIGH / LOW
+# SCORE
 # ============================================================
 
-def swing_low(
-    candles,
-    index,
-    lookback=60
+def calculate_score(
+    probability,
+    matches,
+    average_similarity,
 ):
+    """
+    Score ไม่ใช่ Probability
 
-    start = max(
-        0,
-        index - lookback
+    Probability = ผลจาก Pattern ในอดีต
+
+    Score = ความแข็งแรงโดยรวมของ Pattern
+    """
+
+    probability_score = min(
+        probability,
+        100.0,
     )
 
-    values = [
-        c["low"]
-        for c in candles[
-            start:index
-        ]
-    ]
+    sample_score = min(
+        len(matches) / MAX_MATCHES * 100.0,
+        100.0,
+    )
 
-    if not values:
+    similarity_score = (
+        average_similarity * 100.0
+    )
 
-        return None
+    score = (
+        probability_score * 0.55
+        + sample_score * 0.20
+        + similarity_score * 0.25
+    )
 
-    return min(
-        values
+    return round(
+        float(score),
+        2,
     )
 
 
-def swing_high(
-    candles,
-    index,
-    lookback=60
+# ============================================================
+# ENTRY / SL / TP
+# ============================================================
+
+def calculate_trade_levels(
+    direction,
+    entry,
+    atr,
+    statistics,
 ):
+    """
+    Dynamic TP/SL
 
-    start = max(
-        0,
-        index - lookback
+    ใช้ ATR + สถิติ Pattern
+    """
+
+    if atr <= 0:
+        atr = entry * 0.001
+
+    up_probability = (
+        statistics["buy_probability"]
     )
 
-    values = [
-        c["high"]
-        for c in candles[
-            start:index
-        ]
-    ]
+    down_probability = (
+        statistics["sell_probability"]
+    )
 
-    if not values:
+    if direction == "BUY":
 
-        return None
+        confidence_factor = max(
+            1.0,
+            min(
+                2.0,
+                up_probability / 50.0,
+            ),
+        )
 
-    return max(
-        values
+        sl_distance = (
+            atr
+            * SL_ATR_MULTIPLIER
+        )
+
+        tp_distance = (
+            atr
+            * confidence_factor
+        )
+
+        stop_loss = (
+            entry
+            - sl_distance
+        )
+
+        take_profit = (
+            entry
+            + tp_distance
+        )
+
+    else:
+
+        confidence_factor = max(
+            1.0,
+            min(
+                2.0,
+                down_probability / 50.0,
+            ),
+        )
+
+        sl_distance = (
+            atr
+            * SL_ATR_MULTIPLIER
+        )
+
+        tp_distance = (
+            atr
+            * confidence_factor
+        )
+
+        stop_loss = (
+            entry
+            + sl_distance
+        )
+
+        take_profit = (
+            entry
+            - tp_distance
+        )
+
+    return (
+        round(entry, 2),
+        round(stop_loss, 2),
+        round(take_profit, 2),
     )
 
 
@@ -1158,457 +595,187 @@ def swing_high(
 # SIGNAL ENGINE
 # ============================================================
 
-def generate_signal(
-    candles
-):
+def generate_signal(df):
 
-    indicators = calculate_indicators(
-        candles
-    )
-
-    index = len(
-        candles
-    ) - 1
-
-    candle = candles[
-        index
-    ]
-
-    ind = indicators[
-        index
-    ]
-
-    entry = candle[
-        "close"
-    ]
-
-    atr = ind[
-        "atr"
-    ]
-
-    if atr <= 0:
-
-        raise Exception(
-            "ATR unavailable"
+    if len(df) < (
+        PATTERN_LENGTH * 2 + 20
+    ):
+        raise RuntimeError(
+            "Not enough candle data"
         )
 
-    matches = find_matches(
-        candles,
-        indicators,
-        index
+    matches = find_historical_patterns(
+        df
     )
 
-    stats = calculate_statistics(
+    statistics = calculate_statistics(
+        matches
+    )
+
+    if not matches:
+        return {
+            "timestamp": str(
+                df.iloc[-1]["datetime"]
+            ),
+            "symbol": SYMBOL,
+            "timeframe": "M5",
+            "signal": "NO_TRADE",
+            "score": 0.0,
+            "entry": safe_float(
+                df.iloc[-1]["close"]
+            ),
+            "stop_loss": None,
+            "take_profit": None,
+            "historical_statistics": statistics,
+            "matched_patterns": 0,
+            "method": (
+                "M5 historical pattern matching"
+            ),
+            "data_source": (
+                "Twelve Data XAU/USD"
+            ),
+        }
+
+    buy_probability = statistics[
+        "buy_probability"
+    ]
+
+    sell_probability = statistics[
+        "sell_probability"
+    ]
+
+    average_similarity = statistics[
+        "average_similarity"
+    ]
+
+    entry = safe_float(
+        df.iloc[-1]["close"]
+    )
+
+    atr_series = calculate_atr(df)
+
+    atr = safe_float(
+        atr_series.iloc[-1],
+        entry * 0.001,
+    )
+
+    # --------------------------------------------------------
+    # เลือก Probability สูงสุด
+    # --------------------------------------------------------
+
+    if buy_probability > sell_probability:
+        direction = "BUY"
+        probability = buy_probability
+
+    elif sell_probability > buy_probability:
+        direction = "SELL"
+        probability = sell_probability
+
+    else:
+        direction = "NO_TRADE"
+        probability = 0.0
+
+    # --------------------------------------------------------
+    # SCORE
+    # --------------------------------------------------------
+
+    score = calculate_score(
+        probability,
         matches,
-        atr
-    )
-
-    buy_score = 0.0
-    sell_score = 0.0
-
-    # --------------------------------------------------------
-    # EMA TREND
-    # --------------------------------------------------------
-
-    if ind[
-        "ema20"
-    ] > ind[
-        "ema50"
-    ]:
-
-        buy_score += 18
-
-    else:
-
-        sell_score += 18
-
-    # --------------------------------------------------------
-    # HISTORICAL PROBABILITY
-    # --------------------------------------------------------
-
-    buy_score += (
-        stats[
-            "buy_probability"
-        ]
-        * 0.30
-    )
-
-    sell_score += (
-        stats[
-            "sell_probability"
-        ]
-        * 0.30
+        average_similarity,
     )
 
     # --------------------------------------------------------
-    # RSI
+    # SIGNAL FILTER
     # --------------------------------------------------------
 
-    if 50 <= ind["rsi"] <= 68:
-
-        buy_score += 12
-
-    elif 32 <= ind["rsi"] < 50:
-
-        sell_score += 12
-
-    # --------------------------------------------------------
-    # MOMENTUM
-    # --------------------------------------------------------
-
-    if ind[
-        "momentum"
-    ] > 0.25:
-
-        buy_score += 12
-
-    elif ind[
-        "momentum"
-    ] < -0.25:
-
-        sell_score += 12
-
-    # --------------------------------------------------------
-    # CANDLE DIRECTION
-    # --------------------------------------------------------
-
-    candle_range = max(
-        candle["high"]
-        - candle["low"],
-        0.000001
+    valid_signal = (
+        direction in ["BUY", "SELL"]
+        and probability >= MIN_PROBABILITY
+        and score >= MIN_SCORE
+        and len(matches) >= MIN_MATCHES
     )
 
-    body = abs(
-        candle["close"]
-        - candle["open"]
+    if not valid_signal:
+
+        return {
+            "timestamp": str(
+                df.iloc[-1]["datetime"]
+            ),
+            "symbol": SYMBOL,
+            "timeframe": "M5",
+            "signal": "NO_TRADE",
+            "score": score,
+            "probability": round(
+                probability,
+                2,
+            ),
+            "entry": round(
+                entry,
+                2,
+            ),
+            "stop_loss": None,
+            "take_profit": None,
+            "atr": round(
+                atr,
+                4,
+            ),
+            "historical_statistics": statistics,
+            "matched_patterns": len(
+                matches
+            ),
+            "method": (
+                "M5 historical pattern matching"
+            ),
+            "data_source": (
+                "Twelve Data XAU/USD"
+            ),
+        }
+
+    # --------------------------------------------------------
+    # TRADE LEVELS
+    # --------------------------------------------------------
+
+    (
+        entry,
+        stop_loss,
+        take_profit,
+    ) = calculate_trade_levels(
+        direction,
+        entry,
+        atr,
+        statistics,
     )
-
-    body_ratio = (
-        body
-        / candle_range
-    )
-
-    if (
-        candle["close"]
-        >
-        candle["open"]
-        and
-        body_ratio >= 0.35
-    ):
-
-        buy_score += 8
-
-    elif (
-        candle["close"]
-        <
-        candle["open"]
-        and
-        body_ratio >= 0.35
-    ):
-
-        sell_score += 8
-
-    # --------------------------------------------------------
-    # SELECT DIRECTION
-    # --------------------------------------------------------
-
-    if (
-        len(matches) >= MIN_MATCHES
-        and
-        buy_score >= MIN_SCORE
-        and
-        buy_score > sell_score + 5
-        and
-        stats[
-            "buy_probability"
-        ] >= MIN_PROBABILITY
-    ):
-
-        signal = "BUY"
-
-    elif (
-        len(matches) >= MIN_MATCHES
-        and
-        sell_score >= MIN_SCORE
-        and
-        sell_score > buy_score + 5
-        and
-        stats[
-            "sell_probability"
-        ] >= MIN_PROBABILITY
-    ):
-
-        signal = "SELL"
-
-    else:
-
-        signal = "NO_TRADE"
-
-    score = max(
-        buy_score,
-        sell_score
-    )
-
-    # --------------------------------------------------------
-    # SL / TP
-    # --------------------------------------------------------
-
-    if signal == "BUY":
-
-        structural_sl = swing_low(
-            candles,
-            index
-        )
-
-        atr_sl = (
-            entry
-            - atr
-            * SL_ATR_MULTIPLIER
-        )
-
-        if structural_sl:
-
-            stop_loss = min(
-                atr_sl,
-                structural_sl
-                - atr * 0.10
-            )
-
-        else:
-
-            stop_loss = atr_sl
-
-        risk = (
-            entry
-            - stop_loss
-        )
-
-        statistical_target = (
-            entry
-            + atr
-            * max(
-                TP_ATR_MULTIPLIER,
-                stats[
-                    "expected_up_atr"
-                ]
-            )
-        )
-
-        minimum_target = (
-            entry
-            + risk
-            * MIN_RR
-        )
-
-        take_profit = max(
-            statistical_target,
-            minimum_target
-        )
-
-    elif signal == "SELL":
-
-        structural_sl = swing_high(
-            candles,
-            index
-        )
-
-        atr_sl = (
-            entry
-            + atr
-            * SL_ATR_MULTIPLIER
-        )
-
-        if structural_sl:
-
-            stop_loss = max(
-                atr_sl,
-                structural_sl
-                + atr * 0.10
-            )
-
-        else:
-
-            stop_loss = atr_sl
-
-        risk = (
-            stop_loss
-            - entry
-        )
-
-        statistical_target = (
-            entry
-            - atr
-            * max(
-                TP_ATR_MULTIPLIER,
-                stats[
-                    "expected_down_atr"
-                ]
-            )
-        )
-
-        minimum_target = (
-            entry
-            - risk
-            * MIN_RR
-        )
-
-        take_profit = min(
-            statistical_target,
-            minimum_target
-        )
-
-    else:
-
-        stop_loss = None
-        take_profit = None
-        risk = None
-
-    # --------------------------------------------------------
-    # R/R
-    # --------------------------------------------------------
-
-    if (
-        signal == "BUY"
-        and
-        risk
-        and
-        risk > 0
-    ):
-
-        rr = (
-            take_profit
-            - entry
-        ) / risk
-
-    elif (
-        signal == "SELL"
-        and
-        risk
-        and
-        risk > 0
-    ):
-
-        rr = (
-            entry
-            - take_profit
-        ) / risk
-
-    else:
-
-        rr = None
-
-    # --------------------------------------------------------
-    # RESULT
-    # --------------------------------------------------------
 
     return {
-
-        "timestamp":
-            candle["time"],
-
-        "symbol":
-            SYMBOL,
-
-        "timeframe":
-            "M5",
-
-        "signal":
-            signal,
-
-        "score":
-            round(
-                score,
-                2
-            ),
-
-        "entry":
-            round(
-                entry,
-                2
-            ),
-
-        "stop_loss":
-            (
-                round(
-                    stop_loss,
-                    2
-                )
-                if stop_loss is not None
-                else None
-            ),
-
-        "take_profit":
-            (
-                round(
-                    take_profit,
-                    2
-                )
-                if take_profit is not None
-                else None
-            ),
-
-        "risk_reward":
-            (
-                round(
-                    rr,
-                    2
-                )
-                if rr is not None
-                else None
-            ),
-
-        "atr":
-            round(
-                atr,
-                2
-            ),
-
-        "rsi":
-            round(
-                ind["rsi"],
-                2
-            ),
-
-        "ema20":
-            round(
-                ind["ema20"],
-                2
-            ),
-
-        "ema50":
-            round(
-                ind["ema50"],
-                2
-            ),
-
-        "momentum":
-            round(
-                ind["momentum"],
-                3
-            ),
-
-        "trend":
-            (
-                "BULLISH"
-                if
-                ind["ema20"]
-                >
-                ind["ema50"]
-                else
-                "BEARISH"
-            ),
-
-        "historical_statistics":
-            stats,
-
-        "matched_patterns":
-            len(matches),
-
-        "method":
-            "M5 historical pattern matching",
-
-        "data_source":
+        "timestamp": str(
+            df.iloc[-1]["datetime"]
+        ),
+        "symbol": SYMBOL,
+        "timeframe": "M5",
+        "signal": direction,
+        "score": score,
+        "probability": round(
+            probability,
+            2,
+        ),
+        "entry": entry,
+        "stop_loss": stop_loss,
+        "take_profit": take_profit,
+        "atr": round(
+            atr,
+            4,
+        ),
+        "historical_statistics": statistics,
+        "matched_patterns": len(
+            matches
+        ),
+        "method": (
+            "M5 historical pattern matching"
+        ),
+        "data_source": (
             "Twelve Data XAU/USD"
+        ),
     }
 
 
@@ -1616,237 +783,157 @@ def generate_signal(
 # TELEGRAM
 # ============================================================
 
-def telegram_enabled():
+def send_telegram(message):
 
-    return bool(
-        TELEGRAM_BOT_TOKEN
-        and
-        TELEGRAM_CHAT_ID
-    )
+    if not TELEGRAM_BOT_TOKEN:
+        return False, (
+            "TELEGRAM_BOT_TOKEN "
+            "is not configured"
+        )
 
-
-def send_telegram(
-    result
-):
-
-    if not telegram_enabled():
-
-        return False
-
-    signal = result[
-        "signal"
-    ]
-
-    if signal == "BUY":
-
-        icon = "🟢"
-
-    elif signal == "SELL":
-
-        icon = "🔴"
-
-    else:
-
-        return False
-
-    stats = result[
-        "historical_statistics"
-    ]
-
-    message = f"""
-{icon} <b>XAUUSD M5 SIGNAL</b>
-
-<b>Signal:</b> {signal}
-
-<b>Entry:</b> {result["entry"]}
-
-<b>T/P:</b> {result["take_profit"]}
-
-<b>S/L:</b> {result["stop_loss"]}
-
-<b>R/R:</b> {result["risk_reward"]}
-
-<b>Score:</b> {result["score"]}
-
-<b>BUY Probability:</b> {stats["buy_probability"]}%
-
-<b>SELL Probability:</b> {stats["sell_probability"]}%
-
-<b>Historical Matches:</b> {stats["sample_size"]}
-
-<b>Expected Up:</b> {stats["expected_up_atr"]} ATR
-
-<b>Expected Down:</b> {stats["expected_down_atr"]} ATR
-
-<b>RSI:</b> {result["rsi"]}
-
-<b>ATR:</b> {result["atr"]}
-
-<b>EMA20:</b> {result["ema20"]}
-
-<b>EMA50:</b> {result["ema50"]}
-
-<b>Trend:</b> {result["trend"]}
-
-<b>Time:</b> {result["timestamp"]}
-""".strip()
-
-    params = urlencode({
-
-        "chat_id":
-            TELEGRAM_CHAT_ID,
-
-        "text":
-            message,
-
-        "parse_mode":
-            "HTML"
-
-    }).encode(
-        "utf-8"
-    )
+    if not TELEGRAM_CHAT_ID:
+        return False, (
+            "TELEGRAM_CHAT_ID "
+            "is not configured"
+        )
 
     url = (
         "https://api.telegram.org/bot"
-        + TELEGRAM_BOT_TOKEN
-        + "/sendMessage"
+        f"{TELEGRAM_BOT_TOKEN}"
+        "/sendMessage"
     )
 
-    request = Request(
-        url,
-        data=params,
-        headers={
-            "Content-Type":
-                "application/x-www-form-urlencoded"
-        },
-        method="POST"
-    )
+    payload = {
+        "chat_id": TELEGRAM_CHAT_ID,
+        "text": message,
+        "parse_mode": "HTML",
+    }
 
     try:
 
-        with urlopen(
-            request,
-            timeout=20
-        ) as response:
-
-            data = json.loads(
-                response.read().decode(
-                    "utf-8"
-                )
-            )
-
-        return bool(
-            data.get("ok")
+        response = requests.post(
+            url,
+            json=payload,
+            timeout=20,
         )
 
-    except Exception as error:
+        response.raise_for_status()
 
-        print(
-            "Telegram error:",
-            error
-        )
+        return True, None
 
-        return False
+    except Exception as e:
+
+        return False, str(e)
+
+
+def format_signal_message(signal):
+
+    direction = signal["signal"]
+
+    if direction == "BUY":
+
+        emoji = "🟢"
+
+    elif direction == "SELL":
+
+        emoji = "🔴"
+
+    else:
+
+        return None
+
+    stats = signal[
+        "historical_statistics"
+    ]
+
+    message = (
+        f"{emoji} <b>XAUUSD M5 SIGNAL</b>\n\n"
+        f"<b>Signal:</b> {direction}\n"
+        f"<b>Probability:</b> "
+        f"{signal['probability']:.2f}%\n"
+        f"<b>Score:</b> "
+        f"{signal['score']:.2f}\n\n"
+        f"<b>Entry:</b> "
+        f"{signal['entry']:.2f}\n"
+        f"<b>TP:</b> "
+        f"{signal['take_profit']:.2f}\n"
+        f"<b>SL:</b> "
+        f"{signal['stop_loss']:.2f}\n\n"
+        f"<b>Patterns:</b> "
+        f"{signal['matched_patterns']}\n"
+        f"<b>Similarity:</b> "
+        f"{stats['average_similarity']:.4f}\n\n"
+        f"<b>Time:</b> "
+        f"{signal['timestamp']}\n\n"
+        f"<i>Historical Pattern Analysis</i>"
+    )
+
+    return message
 
 
 # ============================================================
-# PROCESS
+# SIGNAL EXECUTION
 # ============================================================
 
 def run_signal():
 
-    global CACHE
+    df = get_candles()
 
-    candles = get_market_data()
+    signal = generate_signal(df)
 
-    result = generate_signal(
-        candles
-    )
-
-    with LOCK:
-
-        CACHE[
-            "candles"
-        ] = candles
-
-        CACHE[
-            "last_update"
-        ] = datetime.now(
-            timezone.utc
-        ).isoformat()
-
-        CACHE[
-            "error"
-        ] = None
+    state["last_update"] = utc_now().isoformat()
+    state["last_error"] = None
 
     # --------------------------------------------------------
-    # Telegram only once per signal/candle
+    # ส่ง Telegram เฉพาะ BUY / SELL
     # --------------------------------------------------------
 
-    if result[
-        "signal"
-    ] in (
+    if signal["signal"] in [
         "BUY",
-        "SELL"
-    ):
+        "SELL",
+    ]:
 
+        # ป้องกันการส่ง Signal เดิมซ้ำ
         signal_key = (
-            result["timestamp"]
-            + "_"
-            + result["signal"]
+            f"{signal['timestamp']}_"
+            f"{signal['signal']}"
         )
 
-        with LOCK:
-
-            already_sent = (
-                CACHE[
-                    "last_signal_key"
-                ]
-                == signal_key
-            )
-
-        if not already_sent:
-
-            sent = send_telegram(
-                result
-            )
-
-            with LOCK:
-
-                CACHE[
-                    "last_signal_key"
-                ] = signal_key
-
-                CACHE[
-                    "telegram_sent"
-                ] = sent
-
-    with LOCK:
-
-        CACHE[
-            "last_signal"
-        ] = result
-
-    print(
-        json.dumps(
-            result,
-            indent=2,
-            ensure_ascii=False
+        previous = state.get(
+            "last_signal_key"
         )
-    )
 
-    return result
+        if previous != signal_key:
+
+            message = format_signal_message(
+                signal
+            )
+
+            if message:
+
+                ok, error = send_telegram(
+                    message
+                )
+
+                if not ok:
+                    state[
+                        "last_error"
+                    ] = error
+
+            state[
+                "last_signal_key"
+            ] = signal_key
+
+    state["last_signal"] = signal
+
+    return signal
 
 
 # ============================================================
 # BACKGROUND LOOP
 # ============================================================
 
-def background_loop():
-
-    print(
-        "Background signal engine started"
-    )
+def background_worker():
 
     while True:
 
@@ -1854,655 +941,203 @@ def background_loop():
 
             run_signal()
 
-        except Exception as error:
+        except Exception as e:
 
-            print(
-                "Background error:",
-                repr(error)
-            )
+            state[
+                "last_error"
+            ] = str(e)
 
-            with LOCK:
-
-                CACHE[
-                    "error"
-                ] = str(error)
-
-        time.sleep(
-            POLL_SECONDS
-        )
+        # เช็กทุก 60 วินาที
+        time.sleep(60)
 
 
 # ============================================================
-# HTTP SERVER
+# ROUTES
 # ============================================================
 
-class Handler(
-    BaseHTTPRequestHandler
-):
+@app.route("/")
+def home():
 
-    def send_json(
-        self,
-        data,
-        status=200
-    ):
+    return jsonify(
+        {
+            "name": (
+                "XAUUSD M5 Telegram Signal"
+            ),
+            "status": "online",
+            "data_source": "Twelve Data",
+            "symbol": SYMBOL,
+            "timeframe": "M5",
+            "signal_rule": (
+                "Probability >= 70% "
+                "and Score >= 65"
+            ),
+            "endpoints": [
+                "/signal",
+                "/backtest",
+                "/health",
+            ],
+        }
+    )
 
-        body = json.dumps(
-            data,
-            indent=2,
-            ensure_ascii=False
-        ).encode(
-            "utf-8"
-        )
 
-        self.send_response(
-            status
-        )
+@app.route("/health")
+def health():
 
-        self.send_header(
-            "Content-Type",
-            "application/json; charset=utf-8"
-        )
+    return jsonify(
+        {
+            "status": "healthy",
+            "data_source": "Twelve Data",
+            "symbol": SYMBOL,
+            "timeframe": "M5",
+            "telegram": bool(
+                TELEGRAM_BOT_TOKEN
+                and TELEGRAM_CHAT_ID
+            ),
+            "last_update": state[
+                "last_update"
+            ],
+            "last_signal": state[
+                "last_signal"
+            ],
+            "error": state[
+                "last_error"
+            ],
+        }
+    )
 
-        self.send_header(
-            "Content-Length",
-            str(
-                len(body)
-            )
-        )
 
-        self.send_header(
-            "Cache-Control",
-            "no-store"
-        )
+@app.route("/signal")
+def signal_endpoint():
 
-        self.end_headers()
+    try:
 
-        self.wfile.write(
-            body
-        )
+        signal = run_signal()
 
-    def do_HEAD(self):
+        return jsonify(signal)
 
-        path = self.path.split(
-            "?",
-            1
-        )[0]
+    except Exception as e:
 
-        if path in (
-            "/",
-            "/health",
-            "/signal",
-            "/backtest"
+        state[
+            "last_error"
+        ] = str(e)
+
+        return jsonify(
+            {
+                "signal": "ERROR",
+                "error": str(e),
+            }
+        ), 500
+
+
+# ============================================================
+# SIMPLE BACKTEST
+# ============================================================
+
+@app.route("/backtest")
+def backtest():
+
+    try:
+
+        df = get_candles()
+
+        total = 0
+        wins = 0
+        losses = 0
+
+        # ใช้ข้อมูลย้อนหลัง
+        # จำลอง Signal จาก Pattern
+
+        for i in range(
+            PATTERN_LENGTH * 2,
+            len(df) - 1,
         ):
 
-            self.send_response(
-                200
+            historical_df = df.iloc[
+                :i
+            ].copy()
+
+            try:
+
+                signal = generate_signal(
+                    historical_df
+                )
+
+            except Exception:
+                continue
+
+            if signal["signal"] not in [
+                "BUY",
+                "SELL",
+            ]:
+                continue
+
+            total += 1
+
+            current_close = safe_float(
+                df.iloc[i]["close"]
             )
 
-            self.send_header(
-                "Content-Type",
-                "application/json"
+            next_close = safe_float(
+                df.iloc[i + 1]["close"]
             )
 
-            self.end_headers()
+            if (
+                signal["signal"]
+                == "BUY"
+            ):
 
-        else:
+                if next_close > current_close:
+                    wins += 1
+                else:
+                    losses += 1
 
-            self.send_response(
-                404
-            )
+            elif (
+                signal["signal"]
+                == "SELL"
+            ):
 
-            self.end_headers()
+                if next_close < current_close:
+                    wins += 1
+                else:
+                    losses += 1
 
-    def do_GET(self):
-
-        path = self.path.split(
-            "?",
-            1
-        )[0]
-
-        print(
-            "GET",
-            self.path
+        win_rate = (
+            wins / total * 100
+            if total > 0
+            else 0.0
         )
 
-        try:
-
-            # ------------------------------------------------
-            # HOME
-            # ------------------------------------------------
-
-            if path == "/":
-
-                self.send_json({
-
-                    "name":
-                        "XAUUSD M5 Real-Time Statistical Signal",
-
-                    "status":
-                        "online",
-
-                    "symbol":
-                        SYMBOL,
-
-                    "timeframe":
-                        "M5",
-
-                    "data_source":
-                        "Twelve Data",
-
-                    "telegram":
-                        telegram_enabled(),
-
-                    "endpoints": [
-
-                        "/",
-
-                        "/signal",
-
-                        "/health",
-
-                        "/backtest"
-
-                    ]
-                })
-
-                return
-
-            # ------------------------------------------------
-            # HEALTH
-            # ------------------------------------------------
-
-            if path == "/health":
-
-                with LOCK:
-
-                    candle_count = len(
-                        CACHE[
-                            "candles"
-                        ]
-                    )
-
-                    last_update = (
-                        CACHE[
-                            "last_update"
-                        ]
-                    )
-
-                    last_signal = (
-                        CACHE[
-                            "last_signal"
-                        ]
-                    )
-
-                    error = (
-                        CACHE[
-                            "error"
-                        ]
-                    )
-
-                self.send_json({
-
-                    "status":
-                        "healthy",
-
-                    "data_source":
-                        "Twelve Data",
-
-                    "symbol":
-                        SYMBOL,
-
-                    "timeframe":
-                        "M5",
-
-                    "candles":
-                        candle_count,
-
-                    "telegram":
-                        telegram_enabled(),
-
-                    "last_update":
-                        last_update,
-
-                    "last_signal":
-                        last_signal,
-
-                    "error":
-                        error
-                })
-
-                return
-
-            # ------------------------------------------------
-            # SIGNAL
-            # ------------------------------------------------
-
-            if path == "/signal":
-
-                result = run_signal()
-
-                self.send_json(
-                    result
-                )
-
-                return
-
-            # ------------------------------------------------
-            # BACKTEST
-            # ------------------------------------------------
-
-            if path == "/backtest":
-
-                candles = get_market_data()
-
-                if len(candles) < 500:
-
-                    raise Exception(
-                        "Not enough data for backtest"
-                    )
-
-                indicators = (
-                    calculate_indicators(
-                        candles
-                    )
-                )
-
-                wins = 0
-                losses = 0
-                trades = 0
-
-                start = max(
-                    300,
-                    PATTERN_LENGTH
-                    + 50
-                )
-
-                end = (
-                    len(candles)
-                    - FORWARD_BARS
-                    - 1
-                )
-
-                for i in range(
-                    start,
-                    end
-                ):
-
-                    matches = find_matches(
-                        candles,
-                        indicators,
-                        i
-                    )
-
-                    if len(
-                        matches
-                    ) < MIN_MATCHES:
-
-                        continue
-
-                    atr = indicators[
-                        i
-                    ][
-                        "atr"
-                    ]
-
-                    stats = calculate_statistics(
-                        matches,
-                        atr
-                    )
-
-                    if (
-                        stats[
-                            "buy_probability"
-                        ]
-                        >=
-                        MIN_PROBABILITY
-                        and
-                        stats[
-                            "buy_probability"
-                        ]
-                        >
-                        stats[
-                            "sell_probability"
-                        ]
-                        + 5
-                    ):
-
-                        direction = "BUY"
-
-                    elif (
-                        stats[
-                            "sell_probability"
-                        ]
-                        >=
-                        MIN_PROBABILITY
-                        and
-                        stats[
-                            "sell_probability"
-                        ]
-                        >
-                        stats[
-                            "buy_probability"
-                        ]
-                        + 5
-                    ):
-
-                        direction = "SELL"
-
-                    else:
-
-                        continue
-
-                    entry = candles[
-                        i
-                    ][
-                        "close"
-                    ]
-
-                    if direction == "BUY":
-
-                        sl = (
-                            entry
-                            - atr
-                            * SL_ATR_MULTIPLIER
-                        )
-
-                        tp = (
-                            entry
-                            + (
-                                entry
-                                - sl
-                            )
-                            * MIN_RR
-                        )
-
-                    else:
-
-                        sl = (
-                            entry
-                            + atr
-                            * SL_ATR_MULTIPLIER
-                        )
-
-                        tp = (
-                            entry
-                            - (
-                                sl
-                                - entry
-                            )
-                            * MIN_RR
-                        )
-
-                    outcome = None
-
-                    for j in range(
-                        i + 1,
-                        min(
-                            i
-                            + 1
-                            + FORWARD_BARS,
-                            len(candles)
-                        )
-                    ):
-
-                        high = candles[
-                            j
-                        ][
-                            "high"
-                        ]
-
-                        low = candles[
-                            j
-                        ][
-                            "low"
-                        ]
-
-                        if direction == "BUY":
-
-                            if low <= sl:
-
-                                outcome = "LOSS"
-
-                                break
-
-                            if high >= tp:
-
-                                outcome = "WIN"
-
-                                break
-
-                        else:
-
-                            if high >= sl:
-
-                                outcome = "LOSS"
-
-                                break
-
-                            if low <= tp:
-
-                                outcome = "WIN"
-
-                                break
-
-                    if outcome is None:
-
-                        continue
-
-                    trades += 1
-
-                    if outcome == "WIN":
-
-                        wins += 1
-
-                    else:
-
-                        losses += 1
-
-                win_rate = (
-
-                    wins
-                    / trades
-                    * 100
-
-                    if trades > 0
-
-                    else 0
-                )
-
-                self.send_json({
-
-                    "symbol":
-                        SYMBOL,
-
-                    "timeframe":
-                        "M5",
-
-                    "data_source":
-                        "Twelve Data",
-
-                    "candles":
-                        len(candles),
-
-                    "trades":
-                        trades,
-
-                    "wins":
-                        wins,
-
-                    "losses":
-                        losses,
-
-                    "win_rate":
-                        round(
-                            win_rate,
-                            2
-                        ),
-
-                    "warning":
-                        "Historical backtest results do not guarantee future performance."
-                })
-
-                return
-
-            # ------------------------------------------------
-            # 404
-            # ------------------------------------------------
-
-            self.send_json({
-
-                "error":
-                    "Endpoint not found",
-
-                "available_endpoints": [
-
-                    "/",
-
-                    "/signal",
-
-                    "/health",
-
-                    "/backtest"
-
-                ]
-
-            }, 404)
-
-        except Exception as error:
-
-            print(
-                "Request error:",
-                repr(error)
-            )
-
-            self.send_json({
-
-                "signal":
-                    "ERROR",
-
-                "error":
-                    str(error)
-
-            }, 500)
-
-    def log_message(
-        self,
-        format_string,
-        *args
-    ):
-
-        print(
-            "%s - - [%s] %s"
-            % (
-                self.address_string(),
-                self.log_date_time_string(),
-                format_string % args
-            )
+        return jsonify(
+            {
+                "symbol": SYMBOL,
+                "timeframe": "M5",
+                "minimum_probability": (
+                    MIN_PROBABILITY
+                ),
+                "minimum_score": (
+                    MIN_SCORE
+                ),
+                "signals": total,
+                "wins": wins,
+                "losses": losses,
+                "win_rate": round(
+                    win_rate,
+                    2,
+                ),
+                "method": (
+                    "Historical Pattern "
+                    "Backtest"
+                ),
+            }
         )
 
+    except Exception as e:
 
-# ============================================================
-# MAIN
-# ============================================================
-
-def main():
-
-    print("=" * 70)
-
-    print(
-        "XAUUSD M5 REAL-TIME STATISTICAL SIGNAL ENGINE"
-    )
-
-    print("=" * 70)
-
-    print(
-        "PORT:",
-        PORT
-    )
-
-    print(
-        "SYMBOL:",
-        SYMBOL
-    )
-
-    print(
-        "TIMEFRAME:",
-        "M5"
-    )
-
-    print(
-        "DATA SOURCE:",
-        "Twelve Data"
-    )
-
-    print(
-        "API KEY:",
-        bool(
-            TWELVE_DATA_API_KEY
-        )
-    )
-
-    print(
-        "TELEGRAM:",
-        telegram_enabled()
-    )
-
-    print(
-        "PATTERN LENGTH:",
-        PATTERN_LENGTH
-    )
-
-    print(
-        "TOP MATCHES:",
-        TOP_MATCHES
-    )
-
-    print(
-        "MIN SCORE:",
-        MIN_SCORE
-    )
-
-    print(
-        "MIN PROBABILITY:",
-        MIN_PROBABILITY
-    )
-
-    print(
-        "MIN R/R:",
-        MIN_RR
-    )
-
-    print(
-        "POLL:",
-        POLL_SECONDS,
-        "seconds"
-    )
-
-    print("=" * 70)
-
-    # Start background engine
-    thread = threading.Thread(
-        target=background_loop,
-        daemon=True
-    )
-
-    thread.start()
-
-    # Start web server
-    server = HTTPServer(
-        (
-            "0.0.0.0",
-            PORT
-        ),
-        Handler
-    )
-
-    print(
-        "Server listening on:",
-        PORT
-    )
-
-    server.serve_forever()
+        return jsonify(
+            {
+                "error": str(e)
+            }
+        ), 500
 
 
 # ============================================================
@@ -2511,4 +1146,22 @@ def main():
 
 if __name__ == "__main__":
 
-    main()
+    # Background analysis
+    thread = threading.Thread(
+        target=background_worker,
+        daemon=True,
+    )
+
+    thread.start()
+
+    port = int(
+        os.getenv(
+            "PORT",
+            "10000",
+        )
+    )
+
+    app.run(
+        host="0.0.0.0",
+        port=port,
+    )
