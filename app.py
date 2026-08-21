@@ -16,6 +16,8 @@ BASE = {
         "MAX_STOP_ATR": engine.MAX_STOP_ATR,
         "SPREAD": engine.SPREAD,
         "SLIPPAGE": engine.SLIPPAGE,
+        "HISTORY_POINTS": int(os.getenv("XAU_HISTORY_POINTS", str(engine.SIGNAL_HISTORY_POINTS))),
+        "BACKTEST_POINTS": int(os.getenv("XAU_BACKTEST_POINTS", "200")),
     },
     "BTC/USD": {
         "MINIMUM_ATR": float(os.getenv("BTC_MINIMUM_ATR", "20.0")),
@@ -23,10 +25,23 @@ BASE = {
         "MAX_STOP_ATR": float(os.getenv("BTC_MAX_STOP_ATR", "3.0")),
         "SPREAD": float(os.getenv("BTC_SPREAD", "5.0")),
         "SLIPPAGE": float(os.getenv("BTC_SLIPPAGE", "2.0")),
+        "HISTORY_POINTS": int(os.getenv("BTC_HISTORY_POINTS", "80")),
+        "BACKTEST_POINTS": int(os.getenv("BTC_BACKTEST_POINTS", "80")),
     },
 }
 
 engine.ENGINE_VERSION = "4.3"
+_ORIGINAL_RUN_BACKTEST = engine.run_backtest
+
+
+def bounded_run_backtest(df, test_points=200):
+    """Prevent the expensive v4 historical scan from exceeding Render's worker timeout on BTC."""
+    if getattr(engine, "SYMBOL", "XAU/USD") == "BTC/USD":
+        test_points = min(int(test_points), BASE["BTC/USD"]["BACKTEST_POINTS"])
+    return _ORIGINAL_RUN_BACKTEST(df, test_points)
+
+
+engine.run_backtest = bounded_run_backtest
 
 
 def activate(symbol):
@@ -42,6 +57,7 @@ def activate(symbol):
     engine.MAX_STOP_ATR = cfg["MAX_STOP_ATR"]
     engine.SPREAD = cfg["SPREAD"]
     engine.SLIPPAGE = cfg["SLIPPAGE"]
+    engine.SIGNAL_HISTORY_POINTS = cfg["HISTORY_POINTS"]
     return symbol
 
 
@@ -75,6 +91,7 @@ class MultiSymbolMiddleware:
                 "MAX_STOP_ATR": engine.MAX_STOP_ATR,
                 "SPREAD": engine.SPREAD,
                 "SLIPPAGE": engine.SLIPPAGE,
+                "SIGNAL_HISTORY_POINTS": engine.SIGNAL_HISTORY_POINTS,
             }
             try:
                 activate(requested)
@@ -145,6 +162,8 @@ def diagnostics():
             "max_stop_atr": engine.MAX_STOP_ATR,
             "spread": engine.SPREAD,
             "slippage": engine.SLIPPAGE,
+            "history_points": engine.SIGNAL_HISTORY_POINTS,
+            "backtest_points": BASE[requested.strip().upper()]["BACKTEST_POINTS"],
         }
 
         df = engine.get_market_data(1000)
