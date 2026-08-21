@@ -37,6 +37,31 @@ BASE = {
 }
 
 
+def _telegram_alerting_jsonify(*args, **kwargs):
+    """Preserve the existing Telegram workflow without changing v5 route logic."""
+    payload = args[0] if args and isinstance(args[0], dict) else None
+    if payload and payload.get("valid") and payload.get("signal") in ("BUY", "SELL"):
+        levels = payload.get("trade_levels") or {}
+        message = (
+            f"<b>🚨 XAU/USD SIGNAL v5</b>\n\n"
+            f"<b>Direction:</b> {payload.get('signal')}\n"
+            f"<b>Timeframe:</b> M5\n"
+            f"<b>Score:</b> {payload.get('score')}\n"
+            f"<b>Entry:</b> NEXT CANDLE OPEN (THEORETICAL)\n"
+            f"<b>Projected SL:</b> {levels.get('sl')}\n"
+            f"<b>Projected TP:</b> {levels.get('tp')}\n"
+            f"<b>RR:</b> {levels.get('risk_reward')}\n"
+            f"<b>Pattern:</b> {', '.join(payload.get('patterns') or [])}\n"
+            f"<b>Safety:</b> PAPER VALIDATION ONLY"
+        )
+        payload["telegram"] = engine.send_telegram(message)
+    return _original_jsonify(*args, **kwargs)
+
+
+_original_jsonify = engine.jsonify
+engine.jsonify = _telegram_alerting_jsonify
+
+
 def activate(symbol):
     symbol = (symbol or os.getenv("SYMBOL", "XAU/USD")).strip().upper()
     if symbol not in SUPPORTED_SYMBOLS:
