@@ -7,21 +7,21 @@ import threading
 from flask import Flask
 from datetime import datetime, timezone
 
-# --- 1. DUMMY WEB SERVER (รันฟรีบน Render) ---
+# --- 1. DUMMY WEB SERVER ---
 app = Flask(__name__)
 
 @app.route('/')
 def home():
-    return "XM Standard $50 Gold M1 Trap Bot is running live!"
+    return "XM Standard $50 Bot is running!"
 
 def run_web_server():
     port = int(os.environ.get("PORT", 10000))
     app.run(host='0.0.0.0', port=port)
 
 # --- 2. CONFIGURATION ---
-SYMBOL = "GC=F"         # Gold Futures
-TIMEFRAME = "1m"        # M1 ไทม์เฟรมสำหรับสแกนรอบไว
-CHECK_INTERVAL = 60     # สแกนทุกๆ 1 นาที
+SYMBOL = "XAUUSD=X"      # เปลี่ยนมาใช้ XAUUSD=X แทน GC=F
+TIMEFRAME = "1m"
+CHECK_INTERVAL = 90      # ปรับเวลาเป็น 90 วินาที เพื่อเว้นระยะไม่ให้โดน Rate Limit
 
 BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
@@ -34,7 +34,7 @@ def send_telegram(message):
     except Exception as e:
         print(f"Error sending message: {e}")
 
-# --- 3. NEWS FILTER (กรองข่าวแรง 30 นาที) ---
+# --- 3. NEWS FILTER (30 Mins Buffer) ---
 def check_high_impact_news(buffer_minutes=30):
     url = "https://n3.forexfactory1.com/ff_calendar_thisweek.json"
     try:
@@ -52,7 +52,7 @@ def check_high_impact_news(buffer_minutes=30):
                     event_time = datetime.fromisoformat(event_date_str.replace('Z', '+00:00'))
                     time_diff = abs((event_time - now_utc).total_seconds() / 60)
                     if time_diff <= buffer_minutes:
-                        print(f"⚠️ News Buffer Active: {event.get('title')} in {round(time_diff)} mins!")
+                        print(f"⚠️ News Active: {event.get('title')} in {round(time_diff)} mins!")
                         return True
     except Exception as e:
         print(f"News Filter Error: {e}")
@@ -63,21 +63,21 @@ def check_high_impact_news(buffer_minutes=30):
 def scan_m1_trap():
     print("Scanning M1 Liquidity Trap Setup...")
     
-    # 🛑 เช็กข่าวแรงก่อนวิเคราะห์
     if check_high_impact_news(buffer_minutes=30):
-        print("⏭️ Skipped due to USD High-Impact News Buffer.")
+        print("⏭️ Skipped due to USD News Buffer.")
         return
 
     try:
-        df = yf.download(tickers=SYMBOL, period="1d", interval=TIMEFRAME, progress=False)
+        # ใช้ Ticker Object เพื่อดึงข้อมูลป้องกัน Rate Limit
+        ticker = yf.Ticker(SYMBOL)
+        df = ticker.history(period="1d", interval=TIMEFRAME)
+        
         if df.empty or len(df) < 30:
             return
 
-        # คำนวณราคา High/Low ย้อนหลัง 15 แท่งเพื่อดู Liquidity Zone
         df['Swing_High_15'] = df['High'].shift(2).rolling(window=15).max()
         df['Swing_Low_15'] = df['Low'].shift(2).rolling(window=15).min()
 
-        # แท่งก่อนหน้า (-2) และแท่งปัจจุบัน (-1)
         prev_close = df['Close'].iloc[-2]
         prev_open = df['Open'].iloc[-2]
         prev_high = df['High'].iloc[-2]
@@ -86,57 +86,49 @@ def scan_m1_trap():
         swing_high = df['Swing_High_15'].iloc[-2]
         swing_low = df['Swing_Low_15'].iloc[-2]
 
-        # คำนวณขนาดไส้เทียน
         body_size = abs(prev_close - prev_open)
         lower_wick = min(prev_open, prev_close) - prev_low
         upper_wick = prev_high - max(prev_open, prev_close)
 
         entry_price = round(prev_close, 2)
 
-        # 🟢 BUY TRAP: ราคาทิ่มหลุด Swing Low เดิมแต่กลับตัวปิดเขียว/ทิ้งไส้ล่างยาว
+        # 🟢 BUY TRAP
         is_buy_sweep = (prev_low < swing_low) and (prev_close > swing_low)
         is_bullish_reversal = (prev_close > prev_open) or (lower_wick > (body_size * 1.5))
 
         if is_buy_sweep and is_bullish_reversal:
-            # คำนวณ SL/TP แบบฟิกซ์แคบสำหรับ Standard Account ($50 Risk)
-            sl_price = round(entry_price - 1.00, 2)  # SL แคบเพียง 100 จุด ($1.00)
-            tp_price = round(entry_price + 1.20, 2)  # TP 120 จุด ($1.20) เพื่อข้ามค่า Spread XM
+            sl_price = round(entry_price - 1.00, 2)
+            tp_price = round(entry_price + 1.20, 2)
 
             msg = (
                 f"⚡ *XM STANDARD $50: BUY TRAP SIGNAL (M1)*\n\n"
                 f"📌 *สินค้า:* Gold (XAUUSD)\n"
                 f"📈 *คำสั่ง:* BUY\n"
                 f"🎯 *Entry:* `{entry_price}`\n"
-                f"🛑 *SL:* `{sl_price}` (เสี่ยงประมาณ $1.00 ที่ 0.01 Lot)\n"
+                f"🛑 *SL:* `{sl_price}` (-$1.00 ที่ 0.01 Lot)\n"
                 f"🎯 *TP:* `{tp_price}`\n\n"
-                f"💡 *คำแนะนำสำหรับ XM Standard ($50):*\n"
-                f"• ควรใช้ Lot ขนาด **0.01** เท่านั้น\n"
-                f"• กวาด Liquidity M1 เรียบร้อย ฟ้าบวกกดเก็บทันที!\n"
-                f"🛡️ *News Status:* Safe (No USD News Buffer)\n"
+                f"💡 *คำแนะนำ:* ออกออเดอร์ **0.01 Lot** เท่านั้น\n"
                 f"⏰ _Timeframe: M1_"
             )
             send_telegram(msg)
             print("Sent M1 Buy Trap Signal!")
 
-        # 🔴 SELL TRAP: ราคาดันทะลุ Swing High เดิมแต่เจอตบกลับปิดแดง/ทิ้งไส้บนยาว
+        # 🔴 SELL TRAP
         is_sell_sweep = (prev_high > swing_high) and (prev_close < swing_high)
         is_bearish_reversal = (prev_close < prev_open) or (upper_wick > (body_size * 1.5))
 
         if is_sell_sweep and is_bearish_reversal:
-            sl_price = round(entry_price + 1.00, 2)  # SL แคบเพียง 100 จุด ($1.00)
-            tp_price = round(entry_price - 1.20, 2)  # TP 120 จุด ($1.20)
+            sl_price = round(entry_price + 1.00, 2)
+            tp_price = round(entry_price - 1.20, 2)
 
             msg = (
                 f"⚡ *XM STANDARD $50: SELL TRAP SIGNAL (M1)*\n\n"
                 f"📌 *สินค้า:* Gold (XAUUSD)\n"
                 f"📉 *คำสั่ง:* SELL\n"
                 f"🎯 *Entry:* `{entry_price}`\n"
-                f"🛑 *SL:* `{sl_price}` (เสี่ยงประมาณ $1.00 ที่ 0.01 Lot)\n"
+                f"🛑 *SL:* `{sl_price}` (-$1.00 ที่ 0.01 Lot)\n"
                 f"🎯 *TP:* `{tp_price}`\n\n"
-                f"💡 *คำแนะนำสำหรับ XM Standard ($50):*\n"
-                f"• ควรใช้ Lot ขนาด **0.01** เท่านั้น\n"
-                f"• กวาด Liquidity M1 เรียบร้อย ฟ้าบวกกดเก็บทันที!\n"
-                f"🛡️ *News Status:* Safe (No USD News Buffer)\n"
+                f"💡 *คำแนะนำ:* ออกออเดอร์ **0.01 Lot** เท่านั้น\n"
                 f"⏰ _Timeframe: M1_"
             )
             send_telegram(msg)
@@ -149,7 +141,7 @@ def scan_m1_trap():
 if __name__ == "__main__":
     threading.Thread(target=run_web_server, daemon=True).start()
     print("XM Standard $50 Bot is starting...")
-    send_telegram("🚀 *บอทสแกนทอง M1 Liquidity Trap (สำหรับ XM Standard $50) เริ่มทำงานแล้ว!*")
+    send_telegram("🚀 *ระบบสแกน M1 Trap ปรับปรุงระบบป้องกัน Rate Limit เรียบร้อยแล้ว!*")
     
     while True:
         try:
