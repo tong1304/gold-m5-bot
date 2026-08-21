@@ -1,79 +1,100 @@
 import os
-import time
-import threading
+import math
 from datetime import datetime, timezone
 
-import numpy as np
-import pandas as pd
 import requests
 from flask import Flask, jsonify
 
+
 # ============================================================
-# CONFIG
+# APP
 # ============================================================
 
 app = Flask(__name__)
 
-TWELVE_DATA_API_KEY = os.getenv("TWELVE_DATA_API_KEY", "").strip()
 
-TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
-TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "").strip()
+# ============================================================
+# ENVIRONMENT
+# ============================================================
+
+TWELVE_DATA_API_KEY = os.getenv(
+    "TWELVE_DATA_API_KEY",
+    ""
+).strip()
+
+TELEGRAM_BOT_TOKEN = os.getenv(
+    "TELEGRAM_BOT_TOKEN",
+    ""
+).strip()
+
+TELEGRAM_CHAT_ID = os.getenv(
+    "TELEGRAM_CHAT_ID",
+    ""
+).strip()
+
+
+# ============================================================
+# SYSTEM CONFIGURATION
+# ============================================================
 
 SYMBOL = "XAU/USD"
-INTERVAL = "5min"
+TIMEFRAME = "5min"
 
 # จำนวนแท่งที่ดึงจาก Twelve Data
 CANDLE_LIMIT = 1000
 
-# จำนวนแท่งที่ใช้สร้าง Pattern
+# ความยาว Pattern ที่นำมาเปรียบเทียบ
 PATTERN_LENGTH = 12
 
-# จำนวน Pattern ที่นำมาวิเคราะห์
+# จำนวน Pattern ที่เก็บหลังจากเรียงตาม similarity
 MAX_MATCHES = 40
 
-# ความคล้ายขั้นต่ำ
+# Similarity ขั้นต่ำ
 MIN_SIMILARITY = 0.60
 
-# ------------------------------------------------------------
-# Signal settings
-# ------------------------------------------------------------
+# ============================================================
+# USER SIGNAL RULE
+# ============================================================
 
-# ผู้ใช้ต้องการ Score >= 65
-MIN_SCORE = 65.0
-
-# Probability ขั้นต่ำสำหรับการออกออเดอร์
+# Probability ต้อง >= 70%
 MIN_PROBABILITY = 70.0
+
+# Score ต้อง >= 65
+MIN_SCORE = 65.0
 
 # Pattern อย่างน้อย
 MIN_MATCHES = 20
 
-# ATR multiplier สำหรับ safety SL
-SL_ATR_MULTIPLIER = 1.0
 
 # ============================================================
 # STATE
 # ============================================================
 
-state = {
-    "last_signal": None,
+STATE = {
     "last_update": None,
+    "last_signal": None,
+    "last_signal_key": None,
     "last_error": None,
 }
 
 
 # ============================================================
-# UTILITY
+# BASIC HELPERS
 # ============================================================
 
 def utc_now():
     return datetime.now(timezone.utc)
 
 
-def safe_float(value, default=0.0):
+def to_float(value, default=0.0):
     try:
         return float(value)
     except Exception:
         return default
+
+
+def round_price(value):
+    return round(float(value), 2)
 
 
 # ============================================================
@@ -81,14 +102,17 @@ def safe_float(value, default=0.0):
 # ============================================================
 
 def get_candles():
+
     if not TWELVE_DATA_API_KEY:
-        raise RuntimeError("TWELVE_DATA_API_KEY is not configured")
+        raise RuntimeError(
+            "TWELVE_DATA_API_KEY is not configured"
+        )
 
     url = "https://api.twelvedata.com/time_series"
 
     params = {
         "symbol": SYMBOL,
-        "interval": INTERVAL,
+        "interval": TIMEFRAME,
         "outputsize": CANDLE_LIMIT,
         "apikey": TWELVE_DATA_API_KEY,
         "format": "JSON",
@@ -105,185 +129,208 @@ def get_candles():
 
     data = response.json()
 
-    if "status" in data and data["status"] == "error":
+    if data.get("status") == "error":
         raise RuntimeError(
-            data.get("message", "Twelve Data API error")
+            data.get(
+                "message",
+                "Twelve Data API error"
+            )
         )
 
     values = data.get("values")
 
     if not values:
-        raise RuntimeError("No candle data received from Twelve Data")
-
-    df = pd.DataFrame(values)
-
-    required = [
-        "datetime",
-        "open",
-        "high",
-        "low",
-        "close",
-    ]
-
-    for column in required:
-        if column not in df.columns:
-            raise RuntimeError(
-                f"Missing candle column: {column}"
-            )
-
-    for column in [
-        "open",
-        "high",
-        "low",
-        "close",
-    ]:
-        df[column] = pd.to_numeric(
-            df[column],
-            errors="coerce",
+        raise RuntimeError(
+            "No candle data received from Twelve Data"
         )
 
-    df["datetime"] = pd.to_datetime(
-        df["datetime"],
-        errors="coerce",
-    )
+    candles = []
 
-    df = df.dropna(
-        subset=[
-            "datetime",
-            "open",
-            "high",
-            "low",
-            "close",
-        ]
-    )
+    for item in values:
 
-    # Twelve Data returns newest first
-    df = df.sort_values("datetime")
+        try:
 
-    df = df.reset_index(drop=True)
+            candle = {
+                "datetime": item["datetime"],
+                "open": float(item["open"]),
+                "high": float(item["high"]),
+                "low": float(item["low"]),
+                "close": float(item["close"]),
+            }
 
-    return df
+            candles.append(candle)
+
+        except Exception:
+            continue
+
+    # Twelve Data มักส่งข้อมูล newest -> oldest
+    # เราต้องการ oldest -> newest
+    candles.reverse()
+
+    if len(candles) < (
+        PATTERN_LENGTH * 2 + 10
+    ):
+        raise RuntimeError(
+            "Not enough candle data"
+        )
+
+    return candles
 
 
 # ============================================================
 # ATR
 # ============================================================
 
-def calculate_atr(df, period=14):
-    high = df["high"]
-    low = df["low"]
-    close = df["close"]
+def calculate_atr(candles, period=14):
 
-    previous_close = close.shift(1)
+    if len(candles) < period + 1:
+        return 0.0
 
-    tr1 = high - low
-    tr2 = (high - previous_close).abs()
-    tr3 = (low - previous_close).abs()
+    true_ranges = []
 
-    true_range = pd.concat(
-        [tr1, tr2, tr3],
-        axis=1,
-    ).max(axis=1)
+    for i in range(1, len(candles)):
 
-    atr = true_range.rolling(
-        period
-    ).mean()
+        current = candles[i]
+        previous = candles[i - 1]
 
-    return atr
+        high = current["high"]
+        low = current["low"]
+        previous_close = previous["close"]
+
+        tr1 = high - low
+        tr2 = abs(high - previous_close)
+        tr3 = abs(low - previous_close)
+
+        true_range = max(
+            tr1,
+            tr2,
+            tr3,
+        )
+
+        true_ranges.append(
+            true_range
+        )
+
+    recent = true_ranges[-period:]
+
+    if not recent:
+        return 0.0
+
+    return sum(recent) / len(recent)
 
 
 # ============================================================
-# PATTERN CREATION
+# PRICE PATTERN
 # ============================================================
 
-def create_pattern(df):
-    """
-    สร้าง Pattern จากกราฟราคาโดย normalize
-    เพื่อให้เปรียบเทียบรูปทรงของกราฟได้
-    แม้ราคาจะอยู่คนละระดับ
-    """
+def make_pattern(candles):
 
-    closes = df["close"].values.astype(float)
-
-    if len(closes) < PATTERN_LENGTH:
+    if len(candles) < PATTERN_LENGTH:
         return None
 
-    closes = closes[-PATTERN_LENGTH:]
+    window = candles[
+        -PATTERN_LENGTH:
+    ]
 
-    base = closes[0]
+    first_close = window[0]["close"]
 
-    if base == 0:
+    if first_close <= 0:
         return None
 
-    normalized = (
-        closes / base
-    ) - 1.0
+    pattern = []
 
-    return normalized
+    for candle in window:
+
+        normalized = (
+            candle["close"]
+            / first_close
+            - 1.0
+        )
+
+        pattern.append(
+            normalized
+        )
+
+    return pattern
 
 
 # ============================================================
 # PATTERN SIMILARITY
 # ============================================================
 
-def pattern_similarity(pattern_a, pattern_b):
-    if pattern_a is None or pattern_b is None:
+def pattern_similarity(
+    pattern_a,
+    pattern_b,
+):
+
+    if not pattern_a or not pattern_b:
         return 0.0
 
     if len(pattern_a) != len(pattern_b):
         return 0.0
 
-    distance = np.sqrt(
-        np.mean(
-            (pattern_a - pattern_b) ** 2
-        )
+    squared = 0.0
+
+    for a, b in zip(
+        pattern_a,
+        pattern_b,
+    ):
+
+        diff = a - b
+        squared += diff * diff
+
+    mse = (
+        squared
+        / len(pattern_a)
     )
 
-    # Convert distance to similarity
-    similarity = np.exp(
+    distance = math.sqrt(mse)
+
+    similarity = math.exp(
         -distance * 25.0
     )
 
-    return float(
-        np.clip(
-            similarity,
-            0.0,
-            1.0,
-        )
+    if similarity < 0:
+        similarity = 0
+
+    if similarity > 1:
+        similarity = 1
+
+    return similarity
+
+
+# ============================================================
+# FIND HISTORICAL PATTERNS
+# ============================================================
+
+def find_matches(candles):
+
+    current_pattern = make_pattern(
+        candles
     )
-
-
-# ============================================================
-# HISTORICAL PATTERN SEARCH
-# ============================================================
-
-def find_historical_patterns(df):
-    current_pattern = create_pattern(df)
 
     if current_pattern is None:
         return []
 
     matches = []
 
-    # ต้องเหลือแท่งหลัง Pattern
-    # เพื่อดูว่า Pattern ในอดีตไปทางไหน
-    start_index = PATTERN_LENGTH
-    end_index = (
-        len(df)
+    # ต้องมีแท่งอนาคตอย่างน้อย 1 แท่ง
+    last_index = (
+        len(candles)
         - PATTERN_LENGTH
         - 1
     )
 
     for i in range(
-        start_index,
-        end_index + 1,
+        PATTERN_LENGTH,
+        last_index + 1,
     ):
 
-        historical_window = df.iloc[
+        historical_window = candles[
             i - PATTERN_LENGTH:i
         ]
 
-        historical_pattern = create_pattern(
+        historical_pattern = make_pattern(
             historical_window
         )
 
@@ -298,26 +345,31 @@ def find_historical_patterns(df):
         if similarity < MIN_SIMILARITY:
             continue
 
-        historical_close = safe_float(
-            df.iloc[i - 1]["close"]
-        )
+        historical_close = candles[
+            i - 1
+        ]["close"]
 
-        next_close = safe_float(
-            df.iloc[i]["close"]
-        )
+        future_close = candles[
+            i
+        ]["close"]
 
         if historical_close <= 0:
             continue
 
-        movement = (
-            next_close
-            - historical_close
-        ) / historical_close * 100.0
+        movement_percent = (
+            (
+                future_close
+                - historical_close
+            )
+            / historical_close
+        ) * 100.0
 
-        if movement > 0:
+        if movement_percent > 0:
             direction = "BUY"
-        elif movement < 0:
+
+        elif movement_percent < 0:
             direction = "SELL"
+
         else:
             direction = "FLAT"
 
@@ -325,25 +377,30 @@ def find_historical_patterns(df):
             {
                 "index": i,
                 "similarity": similarity,
-                "movement_percent": movement,
+                "movement_percent": movement_percent,
                 "direction": direction,
             }
         )
 
+    # เรียงจาก Pattern ที่คล้ายที่สุด
     matches.sort(
         key=lambda x: x["similarity"],
         reverse=True,
     )
 
-    return matches[:MAX_MATCHES]
+    return matches[
+        :MAX_MATCHES
+    ]
 
 
 # ============================================================
 # HISTORICAL STATISTICS
 # ============================================================
 
-def calculate_statistics(matches):
+def historical_statistics(matches):
+
     if not matches:
+
         return {
             "sample_size": 0,
             "buy_probability": 0.0,
@@ -355,59 +412,95 @@ def calculate_statistics(matches):
             "expected_down_percent": 0.0,
         }
 
-    buy = [
-        x
-        for x in matches
-        if x["direction"] == "BUY"
-    ]
+    buy_count = 0
+    sell_count = 0
+    flat_count = 0
 
-    sell = [
-        x
-        for x in matches
-        if x["direction"] == "SELL"
-    ]
+    similarities = []
 
-    flat = [
-        x
-        for x in matches
-        if x["direction"] == "FLAT"
-    ]
+    up_moves = []
+    down_moves = []
+
+    for match in matches:
+
+        direction = match[
+            "direction"
+        ]
+
+        similarity = match[
+            "similarity"
+        ]
+
+        movement = match[
+            "movement_percent"
+        ]
+
+        similarities.append(
+            similarity
+        )
+
+        if direction == "BUY":
+
+            buy_count += 1
+
+            if movement > 0:
+                up_moves.append(
+                    movement
+                )
+
+        elif direction == "SELL":
+
+            sell_count += 1
+
+            if movement < 0:
+                down_moves.append(
+                    abs(movement)
+                )
+
+        else:
+
+            flat_count += 1
 
     total = len(matches)
 
     buy_probability = (
-        len(buy) / total * 100
+        buy_count
+        / total
+        * 100.0
     )
 
     sell_probability = (
-        len(sell) / total * 100
+        sell_count
+        / total
+        * 100.0
     )
 
     flat_probability = (
-        len(flat) / total * 100
+        flat_count
+        / total
+        * 100.0
     )
 
-    positive_moves = [
-        x["movement_percent"]
-        for x in matches
-        if x["movement_percent"] > 0
-    ]
+    average_similarity = (
+        sum(similarities)
+        / len(similarities)
+    )
 
-    negative_moves = [
-        x["movement_percent"]
-        for x in matches
-        if x["movement_percent"] < 0
-    ]
+    best_similarity = max(
+        similarities
+    )
 
     expected_up = (
-        float(np.mean(positive_moves))
-        if positive_moves
+        sum(up_moves)
+        / len(up_moves)
+        if up_moves
         else 0.0
     )
 
     expected_down = (
-        abs(float(np.mean(negative_moves)))
-        if negative_moves
+        sum(down_moves)
+        / len(down_moves)
+        if down_moves
         else 0.0
     )
 
@@ -426,21 +519,11 @@ def calculate_statistics(matches):
             2,
         ),
         "average_similarity": round(
-            float(
-                np.mean(
-                    [
-                        x["similarity"]
-                        for x in matches
-                    ]
-                )
-            ),
+            average_similarity,
             4,
         ),
         "best_similarity": round(
-            max(
-                x["similarity"]
-                for x in matches
-            ),
+            best_similarity,
             4,
         ),
         "expected_up_percent": round(
@@ -463,42 +546,47 @@ def calculate_score(
     matches,
     average_similarity,
 ):
-    """
-    Score ไม่ใช่ Probability
 
-    Probability = ผลจาก Pattern ในอดีต
-
-    Score = ความแข็งแรงโดยรวมของ Pattern
-    """
-
-    probability_score = min(
+    # Probability เป็นองค์ประกอบหลัก
+    probability_component = min(
         probability,
         100.0,
     )
 
-    sample_score = min(
-        len(matches) / MAX_MATCHES * 100.0,
+    # จำนวน Pattern
+    sample_component = min(
+        (
+            len(matches)
+            / MAX_MATCHES
+        ) * 100.0,
         100.0,
     )
 
-    similarity_score = (
-        average_similarity * 100.0
+    # ความคล้าย
+    similarity_component = (
+        average_similarity
+        * 100.0
     )
 
     score = (
-        probability_score * 0.55
-        + sample_score * 0.20
-        + similarity_score * 0.25
+        probability_component
+        * 0.60
+        +
+        sample_component
+        * 0.15
+        +
+        similarity_component
+        * 0.25
     )
 
     return round(
-        float(score),
+        score,
         2,
     )
 
 
 # ============================================================
-# ENTRY / SL / TP
+# TRADE LEVELS
 # ============================================================
 
 def calculate_trade_levels(
@@ -507,41 +595,33 @@ def calculate_trade_levels(
     atr,
     statistics,
 ):
-    """
-    Dynamic TP/SL
-
-    ใช้ ATR + สถิติ Pattern
-    """
 
     if atr <= 0:
         atr = entry * 0.001
 
-    up_probability = (
-        statistics["buy_probability"]
-    )
-
-    down_probability = (
-        statistics["sell_probability"]
-    )
-
     if direction == "BUY":
 
-        confidence_factor = max(
-            1.0,
-            min(
-                2.0,
-                up_probability / 50.0,
-            ),
+        probability = statistics[
+            "buy_probability"
+        ]
+
+        # Probability สูงขึ้น
+        # ให้ TP กว้างขึ้นเล็กน้อย
+        tp_multiplier = (
+            1.0
+            + (
+                probability
+                - 70.0
+            ) / 100.0
         )
 
-        sl_distance = (
-            atr
-            * SL_ATR_MULTIPLIER
-        )
+        # SL 1 ATR
+        sl_distance = atr
 
+        # TP ประมาณ 1.0 - 1.3 ATR
         tp_distance = (
             atr
-            * confidence_factor
+            * tp_multiplier
         )
 
         stop_loss = (
@@ -556,22 +636,23 @@ def calculate_trade_levels(
 
     else:
 
-        confidence_factor = max(
-            1.0,
-            min(
-                2.0,
-                down_probability / 50.0,
-            ),
+        probability = statistics[
+            "sell_probability"
+        ]
+
+        tp_multiplier = (
+            1.0
+            + (
+                probability
+                - 70.0
+            ) / 100.0
         )
 
-        sl_distance = (
-            atr
-            * SL_ATR_MULTIPLIER
-        )
+        sl_distance = atr
 
         tp_distance = (
             atr
-            * confidence_factor
+            * tp_multiplier
         )
 
         stop_loss = (
@@ -585,9 +666,9 @@ def calculate_trade_levels(
         )
 
     return (
-        round(entry, 2),
-        round(stop_loss, 2),
-        round(take_profit, 2),
+        round_price(entry),
+        round_price(stop_loss),
+        round_price(take_profit),
     )
 
 
@@ -595,37 +676,44 @@ def calculate_trade_levels(
 # SIGNAL ENGINE
 # ============================================================
 
-def generate_signal(df):
+def generate_signal(candles):
 
-    if len(df) < (
-        PATTERN_LENGTH * 2 + 20
-    ):
-        raise RuntimeError(
-            "Not enough candle data"
-        )
+    latest = candles[-1]
 
-    matches = find_historical_patterns(
-        df
+    entry = latest["close"]
+
+    atr = calculate_atr(
+        candles
     )
 
-    statistics = calculate_statistics(
+    matches = find_matches(
+        candles
+    )
+
+    statistics = historical_statistics(
         matches
     )
 
     if not matches:
+
         return {
-            "timestamp": str(
-                df.iloc[-1]["datetime"]
-            ),
+            "timestamp": latest[
+                "datetime"
+            ],
             "symbol": SYMBOL,
             "timeframe": "M5",
             "signal": "NO_TRADE",
             "score": 0.0,
-            "entry": safe_float(
-                df.iloc[-1]["close"]
+            "probability": 0.0,
+            "entry": round_price(
+                entry
             ),
             "stop_loss": None,
             "take_profit": None,
+            "atr": round(
+                atr,
+                4,
+            ),
             "historical_statistics": statistics,
             "matched_patterns": 0,
             "method": (
@@ -644,64 +732,71 @@ def generate_signal(df):
         "sell_probability"
     ]
 
-    average_similarity = statistics[
-        "average_similarity"
-    ]
+    # เลือกทิศทางที่ Probability สูงกว่า
+    if (
+        buy_probability
+        > sell_probability
+    ):
 
-    entry = safe_float(
-        df.iloc[-1]["close"]
-    )
-
-    atr_series = calculate_atr(df)
-
-    atr = safe_float(
-        atr_series.iloc[-1],
-        entry * 0.001,
-    )
-
-    # --------------------------------------------------------
-    # เลือก Probability สูงสุด
-    # --------------------------------------------------------
-
-    if buy_probability > sell_probability:
         direction = "BUY"
-        probability = buy_probability
 
-    elif sell_probability > buy_probability:
+        probability = (
+            buy_probability
+        )
+
+    elif (
+        sell_probability
+        > buy_probability
+    ):
+
         direction = "SELL"
-        probability = sell_probability
+
+        probability = (
+            sell_probability
+        )
 
     else:
-        direction = "NO_TRADE"
-        probability = 0.0
 
-    # --------------------------------------------------------
-    # SCORE
-    # --------------------------------------------------------
+        direction = "NO_TRADE"
+
+        probability = 0.0
 
     score = calculate_score(
         probability,
         matches,
-        average_similarity,
+        statistics[
+            "average_similarity"
+        ],
     )
 
-    # --------------------------------------------------------
-    # SIGNAL FILTER
-    # --------------------------------------------------------
+    # ========================================================
+    # STRICT FILTER
+    # ========================================================
 
-    valid_signal = (
-        direction in ["BUY", "SELL"]
-        and probability >= MIN_PROBABILITY
-        and score >= MIN_SCORE
-        and len(matches) >= MIN_MATCHES
+    valid = (
+        direction
+        in [
+            "BUY",
+            "SELL",
+        ]
+        and probability
+        >= MIN_PROBABILITY
+        and score
+        >= MIN_SCORE
+        and len(matches)
+        >= MIN_MATCHES
     )
 
-    if not valid_signal:
+    # ========================================================
+    # NO TRADE
+    # ========================================================
+
+    if not valid:
 
         return {
-            "timestamp": str(
-                df.iloc[-1]["datetime"]
-            ),
+            "timestamp": latest[
+                "datetime"
+            ],
             "symbol": SYMBOL,
             "timeframe": "M5",
             "signal": "NO_TRADE",
@@ -710,9 +805,8 @@ def generate_signal(df):
                 probability,
                 2,
             ),
-            "entry": round(
-                entry,
-                2,
+            "entry": round_price(
+                entry
             ),
             "stop_loss": None,
             "take_profit": None,
@@ -732,9 +826,9 @@ def generate_signal(df):
             ),
         }
 
-    # --------------------------------------------------------
-    # TRADE LEVELS
-    # --------------------------------------------------------
+    # ========================================================
+    # BUY / SELL
+    # ========================================================
 
     (
         entry,
@@ -748,9 +842,9 @@ def generate_signal(df):
     )
 
     return {
-        "timestamp": str(
-            df.iloc[-1]["datetime"]
-        ),
+        "timestamp": latest[
+            "datetime"
+        ],
         "symbol": SYMBOL,
         "timeframe": "M5",
         "signal": direction,
@@ -786,21 +880,23 @@ def generate_signal(df):
 def send_telegram(message):
 
     if not TELEGRAM_BOT_TOKEN:
-        return False, (
-            "TELEGRAM_BOT_TOKEN "
-            "is not configured"
+
+        return (
+            False,
+            "TELEGRAM_BOT_TOKEN is not configured",
         )
 
     if not TELEGRAM_CHAT_ID:
-        return False, (
-            "TELEGRAM_CHAT_ID "
-            "is not configured"
+
+        return (
+            False,
+            "TELEGRAM_CHAT_ID is not configured",
         )
 
     url = (
         "https://api.telegram.org/bot"
-        f"{TELEGRAM_BOT_TOKEN}"
-        "/sendMessage"
+        + TELEGRAM_BOT_TOKEN
+        + "/sendMessage"
     )
 
     payload = {
@@ -819,16 +915,45 @@ def send_telegram(message):
 
         response.raise_for_status()
 
-        return True, None
+        result = response.json()
 
-    except Exception as e:
+        if not result.get(
+            "ok",
+            False,
+        ):
 
-        return False, str(e)
+            return (
+                False,
+                result.get(
+                    "description",
+                    "Telegram API error",
+                ),
+            )
+
+        return (
+            True,
+            None,
+        )
+
+    except Exception as exc:
+
+        return (
+            False,
+            str(exc),
+        )
 
 
-def format_signal_message(signal):
+# ============================================================
+# TELEGRAM MESSAGE
+# ============================================================
 
-    direction = signal["signal"]
+def format_telegram_message(
+    signal
+):
+
+    direction = signal[
+        "signal"
+    ]
 
     if direction == "BUY":
 
@@ -847,24 +972,36 @@ def format_signal_message(signal):
     ]
 
     message = (
-        f"{emoji} <b>XAUUSD M5 SIGNAL</b>\n\n"
+        f"{emoji} <b>XAUUSD M5 SIGNAL</b>\n"
+        f"\n"
         f"<b>Signal:</b> {direction}\n"
         f"<b>Probability:</b> "
         f"{signal['probability']:.2f}%\n"
         f"<b>Score:</b> "
-        f"{signal['score']:.2f}\n\n"
+        f"{signal['score']:.2f}\n"
+        f"\n"
         f"<b>Entry:</b> "
         f"{signal['entry']:.2f}\n"
-        f"<b>TP:</b> "
+        f"<b>Take Profit:</b> "
         f"{signal['take_profit']:.2f}\n"
-        f"<b>SL:</b> "
-        f"{signal['stop_loss']:.2f}\n\n"
+        f"<b>Stop Loss:</b> "
+        f"{signal['stop_loss']:.2f}\n"
+        f"\n"
         f"<b>Patterns:</b> "
         f"{signal['matched_patterns']}\n"
-        f"<b>Similarity:</b> "
-        f"{stats['average_similarity']:.4f}\n\n"
+        f"<b>Average Similarity:</b> "
+        f"{stats['average_similarity']:.4f}\n"
+        f"<b>Best Similarity:</b> "
+        f"{stats['best_similarity']:.4f}\n"
+        f"\n"
+        f"<b>BUY:</b> "
+        f"{stats['buy_probability']:.2f}%\n"
+        f"<b>SELL:</b> "
+        f"{stats['sell_probability']:.2f}%\n"
+        f"\n"
         f"<b>Time:</b> "
-        f"{signal['timestamp']}\n\n"
+        f"{signal['timestamp']}\n"
+        f"\n"
         f"<i>Historical Pattern Analysis</i>"
     )
 
@@ -872,87 +1009,89 @@ def format_signal_message(signal):
 
 
 # ============================================================
-# SIGNAL EXECUTION
+# RUN SIGNAL
 # ============================================================
 
-def run_signal():
+def run_signal(
+    send_notification=True
+):
 
-    df = get_candles()
+    candles = get_candles()
 
-    signal = generate_signal(df)
+    signal = generate_signal(
+        candles
+    )
 
-    state["last_update"] = utc_now().isoformat()
-    state["last_error"] = None
+    STATE[
+        "last_update"
+    ] = utc_now().isoformat()
 
-    # --------------------------------------------------------
-    # ส่ง Telegram เฉพาะ BUY / SELL
-    # --------------------------------------------------------
+    STATE[
+        "last_error"
+    ] = None
 
-    if signal["signal"] in [
-        "BUY",
-        "SELL",
-    ]:
+    # ========================================================
+    # TELEGRAM
+    # ========================================================
 
-        # ป้องกันการส่ง Signal เดิมซ้ำ
+    if (
+        send_notification
+        and signal["signal"]
+        in [
+            "BUY",
+            "SELL",
+        ]
+    ):
+
         signal_key = (
-            f"{signal['timestamp']}_"
-            f"{signal['signal']}"
+            str(
+                signal["timestamp"]
+            )
+            + "_"
+            + signal["signal"]
         )
 
-        previous = state.get(
-            "last_signal_key"
-        )
+        # ป้องกัน Signal ซ้ำ
+        if (
+            STATE[
+                "last_signal_key"
+            ]
+            != signal_key
+        ):
 
-        if previous != signal_key:
-
-            message = format_signal_message(
-                signal
+            message = (
+                format_telegram_message(
+                    signal
+                )
             )
 
             if message:
 
-                ok, error = send_telegram(
-                    message
+                ok, error = (
+                    send_telegram(
+                        message
+                    )
                 )
 
                 if not ok:
-                    state[
+
+                    STATE[
                         "last_error"
                     ] = error
 
-            state[
+            STATE[
                 "last_signal_key"
             ] = signal_key
 
-    state["last_signal"] = signal
+    STATE[
+        "last_signal"
+    ] = signal
 
     return signal
 
 
 # ============================================================
-# BACKGROUND LOOP
-# ============================================================
-
-def background_worker():
-
-    while True:
-
-        try:
-
-            run_signal()
-
-        except Exception as e:
-
-            state[
-                "last_error"
-            ] = str(e)
-
-        # เช็กทุก 60 วินาที
-        time.sleep(60)
-
-
-# ============================================================
-# ROUTES
+# HOME
 # ============================================================
 
 @app.route("/")
@@ -964,73 +1103,129 @@ def home():
                 "XAUUSD M5 Telegram Signal"
             ),
             "status": "online",
-            "data_source": "Twelve Data",
-            "symbol": SYMBOL,
-            "timeframe": "M5",
-            "signal_rule": (
-                "Probability >= 70% "
-                "and Score >= 65"
+            "data_source": (
+                "Twelve Data"
             ),
-            "endpoints": [
-                "/signal",
-                "/backtest",
-                "/health",
-            ],
-        }
-    )
-
-
-@app.route("/health")
-def health():
-
-    return jsonify(
-        {
-            "status": "healthy",
-            "data_source": "Twelve Data",
             "symbol": SYMBOL,
             "timeframe": "M5",
+            "rules": {
+                "minimum_probability": (
+                    MIN_PROBABILITY
+                ),
+                "minimum_score": (
+                    MIN_SCORE
+                ),
+                "minimum_patterns": (
+                    MIN_MATCHES
+                ),
+                "minimum_similarity": (
+                    MIN_SIMILARITY
+                ),
+            },
             "telegram": bool(
                 TELEGRAM_BOT_TOKEN
                 and TELEGRAM_CHAT_ID
             ),
-            "last_update": state[
-                "last_update"
-            ],
-            "last_signal": state[
-                "last_signal"
-            ],
-            "error": state[
-                "last_error"
+            "endpoints": [
+                "/",
+                "/health",
+                "/signal",
+                "/backtest",
             ],
         }
     )
 
+
+# ============================================================
+# HEALTH
+# ============================================================
+
+@app.route("/health")
+def health():
+
+    try:
+
+        # เช็ก API Key เท่านั้น
+        # ไม่ยิง Twelve Data ทุก health check
+        api_configured = bool(
+            TWELVE_DATA_API_KEY
+        )
+
+        telegram_configured = bool(
+            TELEGRAM_BOT_TOKEN
+            and TELEGRAM_CHAT_ID
+        )
+
+        return jsonify(
+            {
+                "status": "healthy",
+                "data_source": (
+                    "Twelve Data"
+                ),
+                "symbol": SYMBOL,
+                "timeframe": "M5",
+                "candles": CANDLE_LIMIT,
+                "telegram": (
+                    telegram_configured
+                ),
+                "twelve_data": (
+                    api_configured
+                ),
+                "last_update": STATE[
+                    "last_update"
+                ],
+                "last_signal": STATE[
+                    "last_signal"
+                ],
+                "error": STATE[
+                    "last_error"
+                ],
+            }
+        )
+
+    except Exception as exc:
+
+        return jsonify(
+            {
+                "status": "error",
+                "error": str(exc),
+            }
+        ), 500
+
+
+# ============================================================
+# SIGNAL
+# ============================================================
 
 @app.route("/signal")
 def signal_endpoint():
 
     try:
 
-        signal = run_signal()
+        signal = run_signal(
+            send_notification=True
+        )
 
-        return jsonify(signal)
+        return jsonify(
+            signal
+        )
 
-    except Exception as e:
+    except Exception as exc:
 
-        state[
+        STATE[
             "last_error"
-        ] = str(e)
+        ] = str(exc)
 
         return jsonify(
             {
                 "signal": "ERROR",
-                "error": str(e),
+                "error": str(exc),
             }
         ), 500
 
 
 # ============================================================
-# SIMPLE BACKTEST
+# BACKTEST
 # ============================================================
 
 @app.route("/backtest")
@@ -1038,57 +1233,86 @@ def backtest():
 
     try:
 
-        df = get_candles()
+        candles = get_candles()
 
-        total = 0
+        signals = 0
         wins = 0
         losses = 0
 
-        # ใช้ข้อมูลย้อนหลัง
-        # จำลอง Signal จาก Pattern
-
-        for i in range(
+        # จำกัดจำนวนจุดเพื่อไม่ให้ Render Free หนักเกินไป
+        start = max(
             PATTERN_LENGTH * 2,
-            len(df) - 1,
+            50,
+        )
+
+        end = len(candles) - 1
+
+        # ใช้เฉพาะช่วงล่าสุด
+        # สำหรับ Backtest แบบเบา
+        max_test_points = 120
+
+        if (
+            end - start
+            > max_test_points
         ):
 
-            historical_df = df.iloc[
-                :i
-            ].copy()
+            start = (
+                end
+                - max_test_points
+            )
+
+        for i in range(
+            start,
+            end,
+        ):
+
+            historical_candles = (
+                candles[:i]
+            )
 
             try:
 
                 signal = generate_signal(
-                    historical_df
+                    historical_candles
                 )
 
             except Exception:
+
                 continue
 
-            if signal["signal"] not in [
+            if signal[
+                "signal"
+            ] not in [
                 "BUY",
                 "SELL",
             ]:
+
                 continue
 
-            total += 1
+            signals += 1
 
-            current_close = safe_float(
-                df.iloc[i]["close"]
-            )
+            current_close = candles[
+                i
+            ]["close"]
 
-            next_close = safe_float(
-                df.iloc[i + 1]["close"]
-            )
+            next_close = candles[
+                i + 1
+            ]["close"]
 
             if (
                 signal["signal"]
                 == "BUY"
             ):
 
-                if next_close > current_close:
+                if (
+                    next_close
+                    > current_close
+                ):
+
                     wins += 1
+
                 else:
+
                     losses += 1
 
             elif (
@@ -1096,16 +1320,28 @@ def backtest():
                 == "SELL"
             ):
 
-                if next_close < current_close:
+                if (
+                    next_close
+                    < current_close
+                ):
+
                     wins += 1
+
                 else:
+
                     losses += 1
 
-        win_rate = (
-            wins / total * 100
-            if total > 0
-            else 0.0
-        )
+        if signals > 0:
+
+            win_rate = (
+                wins
+                / signals
+                * 100.0
+            )
+
+        else:
+
+            win_rate = 0.0
 
         return jsonify(
             {
@@ -1117,7 +1353,13 @@ def backtest():
                 "minimum_score": (
                     MIN_SCORE
                 ),
-                "signals": total,
+                "minimum_patterns": (
+                    MIN_MATCHES
+                ),
+                "test_points": (
+                    max_test_points
+                ),
+                "signals": signals,
                 "wins": wins,
                 "losses": losses,
                 "win_rate": round(
@@ -1128,31 +1370,29 @@ def backtest():
                     "Historical Pattern "
                     "Backtest"
                 ),
+                "warning": (
+                    "This is a simple "
+                    "historical test and "
+                    "does not guarantee "
+                    "future performance."
+                ),
             }
         )
 
-    except Exception as e:
+    except Exception as exc:
 
         return jsonify(
             {
-                "error": str(e)
+                "error": str(exc)
             }
         ), 500
 
 
 # ============================================================
-# START
+# MAIN
 # ============================================================
 
 if __name__ == "__main__":
-
-    # Background analysis
-    thread = threading.Thread(
-        target=background_worker,
-        daemon=True,
-    )
-
-    thread.start()
 
     port = int(
         os.getenv(
