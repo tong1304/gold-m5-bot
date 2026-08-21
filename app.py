@@ -7,10 +7,7 @@ from urllib.parse import parse_qs
 import requests
 from flask import Response, request
 
-_original_requests_post = requests.post
-requests.post = lambda *args, **kwargs: type("_StartupResponse", (), {"ok": False, "text": "legacy startup suppressed"})()
 import engine_v5 as engine
-requests.post = _original_requests_post
 
 SUPPORTED_SYMBOLS = ("BTC/USDT",)
 SYMBOL_LOCK = threading.RLock()
@@ -42,7 +39,7 @@ engine.evaluate_live_risk_guard = _runtime_risk_guard
 
 
 def activate(symbol):
-    symbol = (symbol or os.getenv("SYMBOL", "BTC/USDT")).strip().upper()
+    symbol = (symbol or "BTC/USDT").strip().upper()
     if symbol not in SUPPORTED_SYMBOLS:
         raise ValueError(f"Unsupported Binance symbol: {symbol}")
     cfg = BASE[symbol]
@@ -83,15 +80,7 @@ def _json_response(payload, status=200):
 
 @engine.app.route("/symbols")
 def symbols():
-    return _json_response({
-        "status": "ok",
-        "engine_version": engine.ENGINE_VERSION,
-        "exchange": "Binance",
-        "symbols": list(SUPPORTED_SYMBOLS),
-        "timeframe": "M5",
-        "market_data": "CCXT public OHLCV",
-        "live_orders_allowed": False,
-    })
+    return _json_response({"status":"ok","engine_version":engine.ENGINE_VERSION,"exchange":"Binance","symbols":list(SUPPORTED_SYMBOLS),"timeframe":"M5","market_data":"CCXT public OHLCV","live_orders_allowed":False})
 
 
 @engine.app.route("/validation")
@@ -109,11 +98,11 @@ def validation():
             activate(symbol)
             report = validate_v5.run(symbol, bars)
         report["endpoint"] = "/validation"
-        report["request"] = {"symbol": symbol, "bars": bars}
+        report["request"] = {"symbol":symbol,"bars":bars}
         report["live_orders_allowed"] = False
         return _json_response(report, 200)
     except Exception as exc:
-        return _json_response({"status":"validation_error","engine_version":engine.ENGINE_VERSION,"exchange":"Binance","symbol":symbol,"bars":bars,"error_type":type(exc).__name__,"message":str(exc),"live_orders_allowed":False,"next_step":"Use /validation/diagnostics?symbol=BTC/USDT&bars=1000"}, 502)
+        return _json_response({"status":"validation_error","engine_version":engine.ENGINE_VERSION,"exchange":"Binance","symbol":symbol,"bars":bars,"error_type":type(exc).__name__,"message":str(exc),"live_orders_allowed":False}, 502)
 
 
 @engine.app.route("/validation/diagnostics")
@@ -171,9 +160,23 @@ def live_signal():
 def scheduler_status():
     try:
         import scheduler
-        return _json_response({"status":"ok", **scheduler.status()}, 200)
+        return _json_response({"status":"ok",**scheduler.status()}, 200)
     except Exception as exc:
         return _json_response({"status":"scheduler_error","error_type":type(exc).__name__,"message":str(exc),"live_orders_allowed":False}, 502)
+
+
+def _startup_once():
+    if os.getenv("DISABLE_STARTUP_TELEGRAM", "false").strip().lower() == "true":
+        return
+    try:
+        from startup_notify import send_startup_notification
+        send_startup_notification("BTC/USDT", str(engine.ENGINE_VERSION))
+    except Exception:
+        pass
+
+# Gunicorn imports this module once per worker. The notification helper has its
+# own process-local once guard; it is deliberately best-effort and never blocks startup.
+_startup_once()
 
 
 class MultiSymbolMiddleware:
@@ -181,7 +184,7 @@ class MultiSymbolMiddleware:
         self.application = application
     def __call__(self, environ, start_response):
         params = parse_qs(environ.get("QUERY_STRING", ""), keep_blank_values=True)
-        requested = params.get("symbol", [os.getenv("SYMBOL", "BTC/USDT")])[0]
+        requested = params.get("symbol", ["BTC/USDT"])[0]
         with SYMBOL_LOCK:
             names = ("SYMBOL","MINIMUM_ATR","MIN_STOP_ATR","MAX_STOP_ATR","SPREAD","SLIPPAGE","SIGNAL_HISTORY_POINTS")
             previous = {name:getattr(engine,name) for name in names}
