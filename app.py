@@ -45,6 +45,20 @@ def activate(symbol):
     return symbol
 
 
+@engine.app.errorhandler(Exception)
+def json_exception_handler(exc):
+    from flask import request
+    return {
+        "status": "error",
+        "engine_version": "4.3",
+        "symbol": getattr(engine, "SYMBOL", None),
+        "path": request.path,
+        "message": str(exc),
+        "exception_type": type(exc).__name__,
+        "trace": traceback.format_exc(),
+    }, 500
+
+
 class MultiSymbolMiddleware:
     def __init__(self, app):
         self.app = app
@@ -63,7 +77,7 @@ class MultiSymbolMiddleware:
                 "SLIPPAGE": engine.SLIPPAGE,
             }
             try:
-                symbol = activate(requested)
+                activate(requested)
                 return self.app(environ, start_response)
             except ValueError as exc:
                 body = json.dumps({
@@ -78,14 +92,12 @@ class MultiSymbolMiddleware:
                 ])
                 return [body]
             except Exception as exc:
-                # Do not let WSGI/Render turn a useful diagnostic into a generic
-                # Internal Server Error page. Flask route errors are still handled
-                # by engine_v42; this catches failures in the multi-symbol wrapper.
                 body = json.dumps({
                     "status": "error",
                     "engine_version": "4.3",
                     "symbol": requested,
                     "message": str(exc),
+                    "exception_type": type(exc).__name__,
                     "trace": traceback.format_exc(),
                 }).encode()
                 try:
@@ -110,6 +122,73 @@ def symbols():
         "timeframe": engine.TIMEFRAME,
         "usage": "Use ?symbol=XAU/USD or ?symbol=BTC/USD on /signal, /backtest, /test-data and /health",
     }
+
+
+@engine.app.route("/diagnostics")
+def diagnostics():
+    from flask import request
+
+    requested = request.args.get("symbol", os.getenv("SYMBOL", "XAU/USD"))
+    result = {
+        "status": "ok",
+        "engine_version": "4.3",
+        "symbol": requested,
+        "stages": {},
+    }
+
+    try:
+        activate(requested)
+        result["stages"]["activate"] = {
+            "ok": True,
+            "minimum_atr": engine.MINIMUM_ATR,
+            "min_stop_atr": engine.MIN_STOP_ATR,
+            "max_stop_atr": engine.MAX_STOP_ATR,
+            "spread": engine.SPREAD,
+            "slippage": engine.SLIPPAGE,
+        }
+
+        df = engine.get_market_data(1000)
+        result["stages"]["market_data"] = {
+            "ok": True,
+            "rows": len(df),
+            "latest": str(df.iloc[-1]["datetime"]) if not df.empty else None,
+        }
+
+        df = engine.remove_incomplete_last_candle(df)
+        result["stages"]["closed_candles"] = {
+            "ok": True,
+            "rows": len(df),
+            "latest": str(df.iloc[-1]["datetime"]) if not df.empty else None,
+        }
+
+        if len(df) < 100:
+            raise RuntimeError(f"Not enough closed candles: {len(df)}")
+
+        df = engine.calculate_indicators(df)
+        result["stages"]["indicators"] = {
+            "ok": True,
+            "columns": len(df.columns),
+            "rows": len(df),
+        }
+
+        index = len(df) - 1
+        analyzed = engine.analyze_candle(df, index)
+        result["stages"]["analyze_candle"] = {
+            "ok": True,
+            "valid": analyzed.get("valid"),
+            "signal": analyzed.get("signal"),
+            "score": analyzed.get("score"),
+        }
+
+        return result
+
+    except Exception as exc:
+        result["status"] = "error"
+        result["failed_stage"] = "current"
+        result["message"] = str(exc)
+        result["exception_type"] = type(exc).__name__
+        result["trace"] = traceback.format_exc()
+        return result, 500
 
 
 app = MultiSymbolMiddleware(engine.app)
