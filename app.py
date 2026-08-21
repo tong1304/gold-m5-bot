@@ -55,9 +55,9 @@ MIN_SCORE = 65.0
 
 MIN_MATCHES = 20
 
-FORWARD_BARS = 12
+RISK_REWARD = 1.50
 
-RISK_REWARD = 1.5
+FORWARD_BARS = 12
 
 
 # ============================================================
@@ -69,9 +69,8 @@ STATE = {
     "last_signal": None,
     "last_signal_key": None,
     "last_error": None,
+    "telegram_startup_sent": False,
 }
-
-STARTUP_NOTIFICATION_SENT = False
 
 STARTUP_LOCK = threading.Lock()
 
@@ -92,11 +91,177 @@ def round_price(value):
     return round(float(value), 2)
 
 
-def safe_float(value, default=0.0):
+# ============================================================
+# TELEGRAM
+# ============================================================
+
+def telegram_configured():
+
+    return bool(
+        TELEGRAM_BOT_TOKEN
+        and TELEGRAM_CHAT_ID
+    )
+
+
+def send_telegram(message):
+
+    if not TELEGRAM_BOT_TOKEN:
+
+        return (
+            False,
+            "TELEGRAM_BOT_TOKEN is not configured"
+        )
+
+    if not TELEGRAM_CHAT_ID:
+
+        return (
+            False,
+            "TELEGRAM_CHAT_ID is not configured"
+        )
+
+    url = (
+        "https://api.telegram.org/bot"
+        + TELEGRAM_BOT_TOKEN
+        + "/sendMessage"
+    )
+
+    payload = {
+        "chat_id": TELEGRAM_CHAT_ID,
+        "text": message,
+        "parse_mode": "HTML",
+        "disable_web_page_preview": True,
+    }
+
     try:
-        return float(value)
-    except Exception:
-        return default
+
+        response = requests.post(
+            url,
+            json=payload,
+            timeout=20
+        )
+
+        response.raise_for_status()
+
+        data = response.json()
+
+        if not data.get("ok"):
+
+            return (
+                False,
+                data.get(
+                    "description",
+                    "Telegram API returned ok=false"
+                )
+            )
+
+        return (
+            True,
+            None
+        )
+
+    except Exception as exc:
+
+        return (
+            False,
+            str(exc)
+        )
+
+
+# ============================================================
+# TELEGRAM STARTUP MESSAGE
+# ============================================================
+
+def send_startup_message():
+
+    with STARTUP_LOCK:
+
+        if STATE["telegram_startup_sent"]:
+
+            return
+
+        print("=" * 70)
+        print("TELEGRAM STARTUP CHECK")
+        print("=" * 70)
+
+        if not TELEGRAM_BOT_TOKEN:
+
+            print(
+                "ERROR: TELEGRAM_BOT_TOKEN is missing"
+            )
+
+            STATE["last_error"] = (
+                "TELEGRAM_BOT_TOKEN is missing"
+            )
+
+            return
+
+        if not TELEGRAM_CHAT_ID:
+
+            print(
+                "ERROR: TELEGRAM_CHAT_ID is missing"
+            )
+
+            STATE["last_error"] = (
+                "TELEGRAM_CHAT_ID is missing"
+            )
+
+            return
+
+        print(
+            "Telegram configuration detected"
+        )
+
+        message = (
+            "🟢 <b>XAUUSD M5 BOT ONLINE</b>\n"
+            "\n"
+            "ระบบเริ่มทำงานเรียบร้อยแล้ว\n"
+            "\n"
+            "━━━━━━━━━━━━━━━━━━\n"
+            f"📊 <b>Symbol:</b> {SYMBOL}\n"
+            "⏱ <b>Timeframe:</b> M5\n"
+            "📡 <b>Data:</b> Twelve Data\n"
+            "━━━━━━━━━━━━━━━━━━\n"
+            "\n"
+            f"🎯 <b>Minimum Probability:</b> "
+            f"{MIN_PROBABILITY:.0f}%\n"
+            f"📈 <b>Minimum Score:</b> "
+            f"{MIN_SCORE:.0f}\n"
+            f"🔎 <b>Minimum Patterns:</b> "
+            f"{MIN_MATCHES}\n"
+            f"📐 <b>Minimum Similarity:</b> "
+            f"{MIN_SIMILARITY:.2f}\n"
+            f"⚖️ <b>Risk/Reward:</b> "
+            f"1:{RISK_REWARD:.2f}\n"
+            "\n"
+            "━━━━━━━━━━━━━━━━━━\n"
+            "🤖 <b>ระบบพร้อมวิเคราะห์ BUY / SELL</b>\n"
+            "━━━━━━━━━━━━━━━━━━\n"
+            "\n"
+            f"🕐 <b>Server Time:</b> "
+            f"{utc_now().strftime('%Y-%m-%d %H:%M:%S UTC')}"
+        )
+
+        ok, error = send_telegram(message)
+
+        if ok:
+
+            STATE["telegram_startup_sent"] = True
+
+            print(
+                "Telegram welcome message sent successfully"
+            )
+
+        else:
+
+            STATE["last_error"] = error
+
+            print(
+                "Telegram welcome message FAILED:"
+            )
+
+            print(error)
+
+        print("=" * 70)
 
 
 # ============================================================
@@ -106,6 +271,7 @@ def safe_float(value, default=0.0):
 def get_candles():
 
     if not TWELVE_DATA_API_KEY:
+
         raise RuntimeError(
             "TWELVE_DATA_API_KEY is not configured"
         )
@@ -135,6 +301,7 @@ def get_candles():
     data = response.json()
 
     if data.get("status") == "error":
+
         raise RuntimeError(
             data.get(
                 "message",
@@ -145,8 +312,9 @@ def get_candles():
     values = data.get("values")
 
     if not values:
+
         raise RuntimeError(
-            "No candle data received from Twelve Data"
+            "No candle data received"
         )
 
     candles = []
@@ -156,23 +324,36 @@ def get_candles():
         try:
 
             candles.append({
-                "datetime": item["datetime"],
-                "open": float(item["open"]),
-                "high": float(item["high"]),
-                "low": float(item["low"]),
-                "close": float(item["close"]),
+
+                "datetime":
+                    item["datetime"],
+
+                "open":
+                    float(item["open"]),
+
+                "high":
+                    float(item["high"]),
+
+                "low":
+                    float(item["low"]),
+
+                "close":
+                    float(item["close"])
             })
 
         except Exception:
+
             continue
 
     candles.reverse()
 
     minimum_required = (
-        PATTERN_LENGTH * 2 + 30
+        PATTERN_LENGTH * 2
+        + 30
     )
 
     if len(candles) < minimum_required:
+
         raise RuntimeError(
             "Not enough M5 candles"
         )
@@ -190,36 +371,50 @@ def calculate_atr(
 ):
 
     if len(candles) <= period:
+
         return 0.0
 
     true_ranges = []
 
-    for i in range(1, len(candles)):
+    for i in range(
+        1,
+        len(candles)
+    ):
 
         current = candles[i]
+
         previous = candles[i - 1]
 
         high = current["high"]
+
         low = current["low"]
-        previous_close = previous["close"]
+
+        previous_close = previous[
+            "close"
+        ]
 
         tr1 = high - low
-        tr2 = abs(high - previous_close)
-        tr3 = abs(low - previous_close)
 
-        true_range = max(
-            tr1,
-            tr2,
-            tr3
+        tr2 = abs(
+            high - previous_close
+        )
+
+        tr3 = abs(
+            low - previous_close
         )
 
         true_ranges.append(
-            true_range
+            max(
+                tr1,
+                tr2,
+                tr3
+            )
         )
 
     recent = true_ranges[-period:]
 
     if not recent:
+
         return 0.0
 
     return (
@@ -229,38 +424,37 @@ def calculate_atr(
 
 
 # ============================================================
-# NORMALIZED PATTERN
+# PATTERN
 # ============================================================
 
 def make_pattern(candles):
 
     if len(candles) < PATTERN_LENGTH:
+
         return None
 
-    window = candles[-PATTERN_LENGTH:]
+    window = candles[
+        -PATTERN_LENGTH:
+    ]
 
     first_close = window[0]["close"]
 
     if first_close <= 0:
+
         return None
 
-    pattern = []
-
-    for candle in window:
-
-        value = (
+    return [
+        (
             candle["close"]
             / first_close
             - 1.0
         )
-
-        pattern.append(value)
-
-    return pattern
+        for candle in window
+    ]
 
 
 # ============================================================
-# PATTERN SIMILARITY
+# SIMILARITY
 # ============================================================
 
 def pattern_similarity(
@@ -269,9 +463,11 @@ def pattern_similarity(
 ):
 
     if not pattern_a or not pattern_b:
+
         return 0.0
 
     if len(pattern_a) != len(pattern_b):
+
         return 0.0
 
     squared = 0.0
@@ -281,12 +477,9 @@ def pattern_similarity(
         pattern_b
     ):
 
-        difference = a - b
+        diff = a - b
 
-        squared += (
-            difference
-            * difference
-        )
+        squared += diff * diff
 
     mse = (
         squared
@@ -319,6 +512,7 @@ def find_matches(candles):
     )
 
     if current_pattern is None:
+
         return []
 
     matches = []
@@ -338,43 +532,38 @@ def find_matches(candles):
             i - PATTERN_LENGTH:i
         ]
 
-        historical_pattern = make_pattern(
-            historical_window
+        historical_pattern = (
+            make_pattern(
+                historical_window
+            )
         )
 
         if historical_pattern is None:
+
             continue
 
-        similarity = pattern_similarity(
-            current_pattern,
-            historical_pattern
+        similarity = (
+            pattern_similarity(
+                current_pattern,
+                historical_pattern
+            )
         )
 
         if similarity < MIN_SIMILARITY:
+
             continue
 
         historical_close = candles[
             i - 1
         ]["close"]
 
-        if historical_close <= 0:
-            continue
-
-        # ----------------------------------------------------
-        # IMPORTANT
-        #
-        # Historical pattern ends at i-1.
-        # We evaluate the NEXT candle(s), not the same candle.
-        # ----------------------------------------------------
-
-        future_end = min(
-            i + FORWARD_BARS - 1,
-            len(candles) - 1
-        )
-
         future_close = candles[
-            future_end
+            i
         ]["close"]
+
+        if historical_close <= 0:
+
+            continue
 
         movement_percent = (
             (
@@ -385,17 +574,21 @@ def find_matches(candles):
         ) * 100.0
 
         if movement_percent > 0:
+
             direction = "BUY"
 
         elif movement_percent < 0:
+
             direction = "SELL"
 
         else:
+
             direction = "FLAT"
 
         matches.append({
 
-            "index": i,
+            "index":
+                i,
 
             "similarity":
                 similarity,
@@ -404,8 +597,7 @@ def find_matches(candles):
                 movement_percent,
 
             "direction":
-                direction,
-
+                direction
         })
 
     matches.sort(
@@ -418,259 +610,141 @@ def find_matches(candles):
 
 
 # ============================================================
-# OUTCOME STATISTICS
+# HISTORICAL STATISTICS
 # ============================================================
 
-def calculate_direction_statistics(
-    matches,
-    direction
-):
+def historical_statistics(matches):
 
-    selected = [
-        x for x in matches
-        if x["direction"] == direction
-    ]
-
-    total = len(matches)
-
-    direction_count = len(selected)
-
-    if total == 0:
+    if not matches:
 
         return {
+
             "sample_size": 0,
-            "wins": 0,
-            "losses": 0,
-            "timeouts": 0,
-            "win_probability": 0.0,
-            "loss_probability": 0.0,
-            "timeout_probability": 0.0,
-            "weighted_win_probability": 0.0,
+
+            "buy_probability": 0.0,
+
+            "sell_probability": 0.0,
+
+            "flat_probability": 0.0,
+
             "average_similarity": 0.0,
-            "average_win_mfe": 0.0,
-            "average_loss_mae": 0.0,
-            "expected_pnl_percent": 0.0,
+
+            "best_similarity": 0.0,
+
+            "expected_up_percent": 0.0,
+
+            "expected_down_percent": 0.0
         }
 
-    wins = 0
-    losses = 0
-    timeouts = 0
+    buy_count = 0
 
-    win_mfe = []
-    loss_mae = []
+    sell_count = 0
 
-    pnl_values = []
+    flat_count = 0
 
     similarities = []
 
-    for item in matches:
+    up_moves = []
 
-        movement = item[
+    down_moves = []
+
+    for match in matches:
+
+        direction = match["direction"]
+
+        movement = match[
             "movement_percent"
         ]
-
-        similarity = item[
-            "similarity"
-        ]
-
-        # ----------------------------------------------------
-        # Direction-specific outcome
-        # ----------------------------------------------------
-
-        if direction == "BUY":
-
-            pnl = movement
-
-        else:
-
-            pnl = -movement
 
         similarities.append(
-            similarity
+            match["similarity"]
         )
-
-        # ----------------------------------------------------
-        # classify outcome
-        # ----------------------------------------------------
-
-        if pnl > 0.0:
-
-            if item["direction"] == direction:
-                wins += 1
-                win_mfe.append(abs(pnl))
-                pnl_values.append(pnl)
-
-            else:
-                losses += 1
-                loss_mae.append(abs(pnl))
-                pnl_values.append(pnl)
-
-        elif pnl < 0.0:
-
-            losses += 1
-            loss_mae.append(abs(pnl))
-            pnl_values.append(pnl)
-
-        else:
-
-            timeouts += 1
-
-    if direction_count > 0:
-
-        win_probability = (
-            wins
-            / direction_count
-            * 100.0
-        )
-
-        loss_probability = (
-            losses
-            / direction_count
-            * 100.0
-        )
-
-        timeout_probability = (
-            timeouts
-            / direction_count
-            * 100.0
-        )
-
-    else:
-
-        win_probability = 0.0
-        loss_probability = 0.0
-        timeout_probability = 0.0
-
-    # --------------------------------------------------------
-    # Weighted probability
-    #
-    # More similar historical patterns receive more weight.
-    # --------------------------------------------------------
-
-    weighted_win = 0.0
-    weighted_total = 0.0
-
-    for item in matches:
-
-        movement = item[
-            "movement_percent"
-        ]
-
-        similarity = item[
-            "similarity"
-        ]
 
         if direction == "BUY":
-            pnl = movement
+
+            buy_count += 1
+
+            if movement > 0:
+
+                up_moves.append(
+                    movement
+                )
+
+        elif direction == "SELL":
+
+            sell_count += 1
+
+            if movement < 0:
+
+                down_moves.append(
+                    abs(movement)
+                )
+
         else:
-            pnl = -movement
 
-        weighted_total += similarity
+            flat_count += 1
 
-        if pnl > 0:
-            weighted_win += similarity
-
-    if weighted_total > 0:
-
-        weighted_win_probability = (
-            weighted_win
-            / weighted_total
-            * 100.0
-        )
-
-    else:
-
-        weighted_win_probability = 0.0
-
-    average_similarity = (
-        sum(similarities)
-        / len(similarities)
-        if similarities
-        else 0.0
-    )
-
-    average_win_mfe = (
-        sum(win_mfe)
-        / len(win_mfe)
-        if win_mfe
-        else 0.0
-    )
-
-    average_loss_mae = (
-        sum(loss_mae)
-        / len(loss_mae)
-        if loss_mae
-        else 0.0
-    )
-
-    expected_pnl = (
-        sum(pnl_values)
-        / len(pnl_values)
-        if pnl_values
-        else 0.0
-    )
+    total = len(matches)
 
     return {
 
         "sample_size":
             total,
 
-        "wins":
-            wins,
-
-        "losses":
-            losses,
-
-        "timeouts":
-            timeouts,
-
-        "win_probability":
+        "buy_probability":
             round(
-                win_probability,
+                buy_count
+                / total
+                * 100.0,
                 2
             ),
 
-        "loss_probability":
+        "sell_probability":
             round(
-                loss_probability,
+                sell_count
+                / total
+                * 100.0,
                 2
             ),
 
-        "timeout_probability":
+        "flat_probability":
             round(
-                timeout_probability,
-                2
-            ),
-
-        "weighted_win_probability":
-            round(
-                weighted_win_probability,
+                flat_count
+                / total
+                * 100.0,
                 2
             ),
 
         "average_similarity":
             round(
-                average_similarity,
+                sum(similarities)
+                / len(similarities),
                 4
             ),
 
-        "average_win_mfe":
+        "best_similarity":
             round(
-                average_win_mfe,
+                max(similarities),
                 4
             ),
 
-        "average_loss_mae":
+        "expected_up_percent":
             round(
-                average_loss_mae,
+                sum(up_moves)
+                / len(up_moves)
+                if up_moves
+                else 0.0,
                 4
             ),
 
-        "expected_pnl_percent":
+        "expected_down_percent":
             round(
-                expected_pnl,
+                sum(down_moves)
+                / len(down_moves)
+                if down_moves
+                else 0.0,
                 4
-            ),
+            )
     }
 
 
@@ -690,10 +764,8 @@ def calculate_score(
     )
 
     sample_component = min(
-        (
-            len(matches)
-            / MAX_MATCHES
-        )
+        len(matches)
+        / MAX_MATCHES
         * 100.0,
         100.0
     )
@@ -729,40 +801,36 @@ def calculate_trade_levels(
 
     if atr <= 0:
 
-        atr = (
-            entry
-            * 0.001
-        )
+        atr = entry * 0.001
 
-    sl_distance = atr
+    stop_distance = atr
 
-    tp_distance = (
-        sl_distance
-        * RISK_REWARD
+    target_distance = (
+        atr * RISK_REWARD
     )
 
     if direction == "BUY":
 
         stop_loss = (
             entry
-            - sl_distance
+            - stop_distance
         )
 
         take_profit = (
             entry
-            + tp_distance
+            + target_distance
         )
 
     else:
 
         stop_loss = (
             entry
-            + sl_distance
+            + stop_distance
         )
 
         take_profit = (
             entry
-            - tp_distance
+            - target_distance
         )
 
     return (
@@ -790,6 +858,12 @@ def generate_signal(candles):
         candles
     )
 
+    statistics = (
+        historical_statistics(
+            matches
+        )
+    )
+
     if not matches:
 
         return {
@@ -809,10 +883,10 @@ def generate_signal(candles):
             "candidate_direction":
                 None,
 
-            "probability":
+            "score":
                 0.0,
 
-            "score":
+            "probability":
                 0.0,
 
             "entry":
@@ -830,111 +904,59 @@ def generate_signal(candles):
             "atr":
                 round(atr, 4),
 
+            "historical_statistics":
+                statistics,
+
             "matched_patterns":
                 0,
 
-            "historical_statistics":
-                {},
-
             "method":
-                "Outcome-Based M5 Historical Pattern Matching",
+                "M5 Historical Pattern Matching",
 
             "data_source":
-                "Twelve Data XAU/USD",
+                "Twelve Data XAU/USD"
         }
 
-    buy_stats = calculate_direction_statistics(
-        matches,
-        "BUY"
-    )
-
-    sell_stats = calculate_direction_statistics(
-        matches,
-        "SELL"
-    )
-
     buy_probability = (
-        buy_stats[
-            "weighted_win_probability"
-        ]
+        statistics["buy_probability"]
     )
 
     sell_probability = (
-        sell_stats[
-            "weighted_win_probability"
-        ]
+        statistics["sell_probability"]
     )
 
-    buy_expected = (
-        buy_stats[
-            "expected_pnl_percent"
-        ]
-    )
+    if buy_probability > sell_probability:
 
-    sell_expected = (
-        sell_stats[
-            "expected_pnl_percent"
-        ]
-    )
+        direction = "BUY"
 
-    # --------------------------------------------------------
-    # Candidate selection
-    # --------------------------------------------------------
-
-    if (
-        buy_probability > sell_probability
-        and buy_expected >= sell_expected
-    ):
-
-        candidate_direction = "BUY"
         probability = buy_probability
-        candidate_stats = buy_stats
 
-    elif (
-        sell_probability > buy_probability
-        and sell_expected > buy_expected
-    ):
+    elif sell_probability > buy_probability:
 
-        candidate_direction = "SELL"
+        direction = "SELL"
+
         probability = sell_probability
-        candidate_stats = sell_stats
-
-    elif buy_expected > sell_expected:
-
-        candidate_direction = "BUY"
-        probability = buy_probability
-        candidate_stats = buy_stats
-
-    elif sell_expected > buy_expected:
-
-        candidate_direction = "SELL"
-        probability = sell_probability
-        candidate_stats = sell_stats
 
     else:
 
-        candidate_direction = "NO_TRADE"
-        probability = 0.0
-        candidate_stats = None
+        direction = "NO_TRADE"
 
-    average_similarity = (
-        sum(
-            x["similarity"]
-            for x in matches
-        )
-        / len(matches)
-    )
+        probability = 0.0
 
     score = calculate_score(
         probability,
         matches,
-        average_similarity
+        statistics[
+            "average_similarity"
+        ]
     )
 
     valid = (
 
-        candidate_direction
-        in ["BUY", "SELL"]
+        direction in [
+            "BUY",
+            "SELL"
+        ]
 
         and probability
         >= MIN_PROBABILITY
@@ -944,12 +966,6 @@ def generate_signal(candles):
 
         and len(matches)
         >= MIN_MATCHES
-
-        and candidate_stats is not None
-
-        and candidate_stats[
-            "expected_pnl_percent"
-        ] > 0
     )
 
     if not valid:
@@ -969,16 +985,16 @@ def generate_signal(candles):
                 "NO_TRADE",
 
             "candidate_direction":
-                candidate_direction,
+                direction,
+
+            "score":
+                score,
 
             "probability":
                 round(
                     probability,
                     2
                 ),
-
-            "score":
-                score,
 
             "entry":
                 round_price(entry),
@@ -998,26 +1014,17 @@ def generate_signal(candles):
                     4
                 ),
 
-            "historical_statistics": {
-
-                "sample_size":
-                    len(matches),
-
-                "buy":
-                    buy_stats,
-
-                "sell":
-                    sell_stats,
-            },
+            "historical_statistics":
+                statistics,
 
             "matched_patterns":
                 len(matches),
 
             "method":
-                "Outcome-Based M5 Historical Pattern Matching",
+                "M5 Historical Pattern Matching",
 
             "data_source":
-                "Twelve Data XAU/USD",
+                "Twelve Data XAU/USD"
         }
 
     (
@@ -1025,7 +1032,7 @@ def generate_signal(candles):
         stop_loss,
         take_profit
     ) = calculate_trade_levels(
-        candidate_direction,
+        direction,
         entry,
         atr
     )
@@ -1042,19 +1049,19 @@ def generate_signal(candles):
             "M5",
 
         "signal":
-            candidate_direction,
+            direction,
 
         "candidate_direction":
-            candidate_direction,
+            direction,
+
+        "score":
+            score,
 
         "probability":
             round(
                 probability,
                 2
             ),
-
-        "score":
-            score,
 
         "entry":
             entry,
@@ -1074,216 +1081,22 @@ def generate_signal(candles):
                 4
             ),
 
-        "historical_statistics": {
-
-            "sample_size":
-                len(matches),
-
-            "buy":
-                buy_stats,
-
-            "sell":
-                sell_stats,
-        },
+        "historical_statistics":
+            statistics,
 
         "matched_patterns":
             len(matches),
 
         "method":
-            "Outcome-Based M5 Historical Pattern Matching",
+            "M5 Historical Pattern Matching",
 
         "data_source":
-            "Twelve Data XAU/USD",
+            "Twelve Data XAU/USD"
     }
 
 
 # ============================================================
-# TELEGRAM
-# ============================================================
-
-def send_telegram(message):
-
-    if not TELEGRAM_BOT_TOKEN:
-
-        return (
-            False,
-            "TELEGRAM_BOT_TOKEN is not configured"
-        )
-
-    if not TELEGRAM_CHAT_ID:
-
-        return (
-            False,
-            "TELEGRAM_CHAT_ID is not configured"
-        )
-
-    url = (
-        "https://api.telegram.org/bot"
-        + TELEGRAM_BOT_TOKEN
-        + "/sendMessage"
-    )
-
-    payload = {
-
-        "chat_id":
-            TELEGRAM_CHAT_ID,
-
-        "text":
-            message,
-
-        "parse_mode":
-            "HTML",
-
-    }
-
-    try:
-
-        response = requests.post(
-            url,
-            json=payload,
-            timeout=20
-        )
-
-        response.raise_for_status()
-
-        result = response.json()
-
-        if not result.get("ok", False):
-
-            return (
-                False,
-                result.get(
-                    "description",
-                    "Telegram API error"
-                )
-            )
-
-        return (
-            True,
-            None
-        )
-
-    except Exception as exc:
-
-        return (
-            False,
-            str(exc)
-        )
-
-
-# ============================================================
-# TELEGRAM STARTUP
-# ============================================================
-
-def send_startup_notification_once():
-
-    global STARTUP_NOTIFICATION_SENT
-
-    if STARTUP_NOTIFICATION_SENT:
-        return
-
-    with STARTUP_LOCK:
-
-        if STARTUP_NOTIFICATION_SENT:
-            return
-
-        if not TELEGRAM_BOT_TOKEN:
-
-            print(
-                "Telegram startup skipped: "
-                "TELEGRAM_BOT_TOKEN not configured"
-            )
-
-            return
-
-        if not TELEGRAM_CHAT_ID:
-
-            print(
-                "Telegram startup skipped: "
-                "TELEGRAM_CHAT_ID not configured"
-            )
-
-            return
-
-        message = (
-
-            "🟢 <b>XAUUSD M5 BOT ONLINE</b>\n"
-            "\n"
-
-            "━━━━━━━━━━━━━━━━━━\n"
-
-            "🚀 <b>ระบบเริ่มทำงานแล้ว</b>\n"
-
-            "━━━━━━━━━━━━━━━━━━\n"
-            "\n"
-
-            f"📊 <b>Symbol:</b> {SYMBOL}\n"
-
-            "⏱ <b>Timeframe:</b> M5\n"
-
-            "📡 <b>Data:</b> Twelve Data\n"
-            "\n"
-
-            "🧠 <b>Engine:</b>\n"
-
-            "Outcome-Based Historical "
-            "Pattern Matching\n"
-            "\n"
-
-            f"🎯 <b>Minimum Probability:</b> "
-            f"{MIN_PROBABILITY:.0f}%\n"
-
-            f"⭐ <b>Minimum Score:</b> "
-            f"{MIN_SCORE:.0f}\n"
-
-            f"📚 <b>Minimum Patterns:</b> "
-            f"{MIN_MATCHES}\n"
-
-            f"🔎 <b>Minimum Similarity:</b> "
-            f"{MIN_SIMILARITY:.2f}\n"
-
-            f"⚖️ <b>Risk / Reward:</b> "
-            f"1:{RISK_REWARD:.1f}\n"
-
-            "\n"
-
-            "━━━━━━━━━━━━━━━━━━\n"
-
-            "✅ <b>พร้อมวิเคราะห์ตลาด</b>\n"
-
-            "━━━━━━━━━━━━━━━━━━\n"
-            "\n"
-
-            "ระบบจะส่ง Telegram เมื่อพบ\n"
-
-            "<b>BUY / SELL</b> "
-            "ที่ผ่านเกณฑ์ทั้งหมด"
-
-        )
-
-        ok, error = send_telegram(
-            message
-        )
-
-        if ok:
-
-            STARTUP_NOTIFICATION_SENT = True
-
-            print(
-                "Telegram welcome message "
-                "sent successfully"
-            )
-
-        else:
-
-            print(
-                "Telegram welcome message failed:",
-                error
-            )
-
-
-# ============================================================
-# TELEGRAM SIGNAL MESSAGE
+# SIGNAL MESSAGE
 # ============================================================
 
 def format_signal_message(signal):
@@ -1306,17 +1119,10 @@ def format_signal_message(signal):
         "historical_statistics"
     ]
 
-    selected = stats[
-        direction.lower()
-    ]
-
     return (
 
-        f"{emoji} "
-        "<b>XAUUSD M5 SIGNAL</b>\n"
+        f"{emoji} <b>XAUUSD M5 SIGNAL</b>\n"
         "\n"
-
-        "━━━━━━━━━━━━━━━━━━\n"
 
         f"<b>SIGNAL:</b> {direction}\n"
 
@@ -1326,10 +1132,7 @@ def format_signal_message(signal):
         f"<b>Score:</b> "
         f"{signal['score']:.2f}\n"
 
-        f"<b>Patterns:</b> "
-        f"{signal['matched_patterns']}\n"
-
-        "━━━━━━━━━━━━━━━━━━\n"
+        "\n"
 
         f"<b>ENTRY:</b> "
         f"{signal['entry']:.2f}\n"
@@ -1340,39 +1143,36 @@ def format_signal_message(signal):
         f"<b>SL:</b> "
         f"{signal['stop_loss']:.2f}\n"
 
-        f"<b>R:R:</b> "
-        f"1:{signal['risk_reward']:.1f}\n"
+        f"<b>RR:</b> "
+        f"1:{signal['risk_reward']:.2f}\n"
 
-        "━━━━━━━━━━━━━━━━━━\n"
+        "\n"
 
-        f"<b>Win Probability:</b> "
-        f"{selected['weighted_win_probability']:.2f}%\n"
-
-        f"<b>Expected P/L:</b> "
-        f"{selected['expected_pnl_percent']:.4f}%\n"
+        f"<b>Patterns:</b> "
+        f"{signal['matched_patterns']}\n"
 
         f"<b>Average Similarity:</b> "
-        f"{selected['average_similarity']:.4f}\n"
+        f"{stats['average_similarity']:.4f}\n"
 
-        f"<b>Wins:</b> "
-        f"{selected['wins']}\n"
+        f"<b>Best Similarity:</b> "
+        f"{stats['best_similarity']:.4f}\n"
 
-        f"<b>Losses:</b> "
-        f"{selected['losses']}\n"
+        "\n"
 
-        f"<b>Timeouts:</b> "
-        f"{selected['timeouts']}\n"
+        f"<b>BUY Probability:</b> "
+        f"{stats['buy_probability']:.2f}%\n"
 
-        "━━━━━━━━━━━━━━━━━━\n"
+        f"<b>SELL Probability:</b> "
+        f"{stats['sell_probability']:.2f}%\n"
+
+        "\n"
 
         f"<b>Time:</b> "
         f"{signal['timestamp']}\n"
 
         "\n"
 
-        "<i>Outcome-Based Historical "
-        "Pattern Matching</i>"
-
+        "<i>Historical Pattern Matching</i>"
     )
 
 
@@ -1396,10 +1196,6 @@ def run_signal(
 
     STATE["last_error"] = None
 
-    # --------------------------------------------------------
-    # Telegram only for valid BUY / SELL
-    # --------------------------------------------------------
-
     if (
         send_notification
         and signal["signal"]
@@ -1407,15 +1203,9 @@ def run_signal(
     ):
 
         signal_key = (
-
-            str(
-                signal["timestamp"]
-            )
-
+            str(signal["timestamp"])
             + "_"
-
             + signal["signal"]
-
         )
 
         if (
@@ -1423,41 +1213,33 @@ def run_signal(
             != signal_key
         ):
 
-            message = format_signal_message(
-                signal
+            message = (
+                format_signal_message(
+                    signal
+                )
             )
 
             if message:
 
-                ok, error = send_telegram(
-                    message
+                ok, error = (
+                    send_telegram(
+                        message
+                    )
                 )
 
                 if not ok:
 
-                    STATE[
-                        "last_error"
-                    ] = error
+                    STATE["last_error"] = (
+                        error
+                    )
 
             STATE[
                 "last_signal_key"
             ] = signal_key
 
-    STATE[
-        "last_signal"
-    ] = signal
+    STATE["last_signal"] = signal
 
     return signal
-
-
-# ============================================================
-# STARTUP BEFORE FIRST REQUEST
-# ============================================================
-
-@app.before_request
-def startup_notification():
-
-    send_startup_notification_once()
 
 
 # ============================================================
@@ -1475,9 +1257,6 @@ def home():
         "status":
             "online",
 
-        "version":
-            "2.0",
-
         "data_source":
             "Twelve Data",
 
@@ -1488,10 +1267,12 @@ def home():
             "M5",
 
         "telegram":
-            bool(
-                TELEGRAM_BOT_TOKEN
-                and TELEGRAM_CHAT_ID
-            ),
+            telegram_configured(),
+
+        "telegram_startup_sent":
+            STATE[
+                "telegram_startup_sent"
+            ],
 
         "rules": {
 
@@ -1508,23 +1289,23 @@ def home():
                 MIN_SIMILARITY,
 
             "risk_reward":
-                RISK_REWARD,
-
-            "forward_bars":
-                FORWARD_BARS,
+                RISK_REWARD
         },
 
         "endpoints": [
 
             "/",
+
             "/health",
-            "/test-telegram",
-            "/test-data",
+
             "/signal",
-            "/backtest",
 
+            "/telegram-test",
+
+            "/twelve-test",
+
+            "/backtest"
         ]
-
     })
 
 
@@ -1540,9 +1321,6 @@ def health():
         "status":
             "healthy",
 
-        "service":
-            "XAUUSD M5 Telegram Signal",
-
         "data_source":
             "Twelve Data",
 
@@ -1556,18 +1334,17 @@ def health():
             CANDLE_LIMIT,
 
         "telegram":
-            bool(
-                TELEGRAM_BOT_TOKEN
-                and TELEGRAM_CHAT_ID
-            ),
+            telegram_configured(),
+
+        "telegram_startup_sent":
+            STATE[
+                "telegram_startup_sent"
+            ],
 
         "twelve_data":
             bool(
                 TWELVE_DATA_API_KEY
             ),
-
-        "startup_notification":
-            STARTUP_NOTIFICATION_SENT,
 
         "last_update":
             STATE[
@@ -1582,103 +1359,74 @@ def health():
         "error":
             STATE[
                 "last_error"
-            ],
-
+            ]
     })
 
 
 # ============================================================
-# TEST TELEGRAM
+# TELEGRAM TEST
 # ============================================================
 
-@app.route("/test-telegram")
-def test_telegram():
-
-    if not TELEGRAM_BOT_TOKEN:
-
-        return jsonify({
-
-            "status":
-                "error",
-
-            "telegram":
-                False,
-
-            "error":
-                "TELEGRAM_BOT_TOKEN is not configured"
-
-        }), 500
-
-    if not TELEGRAM_CHAT_ID:
-
-        return jsonify({
-
-            "status":
-                "error",
-
-            "telegram":
-                False,
-
-            "error":
-                "TELEGRAM_CHAT_ID is not configured"
-
-        }), 500
+@app.route("/telegram-test")
+def telegram_test():
 
     message = (
 
-        "🧪 <b>TELEGRAM TEST</b>\n"
+        "🧪 <b>TELEGRAM TEST SUCCESS</b>\n"
         "\n"
 
-        "✅ Telegram connection is working\n"
+        "Telegram Bot เชื่อมต่อกับระบบสำเร็จ\n"
         "\n"
 
-        f"<b>Symbol:</b> {SYMBOL}\n"
-        "<b>Timeframe:</b> M5\n"
+        f"📊 <b>Symbol:</b> {SYMBOL}\n"
+        "⏱ <b>Timeframe:</b> M5\n"
+        "🤖 <b>Status:</b> ONLINE\n"
+        "\n"
 
-        f"<b>Time:</b> "
-        f"{utc_now().isoformat()}"
-
+        f"🕐 <b>Server Time:</b> "
+        f"{utc_now().strftime('%Y-%m-%d %H:%M:%S UTC')}"
     )
 
     ok, error = send_telegram(
         message
     )
 
-    if not ok:
+    if ok:
 
         return jsonify({
 
             "status":
-                "error",
+                "success",
+
+            "message":
+                "Telegram test message sent successfully",
 
             "telegram":
-                True,
-
-            "error":
-                error
-
-        }), 500
+                True
+        })
 
     return jsonify({
 
         "status":
-            "success",
+            "error",
 
         "message":
-            "Telegram test message sent successfully",
+            "Telegram test failed",
 
         "telegram":
-            True
+            False,
 
-    })
+        "error":
+            error
+    }), 500
 
 
 # ============================================================
-# TEST DATA
+# TWELVE DATA TEST
 # ============================================================
 
-@app.route("/test-data")
-def test_data():
+@app.route("/twelve-test")
+def twelve_test():
 
     try:
 
@@ -1704,24 +1452,18 @@ def test_data():
                 len(candles),
 
             "latest":
-                latest,
-
+                latest
         })
 
     except Exception as exc:
-
-        STATE[
-            "last_error"
-        ] = str(exc)
 
         return jsonify({
 
             "status":
                 "error",
 
-            "error":
+            "message":
                 str(exc)
-
         }), 500
 
 
@@ -1734,6 +1476,10 @@ def signal_endpoint():
 
     try:
 
+        # ถ้ายังไม่ได้ส่ง startup
+        # ให้ลองส่งอีกครั้ง
+        send_startup_message()
+
         signal = run_signal(
             send_notification=True
         )
@@ -1744,14 +1490,9 @@ def signal_endpoint():
 
     except Exception as exc:
 
-        STATE[
-            "last_error"
-        ] = str(exc)
+        STATE["last_error"] = str(exc)
 
         return jsonify({
-
-            "status":
-                "error",
 
             "signal":
                 "ERROR",
@@ -1773,13 +1514,11 @@ def backtest():
 
         candles = get_candles()
 
-        total_candles = len(
-            candles
-        )
+        total_candles = len(candles)
 
         start = max(
-            PATTERN_LENGTH * 2 + 30,
-            100
+            PATTERN_LENGTH * 2 + 20,
+            80
         )
 
         end = (
@@ -1795,9 +1534,6 @@ def backtest():
 
             return jsonify({
 
-                "status":
-                    "error",
-
                 "error":
                     "Not enough candles"
 
@@ -1809,30 +1545,34 @@ def backtest():
         )
 
         signals = 0
+
         buy_signals = 0
+
         sell_signals = 0
 
         wins = 0
+
         losses = 0
+
         timeouts = 0
 
         tp_hits = 0
+
         sl_hits = 0
 
         total_profit_percent = 0.0
+
         total_loss_percent = 0.0
 
         mfe_values = []
+
         mae_values = []
 
         probability_values = []
+
         score_values = []
 
         trade_results = []
-
-        # ----------------------------------------------------
-        # Historical test
-        # ----------------------------------------------------
 
         for i in range(
             start,
@@ -1876,14 +1616,14 @@ def backtest():
                 "take_profit"
             )
 
-            probability = safe_float(
+            probability = float(
                 signal.get(
                     "probability",
                     0
                 )
             )
 
-            score = safe_float(
+            score = float(
                 signal.get(
                     "score",
                     0
@@ -1917,8 +1657,14 @@ def backtest():
                 sell_signals += 1
 
             entry = float(entry)
-            stop_loss = float(stop_loss)
-            take_profit = float(take_profit)
+
+            stop_loss = float(
+                stop_loss
+            )
+
+            take_profit = float(
+                take_profit
+            )
 
             max_index = min(
                 i + FORWARD_BARS,
@@ -1928,9 +1674,11 @@ def backtest():
             result = "TIMEOUT"
 
             exit_price = None
+
             exit_index = None
 
             mfe = 0.0
+
             mae = 0.0
 
             for j in range(
@@ -1947,10 +1695,6 @@ def backtest():
                 low = float(
                     candle["low"]
                 )
-
-                # ------------------------------------------------
-                # BUY
-                # ------------------------------------------------
 
                 if direction == "BUY":
 
@@ -1980,9 +1724,6 @@ def backtest():
                         high >= take_profit
                     )
 
-                    # Conservative assumption:
-                    # if TP and SL happen inside same candle,
-                    # SL is considered first.
                     if hit_sl and hit_tp:
 
                         result = "LOSS"
@@ -2018,10 +1759,6 @@ def backtest():
                         exit_index = j
 
                         break
-
-                # ------------------------------------------------
-                # SELL
-                # ------------------------------------------------
 
                 else:
 
@@ -2087,10 +1824,6 @@ def backtest():
 
                         break
 
-            # ----------------------------------------------------
-            # TIMEOUT
-            # ----------------------------------------------------
-
             if result == "TIMEOUT":
 
                 exit_index = max_index
@@ -2100,10 +1833,6 @@ def backtest():
                         exit_index
                     ]["close"]
                 )
-
-            # ----------------------------------------------------
-            # PNL
-            # ----------------------------------------------------
 
             if direction == "BUY":
 
@@ -2223,15 +1952,11 @@ def backtest():
                 "bars_held":
                     (
                         exit_index - i + 1
-                        if exit_index is not None
+                        if exit_index
+                        is not None
                         else None
-                    ),
-
+                    )
             })
-
-        # ========================================================
-        # PERFORMANCE
-        # ========================================================
 
         if signals > 0:
 
@@ -2256,7 +1981,9 @@ def backtest():
         else:
 
             win_rate = 0.0
+
             loss_rate = 0.0
+
             timeout_rate = 0.0
 
         average_mfe = (
@@ -2316,10 +2043,6 @@ def backtest():
             else 0.0
         )
 
-        # ========================================================
-        # MAX DRAWDOWN
-        # ========================================================
-
         equity = 0.0
 
         peak_equity = 0.0
@@ -2346,10 +2069,6 @@ def backtest():
                 max_drawdown,
                 drawdown
             )
-
-        # ========================================================
-        # RESPONSE
-        # ========================================================
 
         return jsonify({
 
@@ -2385,11 +2104,11 @@ def backtest():
                 "minimum_similarity":
                     MIN_SIMILARITY,
 
-                "forward_bars":
-                    FORWARD_BARS,
-
                 "risk_reward":
                     RISK_REWARD,
+
+                "forward_bars":
+                    FORWARD_BARS
             },
 
             "signals": {
@@ -2401,7 +2120,7 @@ def backtest():
                     buy_signals,
 
                 "sell":
-                    sell_signals,
+                    sell_signals
             },
 
             "results": {
@@ -2419,7 +2138,7 @@ def backtest():
                     tp_hits,
 
                 "sl_hits":
-                    sl_hits,
+                    sl_hits
             },
 
             "performance": {
@@ -2494,7 +2213,7 @@ def backtest():
                     round(
                         average_mae,
                         4
-                    ),
+                    )
             },
 
             "signal_quality": {
@@ -2509,7 +2228,7 @@ def backtest():
                     round(
                         average_score,
                         2
-                    ),
+                    )
             },
 
             "recent_trades":
@@ -2518,15 +2237,10 @@ def backtest():
             "warning":
                 "Historical simulation only. "
                 "Spread, slippage and execution "
-                "differences are not included.",
-
+                "differences are not included."
         })
 
     except Exception as exc:
-
-        STATE[
-            "last_error"
-        ] = str(exc)
 
         return jsonify({
 
@@ -2535,30 +2249,60 @@ def backtest():
 
             "error":
                 str(exc)
-
         }), 500
 
 
 # ============================================================
-# ERROR HANDLER
+# STARTUP
 # ============================================================
 
-@app.errorhandler(Exception)
-def handle_exception(error):
+def initialize_application():
 
-    STATE[
-        "last_error"
-    ] = str(error)
+    print("")
+    print("=" * 70)
+    print("XAUUSD M5 SIGNAL BOT")
+    print("APPLICATION INITIALIZING")
+    print("=" * 70)
 
-    return jsonify({
+    print(
+        "Twelve Data configured:",
+        bool(TWELVE_DATA_API_KEY)
+    )
 
-        "status":
-            "error",
+    print(
+        "Telegram configured:",
+        telegram_configured()
+    )
 
-        "error":
-            str(error),
+    print(
+        "Telegram Chat ID configured:",
+        bool(TELEGRAM_CHAT_ID)
+    )
 
-    }), 500
+    print(
+        "Telegram Bot Token configured:",
+        bool(TELEGRAM_BOT_TOKEN)
+    )
+
+    print("=" * 70)
+
+    # ส่ง Telegram ทันทีเมื่อ worker เริ่ม
+    send_startup_message()
+
+
+# ============================================================
+# IMPORTANT
+# ============================================================
+
+# Gunicorn:
+# gunicorn app:app
+#
+# เมื่อ Gunicorn import app.py
+# จะเรียก initialize_application()
+# และส่งข้อความ Telegram ทันที
+
+
+initialize_application()
 
 
 # ============================================================
@@ -2566,13 +2310,6 @@ def handle_exception(error):
 # ============================================================
 
 if __name__ == "__main__":
-
-    # --------------------------------------------------------
-    # For local Python execution.
-    # Render/Gunicorn will use before_request instead.
-    # --------------------------------------------------------
-
-    send_startup_notification_once()
 
     port = int(
         os.getenv(
@@ -2583,6 +2320,5 @@ if __name__ == "__main__":
 
     app.run(
         host="0.0.0.0",
-        port=port,
-        debug=False
+        port=port
     )
