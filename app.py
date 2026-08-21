@@ -1,5 +1,6 @@
 import os
 import json
+import math
 import threading
 from urllib.parse import parse_qs
 
@@ -87,10 +88,31 @@ def activate(symbol):
     return symbol
 
 
+def _json_safe(value):
+    """Recursively convert pandas/numpy scalars and non-finite numbers to JSON-safe values."""
+    if value is None or isinstance(value, (str, bool, int)):
+        return value
+    if isinstance(value, float):
+        return value if math.isfinite(value) else None
+    if isinstance(value, dict):
+        return {str(k): _json_safe(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple, set)):
+        return [_json_safe(v) for v in value]
+    # numpy/pandas scalar compatibility without importing numpy/pandas in app.py.
+    try:
+        item = value.item()
+        return _json_safe(item)
+    except (AttributeError, TypeError, ValueError):
+        pass
+    try:
+        return _json_safe(value.tolist())
+    except (AttributeError, TypeError, ValueError):
+        return str(value)
+
+
 def _json_response(payload, status=200):
-    # Flask's default JSON provider can fail on numpy/pandas scalar values.
-    # Normalize everything through stdlib JSON before returning a response.
-    body = json.dumps(payload, ensure_ascii=False, default=str, allow_nan=False)
+    safe_payload = _json_safe(payload)
+    body = json.dumps(safe_payload, ensure_ascii=False, allow_nan=False)
     return Response(body, status=status, mimetype="application/json")
 
 
@@ -177,11 +199,11 @@ class MultiSymbolMiddleware:
                 activate(requested)
                 return self.application(environ, start_response)
             except ValueError as exc:
-                body = json.dumps({"status":"error","engine_version":engine.ENGINE_VERSION,"symbol":requested,"message":str(exc),"live_orders_allowed":False}).encode()
+                body = json.dumps(_json_safe({"status":"error","engine_version":engine.ENGINE_VERSION,"symbol":requested,"message":str(exc),"live_orders_allowed":False})).encode()
                 start_response("400 BAD REQUEST",[("Content-Type","application/json"),("Content-Length",str(len(body)))])
                 return [body]
             except Exception as exc:
-                body = json.dumps({"status":"application_error","engine_version":getattr(engine,"ENGINE_VERSION","unknown"),"symbol":requested,"error_type":type(exc).__name__,"message":str(exc),"live_orders_allowed":False}).encode()
+                body = json.dumps(_json_safe({"status":"application_error","engine_version":getattr(engine,"ENGINE_VERSION","unknown"),"symbol":requested,"error_type":type(exc).__name__,"message":str(exc),"live_orders_allowed":False})).encode()
                 start_response("500 INTERNAL SERVER ERROR",[("Content-Type","application/json"),("Content-Length",str(len(body)))])
                 return [body]
             finally:
