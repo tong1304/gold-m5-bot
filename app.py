@@ -6382,8 +6382,34 @@ ALL MUST PASS
 
 
 # ============================================================
+# STARTUP NOTIFICATION BOOTSTRAP
+# ============================================================
+
+def notify_startup_once():
+    """
+    Send startup notification for both direct Python execution and
+    WSGI/gunicorn deployments, where __main__ is not executed.
+    """
+    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
+        print("Telegram startup: credentials not configured")
+        return False
+
+    try:
+        result = startup_message()
+        print("Telegram startup:", result)
+        return bool(result.get("success"))
+    except Exception as e:
+        print("Telegram startup error:", e)
+        return False
+
+
+# ============================================================
 # MAIN
 # ============================================================
+
+# WSGI servers import this module instead of executing __main__.
+# Therefore the startup notification must also be triggered here.
+notify_startup_once()
 
 if __name__ == "__main__":
 
@@ -6473,31 +6499,6 @@ if __name__ == "__main__":
     print(
         "=" * 70
     )
-
-    # --------------------------------------------------------
-    # Telegram startup
-    # --------------------------------------------------------
-
-    if (
-        TELEGRAM_BOT_TOKEN
-        and TELEGRAM_CHAT_ID
-    ):
-
-        try:
-
-            result = startup_message()
-
-            print(
-                "Telegram startup:",
-                result
-            )
-
-        except Exception as e:
-
-            print(
-                "Telegram startup error:",
-                e
-            )
 
     # --------------------------------------------------------
     # Flask
