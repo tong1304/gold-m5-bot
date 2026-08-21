@@ -2,6 +2,7 @@ import os
 import math
 import traceback
 from datetime import datetime, timezone, timedelta
+from zoneinfo import ZoneInfo
 
 import numpy as np
 import pandas as pd
@@ -18,6 +19,10 @@ app = Flask(__name__)
 
 SYMBOL = os.getenv("SYMBOL", "XAU/USD")
 TIMEFRAME = os.getenv("TIMEFRAME", "5min")
+
+# Local display timezone. Default: Thailand (UTC+7)
+TIMEZONE_NAME = os.getenv("TIMEZONE", "Asia/Bangkok")
+LOCAL_TIMEZONE = ZoneInfo(TIMEZONE_NAME)
 
 TWELVE_DATA_API_KEY = os.getenv(
     "TWELVE_DATA_API_KEY",
@@ -39,7 +44,7 @@ TELEGRAM_CHAT_ID = os.getenv(
 # ENGINE VERSION
 # ============================================================
 
-ENGINE_VERSION = "4.0"
+ENGINE_VERSION = "4.1"
 
 # ============================================================
 # TRADING RULES
@@ -216,11 +221,19 @@ def round_price(
     )
 
 
-def now_utc():
+def now_local():
 
     return datetime.now(
         timezone.utc
-    ).isoformat()
+    ).astimezone(
+        LOCAL_TIMEZONE
+    ).strftime("%Y-%m-%d %H:%M:%S")
+
+
+def now_local():
+
+    # Backward-compatible alias. All user-facing timestamps use local time.
+    return now_local()
 
 
 def timeframe_minutes():
@@ -420,6 +433,47 @@ def get_market_data(
     )
 
     return df
+
+
+# ============================================================
+# CANDLE CLOSURE / TIME FILTER
+# ============================================================
+
+def is_last_candle_closed(
+    df
+):
+    """Return True only when the latest candle has fully closed."""
+
+    if df.empty:
+        return False
+
+    try:
+        last_time = df.iloc[-1]["datetime"]
+
+        if last_time.tzinfo is None:
+            last_time = last_time.replace(
+                tzinfo=timezone.utc
+            )
+        else:
+            last_time = last_time.astimezone(
+                timezone.utc
+            )
+
+        close_time = (
+            last_time
+            + timedelta(
+                minutes=timeframe_minutes()
+            )
+        )
+
+        current_time = datetime.now(
+            timezone.utc
+        )
+
+        return current_time >= close_time
+
+    except Exception:
+        return False
 
 
 # ============================================================
@@ -2935,7 +2989,7 @@ def analyze_candle(
             "M5",
 
         "timestamp":
-            now_utc(),
+            now_local(),
 
         "setup_candle":
             str(
@@ -5688,7 +5742,7 @@ def health():
             ),
 
         "timestamp":
-            now_utc()
+            now_local()
     })
 
 
@@ -5858,6 +5912,19 @@ def signal():
             df
         )
 
+        # HARD TIME GATE: never calculate indicators or signals
+        # until the latest candle is confirmed closed.
+        candle_closed = is_last_candle_closed(df)
+
+        if not candle_closed:
+            return jsonify({
+                "status": "waiting",
+                "signal": "NO_TRADE",
+                "candle_closed": False,
+                "time_filter": "CANDLE_NOT_CLOSED",
+                "timestamp": now_local()
+            })
+
         if len(df) < 100:
 
             raise RuntimeError(
@@ -5874,6 +5941,10 @@ def signal():
             df,
             index
         )
+
+        result["candle_closed"] = True
+        result["time_filter"] = "CANDLE_CLOSED"
+        result["timezone"] = TIMEZONE_NAME
 
         # ----------------------------------------------------
         # Historical context
@@ -6265,7 +6336,11 @@ Break Even:
 def startup_message():
 
     message = f"""
-<b>🟢 XAU/USD ENGINE v4 STARTED</b>
+<b>🚀 Bot System Online</b>
+
+<b>Status:</b> Active &amp; Connected
+<b>Timezone:</b> {TIMEZONE_NAME} (UTC+7)
+<b>Time:</b> {now_local()}
 
 <b>Symbol:</b>
 {SYMBOL}
@@ -6299,9 +6374,6 @@ NEXT CANDLE OPEN
 
 <b>Hard Gates:</b>
 ALL MUST PASS
-
-<b>Time:</b>
-{now_utc()}
 """
 
     return send_telegram(
