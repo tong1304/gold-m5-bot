@@ -47,20 +47,21 @@ def fetch_candles(symbol: str, interval: str, outputsize: int) -> pd.DataFrame:
 
 
 def _normalize_signal(signal):
-    """Normalize legacy engine output without silently dropping valid signals."""
+    """Normalize the production engine's analyze_candle result."""
     if not isinstance(signal, dict):
         return None
-    raw_direction = signal.get("direction") or signal.get("signal")
+    raw_direction = signal.get("signal") or signal.get("direction")
     direction = str(raw_direction or "").upper().strip()
     if direction not in ("BUY", "SELL"):
         return None
-    levels = signal.get("levels") or signal.get("trade_levels") or {}
+    levels = signal.get("trade_levels") or signal.get("levels") or {}
     return {
         "direction": direction,
         "levels": levels if isinstance(levels, dict) else {},
         "score": signal.get("score"),
-        "pattern": signal.get("pattern") or signal.get("patterns"),
+        "pattern": signal.get("patterns") or signal.get("pattern"),
         "regime": signal.get("regime"),
+        "valid": bool(signal.get("valid", True)),
     }
 
 
@@ -74,12 +75,21 @@ def run(symbol: str, bars: int) -> dict:
         "candidate_candles": 0,
         "engine_calls": 0,
         "engine_exceptions": 0,
+        "engine_exception_samples": [],
         "signals_seen": 0,
+        "invalid_signals": 0,
         "buy_signals": 0,
         "sell_signals": 0,
         "trades_accepted": 0,
         "trades_rejected_by_execution": 0,
     }
+
+    # Precompute indicators once per validation run. The production signal
+    # analyzer consumes the indicator-enriched dataframe and candle index.
+    df = base.remove_incomplete_last_candle(df)
+    if len(df) < 100:
+        raise RuntimeError(f"Only {len(df)} closed candles returned")
+    df = base.calculate_indicators(df)
 
     start = max(50, len(df) - bars + 1)
     end = len(df) - int(engine.FORWARD_BARS) - 2
@@ -87,13 +97,19 @@ def run(symbol: str, bars: int) -> dict:
         diagnostics["candidate_candles"] += 1
         diagnostics["engine_calls"] += 1
         try:
-            raw_signal = base.generate_signal(df.iloc[: i + 1].copy())
-        except Exception:
+            raw_signal = base.analyze_candle(df, i)
+        except Exception as exc:
             diagnostics["engine_exceptions"] += 1
+            if len(diagnostics["engine_exception_samples"]) < 5:
+                diagnostics["engine_exception_samples"].append(
+                    f"{type(exc).__name__}: {str(exc)[:240]}"
+                )
             continue
 
         signal = _normalize_signal(raw_signal)
         if not signal:
+            if isinstance(raw_signal, dict) and raw_signal.get("valid") is False:
+                diagnostics["invalid_signals"] += 1
             continue
 
         diagnostics["signals_seen"] += 1
