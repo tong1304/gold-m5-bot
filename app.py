@@ -2,6 +2,7 @@ import os
 import math
 import html
 import threading
+import time
 from datetime import datetime, timezone
 
 import requests
@@ -43,6 +44,7 @@ CANDLE_LIMIT = 1000
 
 EMA_FAST = 20
 EMA_SLOW = 50
+
 RSI_PERIOD = 14
 ATR_PERIOD = 14
 
@@ -52,6 +54,7 @@ MIN_RISK_REWARD = 1.30
 
 RISK_REWARD = 1.50
 
+# จำนวนแท่งสำหรับติดตาม TP / SL
 FORWARD_BARS = 12
 
 BACKTEST_POINTS = 200
@@ -232,6 +235,8 @@ def get_candles():
         except Exception:
             continue
 
+    # Twelve Data ส่งใหม่ -> เก่า
+    # ระบบต้องการเก่า -> ใหม่
     candles.reverse()
 
     if len(candles) < 100:
@@ -259,8 +264,9 @@ def calculate_ema(values, period):
 
     for value in values[period:]:
         ema = (
-            value - ema
-        ) * multiplier + ema
+            (value - ema) * multiplier
+            + ema
+        )
 
     return ema
 
@@ -282,7 +288,9 @@ def calculate_rsi(candles, period=14):
     losses = []
 
     for i in range(1, len(closes)):
-        change = closes[i] - closes[i - 1]
+        change = (
+            closes[i] - closes[i - 1]
+        )
 
         if change > 0:
             gains.append(change)
@@ -389,7 +397,11 @@ def calculate_resistance(candles):
 # TREND
 # ============================================================
 
-def get_trend(ema20, ema50, close):
+def get_trend(
+    ema20,
+    ema50,
+    close,
+):
     if (
         close > ema20
         and ema20 > ema50
@@ -414,6 +426,7 @@ def get_momentum(candles):
         return "NEUTRAL"
 
     current = candles[-1]["close"]
+
     previous = candles[-4]["close"]
 
     if current > previous:
@@ -426,7 +439,7 @@ def get_momentum(candles):
 
 
 # ============================================================
-# PATTERN: ENGULFING
+# ENGULFING
 # ============================================================
 
 def detect_engulfing(candles):
@@ -464,7 +477,7 @@ def detect_engulfing(candles):
 
 
 # ============================================================
-# PATTERN: HAMMER
+# HAMMER
 # ============================================================
 
 def detect_hammer(candles):
@@ -476,6 +489,7 @@ def detect_hammer(candles):
     c = candles[-1]
 
     body = candle_body(c)
+
     rng = candle_range(c)
 
     if body <= 0:
@@ -495,7 +509,7 @@ def detect_hammer(candles):
 
 
 # ============================================================
-# PATTERN: SHOOTING STAR
+# SHOOTING STAR
 # ============================================================
 
 def detect_shooting_star(candles):
@@ -507,6 +521,7 @@ def detect_shooting_star(candles):
     c = candles[-1]
 
     body = candle_body(c)
+
     rng = candle_range(c)
 
     if body <= 0:
@@ -528,7 +543,7 @@ def detect_shooting_star(candles):
 
 
 # ============================================================
-# PATTERN: MORNING / EVENING STAR
+# MORNING / EVENING STAR
 # ============================================================
 
 def detect_stars(candles):
@@ -543,7 +558,6 @@ def detect_stars(candles):
 
     a_body = candle_body(a)
     b_body = candle_body(b)
-    c_body = candle_body(c)
 
     if (
         is_bearish(a)
@@ -577,7 +591,7 @@ def detect_stars(candles):
 
 
 # ============================================================
-# PATTERN: BREAKOUT
+# BREAKOUT
 # ============================================================
 
 def detect_breakout(candles):
@@ -612,7 +626,7 @@ def detect_breakout(candles):
 
 
 # ============================================================
-# PATTERN: PULLBACK
+# PULLBACK
 # ============================================================
 
 def detect_pullback(
@@ -657,7 +671,7 @@ def detect_pullback(
 
 
 # ============================================================
-# PATTERN: DOUBLE BOTTOM / TOP
+# DOUBLE BOTTOM / TOP
 # ============================================================
 
 def detect_double_patterns(candles):
@@ -684,13 +698,18 @@ def detect_double_patterns(candles):
 
     avg_price = candles[-1]["close"]
 
-    low_difference = abs(
-        first_low - second_low
-    ) / avg_price
+    if avg_price <= 0:
+        return patterns
 
-    high_difference = abs(
-        first_high - second_high
-    ) / avg_price
+    low_difference = (
+        abs(first_low - second_low)
+        / avg_price
+    )
+
+    high_difference = (
+        abs(first_high - second_high)
+        / avg_price
+    )
 
     if low_difference <= 0.0015:
         if candles[-1]["close"] > second_low:
@@ -763,7 +782,6 @@ def detect_patterns(candles):
         )
     )
 
-    # remove duplicates
     unique = []
 
     for pattern in patterns:
@@ -799,6 +817,7 @@ def get_directional_patterns(patterns):
     bearish = []
 
     for pattern in patterns:
+
         if pattern in BULLISH_PATTERNS:
             bullish.append(pattern)
 
@@ -813,6 +832,7 @@ def get_directional_patterns(patterns):
 # ============================================================
 
 def get_candidate_direction(patterns):
+
     bullish, bearish = (
         get_directional_patterns(patterns)
     )
@@ -833,7 +853,7 @@ def get_candidate_direction(patterns):
 
 
 # ============================================================
-# CONFIRMATION
+# CONFIRMATION ENGINE
 # ============================================================
 
 def confirmation_engine(
@@ -881,7 +901,7 @@ def confirmation_engine(
     trend = get_trend(
         ema20,
         ema50,
-        close
+        close,
     )
 
     momentum = get_momentum(
@@ -904,6 +924,10 @@ def confirmation_engine(
 
     reasons = []
 
+    # --------------------------------------------------------
+    # PATTERN
+    # --------------------------------------------------------
+
     if patterns:
         checks["pattern"] = True
 
@@ -922,8 +946,10 @@ def confirmation_engine(
     # --------------------------------------------------------
 
     if direction == "BUY":
+
         if trend == "UPTREND":
             checks["trend"] = True
+
             reasons.append(
                 "Aligned with uptrend"
             )
@@ -933,8 +959,10 @@ def confirmation_engine(
             )
 
     elif direction == "SELL":
+
         if trend == "DOWNTREND":
             checks["trend"] = True
+
             reasons.append(
                 "Aligned with downtrend"
             )
@@ -948,8 +976,10 @@ def confirmation_engine(
     # --------------------------------------------------------
 
     if direction == "BUY":
+
         if momentum == "BULLISH":
             checks["momentum"] = True
+
             reasons.append(
                 "Momentum confirms BUY"
             )
@@ -959,8 +989,10 @@ def confirmation_engine(
             )
 
     elif direction == "SELL":
+
         if momentum == "BEARISH":
             checks["momentum"] = True
+
             reasons.append(
                 "Momentum confirms SELL"
             )
@@ -974,8 +1006,10 @@ def confirmation_engine(
     # --------------------------------------------------------
 
     if direction == "BUY":
+
         if 45 <= rsi <= 72:
             checks["rsi"] = True
+
             reasons.append(
                 "RSI supports BUY"
             )
@@ -985,8 +1019,10 @@ def confirmation_engine(
             )
 
     elif direction == "SELL":
+
         if 28 <= rsi <= 55:
             checks["rsi"] = True
+
             reasons.append(
                 "RSI supports SELL"
             )
@@ -999,27 +1035,26 @@ def confirmation_engine(
     # LOCATION
     # --------------------------------------------------------
 
-    distance_to_resistance = abs(
-        resistance - close
-    )
-
-    distance_to_support = abs(
-        close - support
-    )
-
     location_buffer = max(
         atr * 0.75,
         1.0,
     )
 
     if direction == "BUY":
+
         if (
-            close >= resistance - location_buffer
+            close >= (
+                resistance
+                - location_buffer
+            )
             or close > ema20
         ):
             checks["location"] = True
 
-        if close >= resistance - location_buffer:
+        if close >= (
+            resistance
+            - location_buffer
+        ):
             reasons.append(
                 "Near resistance / breakout zone"
             )
@@ -1029,13 +1064,20 @@ def confirmation_engine(
             )
 
     elif direction == "SELL":
+
         if (
-            close <= support + location_buffer
+            close <= (
+                support
+                + location_buffer
+            )
             or close < ema20
         ):
             checks["location"] = True
 
-        if close <= support + location_buffer:
+        if close <= (
+            support
+            + location_buffer
+        ):
             reasons.append(
                 "Near support / breakdown zone"
             )
@@ -1049,18 +1091,24 @@ def confirmation_engine(
     # --------------------------------------------------------
 
     if atr >= MIN_ATR:
+
         checks["volatility"] = True
 
         reasons.append(
             "ATR sufficient"
         )
+
     else:
+
         reasons.append(
             "ATR too low"
         )
 
     # --------------------------------------------------------
     # SCORE
+    #
+    # Trigger ยังไม่ถูกนับตรงนี้
+    # เพื่อป้องกันการบวก trigger ซ้ำ
     # --------------------------------------------------------
 
     weights = {
@@ -1076,6 +1124,10 @@ def confirmation_engine(
     score = 0.0
 
     for key, weight in weights.items():
+
+        if key == "trigger":
+            continue
+
         if checks[key]:
             score += weight
 
@@ -1106,7 +1158,9 @@ def calculate_trigger(
     candles,
     direction,
 ):
-    if len(candles) < TRIGGER_LOOKBACK + 2:
+    if len(candles) < (
+        TRIGGER_LOOKBACK + 2
+    ):
         return None
 
     current = candles[-1]
@@ -1126,12 +1180,16 @@ def calculate_trigger(
     )
 
     if direction == "BUY":
+
         trigger = previous_high
 
         if current["close"] >= trigger:
+
             return {
                 "triggered": True,
-                "trigger": round_price(trigger),
+                "trigger": round_price(
+                    trigger
+                ),
                 "entry": round_price(
                     current["close"]
                 ),
@@ -1139,17 +1197,23 @@ def calculate_trigger(
 
         return {
             "triggered": False,
-            "trigger": round_price(trigger),
+            "trigger": round_price(
+                trigger
+            ),
             "entry": None,
         }
 
     if direction == "SELL":
+
         trigger = previous_low
 
         if current["close"] <= trigger:
+
             return {
                 "triggered": True,
-                "trigger": round_price(trigger),
+                "trigger": round_price(
+                    trigger
+                ),
                 "entry": round_price(
                     current["close"]
                 ),
@@ -1157,7 +1221,9 @@ def calculate_trigger(
 
         return {
             "triggered": False,
-            "trigger": round_price(trigger),
+            "trigger": round_price(
+                trigger
+            ),
             "entry": None,
         }
 
@@ -1186,7 +1252,8 @@ def calculate_trade_levels(
     if direction == "BUY":
 
         structural_sl = (
-            support - atr * 0.10
+            support
+            - atr * 0.10
         )
 
         stop_loss = min(
@@ -1195,18 +1262,21 @@ def calculate_trade_levels(
         )
 
         actual_risk = (
-            entry - stop_loss
+            entry
+            - stop_loss
         )
 
         take_profit = (
             entry
-            + actual_risk * RISK_REWARD
+            + actual_risk
+            * RISK_REWARD
         )
 
     elif direction == "SELL":
 
         structural_sl = (
-            resistance + atr * 0.10
+            resistance
+            + atr * 0.10
         )
 
         stop_loss = max(
@@ -1215,12 +1285,14 @@ def calculate_trade_levels(
         )
 
         actual_risk = (
-            stop_loss - entry
+            stop_loss
+            - entry
         )
 
         take_profit = (
             entry
-            - actual_risk * RISK_REWARD
+            - actual_risk
+            * RISK_REWARD
         )
 
     else:
@@ -1233,16 +1305,26 @@ def calculate_trade_levels(
         take_profit - entry
     )
 
-    rr = reward / actual_risk
+    rr = (
+        reward
+        / actual_risk
+    )
 
     if rr < MIN_RISK_REWARD:
         return None
 
     return {
         "entry": round_price(entry),
-        "stop_loss": round_price(stop_loss),
-        "take_profit": round_price(take_profit),
-        "risk_reward": round(rr, 2),
+        "stop_loss": round_price(
+            stop_loss
+        ),
+        "take_profit": round_price(
+            take_profit
+        ),
+        "risk_reward": round(
+            rr,
+            2,
+        ),
         "risk_distance": round(
             actual_risk,
             4,
@@ -1252,19 +1334,10 @@ def calculate_trade_levels(
 
 # ============================================================
 # COMPLETE SIGNAL ENGINE
-#
-# Pattern
-#     ↓
-# Confirmation
-#     ↓
-# Trigger
-#     ↓
-# Entry
-#     ↓
-# TP / SL
 # ============================================================
 
 def analyze_market(candles):
+
     latest = candles[-1]
 
     closes = [
@@ -1318,7 +1391,12 @@ def analyze_market(candles):
         patterns
     )
 
+    # --------------------------------------------------------
+    # NO PATTERN
+    # --------------------------------------------------------
+
     if direction is None:
+
         return {
             "timestamp": latest["datetime"],
             "symbol": SYMBOL,
@@ -1335,7 +1413,9 @@ def analyze_market(candles):
             "stop_loss": None,
             "take_profit": None,
             "risk_reward": 0.0,
+            "risk_distance": 0.0,
             "trigger": None,
+            "triggered": False,
             "atr": round(atr, 4),
             "rsi": round(rsi, 2),
             "ema20": round(ema20, 4),
@@ -1343,14 +1423,23 @@ def analyze_market(candles):
             "trend": trend,
             "momentum": momentum,
             "support": round_price(support),
-            "resistance": round_price(resistance),
+            "resistance": round_price(
+                resistance
+            ),
             "confirmation": None,
             "method": (
                 "Pattern Recognition + "
-                "Confirmation + Trigger + Entry"
+                "Confirmation + Trigger + "
+                "Entry + TP/SL"
             ),
-            "data_source": "Twelve Data XAU/USD",
+            "data_source": (
+                "Twelve Data XAU/USD"
+            ),
         }
+
+    # --------------------------------------------------------
+    # CONFIRMATION
+    # --------------------------------------------------------
 
     confirmation = confirmation_engine(
         candles,
@@ -1358,21 +1447,32 @@ def analyze_market(candles):
         direction,
     )
 
+    # --------------------------------------------------------
+    # TRIGGER
+    # --------------------------------------------------------
+
     trigger = calculate_trigger(
         candles,
         direction,
     )
 
     if trigger is None:
+
         trigger = {
             "triggered": False,
             "trigger": None,
             "entry": None,
         }
 
-    confirmation["checks"]["trigger"] = bool(
-        trigger["triggered"]
+    confirmation["checks"]["trigger"] = (
+        bool(
+            trigger["triggered"]
+        )
     )
+
+    # --------------------------------------------------------
+    # SCORE
+    # --------------------------------------------------------
 
     score = float(
         confirmation["score"]
@@ -1388,16 +1488,27 @@ def analyze_market(candles):
 
     confirmation["score"] = score
 
+    # --------------------------------------------------------
+    # REASON
+    # --------------------------------------------------------
+
     if trigger["triggered"]:
+
         confirmation["reasons"].append(
             "Entry trigger confirmed"
         )
+
     else:
+
         confirmation["reasons"].append(
             "Waiting for {} trigger".format(
                 direction
             )
         )
+
+    # --------------------------------------------------------
+    # CONFIRMATION
+    # --------------------------------------------------------
 
     all_confirmation_checks = all(
         confirmation["checks"].values()
@@ -1410,10 +1521,15 @@ def analyze_market(candles):
 
     trade = None
 
+    # --------------------------------------------------------
+    # TRADE
+    # --------------------------------------------------------
+
     if (
         valid_confirmation
         and trigger["triggered"]
     ):
+
         trade = calculate_trade_levels(
             direction,
             trigger["entry"],
@@ -1423,10 +1539,11 @@ def analyze_market(candles):
         )
 
     # --------------------------------------------------------
-    # REAL ENTRY
+    # STATUS
     # --------------------------------------------------------
 
     if trade is not None:
+
         signal = direction
         status = "ENTRY_READY"
         valid = True
@@ -1435,74 +1552,126 @@ def analyze_market(candles):
         score >= MIN_SCORE
         and not trigger["triggered"]
     ):
+
         signal = "WAIT_TRIGGER"
         status = "PATTERN_CONFIRMED"
         valid = False
 
     else:
+
         signal = "WAIT_CONFIRMATION"
         status = "PATTERN_DETECTED"
         valid = False
+
+    # --------------------------------------------------------
+    # RESULT
+    # --------------------------------------------------------
 
     return {
         "timestamp": latest["datetime"],
         "symbol": SYMBOL,
         "timeframe": "M5",
+
         "signal": signal,
         "status": status,
         "valid": valid,
+
         "patterns": patterns,
+
         "directional_patterns": (
-            confirmation["bullish_patterns"]
+            confirmation[
+                "bullish_patterns"
+            ]
             if direction == "BUY"
-            else confirmation["bearish_patterns"]
+            else confirmation[
+                "bearish_patterns"
+            ]
         ),
+
         "candidate_direction": direction,
+
         "score": score,
         "confidence": score,
+
         "entry": (
             trade["entry"]
             if trade
             else None
         ),
+
         "stop_loss": (
             trade["stop_loss"]
             if trade
             else None
         ),
+
         "take_profit": (
             trade["take_profit"]
             if trade
             else None
         ),
+
         "risk_reward": (
             trade["risk_reward"]
             if trade
             else 0.0
         ),
+
         "risk_distance": (
             trade["risk_distance"]
             if trade
             else 0.0
         ),
+
         "trigger": trigger["trigger"],
+
         "triggered": bool(
             trigger["triggered"]
         ),
-        "atr": round(atr, 4),
-        "rsi": round(rsi, 2),
-        "ema20": round(ema20, 4),
-        "ema50": round(ema50, 4),
+
+        "atr": round(
+            atr,
+            4,
+        ),
+
+        "rsi": round(
+            rsi,
+            2,
+        ),
+
+        "ema20": round(
+            ema20,
+            4,
+        ),
+
+        "ema50": round(
+            ema50,
+            4,
+        ),
+
         "trend": trend,
+
         "momentum": momentum,
-        "support": round_price(support),
-        "resistance": round_price(resistance),
+
+        "support": round_price(
+            support
+        ),
+
+        "resistance": round_price(
+            resistance
+        ),
+
         "confirmation": confirmation,
+
         "method": (
             "Pattern Recognition + "
-            "Confirmation + Trigger + Entry + TP/SL"
+            "Confirmation + Trigger + "
+            "Entry + TP/SL"
         ),
-        "data_source": "Twelve Data XAU/USD",
+
+        "data_source": (
+            "Twelve Data XAU/USD"
+        ),
     }
 
 
@@ -1511,11 +1680,18 @@ def analyze_market(candles):
 # ============================================================
 
 def send_telegram(message):
+
     if not TELEGRAM_BOT_TOKEN:
-        return False, "TELEGRAM_BOT_TOKEN is not configured"
+        return (
+            False,
+            "TELEGRAM_BOT_TOKEN is not configured",
+        )
 
     if not TELEGRAM_CHAT_ID:
-        return False, "TELEGRAM_CHAT_ID is not configured"
+        return (
+            False,
+            "TELEGRAM_CHAT_ID is not configured",
+        )
 
     url = (
         "https://api.telegram.org/bot"
@@ -1530,6 +1706,7 @@ def send_telegram(message):
     }
 
     try:
+
         response = requests.post(
             url,
             json=payload,
@@ -1540,7 +1717,11 @@ def send_telegram(message):
 
         result = response.json()
 
-        if not result.get("ok", False):
+        if not result.get(
+            "ok",
+            False,
+        ):
+
             return (
                 False,
                 result.get(
@@ -1549,33 +1730,46 @@ def send_telegram(message):
                 ),
             )
 
-        return True, None
+        return (
+            True,
+            None,
+        )
 
     except Exception as exc:
-        return False, str(exc)
+
+        return (
+            False,
+            str(exc),
+        )
 
 
 # ============================================================
-# TELEGRAM STARTUP
+# STARTUP TELEGRAM
 # ============================================================
 
 def send_startup_notification():
+
     with STARTUP_LOCK:
+
         if STATE["startup_sent"]:
             return True
 
         if not TELEGRAM_BOT_TOKEN:
+
             print(
                 "Telegram startup skipped: "
                 "TELEGRAM_BOT_TOKEN not configured"
             )
+
             return False
 
         if not TELEGRAM_CHAT_ID:
+
             print(
                 "Telegram startup skipped: "
                 "TELEGRAM_CHAT_ID not configured"
             )
+
             return False
 
         message = (
@@ -1613,6 +1807,7 @@ def send_startup_notification():
         )
 
         if ok:
+
             STATE["startup_sent"] = True
 
             print(
@@ -1634,9 +1829,15 @@ def send_startup_notification():
 # ============================================================
 
 def format_signal_message(signal):
-    direction = signal.get("signal")
 
-    if direction not in ("BUY", "SELL"):
+    direction = signal.get(
+        "signal"
+    )
+
+    if direction not in (
+        "BUY",
+        "SELL",
+    ):
         return None
 
     emoji = (
@@ -1647,7 +1848,7 @@ def format_signal_message(signal):
 
     patterns = signal.get(
         "patterns",
-        []
+        [],
     )
 
     pattern_text = (
@@ -1661,47 +1862,96 @@ def format_signal_message(signal):
         + " <b>XAUUSD M5 SIGNAL</b>\n"
         "\n"
         "<b>SIGNAL:</b> "
-        + html.escape(str(direction))
+        + html.escape(
+            str(direction)
+        )
         + "\n"
         "<b>Score:</b> "
-        + str(signal.get("score", 0))
+        + str(
+            signal.get(
+                "score",
+                0,
+            )
+        )
         + "\n"
         "<b>Pattern:</b> "
-        + html.escape(pattern_text)
+        + html.escape(
+            pattern_text
+        )
         + "\n"
         "\n"
         "<b>ENTRY:</b> "
-        + str(signal.get("entry"))
+        + str(
+            signal.get(
+                "entry"
+            )
+        )
         + "\n"
         "<b>TP:</b> "
-        + str(signal.get("take_profit"))
+        + str(
+            signal.get(
+                "take_profit"
+            )
+        )
         + "\n"
         "<b>SL:</b> "
-        + str(signal.get("stop_loss"))
+        + str(
+            signal.get(
+                "stop_loss"
+            )
+        )
         + "\n"
         "<b>RR:</b> "
-        + str(signal.get("risk_reward"))
+        + str(
+            signal.get(
+                "risk_reward"
+            )
+        )
         + "\n"
         "\n"
         "<b>Trend:</b> "
-        + str(signal.get("trend"))
+        + str(
+            signal.get(
+                "trend"
+            )
+        )
         + "\n"
         "<b>Momentum:</b> "
-        + str(signal.get("momentum"))
+        + str(
+            signal.get(
+                "momentum"
+            )
+        )
         + "\n"
         "<b>RSI:</b> "
-        + str(signal.get("rsi"))
+        + str(
+            signal.get(
+                "rsi"
+            )
+        )
         + "\n"
         "<b>ATR:</b> "
-        + str(signal.get("atr"))
+        + str(
+            signal.get(
+                "atr"
+            )
+        )
         + "\n"
         "\n"
         "<b>Trigger:</b> "
-        + str(signal.get("trigger"))
+        + str(
+            signal.get(
+                "trigger"
+            )
+        )
         + "\n"
         "<b>Time:</b> "
         + html.escape(
-            str(signal.get("timestamp"))
+            str(
+                signal.get(
+                    "timestamp"
+                )
+            )
         )
         + "\n"
         "\n"
@@ -1711,6 +1961,7 @@ def format_signal_message(signal):
 
 
 def maybe_send_signal(signal):
+
     if signal.get("signal") not in (
         "BUY",
         "SELL",
@@ -1721,14 +1972,27 @@ def maybe_send_signal(signal):
         return False
 
     signal_key = (
-        str(signal.get("timestamp"))
+        str(
+            signal.get(
+                "timestamp"
+            )
+        )
         + "_"
-        + str(signal.get("signal"))
+        + str(
+            signal.get(
+                "signal"
+            )
+        )
         + "_"
-        + str(signal.get("entry"))
+        + str(
+            signal.get(
+                "entry"
+            )
+        )
     )
 
     with SIGNAL_LOCK:
+
         if (
             STATE["last_signal_key"]
             == signal_key
@@ -1747,11 +2011,18 @@ def maybe_send_signal(signal):
         )
 
         if not ok:
+
             STATE["last_error"] = error
+
             return False
 
-        STATE["last_signal_key"] = signal_key
-        STATE["last_signal_sent_at"] = now_iso()
+        STATE["last_signal_key"] = (
+            signal_key
+        )
+
+        STATE[
+            "last_signal_sent_at"
+        ] = now_iso()
 
         print(
             "Telegram trading signal sent successfully"
@@ -1764,7 +2035,10 @@ def maybe_send_signal(signal):
 # RUN SIGNAL
 # ============================================================
 
-def run_signal(send_notification=True):
+def run_signal(
+    send_notification=True,
+):
+
     candles = get_candles()
 
     signal = analyze_market(
@@ -1772,32 +2046,21 @@ def run_signal(send_notification=True):
     )
 
     STATE["last_update"] = now_iso()
+
     STATE["last_signal"] = signal
+
     STATE["last_error"] = None
 
     if send_notification:
-        maybe_send_signal(signal)
+        maybe_send_signal(
+            signal
+        )
 
     return signal
 
 
 # ============================================================
-# BACKTEST
-#
-# IMPORTANT:
-#
-# Backtest ใช้ analyze_market() ตัวเดียวกับ Live
-#
-# ไม่สร้างสูตร Entry ใหม่
-#
-# Pattern
-# Confirmation
-# Trigger
-# Entry
-# TP
-# SL
-#
-# ใช้กติกาเดียวกัน
+# BACKTEST TRADE EVALUATION
 # ============================================================
 
 def evaluate_trade_from_signal(
@@ -1805,6 +2068,7 @@ def evaluate_trade_from_signal(
     signal_index,
     signal,
 ):
+
     direction = signal.get(
         "signal"
     )
@@ -1836,24 +2100,36 @@ def evaluate_trade_from_signal(
 
     entry = float(entry)
     stop_loss = float(stop_loss)
-    take_profit = float(take_profit)
+    take_profit = float(
+        take_profit
+    )
 
     last_index = min(
-        signal_index + FORWARD_BARS,
+        signal_index
+        + FORWARD_BARS,
         len(candles) - 1,
     )
 
     result = "TIMEOUT"
+
+    exit_reason = "TIMEOUT"
+
     exit_price = None
+
     exit_index = last_index
 
     mfe = 0.0
     mae = 0.0
 
+    # --------------------------------------------------------
+    # FOLLOW TRADE
+    # --------------------------------------------------------
+
     for j in range(
         signal_index + 1,
         last_index + 1,
     ):
+
         candle = candles[j]
 
         high = float(
@@ -1864,7 +2140,12 @@ def evaluate_trade_from_signal(
             candle["low"]
         )
 
+        # ====================================================
+        # BUY
+        # ====================================================
+
         if direction == "BUY":
+
             favorable = (
                 high - entry
             ) / entry * 100.0
@@ -1891,28 +2172,55 @@ def evaluate_trade_from_signal(
                 high >= take_profit
             )
 
-            # Conservative rule:
-            # ถ้าแท่งเดียวโดนทั้ง TP และ SL
-            # ถือว่า SL ก่อน
+            # ------------------------------------------------
+            # SAME CANDLE TP + SL
+            # Conservative = LOSS
+            # ------------------------------------------------
+
             if hit_sl and hit_tp:
+
                 result = "LOSS"
+
+                exit_reason = (
+                    "SL_AND_TP_SAME_CANDLE"
+                )
+
                 exit_price = stop_loss
+
                 exit_index = j
+
                 break
 
             if hit_sl:
+
                 result = "LOSS"
+
+                exit_reason = "STOP_LOSS"
+
                 exit_price = stop_loss
+
                 exit_index = j
+
                 break
 
             if hit_tp:
+
                 result = "WIN"
+
+                exit_reason = "TAKE_PROFIT"
+
                 exit_price = take_profit
+
                 exit_index = j
+
                 break
 
+        # ====================================================
+        # SELL
+        # ====================================================
+
         else:
+
             favorable = (
                 entry - low
             ) / entry * 100.0
@@ -1939,47 +2247,95 @@ def evaluate_trade_from_signal(
                 low <= take_profit
             )
 
+            # ------------------------------------------------
+            # SAME CANDLE TP + SL
+            # Conservative = LOSS
+            # ------------------------------------------------
+
             if hit_sl and hit_tp:
+
                 result = "LOSS"
+
+                exit_reason = (
+                    "SL_AND_TP_SAME_CANDLE"
+                )
+
                 exit_price = stop_loss
+
                 exit_index = j
+
                 break
 
             if hit_sl:
+
                 result = "LOSS"
+
+                exit_reason = "STOP_LOSS"
+
                 exit_price = stop_loss
+
                 exit_index = j
+
                 break
 
             if hit_tp:
+
                 result = "WIN"
+
+                exit_reason = "TAKE_PROFIT"
+
                 exit_price = take_profit
+
                 exit_index = j
+
                 break
 
+    # --------------------------------------------------------
+    # TIMEOUT EXIT
+    # --------------------------------------------------------
+
     if exit_price is None:
+
         exit_price = float(
-            candles[exit_index]["close"]
+            candles[
+                exit_index
+            ]["close"]
         )
 
+        result = "TIMEOUT"
+
+        exit_reason = "FORWARD_BARS_TIMEOUT"
+
+    # --------------------------------------------------------
+    # PNL
+    # --------------------------------------------------------
+
     if direction == "BUY":
+
         pnl_percent = (
-            exit_price - entry
+            exit_price
+            - entry
         ) / entry * 100.0
+
     else:
+
         pnl_percent = (
-            entry - exit_price
+            entry
+            - exit_price
         ) / entry * 100.0
 
     return {
         "timestamp": candles[
             signal_index
         ]["datetime"],
+
         "signal": direction,
+
         "patterns": signal.get(
             "patterns",
             [],
         ),
+
         "score": round(
             float(
                 signal.get(
@@ -1989,33 +2345,47 @@ def evaluate_trade_from_signal(
             ),
             2,
         ),
-        "entry": round_price(entry),
+
+        "entry": round_price(
+            entry
+        ),
+
         "stop_loss": round_price(
             stop_loss
         ),
+
         "take_profit": round_price(
             take_profit
         ),
+
         "risk_reward": signal.get(
             "risk_reward",
             0,
         ),
+
         "result": result,
+
+        "exit_reason": exit_reason,
+
         "exit_price": round_price(
             exit_price
         ),
+
         "pnl_percent": round(
             pnl_percent,
             4,
         ),
+
         "mfe_percent": round(
             mfe,
             4,
         ),
+
         "mae_percent": round(
             mae,
             4,
         ),
+
         "bars_held": (
             exit_index
             - signal_index
@@ -2023,7 +2393,12 @@ def evaluate_trade_from_signal(
     }
 
 
+# ============================================================
+# BACKTEST
+# ============================================================
+
 def run_backtest():
+
     candles = get_candles()
 
     total_candles = len(candles)
@@ -2034,10 +2409,13 @@ def run_backtest():
     )
 
     end = (
-        total_candles - FORWARD_BARS - 1
+        total_candles
+        - FORWARD_BARS
+        - 1
     )
 
     if end <= minimum_start:
+
         raise RuntimeError(
             "Not enough candles for backtest"
         )
@@ -2052,13 +2430,20 @@ def run_backtest():
     pattern_frequency = {}
 
     candidate_count = 0
+
     confirmation_count = 0
+
     trigger_count = 0
+
+    # ========================================================
+    # WALK FORWARD
+    # ========================================================
 
     for i in range(
         start,
         end,
     ):
+
         historical = candles[
             : i + 1
         ]
@@ -2073,6 +2458,7 @@ def run_backtest():
         )
 
         for pattern in patterns:
+
             pattern_frequency[
                 pattern
             ] = (
@@ -2093,6 +2479,7 @@ def run_backtest():
         )
 
         if confirmation:
+
             if (
                 confirmation.get(
                     "score",
@@ -2107,16 +2494,23 @@ def run_backtest():
         ):
             trigger_count += 1
 
-        trade = evaluate_trade_from_signal(
-            candles,
-            i,
-            signal,
+        trade = (
+            evaluate_trade_from_signal(
+                candles,
+                i,
+                signal,
+            )
         )
 
         if trade is not None:
+
             trade_results.append(
                 trade
             )
+
+    # ========================================================
+    # COUNTS
+    # ========================================================
 
     signals = len(
         trade_results
@@ -2152,6 +2546,10 @@ def run_backtest():
         if x["signal"] == "SELL"
     )
 
+    # ========================================================
+    # PROFIT
+    # ========================================================
+
     total_profit = sum(
         max(
             x["pnl_percent"],
@@ -2175,42 +2573,78 @@ def run_backtest():
         - total_loss
     )
 
+    # ========================================================
+    # RATES
+    # ========================================================
+
     if signals:
+
         win_rate = (
-            wins / signals * 100.0
+            wins
+            / signals
+            * 100.0
         )
 
         loss_rate = (
-            losses / signals * 100.0
+            losses
+            / signals
+            * 100.0
         )
 
         timeout_rate = (
-            timeouts / signals * 100.0
+            timeouts
+            / signals
+            * 100.0
         )
 
         expectancy = (
-            net_profit / signals
+            net_profit
+            / signals
         )
+
     else:
+
         win_rate = 0.0
+
         loss_rate = 0.0
+
         timeout_rate = 0.0
+
         expectancy = 0.0
 
+    # ========================================================
+    # PROFIT FACTOR
+    # ========================================================
+
     if total_loss > 0:
+
         profit_factor = (
-            total_profit / total_loss
+            total_profit
+            / total_loss
         )
+
     elif total_profit > 0:
-        profit_factor = float("inf")
+
+        profit_factor = float(
+            "inf"
+        )
+
     else:
+
         profit_factor = 0.0
 
+    # ========================================================
+    # EQUITY / DRAWDOWN
+    # ========================================================
+
     equity = 0.0
+
     peak = 0.0
+
     max_drawdown = 0.0
 
     for trade in trade_results:
+
         equity += trade[
             "pnl_percent"
         ]
@@ -2221,13 +2655,18 @@ def run_backtest():
         )
 
         drawdown = (
-            peak - equity
+            peak
+            - equity
         )
 
         max_drawdown = max(
             max_drawdown,
             drawdown,
         )
+
+    # ========================================================
+    # MFE / MAE / SCORE
+    # ========================================================
 
     mfe_values = [
         x["mfe_percent"]
@@ -2265,11 +2704,21 @@ def run_backtest():
         else 0.0
     )
 
+    # ========================================================
+    # RESULT
+    # ========================================================
+
     return {
         "status": "completed",
+
         "symbol": SYMBOL,
+
         "timeframe": "M5",
-        "system": "Pattern Recognition",
+
+        "system": (
+            "Pattern Recognition"
+        ),
+
         "architecture": [
             "Pattern Recognition",
             "Confirmation",
@@ -2278,9 +2727,19 @@ def run_backtest():
             "TP/SL",
             "Telegram",
         ],
-        "data_source": "Twelve Data XAU/USD",
-        "candles_available": total_candles,
-        "test_points": end - start,
+
+        "data_source": (
+            "Twelve Data XAU/USD"
+        ),
+
+        "candles_available": (
+            total_candles
+        ),
+
+        "test_points": (
+            end - start
+        ),
+
         "rules": {
             "minimum_atr": MIN_ATR,
             "minimum_score": MIN_SCORE,
@@ -2293,49 +2752,69 @@ def run_backtest():
                 TRIGGER_LOOKBACK
             ),
         },
+
         "pipeline_counts": {
-            "pattern_candidates": candidate_count,
+            "pattern_candidates": (
+                candidate_count
+            ),
+
             "confirmation_passed": (
                 confirmation_count
             ),
-            "triggered": trigger_count,
-            "executed_trades": signals,
+
+            "triggered": (
+                trigger_count
+            ),
+
+            "executed_trades": (
+                signals
+            ),
         },
+
         "signals": {
             "total": signals,
             "buy": buys,
             "sell": sells,
         },
+
         "results": {
             "wins": wins,
             "losses": losses,
             "timeouts": timeouts,
         },
+
         "performance": {
+
             "win_rate_percent": round(
                 win_rate,
                 2,
             ),
+
             "loss_rate_percent": round(
                 loss_rate,
                 2,
             ),
+
             "timeout_rate_percent": round(
                 timeout_rate,
                 2,
             ),
+
             "total_profit_percent": round(
                 total_profit,
                 4,
             ),
+
             "total_loss_percent": round(
                 total_loss,
                 4,
             ),
+
             "net_profit_percent": round(
                 net_profit,
                 4,
             ),
+
             "profit_factor": (
                 round(
                     profit_factor,
@@ -2346,31 +2825,41 @@ def run_backtest():
                 )
                 else "infinite"
             ),
+
             "expectancy_percent": round(
                 expectancy,
                 4,
             ),
+
             "max_drawdown_percent": round(
                 max_drawdown,
                 4,
             ),
+
             "average_mfe_percent": round(
                 avg_mfe,
                 4,
             ),
+
             "average_mae_percent": round(
                 avg_mae,
                 4,
             ),
+
             "average_score": round(
                 avg_score,
                 2,
             ),
         },
-        "pattern_frequency": pattern_frequency,
-        "recent_trades": trade_results[
-            -20:
-        ],
+
+        "pattern_frequency": (
+            pattern_frequency
+        ),
+
+        "recent_trades": (
+            trade_results[-20:]
+        ),
+
         "warning": (
             "Historical simulation only. "
             "Spread, slippage, execution delay "
@@ -2386,14 +2875,20 @@ def run_backtest():
 
 @app.route("/")
 def home():
+
     return jsonify(
         {
             "name": (
                 "XAUUSD M5 Pattern "
                 "Recognition Bot"
             ),
+
             "status": "online",
-            "system": "Pattern Recognition",
+
+            "system": (
+                "Pattern Recognition"
+            ),
+
             "architecture": [
                 "Pattern Recognition",
                 "Confirmation",
@@ -2402,14 +2897,20 @@ def home():
                 "TP/SL",
                 "Telegram",
             ],
+
             "symbol": SYMBOL,
+
             "timeframe": "M5",
+
             "data_source": "Twelve Data",
+
             "telegram": bool(
                 TELEGRAM_BOT_TOKEN
                 and TELEGRAM_CHAT_ID
             ),
+
             "patterns": PATTERNS,
+
             "rules": {
                 "minimum_atr": MIN_ATR,
                 "minimum_score": MIN_SCORE,
@@ -2419,6 +2920,7 @@ def home():
                 "risk_reward": RISK_REWARD,
                 "forward_bars": FORWARD_BARS,
             },
+
             "endpoints": [
                 "/",
                 "/health",
@@ -2437,32 +2939,48 @@ def home():
 
 @app.route("/health")
 def health():
+
     return jsonify(
         {
             "status": "healthy",
-            "system": "Pattern Recognition",
+
+            "system": (
+                "Pattern Recognition"
+            ),
+
             "symbol": SYMBOL,
+
             "timeframe": "M5",
+
             "data_source": "Twelve Data",
+
             "twelve_data": bool(
                 TWELVE_DATA_API_KEY
             ),
+
             "telegram": bool(
                 TELEGRAM_BOT_TOKEN
                 and TELEGRAM_CHAT_ID
             ),
+
             "startup_notification_sent": (
                 STATE["startup_sent"]
             ),
+
             "last_update": (
                 STATE["last_update"]
             ),
+
             "last_signal": (
                 STATE["last_signal"]
             ),
+
             "last_signal_sent_at": (
-                STATE["last_signal_sent_at"]
+                STATE[
+                    "last_signal_sent_at"
+                ]
             ),
+
             "last_error": (
                 STATE["last_error"]
             ),
@@ -2476,20 +2994,26 @@ def health():
 
 @app.route("/signal")
 def signal_endpoint():
+
     try:
-        # ถ้า startup ยังไม่ได้ส่ง
-        # พยายามส่งอีกครั้ง
+
         if not STATE["startup_sent"]:
+
             send_startup_notification()
 
         signal = run_signal(
             send_notification=True
         )
 
-        return jsonify(signal)
+        return jsonify(
+            signal
+        )
 
     except Exception as exc:
-        STATE["last_error"] = str(exc)
+
+        STATE["last_error"] = str(
+            exc
+        )
 
         return jsonify(
             {
@@ -2506,7 +3030,9 @@ def signal_endpoint():
 
 @app.route("/test-data")
 def test_data():
+
     try:
+
         candles = get_candles()
 
         latest = candles[-1]
@@ -2514,27 +3040,49 @@ def test_data():
         return jsonify(
             {
                 "status": "success",
+
                 "message": (
                     "Twelve Data connection "
                     "is working"
                 ),
+
                 "symbol": SYMBOL,
+
                 "timeframe": "M5",
-                "candles": len(candles),
+
+                "candles": len(
+                    candles
+                ),
+
                 "latest": {
                     "datetime": latest[
                         "datetime"
                     ],
-                    "open": latest["open"],
-                    "high": latest["high"],
-                    "low": latest["low"],
-                    "close": latest["close"],
+
+                    "open": latest[
+                        "open"
+                    ],
+
+                    "high": latest[
+                        "high"
+                    ],
+
+                    "low": latest[
+                        "low"
+                    ],
+
+                    "close": latest[
+                        "close"
+                    ],
                 },
             }
         )
 
     except Exception as exc:
-        STATE["last_error"] = str(exc)
+
+        STATE["last_error"] = str(
+            exc
+        )
 
         return jsonify(
             {
@@ -2550,6 +3098,7 @@ def test_data():
 
 @app.route("/test-telegram")
 def test_telegram():
+
     message = (
         "🧪 <b>XAUUSD M5 BOT TEST</b>\n"
         "\n"
@@ -2561,7 +3110,9 @@ def test_telegram():
         "→ Entry → TP/SL\n"
         "\n"
         "<b>Time:</b> "
-        + html.escape(now_iso())
+        + html.escape(
+            now_iso()
+        )
     )
 
     ok, error = send_telegram(
@@ -2569,13 +3120,16 @@ def test_telegram():
     )
 
     if ok:
+
         return jsonify(
             {
                 "status": "success",
+
                 "message": (
                     "Telegram test message "
                     "sent successfully"
                 ),
+
                 "telegram": True,
             }
         )
@@ -2583,7 +3137,9 @@ def test_telegram():
     return jsonify(
         {
             "status": "error",
+
             "message": error,
+
             "telegram": False,
         }
     ), 500
@@ -2595,13 +3151,20 @@ def test_telegram():
 
 @app.route("/backtest")
 def backtest_endpoint():
+
     try:
+
         result = run_backtest()
 
-        return jsonify(result)
+        return jsonify(
+            result
+        )
 
     except Exception as exc:
-        STATE["last_error"] = str(exc)
+
+        STATE["last_error"] = str(
+            exc
+        )
 
         return jsonify(
             {
@@ -2612,23 +3175,19 @@ def backtest_endpoint():
 
 
 # ============================================================
-# STARTUP
+# STARTUP WORKER
 # ============================================================
 
 def startup_worker():
-    """
-    ส่งข้อความต้อนรับหลัง Gunicorn โหลด worker
-    รอเล็กน้อยเพื่อให้ process พร้อมก่อนส่ง Telegram
-    """
 
     try:
-        import time
 
         time.sleep(2)
 
         send_startup_notification()
 
     except Exception as exc:
+
         print(
             "Startup notification error:",
             exc,
@@ -2641,7 +3200,6 @@ def startup_worker():
 
 if __name__ == "__main__":
 
-    # Local / direct execution
     send_startup_notification()
 
     port = int(
@@ -2658,11 +3216,6 @@ if __name__ == "__main__":
 
 else:
 
-    # Gunicorn / Render
-    #
-    # ใช้ daemon thread เพื่อให้ Flask/Gunicorn
-    # โหลด app ได้ก่อน แล้วค่อยส่งข้อความ
-    #
     startup_thread = threading.Thread(
         target=startup_worker,
         daemon=True,
