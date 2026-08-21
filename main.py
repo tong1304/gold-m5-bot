@@ -19,9 +19,9 @@ def run_web_server():
     app.run(host='0.0.0.0', port=port)
 
 # --- 2. CONFIGURATION ---
-SYMBOL = "XAUUSD=X"
+SYMBOL = "GC=F"       # สัญลักษณ์มาตรฐานทองคำบน Yahoo Finance
 TIMEFRAME = "1m"
-CHECK_INTERVAL = 90  # 90 วินาที ป้องกัน YF Rate Limit
+CHECK_INTERVAL = 90   # 90 วินาที ป้องกัน Rate Limit
 
 BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
@@ -67,8 +67,8 @@ def scan_babyforex_setup():
         return
 
     try:
-        ticker = yf.Ticker(SYMBOL)
-        df = ticker.history(period="1d", interval=TIMEFRAME)
+        # ใช้ yf.download ดึงข้อมูลโดยตรงสำหรับ GC=F
+        df = yf.download(tickers=SYMBOL, period="1d", interval=TIMEFRAME, progress=False)
         
         if df.empty or len(df) < 25:
             return
@@ -112,7 +112,7 @@ def scan_babyforex_setup():
 
                 msg = (
                     f"🔥 *BABYFOREX STYLE: M1 BUY REJECTION*\n\n"
-                    f"📌 *สินค้า:* Gold (XAUUSD)\n"
+                    f"📌 *สินค้า:* Gold (XAUUSD / GC=F)\n"
                     f"📈 *คำสั่ง:* BUY\n"
                     f"🎯 *Entry:* `{entry_price}`\n"
                     f"🛑 *SL:* `{sl_price}` (-${sl_distance})\n"
@@ -138,7 +138,7 @@ def scan_babyforex_setup():
 
                 msg = (
                     f"🔥 *BABYFOREX STYLE: M1 SELL REJECTION*\n\n"
-                    f"📌 *สินค้า:* Gold (XAUUSD)\n"
+                    f"📌 *สินค้า:* Gold (XAUUSD / GC=F)\n"
                     f"📉 *คำสั่ง:* SELL\n"
                     f"🎯 *Entry:* `{entry_price}`\n"
                     f"🛑 *SL:* `{sl_price}` (-${sl_distance})\n"
@@ -157,7 +157,7 @@ def scan_babyforex_setup():
 if __name__ == "__main__":
     threading.Thread(target=run_web_server, daemon=True).start()
     print("Babyforex Scalper Bot is starting...")
-    send_telegram("🚀 *ระบบสแกน Babyforex M1 Pure Price Action พร้อมทำงานแล้ว!*")
+    send_telegram("🚀 *ระบบสแกน Babyforex M1 (ใช้ข้อมูล GC=F) เชื่อมต่อสำเร็จและเริ่มทำงานแล้ว!*")
     
     while True:
         try:
