@@ -12,16 +12,16 @@ app = Flask(__name__)
 
 @app.route('/')
 def home():
-    return "XM Standard $50 - Pure Babyforex Price Action Bot is Live!"
+    return "XM Standard $50 - High-WinRate M5 Bot is Running!"
 
 def run_web_server():
     port = int(os.environ.get("PORT", 10000))
     app.run(host='0.0.0.0', port=port)
 
 # --- 2. CONFIGURATION ---
-SYMBOL = "GC=F"       # สัญลักษณ์มาตรฐานทองคำบน Yahoo Finance
-TIMEFRAME = "1m"
-CHECK_INTERVAL = 90   # 90 วินาที ป้องกัน Rate Limit
+SYMBOL = "GC=F"
+TIMEFRAME = "5m"
+CHECK_INTERVAL = 120  # สแกนทุก 2 นาที
 
 BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
@@ -34,7 +34,7 @@ def send_telegram(message):
     except Exception as e:
         print(f"Error sending message: {e}")
 
-# --- 3. NEWS FILTER (30 Mins) ---
+# --- 3. NEWS FILTER (30 Mins Buffer) ---
 def check_high_impact_news(buffer_minutes=30):
     url = "https://n3.forexfactory1.com/ff_calendar_thisweek.json"
     try:
@@ -58,110 +58,105 @@ def check_high_impact_news(buffer_minutes=30):
         return False
     return False
 
-# --- 4. BABYFOREX PURE PRICE ACTION SCANNER ---
-def scan_babyforex_setup():
-    print("Scanning Babyforex M1 Pure Price Action...")
+# --- 4. HIGH CONFLUENCE M5 SCANNER ---
+def scan_m5_setup():
+    print("Scanning M5 High-Confluence Setup...")
     
     if check_high_impact_news(buffer_minutes=30):
         print("⏭️ Skipped due to USD High-Impact News Buffer.")
         return
 
     try:
-        # ใช้ yf.download ดึงข้อมูลโดยตรงสำหรับ GC=F
-        df = yf.download(tickers=SYMBOL, period="1d", interval=TIMEFRAME, progress=False)
-        
-        if df.empty or len(df) < 25:
+        df = yf.download(tickers=SYMBOL, period="5d", interval=TIMEFRAME, progress=False)
+        if df.empty or len(df) < 50:
             return
 
-        # คำนวณ Swing High / Low ล่าสุด (Lookback 10 แท่ง M1)
-        df['Swing_High'] = df['High'].shift(2).rolling(window=10).max()
-        df['Swing_Low'] = df['Low'].shift(2).rolling(window=10).min()
+        # คำนวณ EMA 200 เพื่อระบุเทรนด์หลัก
+        df['EMA200'] = df['Close'].ewm(span=200, adjust=False).mean()
+        
+        # คำนวณ Swing High/Low ย้อนหลัง 20 แท่ง M5
+        df['Swing_High'] = df['High'].shift(2).rolling(window=20).max()
+        df['Swing_Low'] = df['Low'].shift(2).rolling(window=20).min()
 
-        # แท่งล่าสุดที่เพิ่งปิด (-2)
         c_close = df['Close'].iloc[-2]
         c_open = df['Open'].iloc[-2]
         c_high = df['High'].iloc[-2]
         c_low = df['Low'].iloc[-2]
-
-        # แท่งก่อนหน้า (-3)
-        p_close = df['Close'].iloc[-3]
-        p_open = df['Open'].iloc[-3]
+        ema200 = df['EMA200'].iloc[-2]
 
         swing_high = df['Swing_High'].iloc[-2]
         swing_low = df['Swing_Low'].iloc[-2]
 
-        # คำนวณลักษณะองค์ประกอบของแท่งเทียน
         body = abs(c_close - c_open)
         lower_wick = min(c_open, c_close) - c_low
         upper_wick = c_high - max(c_open, c_close)
-        
+
         entry_price = round(c_close, 2)
 
-        # 🟢 BUY SETUP: Sweep Low + Rejection Pinbar / Engulfing
+        # 🟢 BUY SETUP: เทรนด์หลักเป็นขาขึ้น (ราคา > EMA200) + กวาด Liquidity Low + Rejection
+        is_uptrend = c_close > ema200
         is_sweep_low = c_low < swing_low
-        is_bullish_engulfing = (c_close > c_open) and (c_close > p_open) and (c_close > p_close)
-        is_pinbar_rejection = (lower_wick >= body * 1.5) and (c_close > c_open)
+        is_bullish_rejection = (c_close > c_open) and (lower_wick >= body * 1.5)
 
-        if is_sweep_low and (is_bullish_engulfing or is_pinbar_rejection):
-            sl_price = round(c_low - 0.40, 2)
+        if is_uptrend and is_sweep_low and is_bullish_reversal:
+            sl_price = round(c_low - 0.50, 2)
             sl_distance = round((entry_price - sl_price), 2)
-            
-            # กรองเฉพาะจุดเข้าที่ SL ไม่เกิน 120 จุด ($1.20) เพื่อพอร์ต $50
-            if 0.50 <= sl_distance <= 1.20:
+
+            if 0.80 <= sl_distance <= 1.50:
                 tp_price = round(entry_price + (sl_distance * 1.5), 2)
 
                 msg = (
-                    f"🔥 *BABYFOREX STYLE: M1 BUY REJECTION*\n\n"
-                    f"📌 *สินค้า:* Gold (XAUUSD / GC=F)\n"
-                    f"📈 *คำสั่ง:* BUY\n"
+                    f"🎯 *M5 HIGH-WINRATE SIGNAL: BUY*\n\n"
+                    f"📌 *สินค้า:* Gold (XAUUSD)\n"
+                    f"📈 *คำสั่ง:* BUY (ตามเทรนด์หลัก M5/EMA200)\n"
                     f"🎯 *Entry:* `{entry_price}`\n"
                     f"🛑 *SL:* `{sl_price}` (-${sl_distance})\n"
                     f"🎯 *TP:* `{tp_price}` (+${round(sl_distance * 1.5, 2)})\n\n"
-                    f"💡 *Setup:* แท่ง M1 เจาะแนวรับหลอก + ทิ้งไส้ดีดกลับ\n"
+                    f"💡 *Setup:* Sweep Liquidity + EMA200 Confluence\n"
                     f"⚠️ *XM Standard $50:* ออกออเดอร์ **0.01 Lot** เท่านั้น\n"
-                    f"⏰ _Timeframe: M1 | Risk: Safe_"
+                    f"⏰ _Timeframe: M5_"
                 )
                 send_telegram(msg)
-                print("Sent Babyforex Buy Signal!")
+                print("Sent M5 Buy Signal!")
 
-        # 🔴 SELL SETUP: Sweep High + Rejection Pinbar / Engulfing
+        # 🔴 SELL SETUP: เทรนด์หลักเป็นขาลง (ราคา < EMA200) + กวาด Liquidity High + Rejection
+        is_downtrend = c_close < ema200
         is_sweep_high = c_high > swing_high
-        is_bearish_engulfing = (c_close < c_open) and (c_close < p_open) and (c_close < p_close)
-        is_pinbar_sell = (upper_wick >= body * 1.5) and (c_close < c_open)
+        is_bearish_rejection = (c_close < c_open) and (upper_wick >= body * 1.5)
 
-        if is_sweep_high and (is_bearish_engulfing or is_pinbar_sell):
-            sl_price = round(c_high + 0.40, 2)
+        if is_downtrend and is_sweep_high and is_bearish_rejection:
+            sl_price = round(c_high + 0.50, 2)
             sl_distance = round((sl_price - entry_price), 2)
 
-            if 0.50 <= sl_distance <= 1.20:
+            if 0.80 <= sl_distance <= 1.50:
                 tp_price = round(entry_price - (sl_distance * 1.5), 2)
 
                 msg = (
-                    f"🔥 *BABYFOREX STYLE: M1 SELL REJECTION*\n\n"
-                    f"📌 *สินค้า:* Gold (XAUUSD / GC=F)\n"
-                    f"📉 *คำสั่ง:* SELL\n"
+                    f"🎯 *M5 HIGH-WINRATE SIGNAL: SELL*\n\n"
+                    f"📌 *สินค้า:* Gold (XAUUSD)\n"
+                    f"📉 *คำสั่ง:* SELL (ตามเทรนด์หลัก M5/EMA200)\n"
                     f"🎯 *Entry:* `{entry_price}`\n"
                     f"🛑 *SL:* `{sl_price}` (-${sl_distance})\n"
                     f"🎯 *TP:* `{tp_price}` (+${round(sl_distance * 1.5, 2)})\n\n"
-                    f"💡 *Setup:* แท่ง M1 เจาะแนวต้านหลอก + ทิ้งไส้ตบลง\n"
+                    f"💡 *Setup:* Sweep Liquidity + EMA200 Confluence\n"
                     f"⚠️ *XM Standard $50:* ออกออเดอร์ **0.01 Lot** เท่านั้น\n"
-                    f"⏰ _Timeframe: M1 | Risk: Safe_"
+                    f"⏰ _Timeframe: M5_"
                 )
                 send_telegram(msg)
-                print("Sent Babyforex Sell Signal!")
+                print("Sent M5 Sell Signal!")
 
     except Exception as e:
-        print(f"Error scanning Babyforex Setup: {e}")
+        print(f"Error scanning M5 Setup: {e}")
 
 # --- 5. MAIN EXECUTION ---
 if __name__ == "__main__":
     threading.Thread(target=run_web_server, daemon=True).start()
-    print("Babyforex Scalper Bot is starting...")
-    send_telegram("🚀 *ระบบสแกน Babyforex M1 (ใช้ข้อมูล GC=F) เชื่อมต่อสำเร็จและเริ่มทำงานแล้ว!*")
+    print("M5 High-Confluence Bot is starting...")
+    send_telegram("🚀 *ระบบสแกน M5 High-Confluence (EMA200 + Sweep) พร้อมทำงานแล้ว!*")
     
     while True:
         try:
-            scan_babyforex_setup()
+            scan_m5_setup()
         except Exception as e:
             print(f"Main Loop Error: {e}")
         sleep(CHECK_INTERVAL)
