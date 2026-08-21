@@ -12,7 +12,7 @@ app = Flask(__name__)
 
 @app.route('/')
 def home():
-    return "XM Standard $50 - High-WinRate M5 Bot is Running!"
+    return "XM Standard $50 - M5 Statistical Bot is Live!"
 
 def run_web_server():
     port = int(os.environ.get("PORT", 10000))
@@ -21,7 +21,8 @@ def run_web_server():
 # --- 2. CONFIGURATION ---
 SYMBOL = "GC=F"
 TIMEFRAME = "5m"
-CHECK_INTERVAL = 120  # สแกนทุก 2 นาที
+CHECK_INTERVAL = 120      # สแกนทุก 2 นาที
+WINRATE_THRESHOLD = 0.70  # กรองเฉพาะ Setup ที่สถิตีย้อนหลังชนะเกิน 70%
 
 BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
@@ -34,7 +35,7 @@ def send_telegram(message):
     except Exception as e:
         print(f"Error sending message: {e}")
 
-# --- 3. NEWS FILTER (30 Mins Buffer) ---
+# --- 3. NEWS FILTER (30 Mins) ---
 def check_high_impact_news(buffer_minutes=30):
     url = "https://n3.forexfactory1.com/ff_calendar_thisweek.json"
     try:
@@ -58,31 +59,84 @@ def check_high_impact_news(buffer_minutes=30):
         return False
     return False
 
-# --- 4. HIGH CONFLUENCE M5 SCANNER ---
-def scan_m5_setup():
-    print("Scanning M5 High-Confluence Setup...")
+# --- 4. STATISTICAL BACKTEST ENGINE ---
+def calculate_pattern_winrate(df, signal_type, sl_pips=1.0, tp_pips=1.5):
+    """ ค้นหาพฤติกรรมย้อนหลังใน DataFrame แล้วคำนวณ Win Rate """
+    total_trades = 0
+    wins = 0
+
+    # วนลูปเช็กข้อมูลย้อนหลัง (เว้น 20 แท่งล่าสุดไว้เป็นปัจจุบัน)
+    for i in range(30, len(df) - 10):
+        c_close = df['Close'].iloc[i]
+        c_open = df['Open'].iloc[i]
+        c_high = df['High'].iloc[i]
+        c_low = df['Low'].iloc[i]
+        swing_low = df['Low'].iloc[i-15:i].min()
+        swing_high = df['High'].iloc[i-15:i].max()
+
+        body = abs(c_close - c_open)
+        lower_wick = min(c_open, c_close) - c_low
+        upper_wick = c_high - max(c_open, c_close)
+
+        # ตรวจหา Pattern ในอดีต
+        match = False
+        if signal_type == "BUY" and (c_low < swing_low) and (lower_wick >= body * 1.5):
+            match = True
+            entry = c_close
+            sl = entry - sl_pips
+            tp = entry + tp_pips
+
+        elif signal_type == "SELL" and (c_high > swing_high) and (upper_wick >= body * 1.5):
+            match = True
+            entry = c_close
+            sl = entry + sl_pips
+            tp = entry - tp_pips
+
+        # หากเจอ Pattern เดียวกันในอดีต ให้ดูว่าอีก 10 แท่งถัดมา ชน TP หรือ SL ก่อน
+        if match:
+            total_trades += 1
+            future_bars = df.iloc[i+1:i+10]
+            
+            for _, bar in future_bars.iterrows():
+                if signal_type == "BUY":
+                    if bar['Low'] <= sl:
+                        break  # Loss
+                    if bar['High'] >= tp:
+                        wins += 1; break  # Win
+                elif signal_type == "SELL":
+                    if bar['High'] >= sl:
+                        break  # Loss
+                    if bar['Low'] <= tp:
+                        wins += 1; break  # Win
+
+    if total_trades < 5:  # สถิติน้อยเกินไป ไม่นับ
+        return 0.0, 0
+
+    winrate = wins / total_trades
+    return winrate, total_trades
+
+# --- 5. STATISTICAL SCANNER ---
+def scan_statistical_m5():
+    print("Analyzing Historical Statistics for M5 Pattern...")
     
     if check_high_impact_news(buffer_minutes=30):
         print("⏭️ Skipped due to USD High-Impact News Buffer.")
         return
 
     try:
-        df = yf.download(tickers=SYMBOL, period="5d", interval=TIMEFRAME, progress=False)
-        if df.empty or len(df) < 50:
+        # ดึงข้อมูลย้อนหลัง 7 วันเพื่อทำ Statistical Backtest
+        df = yf.download(tickers=SYMBOL, period="7d", interval=TIMEFRAME, progress=False)
+        
+        if df.empty or len(df) < 200:
             return
 
-        # คำนวณ EMA 200 เพื่อระบุเทรนด์หลัก
-        df['EMA200'] = df['Close'].ewm(span=200, adjust=False).mean()
-        
-        # คำนวณ Swing High/Low ย้อนหลัง 20 แท่ง M5
-        df['Swing_High'] = df['High'].shift(2).rolling(window=20).max()
-        df['Swing_Low'] = df['Low'].shift(2).rolling(window=20).min()
+        df['Swing_High'] = df['High'].shift(2).rolling(window=15).max()
+        df['Swing_Low'] = df['Low'].shift(2).rolling(window=15).min()
 
         c_close = df['Close'].iloc[-2]
         c_open = df['Open'].iloc[-2]
         c_high = df['High'].iloc[-2]
         c_low = df['Low'].iloc[-2]
-        ema200 = df['EMA200'].iloc[-2]
 
         swing_high = df['Swing_High'].iloc[-2]
         swing_low = df['Swing_Low'].iloc[-2]
@@ -93,70 +147,66 @@ def scan_m5_setup():
 
         entry_price = round(c_close, 2)
 
-        # 🟢 BUY SETUP: เทรนด์หลักเป็นขาขึ้น (ราคา > EMA200) + กวาด Liquidity Low + Rejection
-        is_uptrend = c_close > ema200
-        is_sweep_low = c_low < swing_low
-        is_bullish_rejection = (c_close > c_open) and (lower_wick >= body * 1.5)
-
-        if is_uptrend and is_sweep_low and is_bullish_reversal:
-            sl_price = round(c_low - 0.50, 2)
-            sl_distance = round((entry_price - sl_price), 2)
-
-            if 0.80 <= sl_distance <= 1.50:
-                tp_price = round(entry_price + (sl_distance * 1.5), 2)
+        # 🟢 CHECK BUY PATTERN CURRENTLY
+        if (c_low < swing_low) and (lower_wick >= body * 1.5):
+            winrate, samples = calculate_pattern_winrate(df, "BUY", sl_pips=1.0, tp_pips=1.5)
+            
+            if winrate >= WINRATE_THRESHOLD:
+                sl_price = round(entry_price - 1.00, 2)
+                tp_price = round(entry_price + 1.50, 2)
 
                 msg = (
-                    f"🎯 *M5 HIGH-WINRATE SIGNAL: BUY*\n\n"
+                    f"📊 *STATISTICAL MODEL: BUY SIGNAL (M5)*\n\n"
                     f"📌 *สินค้า:* Gold (XAUUSD)\n"
-                    f"📈 *คำสั่ง:* BUY (ตามเทรนด์หลัก M5/EMA200)\n"
+                    f"📈 *คำสั่ง:* BUY\n"
                     f"🎯 *Entry:* `{entry_price}`\n"
-                    f"🛑 *SL:* `{sl_price}` (-${sl_distance})\n"
-                    f"🎯 *TP:* `{tp_price}` (+${round(sl_distance * 1.5, 2)})\n\n"
-                    f"💡 *Setup:* Sweep Liquidity + EMA200 Confluence\n"
+                    f"🛑 *SL:* `{sl_price}` (-$1.00)\n"
+                    f"🎯 *TP:* `{tp_price}` (+$1.50)\n\n"
+                    f"📈 *ผลวิเคราะห์สถิติย้อนหลัง (Historical Probability):*\n"
+                    f"• *Win Rate ในอดีต:* `{round(winrate * 100, 1)}%`\n"
+                    f"• *จำนวนตัวอย่างที่เคยเกิด:* {samples} ครั้ง\n\n"
                     f"⚠️ *XM Standard $50:* ออกออเดอร์ **0.01 Lot** เท่านั้น\n"
                     f"⏰ _Timeframe: M5_"
                 )
                 send_telegram(msg)
-                print("Sent M5 Buy Signal!")
+                print(f"Sent Buy Signal with {round(winrate*100, 1)}% Historical Win Rate!")
 
-        # 🔴 SELL SETUP: เทรนด์หลักเป็นขาลง (ราคา < EMA200) + กวาด Liquidity High + Rejection
-        is_downtrend = c_close < ema200
-        is_sweep_high = c_high > swing_high
-        is_bearish_rejection = (c_close < c_open) and (upper_wick >= body * 1.5)
-
-        if is_downtrend and is_sweep_high and is_bearish_rejection:
-            sl_price = round(c_high + 0.50, 2)
-            sl_distance = round((sl_price - entry_price), 2)
-
-            if 0.80 <= sl_distance <= 1.50:
-                tp_price = round(entry_price - (sl_distance * 1.5), 2)
+        # 🔴 CHECK SELL PATTERN CURRENTLY
+        if (c_high > swing_high) and (upper_wick >= body * 1.5):
+            winrate, samples = calculate_pattern_winrate(df, "SELL", sl_pips=1.0, tp_pips=1.5)
+            
+            if winrate >= WINRATE_THRESHOLD:
+                sl_price = round(entry_price + 1.00, 2)
+                tp_price = round(entry_price - 1.50, 2)
 
                 msg = (
-                    f"🎯 *M5 HIGH-WINRATE SIGNAL: SELL*\n\n"
+                    f"📊 *STATISTICAL MODEL: SELL SIGNAL (M5)*\n\n"
                     f"📌 *สินค้า:* Gold (XAUUSD)\n"
-                    f"📉 *คำสั่ง:* SELL (ตามเทรนด์หลัก M5/EMA200)\n"
+                    f"📉 *คำสั่ง:* SELL\n"
                     f"🎯 *Entry:* `{entry_price}`\n"
-                    f"🛑 *SL:* `{sl_price}` (-${sl_distance})\n"
-                    f"🎯 *TP:* `{tp_price}` (+${round(sl_distance * 1.5, 2)})\n\n"
-                    f"💡 *Setup:* Sweep Liquidity + EMA200 Confluence\n"
+                    f"🛑 *SL:* `{sl_price}` (-$1.00)\n"
+                    f"🎯 *TP:* `{tp_price}` (+$1.50)\n\n"
+                    f"📈 *ผลวิเคราะห์สถิติย้อนหลัง (Historical Probability):*\n"
+                    f"• *Win Rate ในอดีต:* `{round(winrate * 100, 1)}%`\n"
+                    f"• *จำนวนตัวอย่างที่เคยเกิด:* {samples} ครั้ง\n\n"
                     f"⚠️ *XM Standard $50:* ออกออเดอร์ **0.01 Lot** เท่านั้น\n"
                     f"⏰ _Timeframe: M5_"
                 )
                 send_telegram(msg)
-                print("Sent M5 Sell Signal!")
+                print(f"Sent Sell Signal with {round(winrate*100, 1)}% Historical Win Rate!")
 
     except Exception as e:
-        print(f"Error scanning M5 Setup: {e}")
+        print(f"Error scanning Statistical M5: {e}")
 
-# --- 5. MAIN EXECUTION ---
+# --- 6. MAIN EXECUTION ---
 if __name__ == "__main__":
     threading.Thread(target=run_web_server, daemon=True).start()
-    print("M5 High-Confluence Bot is starting...")
-    send_telegram("🚀 *ระบบสแกน M5 High-Confluence (EMA200 + Sweep) พร้อมทำงานแล้ว!*")
+    print("M5 Statistical Bot is starting...")
+    send_telegram("🚀 *ระบบสแกน M5 วิเคราะห์สถิติมุมมองย้อนหลัง (Historical Backtest Model) เริ่มทำงานแล้ว!*")
     
     while True:
         try:
-            scan_m5_setup()
+            scan_statistical_m5()
         except Exception as e:
             print(f"Main Loop Error: {e}")
         sleep(CHECK_INTERVAL)
