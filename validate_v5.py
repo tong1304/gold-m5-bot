@@ -7,6 +7,7 @@ import argparse
 import json
 import os
 import sys
+from collections import Counter
 from datetime import datetime, timezone
 
 import pandas as pd
@@ -60,9 +61,65 @@ def _normalize_signal(signal):
         "levels": levels if isinstance(levels, dict) else {},
         "score": signal.get("score"),
         "pattern": signal.get("patterns") or signal.get("pattern"),
-        "regime": signal.get("regime"),
+        "regime": signal.get("market_regime") or signal.get("regime"),
         "valid": bool(signal.get("valid", True)),
     }
+
+
+def _empty_gate_counter():
+    return Counter()
+
+
+def _record_rejection(raw_signal, counters, score_buckets):
+    """Record why a production candle did not become a trade.
+
+    The engine returns rich hard-filter metadata even for NO_TRADE. We use that
+    metadata instead of changing thresholds, so diagnostics do not alter the
+    strategy itself.
+    """
+    if not isinstance(raw_signal, dict):
+        counters["invalid_result"] += 1
+        return
+
+    status = str(raw_signal.get("status") or "").strip().upper()
+    signal_name = str(raw_signal.get("signal") or "").strip().upper()
+    hard_filter = raw_signal.get("hard_filter") or {}
+    failed = hard_filter.get("failed") or []
+
+    if status:
+        counters[f"status:{status}"] += 1
+    elif signal_name == "NO_TRADE":
+        counters["status:NO_TRADE"] += 1
+    else:
+        counters["status:UNKNOWN"] += 1
+
+    if not failed:
+        counters["no_failed_gate_reported"] += 1
+    else:
+        for reason in failed:
+            counters[str(reason)] += 1
+
+    score = raw_signal.get("score")
+    try:
+        score = float(score)
+    except (TypeError, ValueError):
+        score = None
+    if score is not None:
+        if score < 50:
+            bucket = "<50"
+        elif score < 60:
+            bucket = "50-59"
+        elif score < 70:
+            bucket = "60-69"
+        elif score < 75:
+            bucket = "70-74"
+        elif score < 80:
+            bucket = "75-79"
+        elif score < 90:
+            bucket = "80-89"
+        else:
+            bucket = "90+"
+        score_buckets[bucket] += 1
 
 
 def run(symbol: str, bars: int) -> dict:
@@ -82,7 +139,13 @@ def run(symbol: str, bars: int) -> dict:
         "sell_signals": 0,
         "trades_accepted": 0,
         "trades_rejected_by_execution": 0,
+        "no_trade_reasons": {},
+        "score_buckets": {},
+        "pattern_direction_counts": {},
     }
+    rejection_reasons = _empty_gate_counter()
+    score_buckets = _empty_gate_counter()
+    pattern_direction_counts = _empty_gate_counter()
 
     # Precompute indicators once per validation run. The production signal
     # analyzer consumes the indicator-enriched dataframe and candle index.
@@ -91,7 +154,7 @@ def run(symbol: str, bars: int) -> dict:
         raise RuntimeError(f"Only {len(df)} closed candles returned")
     df = base.calculate_indicators(df)
 
-    start = max(50, len(df) - bars + 1)
+    start = max(55, len(df) - bars + 1)
     end = len(df) - int(engine.FORWARD_BARS) - 2
     for i in range(start, max(start, end)):
         diagnostics["candidate_candles"] += 1
@@ -110,11 +173,20 @@ def run(symbol: str, bars: int) -> dict:
         if not signal:
             if isinstance(raw_signal, dict) and raw_signal.get("valid") is False:
                 diagnostics["invalid_signals"] += 1
+            _record_rejection(raw_signal, rejection_reasons, score_buckets)
+            patterns = raw_signal.get("patterns") if isinstance(raw_signal, dict) else None
+            if patterns:
+                try:
+                    pattern_dir = base.get_pattern_direction(patterns).get("direction", "NONE")
+                except Exception:
+                    pattern_dir = "UNKNOWN"
+                pattern_direction_counts[pattern_dir] += 1
             continue
 
         diagnostics["signals_seen"] += 1
         direction = signal["direction"]
         diagnostics["buy_signals" if direction == "BUY" else "sell_signals"] += 1
+        pattern_direction_counts[direction] += 1
 
         trade = engine.simulate_trade(df, i, direction, signal["levels"])
         if not trade:
@@ -136,6 +208,10 @@ def run(symbol: str, bars: int) -> dict:
             "statistics": engine.calculate_trade_statistics(subset),
             "probability": engine.empirical_probability(subset, side),
         }
+
+    diagnostics["no_trade_reasons"] = dict(rejection_reasons.most_common())
+    diagnostics["score_buckets"] = dict(score_buckets)
+    diagnostics["pattern_direction_counts"] = dict(pattern_direction_counts)
 
     windows = engine.build_walk_forward_windows(len(df), 400, 200, 200)
     return {
