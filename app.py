@@ -44,7 +44,7 @@ TELEGRAM_CHAT_ID = os.getenv(
 # ENGINE VERSION
 # ============================================================
 
-ENGINE_VERSION = "4.1"
+ENGINE_VERSION = "4.2"
 
 # ============================================================
 # TRADING RULES
@@ -230,10 +230,6 @@ def now_local():
     ).strftime("%Y-%m-%d %H:%M:%S")
 
 
-def now_local():
-
-    # Backward-compatible alias. All user-facing timestamps use local time.
-    return now_local()
 
 
 def timeframe_minutes():
