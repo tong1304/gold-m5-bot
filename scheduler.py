@@ -33,43 +33,38 @@ def _get_closed_candle_key(symbol):
 
 def _send_price_heartbeat(now_bkk):
     global _LAST_PRICE_HEARTBEAT
-    # 11:05, 11:15, 11:25 ... 11:55 (Bangkok time).
     if now_bkk.minute % 10 != 5:
         return None
     slot = now_bkk.strftime("%Y-%m-%d %H:%M")
     if slot == _LAST_PRICE_HEARTBEAT:
         return None
 
-    lines = [
-        "🧪 <b>ทดสอบระบบ Price Monitor</b>",
-        "",
-        f"🕐 เวลา: {now_bkk.strftime('%d/%m/%Y %H:%M')} (กรุงเทพฯ)",
-        "",
-    ]
+    lines = ["🧪 <b>ทดสอบระบบ Price Monitor</b>", "", f"🕐 เวลา: {now_bkk.strftime('%d/%m/%Y %H:%M')} (กรุงเทพฯ)", ""]
     feed_ok = True
     for symbol in _symbols():
         try:
-            df = live_scanner.BINANCE.fetch_candles(symbol, "5m", 2)
-            if df.empty:
-                raise RuntimeError("ไม่มีข้อมูลราคา")
-            price = float(df.iloc[-1]["close"])
-            lines.append(f"📊 {symbol}: <b>{price:,.8f}</b>".rstrip("0").rstrip("."))
+            price, market_symbol = live_scanner.BINANCE.fetch_price(symbol)
+            label = f"{symbol} (Binance: {market_symbol})" if market_symbol != symbol else symbol
+            lines.append(f"📊 {label}: <b>{price:,.8f}</b>")
         except Exception as exc:
             feed_ok = False
-            lines.append(f"❌ {symbol}: ดึงราคาไม่ได้ ({type(exc).__name__})")
+            lines.append(f"❌ {symbol}: ดึงราคาไม่ได้")
+            lines.append(f"   └ {type(exc).__name__}: {str(exc)}")
 
     lines.extend([
         "",
         "✅ Scheduler ทำงาน",
-        "✅ Binance Price Feed ตรวจสอบแล้ว" if feed_ok else "⚠️ Binance Price Feed มีสินทรัพย์ที่ดึงราคาไม่ได้",
+        "✅ Binance Price Feed" if feed_ok else "⚠️ Binance Price Feed มีข้อผิดพลาด",
         "✅ Telegram Monitor",
         "",
         "ℹ️ ข้อความนี้เป็นการทดสอบระบบ",
         "⛔ ไม่ใช่สัญญาณ BUY/SELL",
     ])
     result = live_scanner.engine.send_telegram("\n".join(lines))
-    _LAST_PRICE_HEARTBEAT = slot
-    return {"sent": bool(isinstance(result, dict) and result.get("success")), "slot": slot, "telegram_result": result}
+    sent = bool(isinstance(result, dict) and result.get("success"))
+    if sent:
+        _LAST_PRICE_HEARTBEAT = slot
+    return {"sent": sent, "slot": slot, "telegram_result": result, "timezone": "Asia/Bangkok"}
 
 
 def run_scan_cycle():
