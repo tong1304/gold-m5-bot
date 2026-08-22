@@ -3,6 +3,8 @@ import json
 import math
 import threading
 from urllib.parse import parse_qs
+from datetime import datetime
+from zoneinfo import ZoneInfo
 
 from flask import Response, request
 
@@ -125,6 +127,13 @@ if os.getenv("ENABLE_SIGNAL_SCHEDULER", "true").strip().lower() == "true":
         import scheduler; scheduler.start()
     except Exception:
         pass
+
+# ส่งข้อความเริ่มระบบภาษาไทยเพียงครั้งเดียวต่อ process
+try:
+    from startup_notify import send_startup_notification
+    send_startup_notification(symbol="MULTI-ASSET", engine_version="5.0")
+except Exception:
+    pass
 
 if __name__ == "__main__":
     port=int(os.getenv("PORT","10000"))
