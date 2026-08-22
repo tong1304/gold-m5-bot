@@ -12,18 +12,28 @@ _LAST_CLOSED_CANDLE = {}
 _LAST_PRICE_HEARTBEAT = None
 BANGKOK = ZoneInfo("Asia/Bangkok")
 
+DISPLAY_SYMBOLS = ("BTC", "ETH", "SOL", "GOLD")
+DISPLAY_TO_MARKET = {"BTC": "BTC/USDT", "ETH": "ETH/USDT", "SOL": "SOL/USDT", "GOLD": "XAU/USDT"}
+LEGACY_SYMBOLS = {"BTC/USDT": "BTC", "ETH/USDT": "ETH", "SOL/USDT": "SOL", "XAU/USDT": "GOLD"}
+
 
 def _interval_seconds():
     return max(10, int(os.getenv("SIGNAL_SCAN_INTERVAL_SECONDS", "15")))
 
 
 def _symbols():
-    raw = os.getenv("LIVE_SIGNAL_SYMBOLS", "BTC/USDT,ETH/USDT,SOL/USDT,XAU/USDT")
-    return [s.strip().upper() for s in raw.split(",") if s.strip()]
+    raw = os.getenv("LIVE_SIGNAL_SYMBOLS", "BTC,ETH,SOL,GOLD")
+    result = []
+    for value in raw.split(","):
+        symbol = LEGACY_SYMBOLS.get(value.strip().upper(), value.strip().upper())
+        if symbol in DISPLAY_SYMBOLS and symbol not in result:
+            result.append(symbol)
+    return result
 
 
 def _get_closed_candle_key(symbol):
-    df = live_scanner.BINANCE.fetch_candles(symbol, "5m", 10)
+    market_symbol = DISPLAY_TO_MARKET[symbol]
+    df = live_scanner.BINANCE.fetch_candles(market_symbol, "5m", 10)
     df = live_scanner.BINANCE.remove_incomplete_last_candle(df, timeframe_minutes=5)
     if df.empty:
         raise RuntimeError(f"ยังไม่มีแท่ง M5 ที่ปิดแล้วสำหรับ {symbol}")
@@ -43,9 +53,8 @@ def _send_price_heartbeat(now_bkk):
     feed_ok = True
     for symbol in _symbols():
         try:
-            price, market_symbol = live_scanner.BINANCE.fetch_price(symbol)
-            label = f"{symbol} (Binance: {market_symbol})" if market_symbol != symbol else symbol
-            lines.append(f"📊 {label}: <b>{price:,.8f}</b>")
+            price, _ = live_scanner.BINANCE.fetch_price(DISPLAY_TO_MARKET[symbol])
+            lines.append(f"📊 {symbol}: <b>{price:,.8f}</b>")
         except Exception as exc:
             feed_ok = False
             lines.append(f"❌ {symbol}: ดึงราคาไม่ได้")
@@ -113,4 +122,4 @@ def stop():
 
 
 def status():
-    return {"running":bool(_RUNNING and _THREAD and _THREAD.is_alive()),"interval_seconds":_interval_seconds(),"symbols":_symbols(),"exchange":"Binance","timeframe":"M5 trigger + H1/M15 confirmation","trigger":"ทุกครั้งที่มีแท่ง M5 ใหม่ปิด","price_heartbeat":"นาทีลงท้ายด้วย 5 ตามเวลา Asia/Bangkok","last_closed_candle":dict(_LAST_CLOSED_CANDLE),"live_orders_allowed":False,"timestamp":datetime.now(timezone.utc).isoformat()}
+    return {"running":bool(_RUNNING and _THREAD and _THREAD.is_alive()),"interval_seconds":_interval_seconds(),"symbols":_symbols(),"symbol_mapping":DISPLAY_TO_MARKET,"exchange":"Binance","timeframe":"M5 trigger + H1/M15 confirmation","trigger":"ทุกครั้งที่มีแท่ง M5 ใหม่ปิด","price_heartbeat":"นาทีลงท้ายด้วย 5 ตามเวลา Asia/Bangkok","last_closed_candle":dict(_LAST_CLOSED_CANDLE),"live_orders_allowed":False,"timestamp":datetime.now(timezone.utc).isoformat()}
