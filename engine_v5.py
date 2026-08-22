@@ -21,6 +21,10 @@ for _name in (
 ):
     globals()[_name] = getattr(base, _name)
 
+# Live signal policy: never send a signal below RR 2:1.
+MIN_RISK_REWARD = max(float(os.getenv("MIN_RISK_REWARD", "2.0")), 2.0)
+RISK_REWARD = max(float(os.getenv("RISK_REWARD", "2.0")), 2.0)
+
 MAX_LIVE_SPREAD = float(os.getenv("MAX_LIVE_SPREAD", "0.50"))
 MAX_LIVE_SLIPPAGE = float(os.getenv("MAX_LIVE_SLIPPAGE", "0.30"))
 MAX_DATA_AGE_SECONDS = int(os.getenv("MAX_DATA_AGE_SECONDS", "420"))
@@ -139,7 +143,6 @@ def simulate_trade(df, signal_index, direction, setup_levels):
             result = "WIN"
             break
 
-        # BE is a candle-close state transition, never an intrabar free move.
         if BREAK_EVEN and not moved_to_be and favorable >= _f(BREAK_EVEN_R):
             close = _f(candle["close"])
             close_favorable = (close - entry) / risk if direction == "BUY" else (entry - close) / risk
@@ -259,229 +262,16 @@ def empirical_probability(trades, group_name="all"):
     n = len(resolved)
     return {
         "group": group_name,
-        "wins": wins,
         "resolved": n,
-        "probability_percent": round(wins / n * 100, 2) if n else None,
-        "sample_size": n,
-        "sample_sufficient": n >= int(MIN_HISTORICAL_SAMPLE),
-        "minimum_sample_required": int(MIN_HISTORICAL_SAMPLE),
-        "note": "Resolved-trade win rate only; TIMEOUT is excluded from this resolved metric and is always included in primary expectancy/outcome counts.",
+        "wins": wins,
+        "win_probability": round(wins / n, 4) if n else 0.0,
     }
 
 
-def evaluate_live_risk_guard(spread=None, max_spread=None, data_age_seconds=0, price_jump_atr=0, daily_loss_r=0, consecutive_losses=0, trades_today=0, slippage=None):
-    max_spread = _f(MAX_LIVE_SPREAD if max_spread is None else max_spread)
-    reasons = []
-    if spread is None:
-        reasons.append("SPREAD_UNAVAILABLE")
-    elif _f(spread) > max_spread:
-        reasons.append("SPREAD_TOO_HIGH")
-    if data_age_seconds is None or _f(data_age_seconds) > MAX_DATA_AGE_SECONDS:
-        reasons.append("STALE_DATA")
-    if _f(price_jump_atr) > MAX_PRICE_JUMP_ATR:
-        reasons.append("PRICE_JUMP_TOO_HIGH")
-    if _f(daily_loss_r) <= DAILY_LOSS_LIMIT_R:
-        reasons.append("DAILY_LOSS_LIMIT")
-    if int(consecutive_losses) >= MAX_CONSECUTIVE_LOSSES:
-        reasons.append("CONSECUTIVE_LOSS_LIMIT")
-    if int(trades_today) >= MAX_TRADES_PER_DAY:
-        reasons.append("MAX_TRADES_PER_DAY")
-    if slippage is not None and _f(slippage) > MAX_LIVE_SLIPPAGE:
-        reasons.append("SLIPPAGE_TOO_HIGH")
-    return {
-        "allowed": not reasons,
-        "reasons": reasons,
-        "measurements": {
-            "spread": spread,
-            "data_age_seconds": data_age_seconds,
-            "price_jump_atr": price_jump_atr,
-            "daily_loss_r": daily_loss_r,
-            "consecutive_losses": consecutive_losses,
-            "trades_today": trades_today,
-            "slippage": slippage,
-        },
-    }
+def evaluate_live_risk_guard(**kwargs):
+    from engine_v42 import evaluate_live_risk_guard as _guard
+    return _guard(**kwargs)
 
 
-def build_walk_forward_windows(n, train_bars=400, test_bars=200, step_bars=200):
-    windows = []
-    start = 0
-    while start + train_bars + test_bars <= n:
-        windows.append({
-            "train_start": start,
-            "train_end": start + train_bars,
-            "test_start": start + train_bars,
-            "test_end": start + train_bars + test_bars,
-        })
-        start += step_bars
-    return windows
-
-
-def run_walk_forward_backtest(df, train_bars=400, test_bars=200, step_bars=200):
-    windows = build_walk_forward_windows(len(df), train_bars, test_bars, step_bars)
-    results = []
-    for window in windows:
-        test = df.iloc[window["test_start"]:window["test_end"]].copy()
-        test = base.calculate_indicators(test)
-        trades = []
-        for i in range(55, len(test) - 1):
-            result = base.analyze_candle(test, i, include_trade_levels=True)
-            if result.get("signal") in ("BUY", "SELL"):
-                trade = simulate_trade(test, i, result["signal"], result.get("trade_levels"))
-                if trade:
-                    trades.append(trade)
-        results.append({**window, "stats": calculate_trade_statistics(trades)})
-    return {"windows": results, "windows_count": len(results), "sample_sufficient": len(results) >= 2}
-
-
-def run_backtest(df, test_points=200):
-    df = base.remove_incomplete_last_candle(df.copy())
-    if len(df) <= 60:
-        raise RuntimeError("Not enough closed candles for backtest")
-    df = base.calculate_indicators(df)
-    test_points = min(int(test_points), len(df) - 60)
-    start = max(55, len(df) - test_points)
-    trades = []
-    next_available = start
-
-    for i in range(start, len(df) - 1):
-        result = base.analyze_candle(df, i, include_trade_levels=True)
-        if not result.get("hard_filter", {}).get("passed", False):
-            continue
-        direction = result.get("signal")
-        levels = result.get("trade_levels")
-        if direction not in ("BUY", "SELL") or not levels:
-            continue
-        if not ALLOW_OVERLAPPING_TRADES and i < next_available:
-            continue
-        trade = simulate_trade(df, i, direction, levels)
-        if not trade:
-            continue
-        trade["score"] = result.get("score")
-        trade["patterns"] = result.get("patterns", [])
-        trade["primary_pattern"] = (result.get("patterns") or [None])[0]
-        trade["regime"] = result.get("market_regime", {}).get("regime")
-        trade["location_zone"] = result.get("location", {}).get("zone")
-        trades.append(trade)
-        if not ALLOW_OVERLAPPING_TRADES:
-            next_available = trade["exit_index"] + 1
-
-    stats = calculate_trade_statistics(trades)
-    return {
-        "status": "completed",
-        "engine_version": ENGINE_VERSION,
-        "system": "XAU/USD Real-Money Validation Engine v5",
-        "symbol": SYMBOL,
-        "timeframe": "M5",
-        "candles_available": len(df),
-        "closed_candles_used": len(df),
-        "test_points": test_points,
-        "test_start": str(df.iloc[start]["datetime"]),
-        "test_end": str(df.iloc[-1]["datetime"]),
-        "signals": {
-            "buy": sum(t["direction"] == "BUY" for t in trades),
-            "sell": sum(t["direction"] == "SELL" for t in trades),
-            "total": len(trades),
-        },
-        "results": stats["outcome_counts"],
-        "performance": stats,
-        "historical_probability": empirical_probability(trades),
-        "recent_trades": trades[-20:],
-        "rules": {
-            "engine_version": ENGINE_VERSION,
-            "entry": "NEXT CANDLE OPEN (THEORETICAL)",
-            "spread": SPREAD,
-            "slippage": SLIPPAGE,
-            "maximum_live_spread": MAX_LIVE_SPREAD,
-            "maximum_live_slippage": MAX_LIVE_SLIPPAGE,
-            "intrabar_ambiguity_policy": INTRABAR_AMBIGUITY_POLICY,
-            "timeout_in_primary_expectancy": True,
-            "historical_probability_excludes_timeout": True,
-        },
-        "warning": "V5 validation model only. OHLC data has no intrabar tick sequence. Ambiguous candles use STOP_FIRST. Execution is modeled, not broker-confirmed. Do not treat historical win rate as probability of the next trade.",
-    }
-
-
-get_market_data = base.get_market_data
-remove_incomplete_last_candle = base.remove_incomplete_last_candle
-calculate_indicators = base.calculate_indicators
-analyze_candle = base.analyze_candle
-score_bucket = getattr(base, "score_bucket", lambda value: str(value))
-send_telegram = base.send_telegram
-now_local = base.now_local
-is_last_candle_closed = base.is_last_candle_closed
-
-
-@app.route("/")
-def home():
-    return jsonify({
-        "status": "online",
-        "version": ENGINE_VERSION,
-        "service": "XAU/USD M5 Real-Money Validation Engine",
-        "symbol": SYMBOL,
-        "timeframe": "M5",
-        "safety_policy": "PAPER_VALIDATION_ONLY",
-        "intrabar_policy": INTRABAR_AMBIGUITY_POLICY,
-    })
-
-
-@app.route("/health")
-def health():
-    return jsonify({
-        "status": "healthy",
-        "engine_version": ENGINE_VERSION,
-        "symbol": SYMBOL,
-        "timeframe": "M5",
-        "twelve_data": bool(TWELVE_DATA_API_KEY),
-        "telegram": bool(TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID),
-        "safety_policy": "PAPER_VALIDATION_ONLY",
-        "timestamp": now_local(),
-    })
-
-
-@app.route("/backtest")
-@app.route("/backtest/<int:points>")
-def backtest_route(points=200):
-    try:
-        return jsonify(run_backtest(get_market_data(max(points + 200, 400)), points))
-    except Exception:
-        logger.exception("Backtest failed")
-        return jsonify({"status": "error", "engine_version": ENGINE_VERSION, "symbol": SYMBOL, "message": "Internal server error"}), 500
-
-
-@app.route("/signal")
-def signal_route():
-    try:
-        df = get_market_data(1000)
-        closed = remove_incomplete_last_candle(df)
-        if closed.empty:
-            return jsonify({"status": "waiting", "signal": "NO_TRADE", "reason": "NO_CLOSED_CANDLE"})
-        timestamp = pd.Timestamp(closed.iloc[-1]["datetime"])
-        timestamp = timestamp.tz_localize("UTC") if timestamp.tzinfo is None else timestamp.tz_convert("UTC")
-        age = (datetime.now(timezone.utc) - timestamp.to_pydatetime()).total_seconds()
-        guard = evaluate_live_risk_guard(spread=SPREAD, data_age_seconds=age)
-        if not guard["allowed"]:
-            return jsonify({"status": "blocked", "signal": "NO_TRADE", "risk_guard": guard, "candle_closed": True})
-        closed = calculate_indicators(closed)
-        result = analyze_candle(closed, len(closed) - 1, True)
-        result["engine_version"] = ENGINE_VERSION
-        result["risk_guard"] = guard
-        result["safety_policy"] = "PAPER_VALIDATION_ONLY"
-        if result.get("valid"):
-            result["entry_rule"] = "NEXT CANDLE OPEN (THEORETICAL)"
-            result["live_execution_warning"] = "Telegram arrival is not a broker-confirmed next-open fill."
-        return jsonify(result)
-    except Exception:
-        logger.exception("Signal failed")
-        return jsonify({"status": "error", "engine_version": ENGINE_VERSION, "symbol": SYMBOL, "message": "Internal server error"}), 500
-
-
-@app.route("/diagnostics")
-def diagnostics():
-    try:
-        df = get_market_data(1000)
-        closed = remove_incomplete_last_candle(df)
-        return jsonify({"status": "ok", "engine_version": ENGINE_VERSION, "symbol": SYMBOL, "closed_candles": len(closed), "safety_policy": "PAPER_VALIDATION_ONLY"})
-    except Exception:
-        logger.exception("Diagnostics failed")
-        return jsonify({"status": "error", "engine_version": ENGINE_VERSION, "symbol": SYMBOL, "message": "Internal server error"}), 500
+def send_telegram(message):
+    return base.send_telegram(message)
