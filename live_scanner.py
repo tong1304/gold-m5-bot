@@ -1,4 +1,5 @@
 # M5_DIRECTION_POLICY: majority confirmed patterns; discard opposing side
+import math
 import os
 import threading
 from datetime import datetime, timezone
@@ -47,16 +48,21 @@ def _format_price(value):
 def _levels_ready(levels, direction=None):
     if not isinstance(levels, dict): return False
     try:
-        entry, sl, tp = float(levels.get("entry")), float(levels.get("sl")), float(levels.get("tp"))
-        risk, reward = abs(entry - sl), abs(tp - entry)
+        entry = float(levels.get("entry"))
+        sl = float(levels.get("sl"))
+        tp = float(levels.get("tp"))
+        risk = abs(entry - sl)
+        reward = abs(tp - entry)
+        if not all(math.isfinite(v) for v in (entry, sl, tp, risk, reward)): return False
         if not (entry > 0 and sl > 0 and tp > 0 and risk > 0 and reward > 0): return False
         if direction == "BUY" and not (sl < entry < tp): return False
         if direction == "SELL" and not (sl > entry > tp): return False
         raw_rr = reward / risk if risk else 0.0
         configured_rr = float(levels.get("risk_reward", levels.get("effective_rr", raw_rr)) or 0)
         effective_rr = float(levels.get("effective_rr", raw_rr) or raw_rr)
-        return raw_rr >= 2.0 and configured_rr >= 2.0 and effective_rr >= 2.0
-    except (TypeError, ValueError): return False
+        return all(math.isfinite(v) for v in (raw_rr, configured_rr, effective_rr)) and raw_rr >= 2.0 and configured_rr >= 2.0 and effective_rr >= 2.0
+    except (TypeError, ValueError):
+        return False
 
 
 def _build_trade_levels(df, index, direction):
@@ -66,17 +72,48 @@ def _build_trade_levels(df, index, direction):
         entry = engine.calculate_execution_price(close, direction)
         levels = engine.calculate_trade_levels(df, index, direction, entry)
         if _levels_ready(levels, direction):
-            levels["source"] = "engine_v5"; levels["validated"] = True; return levels
+            levels["entry"] = levels.get("entry", levels.get("entry_reference", entry))
+            levels["source"] = "engine_v5"
+            levels["validated"] = True
+            return levels
     except Exception as exc:
         print(f"[{direction}] Engine trade-level calculation failed: {type(exc).__name__}: {exc}", flush=True)
-    atr = max(float(df["atr"].iloc[index]) if "atr" in df.columns else 0.0, float(engine.MINIMUM_ATR), 1e-12)
+
+    # Robust ATR fallback. Never allow NaN/inf ATR to poison Entry/SL/TP.
+    atr_candidates = []
+    if "atr" in df.columns:
+        try:
+            atr_candidates.append(float(df["atr"].iloc[index]))
+        except (TypeError, ValueError, IndexError):
+            pass
+    try:
+        atr_candidates.extend(float(v) for v in df["high"].sub(df["low"]).tail(14).tolist())
+    except Exception:
+        pass
+    finite_atrs = [v for v in atr_candidates if math.isfinite(v) and v > 0]
+    observed_atr = sum(finite_atrs[-14:]) / len(finite_atrs[-14:]) if finite_atrs else 0.0
+    minimum_atr = float(engine.MINIMUM_ATR)
+    atr = max(observed_atr, minimum_atr, 1e-12)
+
     stop_atr = min(max(float(engine.MIN_STOP_ATR), 1.0), float(engine.MAX_STOP_ATR))
     risk = atr * stop_atr
     rr_target = max(float(engine.RISK_REWARD), 2.0)
     entry = engine.calculate_execution_price(close, direction)
-    if direction == "BUY": sl, tp = entry - risk, entry + risk * rr_target
-    else: sl, tp = entry + risk, entry - risk * rr_target
-    levels = {"entry": round(entry, 8), "sl": round(sl, 8), "tp": round(tp, 8), "risk": round(abs(entry-sl), 8), "reward": round(abs(tp-entry), 8), "risk_reward": round(rr_target, 3), "effective_rr": round(rr_target, 3), "source": "atr_fallback", "validated": False}
+    if direction == "BUY":
+        sl, tp = entry - risk, entry + risk * rr_target
+    else:
+        sl, tp = entry + risk, entry - risk * rr_target
+    levels = {
+        "entry": round(entry, 8),
+        "sl": round(sl, 8),
+        "tp": round(tp, 8),
+        "risk": round(abs(entry-sl), 8),
+        "reward": round(abs(tp-entry), 8),
+        "risk_reward": round(rr_target, 3),
+        "effective_rr": round(rr_target, 3),
+        "source": "atr_fallback",
+        "validated": False,
+    }
     levels["validated"] = _levels_ready(levels, direction)
     return levels
 
@@ -101,6 +138,13 @@ def scan_once(symbol="BTC"):
     market_symbol = _market_symbol(symbol)
     with _SCAN_LOCK:
         engine.SYMBOL = market_symbol; base.SYMBOL = market_symbol
+        # Scheduler calls scan_once directly, so enforce the same per-symbol
+        # execution/RR configuration here instead of relying on the Flask route.
+        cfg = {"BTC": {"MINIMUM_ATR": 20.0, "MIN_STOP_ATR": 1.0, "MAX_STOP_ATR": 3.0, "SPREAD": 5.0, "SLIPPAGE": 2.0}, "ETH": {"MINIMUM_ATR": 1.0, "MIN_STOP_ATR": 1.0, "MAX_STOP_ATR": 3.0, "SPREAD": 0.50, "SLIPPAGE": 0.20}, "SOL": {"MINIMUM_ATR": 0.20, "MIN_STOP_ATR": 1.0, "MAX_STOP_ATR": 3.0, "SPREAD": 0.10, "SLIPPAGE": 0.05}, "GOLD": {"MINIMUM_ATR": 1.0, "MIN_STOP_ATR": 1.0, "MAX_STOP_ATR": 3.0, "SPREAD": 0.50, "SLIPPAGE": 0.20}}[symbol]
+        for target in (engine, base):
+            for key, value in cfg.items(): setattr(target, key, value)
+            target.MIN_RISK_REWARD = max(float(os.getenv("MIN_RISK_REWARD", "2.0")), 2.0)
+            target.RISK_REWARD = max(float(os.getenv("RISK_REWARD", "2.0")), 2.0)
         frames = {}; tf_minutes = {"1h": 60, "15m": 15, "5m": 5}
         for tf in ("1h", "15m", "5m"):
             cfg = _config(symbol, tf)
@@ -121,8 +165,6 @@ def scan_once(symbol="BTC"):
         else: selected_evidence, discarded_opposite = [], []
         pattern_signal = m5_signal if selected_evidence else None
 
-        # Majority M5 determines direction. H1/M15 only veto the opposite side;
-        # NEUTRAL no longer blocks an otherwise valid setup.
         opposite = "SELL" if pattern_signal == "BUY" else "BUY"
         aligned = pattern_signal in ("BUY", "SELL") and h1["bias"] != opposite and m15["bias"] != opposite
         signal = pattern_signal if aligned else "NO_TRADE"
