@@ -260,7 +260,7 @@ def scan_once(symbol="BTC"):
             )
         if pattern_signal and h1["bias"] != pattern_signal:
             reasons.append(f"H1_MISMATCH:{h1['bias']}")
-        if pattern_signal and m15["bias"] != pattern_signal:
+        if pattern_signal and m15["bias"] in ("BUY", "SELL") and m15["bias"] != pattern_signal:
             reasons.append(f"M15_MISMATCH:{m15['bias']}")
         if aligned and not levels_ready:
             reasons.append("TRADE_LEVELS_NOT_READY")
