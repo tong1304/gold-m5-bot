@@ -11,14 +11,16 @@ from flask import Response, request
 
 import engine_v5 as engine
 
-SUPPORTED_SYMBOLS = ("BTC/USDT", "ETH/USDT", "SOL/USDT", "XAU/USDT")
+# Publicly supported assets: GOLD + BTC only.
+# The scheduler reads this environment variable at import time, so enforce the
+# same two-asset universe here as the API layer.
+os.environ["LIVE_SIGNAL_SYMBOLS"] = "BTC,GOLD"
+SUPPORTED_SYMBOLS = ("BTC/USDT", "XAU/USDT")
 SYMBOL_LOCK = threading.RLock()
 logger = logging.getLogger(__name__)
 
 BASE = {
     "BTC/USDT": {"MINIMUM_ATR": float(os.getenv("BTC_MINIMUM_ATR", "20.0")), "MIN_STOP_ATR": float(os.getenv("BTC_MIN_STOP_ATR", "1.0")), "MAX_STOP_ATR": float(os.getenv("BTC_MAX_STOP_ATR", "3.0")), "SPREAD": float(os.getenv("BTC_SPREAD", "5.0")), "SLIPPAGE": float(os.getenv("BTC_SLIPPAGE", "2.0")), "HISTORY_POINTS": int(os.getenv("BTC_HISTORY_POINTS", "200"))},
-    "ETH/USDT": {"MINIMUM_ATR": float(os.getenv("ETH_MINIMUM_ATR", "1.0")), "MIN_STOP_ATR": float(os.getenv("ETH_MIN_STOP_ATR", "1.0")), "MAX_STOP_ATR": float(os.getenv("ETH_MAX_STOP_ATR", "3.0")), "SPREAD": float(os.getenv("ETH_SPREAD", "0.50")), "SLIPPAGE": float(os.getenv("ETH_SLIPPAGE", "0.20")), "HISTORY_POINTS": int(os.getenv("ETH_HISTORY_POINTS", "200"))},
-    "SOL/USDT": {"MINIMUM_ATR": float(os.getenv("SOL_MINIMUM_ATR", "0.20")), "MIN_STOP_ATR": float(os.getenv("SOL_MIN_STOP_ATR", "1.0")), "MAX_STOP_ATR": float(os.getenv("SOL_MAX_STOP_ATR", "3.0")), "SPREAD": float(os.getenv("SOL_SPREAD", "0.10")), "SLIPPAGE": float(os.getenv("SOL_SLIPPAGE", "0.05")), "HISTORY_POINTS": int(os.getenv("SOL_HISTORY_POINTS", "200"))},
     "XAU/USDT": {"MINIMUM_ATR": float(os.getenv("XAU_MINIMUM_ATR", "1.0")), "MIN_STOP_ATR": float(os.getenv("XAU_MIN_STOP_ATR", "1.0")), "MAX_STOP_ATR": float(os.getenv("XAU_MAX_STOP_ATR", "3.0")), "SPREAD": float(os.getenv("XAU_SPREAD", "0.50")), "SLIPPAGE": float(os.getenv("XAU_SLIPPAGE", "0.20")), "HISTORY_POINTS": int(os.getenv("XAU_HISTORY_POINTS", "200"))},
 }
 
@@ -156,7 +158,7 @@ if os.getenv("ENABLE_SIGNAL_SCHEDULER", "true").strip().lower() == "true":
     try:
         import scheduler
         scheduler.start()
-        logger.info("Signal Scheduler started successfully")
+        logger.info("Signal Scheduler started successfully for BTC + GOLD")
     except Exception as exc:
         logger.exception("Signal Scheduler failed to start")
         try:
@@ -178,7 +180,7 @@ else:
 
 try:
     from startup_notify import send_startup_notification
-    send_startup_notification(symbol="MULTI-ASSET", engine_version="5.0")
+    send_startup_notification(symbol="BTC + GOLD", engine_version="5.0")
 except Exception as exc:
     logger.exception("Startup notification failed: %s", exc)
 
