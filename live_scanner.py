@@ -55,7 +55,6 @@ def _format_price(value):
 
 
 def _levels_ready(levels):
-    """Only require usable manual-entry levels; do not re-apply the old v4 score gate."""
     if not isinstance(levels, dict):
         return False
     try:
@@ -120,7 +119,6 @@ def scan_once(symbol="BTC"):
                 raise RuntimeError(f"ข้อมูล {tf} ของ {symbol} ที่ปิดแล้วไม่เพียงพอ: {len(df)} แท่ง")
             frames[tf] = df
 
-        # M15/H1 are context only. M5 is the actual trigger timeframe.
         h1 = _tf_bias(frames["1h"], "H1")
         m15 = _tf_bias(frames["15m"], "M15")
 
@@ -137,24 +135,36 @@ def scan_once(symbol="BTC"):
             raise RuntimeError("ผลการวิเคราะห์ไม่ถูกต้อง")
 
         m5_signal = conf["signal"]
+
+        # A confirmed directional M5 price/chart setup is the trigger.
+        # Do not restrict this to CHART_PATTERN only: that old restriction
+        # silently discarded confirmed candlestick/price-action patterns.
         confirmed_m5 = [
             p for p in pattern_result["patterns"]
-            if p.get("category") == "CHART_PATTERN"
-            and p.get("confirmed") is True
+            if p.get("confirmed") is True
             and p.get("direction") in ("BUY", "SELL")
+            and p.get("category") in {
+                "PRICE_ACTION",
+                "CHART_PATTERN",
+                "SMC_ICT",
+                "SUPPLY_DEMAND",
+                "TREND_BREAKOUT",
+                "FIBONACCI_HARMONIC",
+                "INDICATOR_SESSION",
+            }
         ]
-        pattern_directions = {p.get("direction") for p in confirmed_m5}
-        pattern_signal = next(iter(pattern_directions)) if len(pattern_directions) == 1 else None
+        buy_confirmed = [p for p in confirmed_m5 if p.get("direction") == "BUY"]
+        sell_confirmed = [p for p in confirmed_m5 if p.get("direction") == "SELL"]
+        pattern_signal = "BUY" if buy_confirmed and not sell_confirmed else "SELL" if sell_confirmed and not buy_confirmed else None
 
-        # The live strategy is deliberately simple:
-        # M5 confirmed pattern + M15 trend + H1 trend must agree.
+        # Strategy: M5 directional pattern + M15 trend + H1 trend must agree.
         aligned = (
-            m5_signal in ("BUY", "SELL")
-            and pattern_signal == m5_signal
-            and h1["bias"] == m5_signal
-            and m15["bias"] == m5_signal
+            pattern_signal in ("BUY", "SELL")
+            and m5_signal == pattern_signal
+            and h1["bias"] == pattern_signal
+            and m15["bias"] == pattern_signal
         )
-        signal = m5_signal if aligned else "NO_TRADE"
+        signal = pattern_signal if aligned else "NO_TRADE"
 
         levels = result.get("trade_levels") or {}
         levels_ready = _levels_ready(levels)
@@ -164,22 +174,36 @@ def scan_once(symbol="BTC"):
         telegram_result = None
         alerted = False
 
+        reasons = []
+        if not confirmed_m5:
+            reasons.append("NO_CONFIRMED_M5_PATTERN")
+        if buy_confirmed and sell_confirmed:
+            reasons.append("M5_PATTERN_DIRECTION_CONFLICT")
+        if pattern_signal and m5_signal != pattern_signal:
+            reasons.append(f"M5_CONFLUENCE_MISMATCH:{m5_signal}")
+        if pattern_signal and h1["bias"] != pattern_signal:
+            reasons.append(f"H1_MISMATCH:{h1['bias']}")
+        if pattern_signal and m15["bias"] != pattern_signal:
+            reasons.append(f"M15_MISMATCH:{m15['bias']}")
+        if aligned and not levels_ready:
+            reasons.append("TRADE_LEVELS_NOT_READY")
+
+        print(
+            f"[{symbol}] Decision: pattern_signal={pattern_signal} m5_confluence={m5_signal} "
+            f"H1={h1['bias']} M15={m15['bias']} confirmed_patterns={len(confirmed_m5)} "
+            f"levels_ready={levels_ready} aligned={aligned} valid={valid} "
+            f"reasons={','.join(reasons) if reasons else 'PASS'}",
+            flush=True,
+        )
+
         with _SCAN_LOCK:
             already_alerted = key in _ALERTED_SIGNAL_KEYS
-            # NO_TRADE is intentionally silent. Risk-block messages are also not
-            # sent as entry alerts because the user requested signal-only alerts.
             if valid and not already_alerted:
-                evidence = conf["buy_evidence"] if signal == "BUY" else conf["sell_evidence"]
+                evidence = buy_confirmed if signal == "BUY" else sell_confirmed
                 message = _format_signal(
-                    symbol,
-                    signal,
-                    levels,
-                    conf,
-                    {"H1": h1, "M15": m15},
-                    previous_close,
-                    candle_time,
-                    signal_id,
-                    evidence,
+                    symbol, signal, levels, conf,
+                    {"H1": h1, "M15": m15}, previous_close,
+                    candle_time, signal_id, evidence,
                 )
                 telegram_result = engine.send_telegram(message)
                 if isinstance(telegram_result, dict) and telegram_result.get("success"):
@@ -207,6 +231,7 @@ def scan_once(symbol="BTC"):
             "patterns": pattern_result["patterns"],
             "confirmed_m5_patterns": confirmed_m5,
             "pattern_signal": pattern_signal,
+            "decision_reasons": reasons,
             "confluence": conf,
             "multi_timeframe": {
                 "H1": h1,
