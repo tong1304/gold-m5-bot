@@ -8,7 +8,10 @@ from binance_data import BinanceMarketData
 from pattern_engine import detect_all, confluence
 
 _SCAN_LOCK = threading.RLock()
-_LAST_ALERT_KEY = None
+# Persist de-duplication for the current process. Key includes symbol + closed
+# candle timestamp + direction, so one signal cannot be sent repeatedly for
+# the same candle. The scheduler also prevents rescanning the same candle.
+_ALERTED_SIGNAL_KEYS = set()
 BINANCE = BinanceMarketData()
 SUPPORTED_SYMBOLS = {"BTC/USDT", "ETH/USDT", "SOL/USDT", "XAU/USDT"}
 
@@ -47,7 +50,6 @@ def _format_risk_block(symbol, signal, result, reason):
 
 
 def scan_once(symbol="BTC/USDT"):
-    global _LAST_ALERT_KEY
     symbol = (symbol or "BTC/USDT").strip().upper()
     if symbol not in SUPPORTED_SYMBOLS: raise ValueError(f"ไม่รองรับสินทรัพย์: {symbol}; รองรับ: {', '.join(sorted(SUPPORTED_SYMBOLS))}")
     with _SCAN_LOCK:
@@ -64,7 +66,14 @@ def scan_once(symbol="BTC/USDT"):
         m5_signal = conf["signal"]; aligned = m5_signal in ("BUY","SELL") and h1["bias"] == m5_signal and m15["bias"] == m5_signal
         signal = m5_signal if aligned else "NO_TRADE"; valid = aligned and bool(result.get("valid")); key = f"{symbol}|{candle_time}|{signal}"
         alerted=False; telegram_result=None; levels=result.get("trade_levels") or {}; risk_reason=_risk_block_reason(result)
-        if risk_reason and signal in ("BUY","SELL") and key != _LAST_ALERT_KEY: telegram_result=engine.send_telegram(_format_risk_block(symbol,signal,result,risk_reason))
-        elif valid and key != _LAST_ALERT_KEY: telegram_result=engine.send_telegram(_format_signal(symbol,signal,result,levels,pattern_result,conf,{"H1":h1,"M15":m15}))
-        if isinstance(telegram_result,dict) and telegram_result.get("success"): _LAST_ALERT_KEY=key; alerted=True
-        return {"status":"ok","engine_version":engine.ENGINE_VERSION,"exchange":"Binance","market_type":"spot","symbol":symbol,"timeframe":"M5","closed_candle":candle_time,"signal":signal,"valid":valid,"score":conf["score"],"engine_score":result.get("score"),"trade_levels":result.get("trade_levels"),"pattern_count":pattern_result["pattern_count"],"patterns":pattern_result["patterns"],"confluence":conf,"multi_timeframe":{"H1":h1,"M15":m15,"M5":{"signal":m5_signal,"valid":bool(result.get("valid"))}},"alignment":aligned,"telegram_alert_sent":alerted,"telegram_result":telegram_result,"risk_blocked":bool(risk_reason),"risk_block_reason":risk_reason,"live_orders_allowed":False,"generated_at":datetime.now(timezone.utc).isoformat()}
+        with _SCAN_LOCK:
+            already_alerted = key in _ALERTED_SIGNAL_KEYS
+            if not already_alerted:
+                if risk_reason and signal in ("BUY","SELL"):
+                    telegram_result=engine.send_telegram(_format_risk_block(symbol,signal,result,risk_reason))
+                elif valid:
+                    telegram_result=engine.send_telegram(_format_signal(symbol,signal,result,levels,pattern_result,conf,{"H1":h1,"M15":m15}))
+                if isinstance(telegram_result,dict) and telegram_result.get("success"):
+                    _ALERTED_SIGNAL_KEYS.add(key)
+                    alerted=True
+        return {"status":"ok","engine_version":engine.ENGINE_VERSION,"exchange":"Binance","market_type":"spot","symbol":symbol,"timeframe":"M5","closed_candle":candle_time,"signal":signal,"valid":valid,"score":conf["score"],"engine_score":result.get("score"),"trade_levels":result.get("trade_levels"),"pattern_count":pattern_result["pattern_count"],"patterns":pattern_result["patterns"],"confluence":conf,"multi_timeframe":{"H1":h1,"M15":m15,"M5":{"signal":m5_signal,"valid":bool(result.get("valid"))}},"alignment":aligned,"duplicate_alert_suppressed":already_alerted,"telegram_alert_sent":alerted,"telegram_result":telegram_result,"risk_blocked":bool(risk_reason),"risk_block_reason":risk_reason,"live_orders_allowed":False,"generated_at":datetime.now(timezone.utc).isoformat()}
