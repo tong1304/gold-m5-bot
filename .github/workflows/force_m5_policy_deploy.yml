@@ -1,0 +1,58 @@
+name: force M5 single-pattern policy deploy
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+
+jobs:
+  force:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify and touch live scanner
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          p = Path('live_scanner.py')
+          s = p.read_text(encoding='utf-8')
+          required = [
+              'def _resolve_m5_direction(conf, buy_confirmed, sell_confirmed):',
+              'if buy_count >= 1 and sell_count == 0:',
+              'if sell_count >= 1 and buy_count == 0:',
+              'conf = confluence(pattern_result["patterns"], minimum=1)',
+              'pattern_signal = m5_signal if selected_evidence else None',
+          ]
+          for item in required:
+              assert item in s, f'M5 policy missing: {item}'
+          old = 'm5_direction_policy = "single_confirmed_pattern_no_opposite"'
+          marker = '# M5_DIRECTION_POLICY: single confirmed pattern, no opposite confirmed pattern\n'
+          if marker not in s:
+              s = marker + s
+          p.write_text(s, encoding='utf-8')
+          PY
+          python -m py_compile live_scanner.py
+      - name: Fix neutral M15 diagnostic
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          p = Path('live_scanner.py')
+          s = p.read_text(encoding='utf-8')
+          old = 'if pattern_signal and m15["bias"] != pattern_signal:\n            reasons.append(f"M15_MISMATCH:{m15[\"bias\"]}")'
+          new = 'if pattern_signal and m15["bias"] == ("SELL" if pattern_signal == "BUY" else "BUY"):\n            reasons.append(f"M15_MISMATCH:{m15[\"bias\"]}")'
+          if old in s:
+              s = s.replace(old, new, 1)
+          p.write_text(s, encoding='utf-8')
+          PY
+          python -m py_compile live_scanner.py
+      - name: Commit verified code and remove workflow
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          rm -f .github/workflows/force_m5_policy_deploy.yml
+          git add live_scanner.py .github/workflows/force_m5_policy_deploy.yml
+          git commit -m "Deploy verified M5 single-pattern policy" || exit 0
+          git push
