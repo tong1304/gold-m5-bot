@@ -54,16 +54,78 @@ def _format_price(value):
         return str(value)
 
 
-def _levels_ready(levels):
+def _levels_ready(levels, direction=None):
     if not isinstance(levels, dict):
         return False
     try:
         entry = float(levels.get("entry"))
         sl = float(levels.get("sl"))
         tp = float(levels.get("tp"))
-        return entry > 0 and sl > 0 and tp > 0 and abs(entry - sl) > 0 and abs(tp - entry) > 0
+        risk = abs(entry - sl)
+        reward = abs(tp - entry)
+        if not (entry > 0 and sl > 0 and tp > 0 and risk > 0 and reward > 0):
+            return False
+        if direction == "BUY" and not (sl < entry < tp):
+            return False
+        if direction == "SELL" and not (sl > entry > tp):
+            return False
+        rr = float(levels.get("risk_reward", levels.get("effective_rr", 0)) or 0)
+        if rr > 0 and rr < float(engine.MIN_RISK_REWARD):
+            return False
+        return True
     except (TypeError, ValueError):
         return False
+
+
+def _build_trade_levels(df, index, direction):
+    """Build levels after the final candidate direction is known.
+
+    The previous implementation read trade_levels from analyze_candle() before
+    deciding the live signal. That made levels_ready=False whenever the base
+    engine itself returned NO_TRADE, even when M5/M15/H1 later aligned.
+    """
+    row = df.iloc[index]
+    close = float(row["close"])
+
+    # Prefer the established v5 level calculator with an explicit direction.
+    try:
+        entry = engine.calculate_execution_price(close, direction)
+        levels = engine.calculate_trade_levels(df, index, direction, entry)
+        if _levels_ready(levels, direction):
+            levels["source"] = "engine_v5"
+            levels["validated"] = True
+            return levels
+    except Exception as exc:
+        print(f"[{direction}] Engine trade-level calculation failed: {type(exc).__name__}: {exc}", flush=True)
+
+    # Deterministic fallback: ATR-based levels. This is only a level builder;
+    # it never opens an order.
+    atr = float(df["atr"].iloc[index]) if "atr" in df.columns else 0.0
+    atr = max(atr, float(engine.MINIMUM_ATR), 1e-12)
+    stop_atr = min(max(float(engine.MIN_STOP_ATR), 1.0), float(engine.MAX_STOP_ATR))
+    risk = atr * stop_atr
+    rr_target = max(float(engine.RISK_REWARD), float(engine.MIN_RISK_REWARD))
+    entry = engine.calculate_execution_price(close, direction)
+
+    if direction == "BUY":
+        sl = entry - risk
+        tp = entry + risk * rr_target
+    else:
+        sl = entry + risk
+        tp = entry - risk * rr_target
+
+    levels = {
+        "entry": round(entry, 8),
+        "sl": round(sl, 8),
+        "tp": round(tp, 8),
+        "risk": round(abs(entry - sl), 8),
+        "reward": round(abs(tp - entry), 8),
+        "risk_reward": round(rr_target, 3),
+        "source": "atr_fallback",
+        "validated": False,
+    }
+    levels["validated"] = _levels_ready(levels, direction)
+    return levels
 
 
 def _format_signal(symbol, signal, levels, confluence_result, mtf, previous_close, candle_time, signal_id, evidence):
@@ -136,9 +198,12 @@ def scan_once(symbol="BTC"):
 
         m5_signal = conf["signal"]
 
-        # A confirmed directional M5 price/chart setup is the trigger.
-        # Do not restrict this to CHART_PATTERN only: that old restriction
-        # silently discarded confirmed candlestick/price-action patterns.
+        # Use the already-scored M5 confluence as the directional trigger.
+        # The old code required every confirmed pattern to have the same side.
+        # That is too strict because independent patterns can legitimately
+        # disagree; confluence is specifically responsible for selecting the
+        # stronger side. We still require at least 3 matching confirmed
+        # directional patterns before accepting the selected M5 direction.
         confirmed_m5 = [
             p for p in pattern_result["patterns"]
             if p.get("confirmed") is True
@@ -155,9 +220,10 @@ def scan_once(symbol="BTC"):
         ]
         buy_confirmed = [p for p in confirmed_m5 if p.get("direction") == "BUY"]
         sell_confirmed = [p for p in confirmed_m5 if p.get("direction") == "SELL"]
-        pattern_signal = "BUY" if buy_confirmed and not sell_confirmed else "SELL" if sell_confirmed and not buy_confirmed else None
 
-        # Strategy: M5 directional pattern + M15 trend + H1 trend must agree.
+        selected_evidence = buy_confirmed if m5_signal == "BUY" else sell_confirmed if m5_signal == "SELL" else []
+        pattern_signal = m5_signal if len(selected_evidence) >= 3 else None
+
         aligned = (
             pattern_signal in ("BUY", "SELL")
             and m5_signal == pattern_signal
@@ -166,8 +232,11 @@ def scan_once(symbol="BTC"):
         )
         signal = pattern_signal if aligned else "NO_TRADE"
 
-        levels = result.get("trade_levels") or {}
-        levels_ready = _levels_ready(levels)
+        # IMPORTANT: calculate Trade Levels only after the final candidate
+        # direction is known. Reading analyze_candle().trade_levels before this
+        # decision caused levels_ready=False on otherwise valid candidates.
+        levels = _build_trade_levels(m5_df, index, signal) if signal in ("BUY", "SELL") else {}
+        levels_ready = _levels_ready(levels, signal if signal in ("BUY", "SELL") else None)
         valid = aligned and levels_ready
         key = f"{symbol}|{candle_time}"
         signal_id = f"{symbol}-{candle_time.replace(':', '').replace('-', '').replace(' ', '-')}-{signal}"
@@ -177,8 +246,14 @@ def scan_once(symbol="BTC"):
         reasons = []
         if not confirmed_m5:
             reasons.append("NO_CONFIRMED_M5_PATTERN")
+        if m5_signal == "NO_TRADE":
+            reasons.append("M5_CONFLUENCE_NOT_READY")
+        elif len(selected_evidence) < 3:
+            reasons.append(f"M5_DIRECTIONAL_EVIDENCE_LOW:{len(selected_evidence)}")
         if buy_confirmed and sell_confirmed:
-            reasons.append("M5_PATTERN_DIRECTION_CONFLICT")
+            reasons.append(
+                f"M5_MIXED_PATTERNS:BUY={len(buy_confirmed)},SELL={len(sell_confirmed)}"
+            )
         if pattern_signal and m5_signal != pattern_signal:
             reasons.append(f"M5_CONFLUENCE_MISMATCH:{m5_signal}")
         if pattern_signal and h1["bias"] != pattern_signal:
@@ -187,11 +262,15 @@ def scan_once(symbol="BTC"):
             reasons.append(f"M15_MISMATCH:{m15['bias']}")
         if aligned and not levels_ready:
             reasons.append("TRADE_LEVELS_NOT_READY")
+        if valid:
+            reasons = []
 
         print(
             f"[{symbol}] Decision: pattern_signal={pattern_signal} m5_confluence={m5_signal} "
             f"H1={h1['bias']} M15={m15['bias']} confirmed_patterns={len(confirmed_m5)} "
+            f"BUY={len(buy_confirmed)} SELL={len(sell_confirmed)} selected={len(selected_evidence)} "
             f"levels_ready={levels_ready} aligned={aligned} valid={valid} "
+            f"level_source={levels.get('source', 'none')} "
             f"reasons={','.join(reasons) if reasons else 'PASS'}",
             flush=True,
         )
@@ -199,7 +278,7 @@ def scan_once(symbol="BTC"):
         with _SCAN_LOCK:
             already_alerted = key in _ALERTED_SIGNAL_KEYS
             if valid and not already_alerted:
-                evidence = buy_confirmed if signal == "BUY" else sell_confirmed
+                evidence = selected_evidence
                 message = _format_signal(
                     symbol, signal, levels, conf,
                     {"H1": h1, "M15": m15}, previous_close,
@@ -230,6 +309,9 @@ def scan_once(symbol="BTC"):
             "pattern_count": pattern_result["pattern_count"],
             "patterns": pattern_result["patterns"],
             "confirmed_m5_patterns": confirmed_m5,
+            "confirmed_m5_buy": buy_confirmed,
+            "confirmed_m5_sell": sell_confirmed,
+            "selected_m5_evidence": selected_evidence,
             "pattern_signal": pattern_signal,
             "decision_reasons": reasons,
             "confluence": conf,
