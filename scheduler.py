@@ -131,9 +131,26 @@ def run_scan_cycle():
                 continue
             logger.warning("[%s] NEW closed M5 candle detected: %s", symbol, closed_key)
             result = live_scanner.scan_once(symbol)
-            _LAST_CLOSED_CANDLE[symbol] = closed_key
+
+            # IMPORTANT: Do not consume a valid candle when Telegram delivery failed.
+            # scan_once only adds the candle to its alert cache after Telegram succeeds,
+            # so keeping this candle unconsumed allows the scheduler to retry delivery
+            # on the next 15-second cycle without sending duplicates after success.
+            telegram_sent = bool(isinstance(result, dict) and result.get("telegram_alert_sent"))
+            valid_signal = bool(isinstance(result, dict) and result.get("valid"))
+            if valid_signal and not telegram_sent:
+                logger.warning(
+                    "[%s] VALID signal detected but Telegram alert was not confirmed; "
+                    "candle=%s will be retried on the next scheduler cycle",
+                    symbol,
+                    closed_key,
+                )
+            else:
+                _LAST_CLOSED_CANDLE[symbol] = closed_key
+
             logger.warning("[%s] Scan result: signal=%s telegram_alert_sent=%s status=%s", symbol, result.get("signal"), result.get("telegram_alert_sent"), result.get("status"))
             result["trigger"] = "NEW_CLOSED_M5_CANDLE"
+            result["candle_consumed"] = not (valid_signal and not telegram_sent)
             results.append(result)
         except Exception as exc:
             logger.exception("[%s] Scan failed", symbol)
