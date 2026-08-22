@@ -1,3 +1,4 @@
+# M5_DIRECTION_POLICY: single confirmed pattern, no opposite confirmed pattern
 import os
 import threading
 from datetime import datetime, timezone
