@@ -2,6 +2,7 @@ import os
 import json
 import math
 import threading
+import logging
 from urllib.parse import parse_qs
 from datetime import datetime
 from zoneinfo import ZoneInfo
@@ -12,6 +13,7 @@ import engine_v5 as engine
 
 SUPPORTED_SYMBOLS = ("BTC/USDT", "ETH/USDT", "SOL/USDT", "XAU/USDT")
 SYMBOL_LOCK = threading.RLock()
+logger = logging.getLogger(__name__)
 
 BASE = {
     "BTC/USDT": {"MINIMUM_ATR": float(os.getenv("BTC_MINIMUM_ATR", "20.0")), "MIN_STOP_ATR": float(os.getenv("BTC_MIN_STOP_ATR", "1.0")), "MAX_STOP_ATR": float(os.getenv("BTC_MAX_STOP_ATR", "3.0")), "SPREAD": float(os.getenv("BTC_SPREAD", "5.0")), "SLIPPAGE": float(os.getenv("BTC_SLIPPAGE", "2.0")), "HISTORY_POINTS": int(os.getenv("BTC_HISTORY_POINTS", "200"))},
@@ -25,6 +27,14 @@ _original_risk_guard = engine.evaluate_live_risk_guard
 def _runtime_risk_guard(**kwargs):
     return _original_risk_guard(**kwargs, price_jump_atr=float(os.getenv("LIVE_PRICE_JUMP_ATR", "0")), daily_loss_r=float(os.getenv("LIVE_DAILY_LOSS_R", "0")), consecutive_losses=int(os.getenv("LIVE_CONSECUTIVE_LOSSES", "0")), trades_today=int(os.getenv("LIVE_TRADES_TODAY", "0")), slippage=float(os.getenv("LIVE_SLIPPAGE", str(engine.SLIPPAGE))))
 engine.evaluate_live_risk_guard = _runtime_risk_guard
+
+
+def _f(value, default=0.0):
+    try:
+        value = float(value)
+        return default if not math.isfinite(value) else value
+    except Exception:
+        return default
 
 
 def activate(symbol):
@@ -115,6 +125,7 @@ class MultiSymbolMiddleware:
             except ValueError as exc:
                 body=json.dumps(_json_safe({"status":"error","engine_version":engine.ENGINE_VERSION,"exchange":"Binance","symbol":requested,"message":str(exc),"live_orders_allowed":False})).encode(); start_response("400 BAD REQUEST",[("Content-Type","application/json"),("Content-Length",str(len(body)))]); return [body]
             except Exception as exc:
+                logger.exception("Application request failed: %s", exc)
                 body=json.dumps(_json_safe({"status":"application_error","engine_version":getattr(engine,"ENGINE_VERSION","unknown"),"exchange":"Binance","symbol":requested,"error_type":type(exc).__name__,"message":str(exc),"live_orders_allowed":False})).encode(); start_response("500 INTERNAL SERVER ERROR",[("Content-Type","application/json"),("Content-Length",str(len(body)))]); return [body]
             finally:
                 for n,v in previous.items(): setattr(engine,n,v)
@@ -122,18 +133,37 @@ class MultiSymbolMiddleware:
 
 app=MultiSymbolMiddleware(engine.app)
 
+# เปิด Signal Scheduler และอย่าซ่อนข้อผิดพลาด
 if os.getenv("ENABLE_SIGNAL_SCHEDULER", "true").strip().lower() == "true":
     try:
-        import scheduler; scheduler.start()
-    except Exception:
-        pass
+        import scheduler
+        scheduler.start()
+        logger.info("Signal Scheduler started successfully")
+    except Exception as exc:
+        logger.exception("Signal Scheduler failed to start")
+        try:
+            from telegram_notify import send_telegram_message
+            now_bkk = datetime.now(ZoneInfo("Asia/Bangkok")).strftime("%d/%m/%Y %H:%M:%S")
+            send_telegram_message(
+                "❌ ระบบแจ้งเตือน Scheduler ขัดข้อง\n\n"
+                f"🕐 เวลา: {now_bkk} (กรุงเทพฯ)\n"
+                "⚠️ ไม่สามารถเริ่มระบบสแกนสัญญาณอัตโนมัติได้\n\n"
+                f"🔴 ประเภทข้อผิดพลาด: {type(exc).__name__}\n"
+                f"📝 รายละเอียด: {str(exc)}\n\n"
+                "🛑 ระบบจะไม่ถือว่า Scheduler ทำงานอยู่\n"
+                "🖐️ ไม่มีการเปิดออเดอร์อัตโนมัติ"
+            )
+        except Exception as telegram_exc:
+            logger.exception("Scheduler error Telegram notification failed: %s", telegram_exc)
+else:
+    logger.warning("Signal Scheduler disabled by ENABLE_SIGNAL_SCHEDULER")
 
 # ส่งข้อความเริ่มระบบภาษาไทยเพียงครั้งเดียวต่อ process
 try:
     from startup_notify import send_startup_notification
     send_startup_notification(symbol="MULTI-ASSET", engine_version="5.0")
-except Exception:
-    pass
+except Exception as exc:
+    logger.exception("Startup notification failed: %s", exc)
 
 if __name__ == "__main__":
     port=int(os.getenv("PORT","10000"))
