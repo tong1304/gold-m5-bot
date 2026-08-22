@@ -1,10 +1,11 @@
 """V5 paper validation: M5 pattern trigger + M15/H1 trend confirmation.
 
-No orders are placed. The validator mirrors the live multi-timeframe decision:
-M5 must produce a confirmed directional setup, while M15 and H1 must agree.
+Optimized for Render: M15/H1 trend context is precomputed once, rather than
+recalculating indicators for every M5 candle. No live orders are placed.
 """
 import argparse
 import json
+import time
 from collections import Counter
 from datetime import datetime, timezone
 
@@ -26,41 +27,41 @@ def closed(df, minutes):
     return BinanceMarketData.remove_incomplete_last_candle(df, timeframe_minutes=minutes)
 
 
-def _trend_context(df, timeframe):
-    df = base.calculate_indicators(df.copy())
-    if len(df) < 55:
-        return {"timeframe": timeframe, "bias": "NEUTRAL", "structure": "INSUFFICIENT_DATA", "close": None}
-    c = df.close
-    e20 = c.ewm(span=20, adjust=False).mean()
-    e50 = c.ewm(span=50, adjust=False).mean()
-    i = len(df) - 1
-    recent = df.iloc[max(0, i - 20):i]
-    close = float(c.iloc[i])
-    if close > float(e20.iloc[i]) > float(e50.iloc[i]):
-        bias = "BUY"
-    elif close < float(e20.iloc[i]) < float(e50.iloc[i]):
-        bias = "SELL"
-    else:
-        bias = "NEUTRAL"
-    if len(recent) >= 6:
-        half = len(recent) // 2
-        first_high = float(recent.high.iloc[:half].max())
-        last_high = float(recent.high.iloc[half:].max())
-        first_low = float(recent.low.iloc[:half].min())
-        last_low = float(recent.low.iloc[half:].min())
-        structure = "HH_HL" if last_high > first_high and last_low > first_low else "LH_LL" if last_high < first_high and last_low < first_low else "MIXED"
-    else:
-        structure = "MIXED"
-    return {"timeframe": timeframe, "bias": bias, "structure": structure, "close": close}
+def _prepare_trend_table(df, timeframe):
+    """Precompute the MTF bias/structure once for every closed candle."""
+    out = df.copy()
+    c = pd.to_numeric(out["close"], errors="coerce")
+    out["ema20_v5"] = c.ewm(span=20, adjust=False).mean()
+    out["ema50_v5"] = c.ewm(span=50, adjust=False).mean()
+    out["bias_v5"] = "NEUTRAL"
+    out.loc[(c > out["ema20_v5"]) & (out["ema20_v5"] > out["ema50_v5"]), "bias_v5"] = "BUY"
+    out.loc[(c < out["ema20_v5"]) & (out["ema20_v5"] < out["ema50_v5"]), "bias_v5"] = "SELL"
+    highs = out["high"].rolling(10, min_periods=10)
+    lows = out["low"].rolling(10, min_periods=10)
+    prev_high = out["high"].shift(10).rolling(10, min_periods=10).max()
+    prev_low = out["low"].shift(10).rolling(10, min_periods=10).min()
+    hhhl = (highs.max() > prev_high) & (lows.min() > prev_low)
+    llll = (highs.max() < prev_high) & (lows.min() < prev_low)
+    out["structure_v5"] = "MIXED"
+    out.loc[hhhl, "structure_v5"] = "HH_HL"
+    out.loc[llll, "structure_v5"] = "LH_LL"
+    out.attrs["timeframe"] = timeframe
+    return out
 
 
 def _context_for_timestamp(context_df, ts, timeframe):
-    available = context_df[context_df["datetime"] <= ts]
-    return _trend_context(available, timeframe)
+    """Read the latest already-computed closed context candle."""
+    if context_df.empty:
+        return {"timeframe": timeframe, "bias": "NEUTRAL", "structure": "INSUFFICIENT_DATA", "close": None}
+    pos = context_df["datetime"].searchsorted(ts, side="right") - 1
+    if pos < 0:
+        return {"timeframe": timeframe, "bias": "NEUTRAL", "structure": "INSUFFICIENT_DATA", "close": None}
+    row = context_df.iloc[int(pos)]
+    return {"timeframe": timeframe, "bias": str(row["bias_v5"]), "structure": str(row["structure_v5"]), "close": float(row["close"])}
 
 
 def run(symbol: str, bars: int) -> dict:
-    """Run a bounded paper backtest using only closed candles and no live orders."""
+    started = time.monotonic()
     stage = "start"
     try:
         stage = "fetch_m5"
@@ -74,8 +75,8 @@ def run(symbol: str, bars: int) -> dict:
 
         stage = "prepare_indicators"
         m5 = base.calculate_indicators(m5)
-        m15_prepared = base.calculate_indicators(m15)
-        h1_prepared = base.calculate_indicators(h1)
+        m15_ctx_table = _prepare_trend_table(m15, "M15")
+        h1_ctx_table = _prepare_trend_table(h1, "H1")
 
         diagnostics = Counter()
         pattern_counts = Counter()
@@ -86,12 +87,13 @@ def run(symbol: str, bars: int) -> dict:
         if end <= start:
             raise RuntimeError(f"ช่วง Backtest ไม่เพียงพอ: start={start}, end={end}, M5={len(m5)}")
 
+        stage = "backtest_loop"
         for i in range(start, end):
             diagnostics["candidate_candles"] += 1
             ts = pd.Timestamp(m5.iloc[i]["datetime"])
             try:
-                m15_ctx = _context_for_timestamp(m15_prepared, ts, "M15")
-                h1_ctx = _context_for_timestamp(h1_prepared, ts, "H1")
+                m15_ctx = _context_for_timestamp(m15_ctx_table, ts, "M15")
+                h1_ctx = _context_for_timestamp(h1_ctx_table, ts, "H1")
                 if m15_ctx["bias"] == "NEUTRAL" or h1_ctx["bias"] == "NEUTRAL":
                     rejection_reasons["mtf_neutral"] += 1
                     continue
@@ -99,10 +101,7 @@ def run(symbol: str, bars: int) -> dict:
                 patterns = detect_all(m5, i)
                 conf = confluence(patterns["patterns"], minimum=3)
                 direction = conf["signal"]
-                confirmed_patterns = [
-                    p for p in patterns["patterns"]
-                    if p.get("confirmed") is True or p.get("category") != "CHART_PATTERN"
-                ]
+                confirmed_patterns = [p for p in patterns["patterns"] if p.get("confirmed") is True or p.get("category") != "CHART_PATTERN"]
                 if direction not in ("BUY", "SELL"):
                     diagnostics["m5_no_trade"] += 1
                     rejection_reasons["m5_pattern_no_direction"] += 1
@@ -127,7 +126,6 @@ def run(symbol: str, bars: int) -> dict:
                     continue
 
                 diagnostics["mtf_aligned"] += 1
-                # Reuse the V5 execution simulator. This is paper-only and never places an order.
                 raw = base.analyze_candle(m5, i)
                 if not isinstance(raw, dict):
                     diagnostics["engine_gate_rejected"] += 1
@@ -159,10 +157,7 @@ def run(symbol: str, bars: int) -> dict:
         by_side = {}
         for side in ("BUY", "SELL"):
             subset = [t for t in trades if t.get("direction") == side]
-            by_side[side] = {
-                "statistics": engine.calculate_trade_statistics(subset),
-                "probability": engine.empirical_probability(subset, side),
-            }
+            by_side[side] = {"statistics": engine.calculate_trade_statistics(subset), "probability": engine.empirical_probability(subset, side)}
         windows = engine.build_walk_forward_windows(len(m5), 400, 200, 200)
         return {
             "status": "PAPER_VALIDATION_ONLY",
@@ -178,18 +173,9 @@ def run(symbol: str, bars: int) -> dict:
             "data_start": str(m5.iloc[0]["datetime"]),
             "data_end": str(m5.iloc[-1]["datetime"]),
             "walk_forward_windows_available": len(windows),
-            "assumptions": {
-                "intrabar_policy": engine.INTRABAR_AMBIGUITY_POLICY,
-                "orders_placed": False,
-                "slippage": engine.SLIPPAGE,
-                "spread": engine.SPREAD,
-                "timeout_in_expectancy": True,
-            },
-            "diagnostics": {
-                **dict(diagnostics),
-                "rejection_reasons": dict(rejection_reasons.most_common()),
-                "pattern_counts": dict(pattern_counts.most_common()),
-            },
+            "elapsed_seconds": round(time.monotonic() - started, 3),
+            "assumptions": {"intrabar_policy": engine.INTRABAR_AMBIGUITY_POLICY, "orders_placed": False, "slippage": engine.SLIPPAGE, "spread": engine.SPREAD, "timeout_in_expectancy": True},
+            "diagnostics": {**dict(diagnostics), "rejection_reasons": dict(rejection_reasons.most_common()), "pattern_counts": dict(pattern_counts.most_common())},
             "statistics": stats,
             "resolved_probability": probability,
             "by_side": by_side,
@@ -198,8 +184,6 @@ def run(symbol: str, bars: int) -> dict:
             "warning": "Paper validation only. Multi-timeframe alignment does not guarantee profitability; validate on broker/exchange-specific data and execution conditions.",
         }
     except Exception as exc:
-        # The API layer already serializes this response. Keeping the stage here makes
-        # Render failures actionable instead of returning a generic 500.
         return {
             "status": "VALIDATION_FAILED",
             "engine_version": getattr(engine, "ENGINE_VERSION", "5.0"),
@@ -209,6 +193,7 @@ def run(symbol: str, bars: int) -> dict:
             "error_type": type(exc).__name__,
             "message": str(exc),
             "data_provider": getattr(BINANCE, "last_provider", "unknown"),
+            "elapsed_seconds": round(time.monotonic() - started, 3),
             "live_orders_allowed": False,
             "trades": [],
         }
