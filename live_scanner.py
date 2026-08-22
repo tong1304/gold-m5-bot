@@ -120,23 +120,19 @@ def _build_trade_levels(df, index, direction):
     return levels
 
 
-def _resolve_m5_direction(conf, buy_confirmed, sell_confirmed, minimum=3):
-    """Resolve M5 direction from confluence, with a confirmed-evidence floor.
+def _resolve_m5_direction(conf, buy_confirmed, sell_confirmed):
+    """Resolve M5 direction from one confirmed pattern when it is uncontested.
 
-    The pattern engine's score threshold can return NO_TRADE even when one side
-    already has the required number of confirmed directional patterns. For the
-    live scanner, the evidence floor is the actual trigger; the MTF filters
-    below still decide whether a trade is valid.
+    One confirmed M5 pattern is sufficient. A trade direction is rejected when
+    any confirmed M5 pattern points in the opposite direction. Confluence score
+    and pattern count are not used as a minimum trigger requirement here.
     """
-    signal = conf.get("signal") if isinstance(conf, dict) else None
-    if signal in ("BUY", "SELL"):
-        return signal
-
     buy_count = len(buy_confirmed)
     sell_count = len(sell_confirmed)
-    if buy_count >= minimum and buy_count > sell_count:
+
+    if buy_count >= 1 and sell_count == 0:
         return "BUY"
-    if sell_count >= minimum and sell_count > buy_count:
+    if sell_count >= 1 and buy_count == 0:
         return "SELL"
     return "NO_TRADE"
 
@@ -204,7 +200,7 @@ def scan_once(symbol="BTC"):
         previous_close = float(candle["close"])
 
         pattern_result = detect_all(m5_df, index)
-        conf = confluence(pattern_result["patterns"], minimum=3)
+        conf = confluence(pattern_result["patterns"], minimum=1)
         result = base.analyze_candle(m5_df, index)
         if not isinstance(result, dict):
             raise RuntimeError("ผลการวิเคราะห์ไม่ถูกต้อง")
@@ -229,14 +225,14 @@ def scan_once(symbol="BTC"):
         # Resolve direction from the confluence result first. If confluence is
         # NO_TRADE only because its score threshold was not reached, use the
         # confirmed directional evidence floor instead of discarding the setup.
-        m5_signal = _resolve_m5_direction(conf, buy_confirmed, sell_confirmed, minimum=3)
+        m5_signal = _resolve_m5_direction(conf, buy_confirmed, sell_confirmed)
         selected_evidence = buy_confirmed if m5_signal == "BUY" else sell_confirmed if m5_signal == "SELL" else []
-        pattern_signal = m5_signal if len(selected_evidence) >= 3 else None
+        pattern_signal = m5_signal if selected_evidence else None
 
         aligned = (
             pattern_signal in ("BUY", "SELL")
             and h1["bias"] == pattern_signal
-            and m15["bias"] == pattern_signal
+            and m15["bias"] != ("SELL" if pattern_signal == "BUY" else "BUY")
         )
         signal = pattern_signal if aligned else "NO_TRADE"
 
@@ -255,7 +251,7 @@ def scan_once(symbol="BTC"):
             reasons.append("M5_CONFLUENCE_NOT_READY")
         elif conf.get("signal") == "NO_TRADE":
             reasons.append("M5_EVIDENCE_FLOOR_USED")
-        if len(selected_evidence) < 3:
+        if len(selected_evidence) < 1:
             reasons.append(f"M5_DIRECTIONAL_EVIDENCE_LOW:{len(selected_evidence)}")
         if buy_confirmed and sell_confirmed:
             reasons.append(
