@@ -126,13 +126,6 @@ if os.getenv("ENABLE_SIGNAL_SCHEDULER", "true").strip().lower() == "true":
     except Exception:
         pass
 
-# แจ้งเตือนเริ่มระบบเป็นภาษาไทยเพียงครั้งเดียวต่อ process
-try:
-    from startup_notify import send_startup_notification
-    send_startup_notification(symbol="MULTI-ASSET", engine_version="5.0")
-except Exception:
-    pass
-
 if __name__ == "__main__":
     port=int(os.getenv("PORT","10000"))
     from werkzeug.serving import run_simple
