@@ -1,4 +1,4 @@
-# M5_DIRECTION_POLICY: single confirmed pattern, no opposite confirmed pattern
+# M5_DIRECTION_POLICY: majority confirmed patterns; discard opposing side
 import os
 import threading
 from datetime import datetime, timezone
@@ -122,18 +122,20 @@ def _build_trade_levels(df, index, direction):
 
 
 def _resolve_m5_direction(conf, buy_confirmed, sell_confirmed):
-    """Resolve M5 direction from one confirmed pattern when it is uncontested.
+    """Resolve M5 direction by majority side.
 
-    One confirmed M5 pattern is sufficient. A trade direction is rejected when
-    any confirmed M5 pattern points in the opposite direction. Confluence score
-    and pattern count are not used as a minimum trigger requirement here.
+    If one side has more confirmed patterns, discard all confirmed patterns
+    from the opposing side and pass only the majority side to the next rules.
+    A single BUY or SELL pattern is therefore sufficient when uncontested.
+    A tie is rejected as NO_TRADE. No weighted confluence score is used to
+    choose the direction.
     """
     buy_count = len(buy_confirmed)
     sell_count = len(sell_confirmed)
 
-    if buy_count >= 1 and sell_count == 0:
+    if buy_count > sell_count and buy_count >= 1:
         return "BUY"
-    if sell_count >= 1 and buy_count == 0:
+    if sell_count > buy_count and sell_count >= 1:
         return "SELL"
     return "NO_TRADE"
 
@@ -223,11 +225,17 @@ def scan_once(symbol="BTC"):
         buy_confirmed = [p for p in confirmed_m5 if p.get("direction") == "BUY"]
         sell_confirmed = [p for p in confirmed_m5 if p.get("direction") == "SELL"]
 
-        # Resolve direction from the confluence result first. If confluence is
-        # NO_TRADE only because its score threshold was not reached, use the
-        # confirmed directional evidence floor instead of discarding the setup.
+        # Majority rule: discard the opposing side before the next conditions.
         m5_signal = _resolve_m5_direction(conf, buy_confirmed, sell_confirmed)
-        selected_evidence = buy_confirmed if m5_signal == "BUY" else sell_confirmed if m5_signal == "SELL" else []
+        if m5_signal == "BUY":
+            selected_evidence = buy_confirmed
+            discarded_opposite = sell_confirmed
+        elif m5_signal == "SELL":
+            selected_evidence = sell_confirmed
+            discarded_opposite = buy_confirmed
+        else:
+            selected_evidence = []
+            discarded_opposite = []
         pattern_signal = m5_signal if selected_evidence else None
 
         aligned = (
@@ -249,15 +257,14 @@ def scan_once(symbol="BTC"):
         if not confirmed_m5:
             reasons.append("NO_CONFIRMED_M5_PATTERN")
         if m5_signal == "NO_TRADE":
-            reasons.append("M5_CONFLUENCE_NOT_READY")
+            if buy_confirmed or sell_confirmed:
+                reasons.append(f"M5_PATTERN_TIE:BUY={len(buy_confirmed)},SELL={len(sell_confirmed)}")
+            else:
+                reasons.append("NO_DIRECTIONAL_M5_PATTERN")
         elif conf.get("signal") == "NO_TRADE":
-            reasons.append("M5_EVIDENCE_FLOOR_USED")
+            reasons.append("M5_MAJORITY_RULE_USED")
         if len(selected_evidence) < 1:
             reasons.append(f"M5_DIRECTIONAL_EVIDENCE_LOW:{len(selected_evidence)}")
-        if buy_confirmed and sell_confirmed:
-            reasons.append(
-                f"M5_MIXED_PATTERNS:BUY={len(buy_confirmed)},SELL={len(sell_confirmed)}"
-            )
         if pattern_signal and h1["bias"] != pattern_signal:
             reasons.append(f"H1_MISMATCH:{h1['bias']}")
         if pattern_signal and m15["bias"] in ("BUY", "SELL") and m15["bias"] != pattern_signal:
@@ -272,6 +279,7 @@ def scan_once(symbol="BTC"):
             f"raw_m5_confluence={conf.get('signal')} m5_direction={m5_signal} "
             f"H1={h1['bias']} M15={m15['bias']} confirmed_patterns={len(confirmed_m5)} "
             f"BUY={len(buy_confirmed)} SELL={len(sell_confirmed)} selected={len(selected_evidence)} "
+            f"discarded_opposite={len(discarded_opposite)} "
             f"levels_ready={levels_ready} aligned={aligned} valid={valid} "
             f"level_source={levels.get('source', 'none')} "
             f"reasons={','.join(reasons) if reasons else 'PASS'}",
@@ -315,6 +323,7 @@ def scan_once(symbol="BTC"):
             "confirmed_m5_buy": buy_confirmed,
             "confirmed_m5_sell": sell_confirmed,
             "selected_m5_evidence": selected_evidence,
+            "discarded_opposite_m5": discarded_opposite,
             "pattern_signal": pattern_signal,
             "decision_reasons": reasons,
             "confluence": conf,
