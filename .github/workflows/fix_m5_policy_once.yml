@@ -1,0 +1,65 @@
+name: fix M5 single-pattern policy
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+
+jobs:
+  fix:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Apply M5 single-pattern policy
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          p = Path('live_scanner.py')
+          s = p.read_text(encoding='utf-8')
+
+          old = '''def _resolve_m5_direction(conf, buy_confirmed, sell_confirmed, minimum=3):\n    """Resolve M5 direction from confluence, with a confirmed-evidence floor.\n\n    The pattern engine's score threshold can return NO_TRADE even when one side\n    already has the required number of confirmed directional patterns. For the\n    live scanner, the evidence floor is the actual trigger; the MTF filters\n    below still decide whether a trade is valid.\n    """\n    signal = conf.get("signal") if isinstance(conf, dict) else None\n    if signal in ("BUY", "SELL"):\n        return signal\n\n    buy_count = len(buy_confirmed)\n    sell_count = len(sell_confirmed)\n    if buy_count >= minimum and buy_count > sell_count:\n        return "BUY"\n    if sell_count >= minimum and sell_count > buy_count:\n        return "SELL"\n    return "NO_TRADE"\n'''
+
+          new = '''def _resolve_m5_direction(conf, buy_confirmed, sell_confirmed):\n    """Resolve M5 direction from one confirmed pattern when it is uncontested.\n\n    One confirmed M5 pattern is sufficient. A trade direction is rejected when\n    any confirmed M5 pattern points in the opposite direction. Confluence score\n    and pattern count are not used as a minimum trigger requirement here.\n    """\n    buy_count = len(buy_confirmed)\n    sell_count = len(sell_confirmed)\n\n    if buy_count >= 1 and sell_count == 0:\n        return "BUY"\n    if sell_count >= 1 and buy_count == 0:\n        return "SELL"\n    return "NO_TRADE"\n'''
+
+          assert old in s, 'old M5 resolver block not found'
+          s = s.replace(old, new, 1)
+          s = s.replace('conf = confluence(pattern_result["patterns"], minimum=3)', 'conf = confluence(pattern_result["patterns"], minimum=1)', 1)
+          s = s.replace('m5_signal = _resolve_m5_direction(conf, buy_confirmed, sell_confirmed, minimum=3)', 'm5_signal = _resolve_m5_direction(conf, buy_confirmed, sell_confirmed)', 1)
+          s = s.replace('pattern_signal = m5_signal if len(selected_evidence) >= 3 else None', 'pattern_signal = m5_signal if selected_evidence else None', 1)
+          s = s.replace('and m15["bias"] == pattern_signal', 'and m15["bias"] != ("SELL" if pattern_signal == "BUY" else "BUY")', 1)
+          s = s.replace('if len(selected_evidence) < 3:\n            reasons.append(f"M5_DIRECTIONAL_EVIDENCE_LOW:{len(selected_evidence)}")', 'if len(selected_evidence) < 1:\n            reasons.append(f"M5_DIRECTIONAL_EVIDENCE_LOW:{len(selected_evidence)}")', 1)
+          s = s.replace('if pattern_signal and m15["bias"] != pattern_signal:\n            reasons.append(f"M15_MISMATCH:{m15[\"bias\"]}")', 'if pattern_signal and m15["bias"] == ("SELL" if pattern_signal == "BUY" else "BUY"):\n            reasons.append(f"M15_MISMATCH:{m15[\"bias\"]}")', 1)
+          p.write_text(s, encoding='utf-8')
+          PY
+      - name: Verify syntax and policy
+        run: |
+          python -m py_compile live_scanner.py
+          python - <<'PY'
+          from pathlib import Path
+          s = Path('live_scanner.py').read_text(encoding='utf-8')
+          checks = [
+              'def _resolve_m5_direction(conf, buy_confirmed, sell_confirmed):',
+              'if buy_count >= 1 and sell_count == 0:',
+              'if sell_count >= 1 and buy_count == 0:',
+              'confluence(pattern_result["patterns"], minimum=1)',
+              'pattern_signal = m5_signal if selected_evidence else None',
+              'm15["bias"] != ("SELL" if pattern_signal == "BUY" else "BUY")',
+          ]
+          for x in checks:
+              assert x in s, x
+          print('M5 single-pattern policy verification: PASS')
+          PY
+      - name: Commit and remove one-time workflow
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          rm -f .github/workflows/fix_m5_policy_once.yml
+          git add live_scanner.py .github/workflows/fix_m5_policy_once.yml
+          git commit -m "Fix M5 single-pattern signal policy" || exit 0
+          git push
