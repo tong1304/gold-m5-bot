@@ -57,12 +57,15 @@ def _notify_scheduler_error(exc, context="Scheduler"):
 
 def _get_closed_candle_key(symbol):
     market_symbol = DISPLAY_TO_MARKET[symbol]
+    logger.warning("[%s] Fetching latest closed M5 candle from %s", symbol, market_symbol)
     df = live_scanner.BINANCE.fetch_candles(market_symbol, "5m", 10)
     df = live_scanner.BINANCE.remove_incomplete_last_candle(df, timeframe_minutes=5)
     if df.empty:
         raise RuntimeError(f"ยังไม่มีแท่ง M5 ที่ปิดแล้วสำหรับ {symbol}")
     row = df.iloc[-1]
-    return str(row.get("datetime", row.name))
+    key = str(row.get("datetime", row.name))
+    logger.warning("[%s] Latest closed M5 candle: %s", symbol, key)
+    return key
 
 
 def _send_price_heartbeat(now_bkk):
@@ -105,35 +108,40 @@ def _send_price_heartbeat(now_bkk):
 
 def run_scan_cycle():
     now_bkk = datetime.now(timezone.utc).astimezone(BANGKOK)
-    logger.info("Scheduler scan cycle started: %s", now_bkk.strftime("%d/%m/%Y %H:%M:%S"))
+    symbols = _symbols()
+    logger.warning(
+        "[HEARTBEAT] Scheduler scan cycle START: %s | symbols=%s | interval=%ss",
+        now_bkk.strftime("%d/%m/%Y %H:%M:%S"), symbols, _interval_seconds()
+    )
     heartbeat = _send_price_heartbeat(now_bkk)
     results = []
-    symbols = _symbols()
     if not symbols:
         raise RuntimeError("ไม่มีสินทรัพย์ที่เปิดใช้งานใน LIVE_SIGNAL_SYMBOLS")
 
     for symbol in symbols:
         try:
+            logger.warning("[%s] Scan step START", symbol)
             if symbol not in live_scanner.SUPPORTED_SYMBOLS:
                 raise RuntimeError(f"ไม่รองรับสินทรัพย์: {symbol}")
             closed_key = _get_closed_candle_key(symbol)
             previous = _LAST_CLOSED_CANDLE.get(symbol)
             if previous == closed_key:
+                logger.warning("[%s] No new closed M5 candle; waiting. candle=%s", symbol, closed_key)
                 results.append({"status":"waiting_new_candle","symbol":symbol,"timeframe":"M5","closed_candle":closed_key,"message":"ยังไม่มีแท่ง M5 ใหม่ปิด ระบบรอแท่งถัดไป","telegram_alert_sent":False,"live_orders_allowed":False})
                 continue
-            logger.info("New closed M5 candle detected: %s %s", symbol, closed_key)
+            logger.warning("[%s] NEW closed M5 candle detected: %s", symbol, closed_key)
             result = live_scanner.scan_once(symbol)
             _LAST_CLOSED_CANDLE[symbol] = closed_key
-            logger.info("Scan result: symbol=%s candle=%s signal=%s telegram_alert_sent=%s", symbol, closed_key, result.get("signal"), result.get("telegram_alert_sent"))
+            logger.warning("[%s] Scan result: signal=%s telegram_alert_sent=%s status=%s", symbol, result.get("signal"), result.get("telegram_alert_sent"), result.get("status"))
             result["trigger"] = "NEW_CLOSED_M5_CANDLE"
             results.append(result)
         except Exception as exc:
-            logger.exception("Scan failed for %s", symbol)
+            logger.exception("[%s] Scan failed", symbol)
             _notify_scheduler_error(exc, context=f"การสแกน {symbol}")
             results.append({"status":"scan_error","symbol":symbol,"error_type":type(exc).__name__,"message":str(exc),"telegram_alert_sent":False,"live_orders_allowed":False})
     if heartbeat is not None:
         results.append({"status":"price_heartbeat","heartbeat":heartbeat,"timezone":"Asia/Bangkok"})
-    logger.info("Scheduler scan cycle finished: %d symbol(s)", len(symbols))
+    logger.warning("[HEARTBEAT] Scheduler scan cycle END: processed=%d symbol(s)", len(symbols))
     return results
 
 
@@ -141,12 +149,14 @@ def _loop():
     global _RUNNING
     logger.warning("M5 Multi-Asset Signal Scheduler thread started; interval=%ss; symbols=%s", _interval_seconds(), _symbols())
     while _RUNNING:
+        cycle_started = time.monotonic()
         try:
             run_scan_cycle()
         except Exception as exc:
             logger.exception("Fatal scheduler cycle error")
             _notify_scheduler_error(exc, context="รอบการทำงานหลักของ Scheduler")
-            # Keep the scheduler alive after a cycle-level failure.
+        elapsed = time.monotonic() - cycle_started
+        logger.warning("[HEARTBEAT] Scheduler cycle returned; elapsed=%.2fs; next_scan_in=%ss", elapsed, _interval_seconds())
         time.sleep(_interval_seconds())
     logger.warning("M5 Multi-Asset Signal Scheduler thread stopped")
 
