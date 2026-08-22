@@ -2,12 +2,15 @@ import os
 import threading
 import time
 from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
 
 import live_scanner
 
 _RUNNING = False
 _THREAD = None
 _LAST_CLOSED_CANDLE = {}
+_LAST_PRICE_HEARTBEAT = None
+BANGKOK = ZoneInfo("Asia/Bangkok")
 
 
 def _interval_seconds():
@@ -28,7 +31,50 @@ def _get_closed_candle_key(symbol):
     return str(row.get("datetime", row.name))
 
 
+def _send_price_heartbeat(now_bkk):
+    global _LAST_PRICE_HEARTBEAT
+    # 11:05, 11:15, 11:25 ... 11:55 (Bangkok time).
+    if now_bkk.minute % 10 != 5:
+        return None
+    slot = now_bkk.strftime("%Y-%m-%d %H:%M")
+    if slot == _LAST_PRICE_HEARTBEAT:
+        return None
+
+    lines = [
+        "🧪 <b>ทดสอบระบบ Price Monitor</b>",
+        "",
+        f"🕐 เวลา: {now_bkk.strftime('%d/%m/%Y %H:%M')} (กรุงเทพฯ)",
+        "",
+    ]
+    feed_ok = True
+    for symbol in _symbols():
+        try:
+            df = live_scanner.BINANCE.fetch_candles(symbol, "5m", 2)
+            if df.empty:
+                raise RuntimeError("ไม่มีข้อมูลราคา")
+            price = float(df.iloc[-1]["close"])
+            lines.append(f"📊 {symbol}: <b>{price:,.8f}</b>".rstrip("0").rstrip("."))
+        except Exception as exc:
+            feed_ok = False
+            lines.append(f"❌ {symbol}: ดึงราคาไม่ได้ ({type(exc).__name__})")
+
+    lines.extend([
+        "",
+        "✅ Scheduler ทำงาน",
+        "✅ Binance Price Feed ตรวจสอบแล้ว" if feed_ok else "⚠️ Binance Price Feed มีสินทรัพย์ที่ดึงราคาไม่ได้",
+        "✅ Telegram Monitor",
+        "",
+        "ℹ️ ข้อความนี้เป็นการทดสอบระบบ",
+        "⛔ ไม่ใช่สัญญาณ BUY/SELL",
+    ])
+    result = live_scanner.engine.send_telegram("\n".join(lines))
+    _LAST_PRICE_HEARTBEAT = slot
+    return {"sent": bool(isinstance(result, dict) and result.get("success")), "slot": slot, "telegram_result": result}
+
+
 def run_scan_cycle():
+    now_bkk = datetime.now(timezone.utc).astimezone(BANGKOK)
+    heartbeat = _send_price_heartbeat(now_bkk)
     results = []
     for symbol in _symbols():
         try:
@@ -45,6 +91,8 @@ def run_scan_cycle():
             results.append(result)
         except Exception as exc:
             results.append({"status":"scan_error","symbol":symbol,"error_type":type(exc).__name__,"message":str(exc),"telegram_alert_sent":False,"live_orders_allowed":False})
+    if heartbeat is not None:
+        results.append({"status":"price_heartbeat","heartbeat":heartbeat,"timezone":"Asia/Bangkok"})
     return results
 
 
@@ -70,4 +118,4 @@ def stop():
 
 
 def status():
-    return {"running":bool(_RUNNING and _THREAD and _THREAD.is_alive()),"interval_seconds":_interval_seconds(),"symbols":_symbols(),"exchange":"Binance","timeframe":"M5 trigger + H1/M15 confirmation","trigger":"ทุกครั้งที่มีแท่ง M5 ใหม่ปิด","last_closed_candle":dict(_LAST_CLOSED_CANDLE),"live_orders_allowed":False,"timestamp":datetime.now(timezone.utc).isoformat()}
+    return {"running":bool(_RUNNING and _THREAD and _THREAD.is_alive()),"interval_seconds":_interval_seconds(),"symbols":_symbols(),"exchange":"Binance","timeframe":"M5 trigger + H1/M15 confirmation","trigger":"ทุกครั้งที่มีแท่ง M5 ใหม่ปิด","price_heartbeat":"นาทีลงท้ายด้วย 5 ตามเวลา Asia/Bangkok","last_closed_candle":dict(_LAST_CLOSED_CANDLE),"live_orders_allowed":False,"timestamp":datetime.now(timezone.utc).isoformat()}
