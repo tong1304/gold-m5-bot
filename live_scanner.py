@@ -78,16 +78,10 @@ def _levels_ready(levels, direction=None):
 
 
 def _build_trade_levels(df, index, direction):
-    """Build levels after the final candidate direction is known.
-
-    The previous implementation read trade_levels from analyze_candle() before
-    deciding the live signal. That made levels_ready=False whenever the base
-    engine itself returned NO_TRADE, even when M5/M15/H1 later aligned.
-    """
+    """Build levels after the final candidate direction is known."""
     row = df.iloc[index]
     close = float(row["close"])
 
-    # Prefer the established v5 level calculator with an explicit direction.
     try:
         entry = engine.calculate_execution_price(close, direction)
         levels = engine.calculate_trade_levels(df, index, direction, entry)
@@ -98,8 +92,6 @@ def _build_trade_levels(df, index, direction):
     except Exception as exc:
         print(f"[{direction}] Engine trade-level calculation failed: {type(exc).__name__}: {exc}", flush=True)
 
-    # Deterministic fallback: ATR-based levels. This is only a level builder;
-    # it never opens an order.
     atr = float(df["atr"].iloc[index]) if "atr" in df.columns else 0.0
     atr = max(atr, float(engine.MINIMUM_ATR), 1e-12)
     stop_atr = min(max(float(engine.MIN_STOP_ATR), 1.0), float(engine.MAX_STOP_ATR))
@@ -126,6 +118,27 @@ def _build_trade_levels(df, index, direction):
     }
     levels["validated"] = _levels_ready(levels, direction)
     return levels
+
+
+def _resolve_m5_direction(conf, buy_confirmed, sell_confirmed, minimum=3):
+    """Resolve M5 direction from confluence, with a confirmed-evidence floor.
+
+    The pattern engine's score threshold can return NO_TRADE even when one side
+    already has the required number of confirmed directional patterns. For the
+    live scanner, the evidence floor is the actual trigger; the MTF filters
+    below still decide whether a trade is valid.
+    """
+    signal = conf.get("signal") if isinstance(conf, dict) else None
+    if signal in ("BUY", "SELL"):
+        return signal
+
+    buy_count = len(buy_confirmed)
+    sell_count = len(sell_confirmed)
+    if buy_count >= minimum and buy_count > sell_count:
+        return "BUY"
+    if sell_count >= minimum and sell_count > buy_count:
+        return "SELL"
+    return "NO_TRADE"
 
 
 def _format_signal(symbol, signal, levels, confluence_result, mtf, previous_close, candle_time, signal_id, evidence):
@@ -196,14 +209,6 @@ def scan_once(symbol="BTC"):
         if not isinstance(result, dict):
             raise RuntimeError("ผลการวิเคราะห์ไม่ถูกต้อง")
 
-        m5_signal = conf["signal"]
-
-        # Use the already-scored M5 confluence as the directional trigger.
-        # The old code required every confirmed pattern to have the same side.
-        # That is too strict because independent patterns can legitimately
-        # disagree; confluence is specifically responsible for selecting the
-        # stronger side. We still require at least 3 matching confirmed
-        # directional patterns before accepting the selected M5 direction.
         confirmed_m5 = [
             p for p in pattern_result["patterns"]
             if p.get("confirmed") is True
@@ -221,20 +226,20 @@ def scan_once(symbol="BTC"):
         buy_confirmed = [p for p in confirmed_m5 if p.get("direction") == "BUY"]
         sell_confirmed = [p for p in confirmed_m5 if p.get("direction") == "SELL"]
 
+        # Resolve direction from the confluence result first. If confluence is
+        # NO_TRADE only because its score threshold was not reached, use the
+        # confirmed directional evidence floor instead of discarding the setup.
+        m5_signal = _resolve_m5_direction(conf, buy_confirmed, sell_confirmed, minimum=3)
         selected_evidence = buy_confirmed if m5_signal == "BUY" else sell_confirmed if m5_signal == "SELL" else []
         pattern_signal = m5_signal if len(selected_evidence) >= 3 else None
 
         aligned = (
             pattern_signal in ("BUY", "SELL")
-            and m5_signal == pattern_signal
             and h1["bias"] == pattern_signal
             and m15["bias"] == pattern_signal
         )
         signal = pattern_signal if aligned else "NO_TRADE"
 
-        # IMPORTANT: calculate Trade Levels only after the final candidate
-        # direction is known. Reading analyze_candle().trade_levels before this
-        # decision caused levels_ready=False on otherwise valid candidates.
         levels = _build_trade_levels(m5_df, index, signal) if signal in ("BUY", "SELL") else {}
         levels_ready = _levels_ready(levels, signal if signal in ("BUY", "SELL") else None)
         valid = aligned and levels_ready
@@ -248,14 +253,14 @@ def scan_once(symbol="BTC"):
             reasons.append("NO_CONFIRMED_M5_PATTERN")
         if m5_signal == "NO_TRADE":
             reasons.append("M5_CONFLUENCE_NOT_READY")
-        elif len(selected_evidence) < 3:
+        elif conf.get("signal") == "NO_TRADE":
+            reasons.append("M5_EVIDENCE_FLOOR_USED")
+        if len(selected_evidence) < 3:
             reasons.append(f"M5_DIRECTIONAL_EVIDENCE_LOW:{len(selected_evidence)}")
         if buy_confirmed and sell_confirmed:
             reasons.append(
                 f"M5_MIXED_PATTERNS:BUY={len(buy_confirmed)},SELL={len(sell_confirmed)}"
             )
-        if pattern_signal and m5_signal != pattern_signal:
-            reasons.append(f"M5_CONFLUENCE_MISMATCH:{m5_signal}")
         if pattern_signal and h1["bias"] != pattern_signal:
             reasons.append(f"H1_MISMATCH:{h1['bias']}")
         if pattern_signal and m15["bias"] != pattern_signal:
@@ -266,7 +271,8 @@ def scan_once(symbol="BTC"):
             reasons = []
 
         print(
-            f"[{symbol}] Decision: pattern_signal={pattern_signal} m5_confluence={m5_signal} "
+            f"[{symbol}] Decision: pattern_signal={pattern_signal} "
+            f"raw_m5_confluence={conf.get('signal')} m5_direction={m5_signal} "
             f"H1={h1['bias']} M15={m15['bias']} confirmed_patterns={len(confirmed_m5)} "
             f"BUY={len(buy_confirmed)} SELL={len(sell_confirmed)} selected={len(selected_evidence)} "
             f"levels_ready={levels_ready} aligned={aligned} valid={valid} "
@@ -318,7 +324,7 @@ def scan_once(symbol="BTC"):
             "multi_timeframe": {
                 "H1": h1,
                 "M15": m15,
-                "M5": {"signal": m5_signal, "valid": valid},
+                "M5": {"signal": m5_signal, "raw_confluence": conf.get("signal"), "valid": valid},
             },
             "alignment": aligned,
             "duplicate_alert_suppressed": already_alerted,
