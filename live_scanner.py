@@ -8,16 +8,18 @@ from binance_data import BinanceMarketData
 from pattern_engine import detect_all, confluence
 
 _SCAN_LOCK = threading.RLock()
-# Persist de-duplication for the current process. Key includes symbol + closed
-# candle timestamp + direction, so one signal cannot be sent repeatedly for
-# the same candle. The scheduler also prevents rescanning the same candle.
 _ALERTED_SIGNAL_KEYS = set()
 BINANCE = BinanceMarketData()
-SUPPORTED_SYMBOLS = {"BTC/USDT", "ETH/USDT", "SOL/USDT", "XAU/USDT"}
+SUPPORTED_SYMBOLS = {"BTC", "ETH", "SOL", "GOLD"}
+SYMBOL_MAP = {"BTC": "BTC/USDT", "ETH": "ETH/USDT", "SOL": "SOL/USDT", "GOLD": "XAU/USDT"}
+
+
+def _market_symbol(symbol):
+    return SYMBOL_MAP.get((symbol or "").strip().upper(), symbol)
 
 
 def _config(symbol, timeframe):
-    return {"symbol": symbol, "timeframe": timeframe, "history": int(os.getenv("LIVE_SIGNAL_HISTORY", str(engine.SIGNAL_HISTORY_POINTS)))}
+    return {"symbol": _market_symbol(symbol), "timeframe": timeframe, "history": int(os.getenv("LIVE_SIGNAL_HISTORY", str(engine.SIGNAL_HISTORY_POINTS)))}
 
 
 def _risk_block_reason(result):
@@ -49,14 +51,15 @@ def _format_risk_block(symbol, signal, result, reason):
     return ("🛡️ <b>สัญญาณถูกระงับโดยระบบควบคุมความเสี่ยง</b>\n\n" f"📊 <b>สินทรัพย์:</b> {symbol}\n📌 <b>ทิศทาง:</b> {signal}\n⭐ <b>คะแนน:</b> {result.get('score')}\n\n❌ <b>เหตุผล:</b> {reason}\n\n⛔ ระบบจะไม่ส่งสัญญาณเข้าออเดอร์\n🤖 <b>ไม่มีการเปิดออเดอร์อัตโนมัติ</b>")
 
 
-def scan_once(symbol="BTC/USDT"):
-    symbol = (symbol or "BTC/USDT").strip().upper()
+def scan_once(symbol="BTC"):
+    symbol = (symbol or "BTC").strip().upper()
     if symbol not in SUPPORTED_SYMBOLS: raise ValueError(f"ไม่รองรับสินทรัพย์: {symbol}; รองรับ: {', '.join(sorted(SUPPORTED_SYMBOLS))}")
+    market_symbol = _market_symbol(symbol)
     with _SCAN_LOCK:
-        engine.SYMBOL = symbol; base.SYMBOL = symbol
+        engine.SYMBOL = market_symbol; base.SYMBOL = market_symbol
         frames = {}; tf_minutes = {"1h":60,"15m":15,"5m":5}
         for tf in ("1h","15m","5m"):
-            cfg = _config(symbol, tf); df = BINANCE.fetch_candles(symbol, tf, cfg["history"]); df = BINANCE.remove_incomplete_last_candle(df, timeframe_minutes=tf_minutes[tf])
+            cfg = _config(symbol, tf); df = BINANCE.fetch_candles(market_symbol, tf, cfg["history"]); df = BINANCE.remove_incomplete_last_candle(df, timeframe_minutes=tf_minutes[tf])
             if len(df) < 100: raise RuntimeError(f"ข้อมูล {tf} ของ {symbol} ที่ปิดแล้วไม่เพียงพอ: {len(df)} แท่ง")
             frames[tf] = df
         h1 = _tf_bias(frames["1h"], "H1"); m15 = _tf_bias(frames["15m"], "M15")
@@ -74,6 +77,5 @@ def scan_once(symbol="BTC/USDT"):
                 elif valid:
                     telegram_result=engine.send_telegram(_format_signal(symbol,signal,result,levels,pattern_result,conf,{"H1":h1,"M15":m15}))
                 if isinstance(telegram_result,dict) and telegram_result.get("success"):
-                    _ALERTED_SIGNAL_KEYS.add(key)
-                    alerted=True
-        return {"status":"ok","engine_version":engine.ENGINE_VERSION,"exchange":"Binance","market_type":"spot","symbol":symbol,"timeframe":"M5","closed_candle":candle_time,"signal":signal,"valid":valid,"score":conf["score"],"engine_score":result.get("score"),"trade_levels":result.get("trade_levels"),"pattern_count":pattern_result["pattern_count"],"patterns":pattern_result["patterns"],"confluence":conf,"multi_timeframe":{"H1":h1,"M15":m15,"M5":{"signal":m5_signal,"valid":bool(result.get("valid"))}},"alignment":aligned,"duplicate_alert_suppressed":already_alerted,"telegram_alert_sent":alerted,"telegram_result":telegram_result,"risk_blocked":bool(risk_reason),"risk_block_reason":risk_reason,"live_orders_allowed":False,"generated_at":datetime.now(timezone.utc).isoformat()}
+                    _ALERTED_SIGNAL_KEYS.add(key); alerted=True
+        return {"status":"ok","engine_version":engine.ENGINE_VERSION,"exchange":"Binance","market_type":"spot","symbol":symbol,"market_symbol":market_symbol,"timeframe":"M5","closed_candle":candle_time,"signal":signal,"valid":valid,"score":conf["score"],"engine_score":result.get("score"),"trade_levels":result.get("trade_levels"),"pattern_count":pattern_result["pattern_count"],"patterns":pattern_result["patterns"],"confluence":conf,"multi_timeframe":{"H1":h1,"M15":m15,"M5":{"signal":m5_signal,"valid":bool(result.get("valid"))}},"alignment":aligned,"duplicate_alert_suppressed":already_alerted,"telegram_alert_sent":alerted,"telegram_result":telegram_result,"risk_blocked":bool(risk_reason),"risk_block_reason":risk_reason,"live_orders_allowed":False,"generated_at":datetime.now(timezone.utc).isoformat()}
