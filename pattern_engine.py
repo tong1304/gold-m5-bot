@@ -2,6 +2,11 @@
 
 Patterns are evidence only. A live signal requires a confirmed M5 setup plus
 aligned M15/H1 context in live_scanner.py. No pattern is treated as guaranteed.
+
+M5 trigger policy:
+- One confirmed directional pattern is sufficient.
+- Any confirmed pattern in the opposite direction blocks the M5 setup.
+- No weighted confluence score is used to decide direction.
 """
 from __future__ import annotations
 import numpy as np
@@ -144,11 +149,32 @@ def detect_all(df,i):
     patterns=[p for vals in groups.values() for p in vals]
     return {"groups":groups,"patterns":patterns,"pattern_count":len(patterns)}
 
-def confluence(patterns,minimum=3):
-    buy=[p for p in patterns if p.get("direction")=="BUY"]; sell=[p for p in patterns if p.get("direction")=="SELL"]
-    bc={p.get("category") for p in buy}; sc={p.get("category") for p in sell}
-    bs=min(100,len(buy)*12+len(bc)*10); ss=min(100,len(sell)*12+len(sc)*10)
-    if bs>=ss and bs>=minimum*20: direction,score="BUY",bs
-    elif ss>bs and ss>=minimum*20: direction,score="SELL",ss
-    else: direction,score="NO_TRADE",max(bs,ss)
-    return {"signal":direction,"score":round(float(score),2),"buy_evidence":buy,"sell_evidence":sell,"buy_categories":sorted(x for x in bc if x),"sell_categories":sorted(x for x in sc if x),"minimum_confluence":minimum}
+def confluence(patterns,minimum=1):
+    """Compatibility summary only; never used as a weighted trigger.
+
+    Direction is determined strictly by the presence of confirmed directional
+    evidence. A single clean BUY or SELL pattern is enough. If both directions
+    are present, the result is NO_TRADE because the M5 evidence is contested.
+    The returned score is a plain evidence count, not a weighted score.
+    """
+    buy=[p for p in patterns if p.get("direction")=="BUY"]
+    sell=[p for p in patterns if p.get("direction")=="SELL"]
+    bc={p.get("category") for p in buy if p.get("category")}
+    sc={p.get("category") for p in sell if p.get("category")}
+    if buy and not sell:
+        direction="BUY"
+    elif sell and not buy:
+        direction="SELL"
+    else:
+        direction="NO_TRADE"
+    score=len(buy) if direction=="BUY" else len(sell) if direction=="SELL" else max(len(buy),len(sell))
+    return {
+        "signal": direction,
+        "score": score,
+        "buy_evidence": buy,
+        "sell_evidence": sell,
+        "buy_categories": sorted(bc),
+        "sell_categories": sorted(sc),
+        "minimum_confluence": 1,
+        "weighted": False,
+    }
