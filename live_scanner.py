@@ -78,7 +78,11 @@ def scan_once(symbol="BTC"):
         candle_time = str(candle.get("datetime", candle.name)); previous_close = float(candle["close"])
         pattern_result = detect_all(m5_df,index); conf = confluence(pattern_result["patterns"], minimum=3); result = base.analyze_candle(m5_df,index)
         if not isinstance(result,dict): raise RuntimeError("ผลการวิเคราะห์ไม่ถูกต้อง")
-        m5_signal = conf["signal"]; aligned = m5_signal in ("BUY","SELL") and h1["bias"] == m5_signal and m15["bias"] == m5_signal
+        m5_signal = conf["signal"]
+        confirmed_m5 = [p for p in pattern_result["patterns"] if p.get("category")=="CHART_PATTERN" and p.get("confirmed") is True and p.get("direction") in ("BUY","SELL")]
+        pattern_directions = {p.get("direction") for p in confirmed_m5}
+        pattern_signal = next(iter(pattern_directions)) if len(pattern_directions)==1 else None
+        aligned = m5_signal in ("BUY","SELL") and pattern_signal == m5_signal and h1["bias"] == m5_signal and m15["bias"] == m5_signal
         signal = m5_signal if aligned else "NO_TRADE"; valid = aligned and bool(result.get("valid")); key = f"{symbol}|{candle_time}|{signal}"
         signal_id = f"{symbol}-{candle_time.replace(':','').replace('-','').replace(' ','-')}-{signal}"
         alerted=False; telegram_result=None; levels=result.get("trade_levels") or {}; risk_reason=_risk_block_reason(result)
@@ -91,4 +95,4 @@ def scan_once(symbol="BTC"):
                     telegram_result=engine.send_telegram(_format_signal(symbol,signal,result,levels,pattern_result,conf,{"H1":h1,"M15":m15},previous_close,candle_time,signal_id))
                 if isinstance(telegram_result,dict) and telegram_result.get("success"):
                     _ALERTED_SIGNAL_KEYS.add(key); alerted=True
-        return {"status":"ok","engine_version":engine.ENGINE_VERSION,"exchange":"Binance","market_type":"spot","symbol":symbol,"market_symbol":market_symbol,"timeframe":"M5","closed_candle":candle_time,"previous_close":previous_close,"signal_id":signal_id,"signal":signal,"valid":valid,"score":conf["score"],"engine_score":result.get("score"),"trade_levels":result.get("trade_levels"),"pattern_count":pattern_result["pattern_count"],"patterns":pattern_result["patterns"],"confluence":conf,"multi_timeframe":{"H1":h1,"M15":m15,"M5":{"signal":m5_signal,"valid":bool(result.get("valid"))}},"alignment":aligned,"duplicate_alert_suppressed":already_alerted,"telegram_alert_sent":alerted,"telegram_result":telegram_result,"risk_blocked":bool(risk_reason),"risk_block_reason":risk_reason,"live_orders_allowed":False,"generated_at":datetime.now(timezone.utc).isoformat()}
+        return {"status":"ok","engine_version":engine.ENGINE_VERSION,"exchange":"Binance","market_type":"spot","symbol":symbol,"market_symbol":market_symbol,"timeframe":"M5","closed_candle":candle_time,"previous_close":previous_close,"signal_id":signal_id,"signal":signal,"valid":valid,"score":conf["score"],"engine_score":result.get("score"),"trade_levels":result.get("trade_levels"),"pattern_count":pattern_result["pattern_count"],"patterns":pattern_result["patterns"],"confirmed_m5_patterns":confirmed_m5,"pattern_signal":pattern_signal,"confluence":conf,"multi_timeframe":{"H1":h1,"M15":m15,"M5":{"signal":m5_signal,"valid":bool(result.get("valid"))}},"alignment":aligned,"duplicate_alert_suppressed":already_alerted,"telegram_alert_sent":alerted,"telegram_result":telegram_result,"risk_blocked":bool(risk_reason),"risk_block_reason":risk_reason,"live_orders_allowed":False,"generated_at":datetime.now(timezone.utc).isoformat()}
