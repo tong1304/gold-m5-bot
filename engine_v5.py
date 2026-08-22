@@ -8,8 +8,6 @@ ENGINE_VERSION = "5.0"
 logger = logging.getLogger(__name__)
 app = Flask(__name__)
 
-# Reuse the established signal/pattern engine while replacing its execution,
-# performance, and live-safety layer with conservative v5 behavior.
 for _name in (
     "SYMBOL", "TIMEFRAME", "MINIMUM_ATR", "MIN_STOP_ATR", "MAX_STOP_ATR",
     "SPREAD", "SLIPPAGE", "BREAK_EVEN", "BREAK_EVEN_R", "FORWARD_BARS",
@@ -21,9 +19,10 @@ for _name in (
 ):
     globals()[_name] = getattr(base, _name)
 
-# Live signal policy: never send a signal below RR 2:1.
-MIN_RISK_REWARD = max(float(os.getenv("MIN_RISK_REWARD", "2.0")), 2.0)
-RISK_REWARD = max(float(os.getenv("RISK_REWARD", "2.0")), 2.0)
+# Live policy: RR 1.5:1 is the minimum acceptable ratio.
+# Values above 1.5 are also accepted; never lower the actual RR.
+MIN_RISK_REWARD = max(float(os.getenv("MIN_RISK_REWARD", "1.5")), 1.5)
+RISK_REWARD = max(float(os.getenv("RISK_REWARD", "1.5")), 1.5)
 
 MAX_LIVE_SPREAD = float(os.getenv("MAX_LIVE_SPREAD", "0.50"))
 MAX_LIVE_SLIPPAGE = float(os.getenv("MAX_LIVE_SLIPPAGE", "0.30"))
@@ -80,6 +79,7 @@ def validate_trade_levels(entry, sl, tp, spread=None, slippage=None):
         "reward": round(reward, 5),
         "effective_rr": round(effective_rr, 3),
         "cost_price": round(cost, 5),
+        "minimum_rr": round(_f(MIN_RISK_REWARD), 3),
         "reason": None if valid else "INVALID_OR_LOW_EFFECTIVE_RR",
     }
 
@@ -88,7 +88,6 @@ def simulate_trade(df, signal_index, direction, setup_levels):
     entry_index = signal_index + 1
     if entry_index >= len(df):
         return None
-
     raw_entry = _f(df.iloc[entry_index]["open"])
     entry = calculate_execution_price(raw_entry, direction)
     levels = calculate_trade_levels(df, signal_index, direction, entry)
@@ -120,18 +119,14 @@ def simulate_trade(df, signal_index, direction, setup_levels):
         adverse = (low - entry) / risk if direction == "BUY" else (entry - high) / risk
         max_favorable = max(max_favorable, favorable)
         max_adverse = min(max_adverse, adverse)
-
         if favorable >= 1.0 and not one_r_reached:
             one_r_reached = True
             bars_to_1r = j - entry_index
         if favorable >= _f(levels.get("risk_reward"), 1.5) and not tp_reached:
             tp_reached = True
             bars_to_tp = j - entry_index
-
         stop_touch = low <= sl if direction == "BUY" else high >= sl
         target_touch = high >= tp if direction == "BUY" else low <= tp
-
-        # Candle OHLC cannot reveal tick order. STOP_FIRST is deliberately conservative.
         if stop_touch:
             exit_price = calculate_execution_price(sl, direction, is_entry=False)
             exit_index = j
@@ -142,7 +137,6 @@ def simulate_trade(df, signal_index, direction, setup_levels):
             exit_index = j
             result = "WIN"
             break
-
         if BREAK_EVEN and not moved_to_be and favorable >= _f(BREAK_EVEN_R):
             close = _f(candle["close"])
             close_favorable = (close - entry) / risk if direction == "BUY" else (entry - close) / risk
@@ -153,11 +147,9 @@ def simulate_trade(df, signal_index, direction, setup_levels):
     if result == "TIMEOUT":
         close = _f(df.iloc[exit_index]["close"])
         exit_price = calculate_execution_price(close, direction, is_entry=False)
-
     r = (exit_price - entry) / risk if direction == "BUY" else (entry - exit_price) / risk
     if result == "BREAKEVEN":
         r = 0.0
-
     if result == "WIN":
         diagnosis = "TP_WIN"
     elif result == "BREAKEVEN":
@@ -172,39 +164,19 @@ def simulate_trade(df, signal_index, direction, setup_levels):
         diagnosis = "TIMEOUT_WITH_PARTIAL_PROFIT"
     else:
         diagnosis = "TIMEOUT_WITHOUT_PROFIT"
-
     reference_exit = _f(df.iloc[exit_index]["close"])
     return {
-        "setup_index": signal_index,
-        "entry_index": entry_index,
-        "exit_index": exit_index,
-        "setup_time": str(df.iloc[signal_index]["datetime"]),
-        "entry_time": str(df.iloc[entry_index]["datetime"]),
-        "exit_time": str(df.iloc[exit_index]["datetime"]),
-        "direction": direction,
-        "entry_raw": round(raw_entry, 5),
-        "entry": round(entry, 5),
-        "sl": round(original_sl, 5),
-        "tp": round(tp, 5),
-        "exit": round(exit_price, 5),
-        "result": result,
-        "r": round(r, 4),
-        "r_no_be": round(r, 4),
-        "result_no_be": result,
-        "be_delta_r": 0.0,
-        "mae_r": round(max_adverse, 4),
-        "mfe_r": round(max_favorable, 4),
-        "break_even_used": moved_to_be,
-        "one_r_reached": one_r_reached,
-        "tp_reached": tp_reached,
-        "bars_to_1r": bars_to_1r,
-        "bars_to_tp": bars_to_tp,
-        "timeout_mfe_ge_1r": max_favorable >= 1.0,
-        "timeout_mfe_ge_tp": tp_reached,
-        "exit_diagnosis": diagnosis,
-        "risk": round(risk, 5),
-        "reward": round(abs(tp - entry), 5),
-        "risk_reward": round(_f(levels.get("risk_reward")), 3),
+        "setup_index": signal_index, "entry_index": entry_index, "exit_index": exit_index,
+        "setup_time": str(df.iloc[signal_index]["datetime"]), "entry_time": str(df.iloc[entry_index]["datetime"]),
+        "exit_time": str(df.iloc[exit_index]["datetime"]), "direction": direction,
+        "entry_raw": round(raw_entry, 5), "entry": round(entry, 5), "sl": round(original_sl, 5),
+        "tp": round(tp, 5), "exit": round(exit_price, 5), "result": result, "r": round(r, 4),
+        "r_no_be": round(r, 4), "result_no_be": result, "be_delta_r": 0.0,
+        "mae_r": round(max_adverse, 4), "mfe_r": round(max_favorable, 4), "break_even_used": moved_to_be,
+        "one_r_reached": one_r_reached, "tp_reached": tp_reached, "bars_to_1r": bars_to_1r,
+        "bars_to_tp": bars_to_tp, "timeout_mfe_ge_1r": max_favorable >= 1.0,
+        "timeout_mfe_ge_tp": tp_reached, "exit_diagnosis": diagnosis, "risk": round(risk, 5),
+        "reward": round(abs(tp - entry), 5), "risk_reward": round(_f(levels.get("risk_reward")), 3),
         "execution_cost": round(abs(entry - raw_entry) + abs(exit_price - reference_exit), 5),
         "intrabar_assumption": INTRABAR_AMBIGUITY_POLICY,
     }
@@ -218,7 +190,6 @@ def calculate_trade_statistics(trades):
     profit = sum(max(_f(t.get("r")), 0) for t in trades)
     loss = abs(sum(min(_f(t.get("r")), 0) for t in trades))
     pf = profit / loss if loss else (None if profit == 0 else float("inf"))
-
     current_streak = longest_streak = 0
     equity = peak = max_drawdown = 0.0
     for trade in trades:
@@ -230,19 +201,11 @@ def calculate_trade_statistics(trades):
         equity += _f(trade.get("r"))
         peak = max(peak, equity)
         max_drawdown = max(max_drawdown, peak - equity)
-
     return {
-        "trades": total,
-        "wins": counts["WIN"],
-        "losses": counts["LOSS"],
-        "breakevens": counts["BREAKEVEN"],
-        "timeouts": counts["TIMEOUT"],
-        "resolved": resolved,
-        "outcome_counts": counts,
-        "net_profit_r": round(net, 4),
-        "gross_expectancy_r": round(net / total, 4) if total else 0.0,
-        "net_expectancy_r": round(net / total, 4) if total else 0.0,
-        "expectancy_r": round(net / total, 4) if total else 0.0,
+        "trades": total, "wins": counts["WIN"], "losses": counts["LOSS"], "breakevens": counts["BREAKEVEN"],
+        "timeouts": counts["TIMEOUT"], "resolved": resolved, "outcome_counts": counts,
+        "net_profit_r": round(net, 4), "gross_expectancy_r": round(net / total, 4) if total else 0.0,
+        "net_expectancy_r": round(net / total, 4) if total else 0.0, "expectancy_r": round(net / total, 4) if total else 0.0,
         "win_rate_percent": round(counts["WIN"] / resolved * 100, 2) if resolved else 0.0,
         "loss_rate_percent": round(counts["LOSS"] / total * 100, 2) if total else 0.0,
         "breakeven_rate_percent": round(counts["BREAKEVEN"] / total * 100, 2) if total else 0.0,
@@ -250,8 +213,7 @@ def calculate_trade_statistics(trades):
         "profit_factor": None if pf is None or not math.isfinite(pf) else round(pf, 3),
         "average_mae_r": round(sum(_f(t.get("mae_r")) for t in trades) / total, 4) if total else 0.0,
         "average_mfe_r": round(sum(_f(t.get("mfe_r")) for t in trades) / total, 4) if total else 0.0,
-        "longest_losing_streak": longest_streak,
-        "max_drawdown_r": round(max_drawdown, 4),
+        "longest_losing_streak": longest_streak, "max_drawdown_r": round(max_drawdown, 4),
         "sample_sufficient": total >= int(MIN_HISTORICAL_SAMPLE),
     }
 
@@ -260,12 +222,7 @@ def empirical_probability(trades, group_name="all"):
     resolved = [t for t in trades if t.get("result") in ("WIN", "LOSS", "BREAKEVEN")]
     wins = sum(1 for t in resolved if t.get("result") == "WIN")
     n = len(resolved)
-    return {
-        "group": group_name,
-        "resolved": n,
-        "wins": wins,
-        "win_probability": round(wins / n, 4) if n else 0.0,
-    }
+    return {"group": group_name, "resolved": n, "wins": wins, "win_probability": round(wins / n, 4) if n else 0.0}
 
 
 def evaluate_live_risk_guard(**kwargs):
