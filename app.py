@@ -28,6 +28,11 @@ def _runtime_risk_guard(**kwargs):
     return _original_risk_guard(**kwargs, price_jump_atr=float(os.getenv("LIVE_PRICE_JUMP_ATR", "0")), daily_loss_r=float(os.getenv("LIVE_DAILY_LOSS_R", "0")), consecutive_losses=int(os.getenv("LIVE_CONSECUTIVE_LOSSES", "0")), trades_today=int(os.getenv("LIVE_TRADES_TODAY", "0")), slippage=float(os.getenv("LIVE_SLIPPAGE", str(engine.SLIPPAGE))))
 engine.evaluate_live_risk_guard = _runtime_risk_guard
 
+# M5 policy: a single confirmed directional pattern is sufficient when there
+# is no opposing M5 pattern. H1 must confirm and M15 must not oppose.
+M5_MIN_DIRECTIONAL_PATTERNS = 1
+M5_REQUIRE_NO_OPPOSING_PATTERN = True
+
 
 def _f(value, default=0.0):
     try:
@@ -133,7 +138,6 @@ class MultiSymbolMiddleware:
 
 app=MultiSymbolMiddleware(engine.app)
 
-# เปิด Signal Scheduler และอย่าซ่อนข้อผิดพลาด
 if os.getenv("ENABLE_SIGNAL_SCHEDULER", "true").strip().lower() == "true":
     try:
         import scheduler
@@ -158,7 +162,6 @@ if os.getenv("ENABLE_SIGNAL_SCHEDULER", "true").strip().lower() == "true":
 else:
     logger.warning("Signal Scheduler disabled by ENABLE_SIGNAL_SCHEDULER")
 
-# ส่งข้อความเริ่มระบบภาษาไทยเพียงครั้งเดียวต่อ process
 try:
     from startup_notify import send_startup_notification
     send_startup_notification(symbol="MULTI-ASSET", engine_version="5.0")
