@@ -103,16 +103,6 @@ def scheduler_status():
     except Exception as exc: return _json_response({"status":"scheduler_error","error_type":type(exc).__name__,"message":str(exc),"live_orders_allowed":False},502)
 
 
-# Startup Telegram notification intentionally disabled. The service still starts
-# the background scanner; only BUY/SELL, risk-block, and scheduled test messages
-# are allowed to reach Telegram.
-
-def _startup_once():
-    return False
-
-_startup_once()
-
-
 class MultiSymbolMiddleware:
     def __init__(self, application): self.application=application
     def __call__(self,environ,start_response):
@@ -135,6 +125,13 @@ if os.getenv("ENABLE_SIGNAL_SCHEDULER", "true").strip().lower() == "true":
         import scheduler; scheduler.start()
     except Exception:
         pass
+
+# แจ้งเตือนเริ่มระบบเป็นภาษาไทยเพียงครั้งเดียวต่อ process
+try:
+    from startup_notify import send_startup_notification
+    send_startup_notification(symbol="MULTI-ASSET", engine_version="5.0")
+except Exception:
+    pass
 
 if __name__ == "__main__":
     port=int(os.getenv("PORT","10000"))
