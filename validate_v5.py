@@ -17,6 +17,7 @@ from binance_data import BinanceMarketData
 from pattern_engine import detect_all, confluence
 
 BINANCE = BinanceMarketData()
+MIN_CONTEXT_BARS = 60
 
 
 def fetch_candles(symbol: str, interval: str, outputsize: int) -> pd.DataFrame:
@@ -50,7 +51,6 @@ def _prepare_trend_table(df, timeframe):
 
 
 def _context_for_timestamp(context_df, ts, timeframe):
-    """Read the latest already-computed closed context candle."""
     if context_df.empty:
         return {"timeframe": timeframe, "bias": "NEUTRAL", "structure": "INSUFFICIENT_DATA", "close": None}
     pos = context_df["datetime"].searchsorted(ts, side="right") - 1
@@ -64,14 +64,18 @@ def run(symbol: str, bars: int) -> dict:
     started = time.monotonic()
     stage = "start"
     try:
+        bars = max(10, int(bars))
         stage = "fetch_m5"
         m5 = closed(fetch_candles(symbol, "5m", bars), 5)
         stage = "fetch_m15"
-        m15 = closed(fetch_candles(symbol, "15m", max(200, min(1000, bars // 3 + 100))), 15)
+        # Need enough history for EMA50, but do not force 200 bars for short smoke tests.
+        m15_requested = max(MIN_CONTEXT_BARS + 10, min(1000, bars // 3 + 60))
+        m15 = closed(fetch_candles(symbol, "15m", m15_requested), 15)
         stage = "fetch_h1"
-        h1 = closed(fetch_candles(symbol, "1h", max(200, min(1000, bars // 12 + 100))), 60)
-        if min(len(m5), len(m15), len(h1)) < 100:
-            raise RuntimeError(f"ข้อมูลแท่งที่ปิดแล้วไม่เพียงพอ: M5={len(m5)}, M15={len(m15)}, H1={len(h1)}")
+        h1_requested = max(MIN_CONTEXT_BARS + 10, min(1000, bars // 12 + 60))
+        h1 = closed(fetch_candles(symbol, "1h", h1_requested), 60)
+        if len(m5) < 10 or len(m15) < MIN_CONTEXT_BARS or len(h1) < MIN_CONTEXT_BARS:
+            raise RuntimeError(f"ข้อมูลแท่งที่ปิดแล้วไม่เพียงพอ: M5={len(m5)}, M15={len(m15)}, H1={len(h1)}; ต้องการอย่างน้อย M5=10, M15/H1={MIN_CONTEXT_BARS}")
 
         stage = "prepare_indicators"
         m5 = base.calculate_indicators(m5)
@@ -85,7 +89,7 @@ def run(symbol: str, bars: int) -> dict:
         start = max(80, len(m5) - bars + 1)
         end = len(m5) - int(engine.FORWARD_BARS) - 2
         if end <= start:
-            raise RuntimeError(f"ช่วง Backtest ไม่เพียงพอ: start={start}, end={end}, M5={len(m5)}")
+            raise RuntimeError(f"ช่วง Backtest ไม่เพียงพอ: start={start}, end={end}, M5={len(m5)}; เพิ่ม bars อย่างน้อย 300-500 สำหรับผลที่มีนัยสำคัญ")
 
         stage = "backtest_loop"
         for i in range(start, end):
