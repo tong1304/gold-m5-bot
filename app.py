@@ -28,8 +28,6 @@ def _runtime_risk_guard(**kwargs):
     return _original_risk_guard(**kwargs, price_jump_atr=float(os.getenv("LIVE_PRICE_JUMP_ATR", "0")), daily_loss_r=float(os.getenv("LIVE_DAILY_LOSS_R", "0")), consecutive_losses=int(os.getenv("LIVE_CONSECUTIVE_LOSSES", "0")), trades_today=int(os.getenv("LIVE_TRADES_TODAY", "0")), slippage=float(os.getenv("LIVE_SLIPPAGE", str(engine.SLIPPAGE))))
 engine.evaluate_live_risk_guard = _runtime_risk_guard
 
-# M5 policy: a single confirmed directional pattern is sufficient when there
-# is no opposing M5 pattern. H1 must confirm and M15 must not oppose.
 M5_MIN_DIRECTIONAL_PATTERNS = 1
 M5_REQUIRE_NO_OPPOSING_PATTERN = True
 
@@ -47,8 +45,19 @@ def activate(symbol):
     if symbol not in SUPPORTED_SYMBOLS:
         raise ValueError(f"Unsupported Binance symbol: {symbol}")
     cfg = BASE[symbol]
+    # Keep v5 and the underlying v4 execution engine on the same RR policy.
+    # Otherwise base.calculate_trade_levels() can silently return 1.5R while
+    # live_scanner expects the mandatory 2.0R minimum.
     for target in (engine, engine.base):
-        target.SYMBOL = symbol; target.MINIMUM_ATR = cfg["MINIMUM_ATR"]; target.MIN_STOP_ATR = cfg["MIN_STOP_ATR"]; target.MAX_STOP_ATR = cfg["MAX_STOP_ATR"]; target.SPREAD = cfg["SPREAD"]; target.SLIPPAGE = cfg["SLIPPAGE"]; target.SIGNAL_HISTORY_POINTS = cfg["HISTORY_POINTS"]
+        target.SYMBOL = symbol
+        target.MINIMUM_ATR = cfg["MINIMUM_ATR"]
+        target.MIN_STOP_ATR = cfg["MIN_STOP_ATR"]
+        target.MAX_STOP_ATR = cfg["MAX_STOP_ATR"]
+        target.SPREAD = cfg["SPREAD"]
+        target.SLIPPAGE = cfg["SLIPPAGE"]
+        target.SIGNAL_HISTORY_POINTS = cfg["HISTORY_POINTS"]
+        target.MIN_RISK_REWARD = max(float(os.getenv("MIN_RISK_REWARD", "2.0")), 2.0)
+        target.RISK_REWARD = max(float(os.getenv("RISK_REWARD", "2.0")), 2.0)
     return symbol
 
 
@@ -65,6 +74,11 @@ def _json_safe(value):
 
 def _json_response(payload, status=200):
     return Response(json.dumps(_json_safe(payload), ensure_ascii=False, allow_nan=False), status=status, mimetype="application/json")
+
+
+@engine.app.route("/")
+def health():
+    return _json_response({"status":"ok","service":"gold-m5-bot","engine_version":engine.ENGINE_VERSION,"exchange":"Binance","symbols":list(SUPPORTED_SYMBOLS),"timeframe":"M5","live_orders_allowed":False})
 
 
 @engine.app.route("/symbols")
@@ -125,7 +139,7 @@ class MultiSymbolMiddleware:
     def __call__(self,environ,start_response):
         params=parse_qs(environ.get("QUERY_STRING", ""),keep_blank_values=True); requested=params.get("symbol",["BTC/USDT"])[0]
         with SYMBOL_LOCK:
-            names=("SYMBOL","MINIMUM_ATR","MIN_STOP_ATR","MAX_STOP_ATR","SPREAD","SLIPPAGE","SIGNAL_HISTORY_POINTS"); previous={n:getattr(engine,n) for n in names}; previous_base={n:getattr(engine.base,n) for n in names}
+            names=("SYMBOL","MINIMUM_ATR","MIN_STOP_ATR","MAX_STOP_ATR","SPREAD","SLIPPAGE","SIGNAL_HISTORY_POINTS","MIN_RISK_REWARD","RISK_REWARD"); previous={n:getattr(engine,n) for n in names}; previous_base={n:getattr(engine.base,n) for n in names}
             try: activate(requested); return self.application(environ,start_response)
             except ValueError as exc:
                 body=json.dumps(_json_safe({"status":"error","engine_version":engine.ENGINE_VERSION,"exchange":"Binance","symbol":requested,"message":str(exc),"live_orders_allowed":False})).encode(); start_response("400 BAD REQUEST",[("Content-Type","application/json"),("Content-Length",str(len(body)))]); return [body]
