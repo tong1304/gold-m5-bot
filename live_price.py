@@ -63,21 +63,28 @@ def _set_tick(tick):
         _LAST_TICK_AT = received_at
         _CONNECTED = True
         _LOOP_STATE = "receiving_ticks"
-    logger.info("[LIVE PRICE] %s price=%s timestamp=%s replay=%s", symbol, price, timestamp, bool(getattr(tick, "replay", False)))
+    logger.info(
+        "[LIVE PRICE] %s price=%s timestamp=%s replay=%s",
+        symbol,
+        price,
+        timestamp,
+        bool(getattr(tick, "replay", False)),
+    )
 
 
 def _on_connected(*_args):
     global _CONNECTED, _LOOP_STATE
     with _LOCK:
         _CONNECTED = True
-        _LOOP_STATE = "connected_waiting_for_tick"
+        _LOOP_STATE = "connected_waiting_for_authentication"
     logger.info("[LIVE PRICE] LSE WebSocket connected")
 
 
 def _on_authenticated(*_args):
-    global _AUTHENTICATED, _LOOP_STATE
+    global _AUTHENTICATED, _CONNECTED, _LOOP_STATE
     with _LOCK:
         _AUTHENTICATED = True
+        _CONNECTED = True
         _LOOP_STATE = "authenticated_waiting_for_tick"
     logger.info("[LIVE PRICE] LSE WebSocket authenticated")
 
@@ -120,31 +127,42 @@ def _stream_loop():
         client = None
         try:
             client = LSE(api_key=key)
+            client.on("tick", _set_tick)
+            client.on("connected", _on_connected)
+            client.on("authenticated", _on_authenticated)
+            client.on("disconnected", _on_disconnected)
+            client.on("error", _on_error)
+
             with _LOCK:
                 _CLIENT = client
                 _CONNECTED = False
                 _AUTHENTICATED = False
                 _LOOP_STATE = "connecting"
-            logger.warning("[LIVE PRICE] Connecting LSE WebSocket: %s", ", ".join(SYMBOLS))
+            logger.warning(
+                "[LIVE PRICE] Connecting LSE WebSocket with callbacks: %s",
+                ", ".join(SYMBOLS),
+            )
 
-            # Official lse-data iterator streaming API.
-            for tick in client.stream(list(SYMBOLS)):
-                if not _RUNNING:
-                    break
-                _set_tick(tick)
+            # Use the documented callback/connect API. This keeps the worker
+            # attached to the WebSocket and exposes connection/auth errors via
+            # status(), instead of relying only on the iterator interface.
+            client.connect(symbols=list(SYMBOLS))
 
+            # connect() normally blocks until disconnect/reconnect. If it
+            # returns while the service is still running, treat that as an
+            # unexpected stream termination and reconnect through the outer loop.
             if _RUNNING:
                 with _LOCK:
-                    _LAST_ERROR = "LSE stream ended unexpectedly without an exception"
-                    _LOOP_STATE = "stream_ended_reconnecting"
-                logger.error("[LIVE PRICE] LSE stream ended unexpectedly; reconnecting")
+                    _LAST_ERROR = _LAST_ERROR or "LSE connect() returned while service was running"
+                    _LOOP_STATE = "connect_returned_reconnecting"
+                logger.error("[LIVE PRICE] LSE connect() returned unexpectedly; reconnecting")
         except Exception as exc:
             with _LOCK:
                 _LAST_ERROR = f"{type(exc).__name__}: {exc}"
                 _CONNECTED = False
                 _AUTHENTICATED = False
                 _LOOP_STATE = "exception_reconnecting"
-            logger.exception("[LIVE PRICE] Stream failed")
+            logger.exception("[LIVE PRICE] WebSocket connection failed")
         finally:
             with _LOCK:
                 if _CLIENT is client:
@@ -234,7 +252,11 @@ def _decorate(value):
     value = dict(value)
     value["age_seconds"] = _age_seconds(value.get("received_at"))
     try:
-        value["received_at_bangkok"] = datetime.fromisoformat(value["received_at"].replace("Z", "+00:00")).astimezone(BANGKOK).strftime("%d/%m/%Y %H:%M:%S")
+        value["received_at_bangkok"] = (
+            datetime.fromisoformat(value["received_at"].replace("Z", "+00:00"))
+            .astimezone(BANGKOK)
+            .strftime("%d/%m/%Y %H:%M:%S")
+        )
     except (KeyError, TypeError, ValueError):
         value["received_at_bangkok"] = None
     return value
@@ -277,7 +299,12 @@ def status():
 
 def get(symbol):
     symbol = str(symbol or "").strip().upper()
-    market = {"BTC": "BTC/USD", "BTC/USD": "BTC/USD", "GOLD": "XAU/USD", "XAU/USD": "XAU/USD"}.get(symbol)
+    market = {
+        "BTC": "BTC/USD",
+        "BTC/USD": "BTC/USD",
+        "GOLD": "XAU/USD",
+        "XAU/USD": "XAU/USD",
+    }.get(symbol)
     if not market:
         return None
     with _LOCK:
