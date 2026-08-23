@@ -39,19 +39,19 @@ def _start_runtime_services():
         if _SERVICES_STARTED_PID==pid:return
         if os.getenv("ENABLE_SIGNAL_SCHEDULER","true").strip().lower()!="true": _SERVICES_STARTED_PID=pid; return
         try:
-            import live_price; live_price.start(); import scheduler; scheduler.start(); logger.info("V9.2 Signal Scheduler + Live Price started in Gunicorn worker pid=%s",pid)
+            import live_price; live_price.start(); import scheduler; scheduler.start(); logger.info("Multi-Strategy Signal Scheduler + Live Price started in Gunicorn worker pid=%s",pid)
             try:
                 from startup_notify import send_startup_notification; send_startup_notification(symbol="BTC + GOLD / LSE",engine_version=engine.ENGINE_VERSION)
             except Exception: logger.exception("Startup notification failed")
             _SERVICES_STARTED_PID=pid
-        except Exception as exc: logger.exception("V9.2 Runtime services failed to start: %s",exc)
+        except Exception as exc: logger.exception("Runtime services failed to start: %s",exc)
 @engine.app.before_request
 def _ensure_runtime_services(): _start_runtime_services()
 @engine.app.route("/")
 def health():
     try: import live_price; live=live_price.status()
     except Exception as exc: live={"running":False,"provider":"LSE","transport":"WebSocket","error":str(exc)}
-    return _json_response({"status":"ok","service":"gold-m5-bot","engine_version":"V9.2","exchange":"LSE","symbols":["BTC/USD","XAU/USD"],"timeframe":"M5 trigger + H1/M15 confirmation","live_price":live,"live_orders_allowed":False})
+    return _json_response({"status":"ok","service":"gold-m5-bot","engine_version":engine.ENGINE_VERSION,"exchange":"LSE","symbols":["BTC/USD","XAU/USD"],"timeframe":"M5 trigger + M15 context + H1 confirmation","analysis_windows":{"M15_context_bars":100,"M5_structure_bars":50,"M5_setup_bars":20,"M5_trigger_bars":3},"live_price":live,"live_orders_allowed":False})
 @engine.app.route("/live-price")
 def live_price_status():
     try: import live_price; payload=live_price.status(); payload["status"]="ok"; return _json_response(payload)
@@ -64,7 +64,7 @@ def live_price_symbol(symbol):
         return _json_response({"status":"ok","provider":"LSE","transport":"WebSocket","latest":value})
     except Exception as exc:return _json_response({"status":"live_price_error","provider":"LSE","transport":"WebSocket","error_type":type(exc).__name__,"message":str(exc)},502)
 @engine.app.route("/symbols")
-def symbols():return _json_response({"status":"ok","engine_version":"V9.2","exchange":"LSE","symbols":["BTC/USD","XAU/USD"],"mt5_symbols":{"BTC":os.getenv("MT5_BTC_SYMBOL","BTCUSD"),"GOLD":os.getenv("MT5_GOLD_SYMBOL","XAUUSD")},"timeframe":"M5 trigger + H1/M15 confirmation","market_data":"LSE historical + LSE WebSocket live price","live_orders_allowed":False})
+def symbols():return _json_response({"status":"ok","engine_version":engine.ENGINE_VERSION,"exchange":"LSE","symbols":["BTC/USD","XAU/USD"],"mt5_symbols":{"BTC":os.getenv("MT5_BTC_SYMBOL","BTCUSD"),"GOLD":os.getenv("MT5_GOLD_SYMBOL","XAUUSD")},"timeframe":"M5 trigger + M15 context + H1 confirmation","market_data":"LSE historical + LSE WebSocket live price","live_orders_allowed":False})
 @engine.app.route("/signal")
 def live_signal():
     symbol=(request.args.get("symbol") or "BTC/USDT").strip().upper()
@@ -111,7 +111,7 @@ class MultiSymbolMiddleware:
         with SYMBOL_LOCK:
             try:activate(requested); return self.application(environ,start_response)
             except ValueError as exc:
-                body=json.dumps(_json_safe({"status":"error","engine_version":"V9.2","symbol":requested,"message":str(exc),"live_orders_allowed":False})).encode(); start_response("400 BAD REQUEST",[("Content-Type","application/json"),("Content-Length",str(len(body)))]); return [body]
+                body=json.dumps(_json_safe({"status":"error","engine_version":engine.ENGINE_VERSION,"symbol":requested,"message":str(exc),"live_orders_allowed":False})).encode(); start_response("400 BAD REQUEST",[("Content-Type","application/json"),("Content-Length",str(len(body)))]); return [body]
 app=MultiSymbolMiddleware(engine.app)
 if __name__=="__main__":
     from werkzeug.serving import run_simple; run_simple("0.0.0.0",int(os.getenv("PORT","10000")),app)
