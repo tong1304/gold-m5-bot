@@ -30,4 +30,4 @@ def test_candle_metrics_has_body_and_wicks_without_confirmation_flag():
 def test_atr_and_momentum_are_available():
     x = pd.concat([frame()] * 8, ignore_index=True)
     assert atr14(x).iloc[-1] > 0
-    assert momentum_move(x, 3) > 0
+    assert momentum_move(x, 2) > 0
