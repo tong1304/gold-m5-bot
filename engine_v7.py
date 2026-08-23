@@ -4,10 +4,11 @@ No ATR fallback is allowed. Every live/replay trade must have causal invalidatio
 from __future__ import annotations
 import math, os
 import pandas as pd
-import numpy as np
+from flask import Flask
 import engine_v42 as base
 
 ENGINE_VERSION = "7.0"
+app = Flask(__name__)
 SYMBOL = os.getenv("SYMBOL", "XAU/USD")
 SPREAD = float(os.getenv("SPREAD", "0.2"))
 SLIPPAGE = float(os.getenv("SLIPPAGE", "0.05"))
@@ -32,18 +33,13 @@ def _atr(df, i, period=14):
 def _ema_bias(df):
     if df is None or len(df)<60: return "NEUTRAL"
     c=pd.to_numeric(df.close,errors="coerce")
-    e20=c.ewm(span=20,adjust=False).mean().iloc[-1]
-    e50=c.ewm(span=50,adjust=False).mean().iloc[-1]
-    last=_f(c.iloc[-1])
+    e20=c.ewm(span=20,adjust=False).mean().iloc[-1]; e50=c.ewm(span=50,adjust=False).mean().iloc[-1]; last=_f(c.iloc[-1])
     return "BUY" if last>e20>e50 else "SELL" if last<e20<e50 else "NEUTRAL"
 
 
 def _structure(df, lookback=30):
     if df is None or len(df)<60: return {"bias":"NEUTRAL","high":None,"low":None}
-    prior=df.iloc[:-1].tail(lookback)
-    hi,lo=_f(prior.high.max()),_f(prior.low.min())
-    ema=_ema_bias(df)
-    close=_f(df.iloc[-1].close)
+    prior=df.iloc[:-1].tail(lookback); hi,lo=_f(prior.high.max()),_f(prior.low.min()); ema=_ema_bias(df); close=_f(df.iloc[-1].close)
     bias=ema
     if close>hi and ema=="BUY": bias="BUY"
     if close<lo and ema=="SELL": bias="SELL"
@@ -53,10 +49,8 @@ def _structure(df, lookback=30):
 def _location(df, direction, lookback=48):
     if df is None or len(df)<30: return {"valid":False,"zone":"INSUFFICIENT_DATA"}
     x=df.tail(lookback); hi,lo=_f(x.high.max()),_f(x.low.min()); width=max(hi-lo,1e-9); c=_f(df.iloc[-1].close)
-    if direction=="BUY":
-        valid=c<=lo+width*0.45; zone="DISCOUNT" if valid else "PREMIUM"
-    else:
-        valid=c>=hi-width*0.45; zone="PREMIUM" if valid else "DISCOUNT"
+    if direction=="BUY": valid=c<=lo+width*0.45; zone="DISCOUNT" if valid else "PREMIUM"
+    else: valid=c>=hi-width*0.45; zone="PREMIUM" if valid else "DISCOUNT"
     return {"valid":valid,"zone":zone,"range_high":hi,"range_low":lo,"mid":lo+width*.5}
 
 
@@ -99,14 +93,12 @@ def _target_liquidity(df, direction, entry, lookback=80):
 
 
 def execution_price(raw, side):
-    adverse=_f(SPREAD)/2+_f(SLIPPAGE); p=_f(raw)
-    return p+adverse if side=="BUY" else p-adverse
+    adverse=_f(SPREAD)/2+_f(SLIPPAGE); p=_f(raw); return p+adverse if side=="BUY" else p-adverse
 
 
 def build_trade_levels(df,index,direction,invalidation,target):
     entry=execution_price(df.iloc[index].close,direction); atr=_atr(df,index); buffer=max(atr*.10,1e-9)
-    sl=_f(invalidation)-buffer if direction=="BUY" else _f(invalidation)+buffer
-    tp=_f(target)
+    sl=_f(invalidation)-buffer if direction=="BUY" else _f(invalidation)+buffer; tp=_f(target)
     if direction=="BUY" and not sl<entry<tp: return {"valid":False,"reason":"INVALID_LEVEL_ORDER"}
     if direction=="SELL" and not sl>entry>tp: return {"valid":False,"reason":"INVALID_LEVEL_ORDER"}
     risk=abs(entry-sl); reward=abs(tp-entry); rr=reward/risk if risk else 0
@@ -117,10 +109,9 @@ def build_trade_levels(df,index,direction,invalidation,target):
 def analyze_structure_setup(m5,m15,h1,index=None):
     if index is None: index=len(m5)-1
     m5=m5.iloc[:index+1].reset_index(drop=True)
-    if len(m5)<80 or len(m15)<60 or len(h1)<60:
-        return {"signal":"NO_TRADE","engine_version":ENGINE_VERSION,"valid":False,"rejection_reasons":["INSUFFICIENT_CONTEXT"]}
+    if len(m5)<80 or len(m15)<60 or len(h1)<60: return {"signal":"NO_TRADE","engine_version":ENGINE_VERSION,"valid":False,"rejection_reasons":["INSUFFICIENT_CONTEXT"]}
     h1s=_structure(h1); m15s=_structure(m15); direction=h1s["bias"]; reasons=[]
-    if direction not in ("BUY","SELL"): reasons.append("H1_NOT_DIRECTIONAL"); return {"signal":"NO_TRADE","engine_version":ENGINE_VERSION,"valid":False,"rejection_reasons":reasons,"structure_bias":h1s,"m15_structure":m15s}
+    if direction not in ("BUY","SELL"): return {"signal":"NO_TRADE","engine_version":ENGINE_VERSION,"valid":False,"rejection_reasons":["H1_NOT_DIRECTIONAL"],"structure_bias":h1s,"m15_structure":m15s}
     if m15s["bias"] not in (direction,"NEUTRAL"): reasons.append("M15_OPPOSES_H1")
     loc=_location(m15,direction)
     if not loc["valid"]: reasons.append("M15_LOCATION_INVALID")
@@ -134,17 +125,14 @@ def analyze_structure_setup(m5,m15,h1,index=None):
     if target is None: reasons.append("NO_LIQUIDITY_TARGET")
     levels=build_trade_levels(m5,len(m5)-1,direction,sweep["extreme"],target) if sweep and target else {"valid":False,"reason":"LEVELS_UNAVAILABLE"}
     if not levels.get("valid"): reasons.append(levels.get("reason","LEVELS_INVALID"))
-    signal=direction if not reasons else "NO_TRADE"
-    setup_key=f"{direction}:{sweep['index']}:{mss['index']}" if sweep and mss else None
+    signal=direction if not reasons else "NO_TRADE"; setup_key=f"{direction}:{sweep['index']}:{mss['index']}" if sweep and mss else None
     return {"signal":signal,"engine_version":ENGINE_VERSION,"valid":signal in ("BUY","SELL") and levels.get("valid",False),"structure_bias":h1s,"m15_structure":m15s,"location":loc,"liquidity_event":sweep,"m5_trigger":mss,"pullback":retest,"target_liquidity":target,"invalidation":sweep["extreme"] if sweep else None,"trade_levels":levels,"setup_key":setup_key,"rejection_reasons":reasons}
 
 
 def resolve_trade(direction,entry,sl,tp,future):
     risk=abs(float(entry)-float(sl)); rr=abs(float(tp)-float(entry))/risk if risk else 0
     for _,r in future.iterrows():
-        h,l=float(r.high),float(r.low)
-        hit_sl=(l<=sl) if direction=="BUY" else (h>=sl); hit_tp=(h>=tp) if direction=="BUY" else (l<=tp)
-        when=str(r.get("datetime",""))
+        h,l=float(r.high),float(r.low); hit_sl=(l<=sl) if direction=="BUY" else (h>=sl); hit_tp=(h>=tp) if direction=="BUY" else (l<=tp); when=str(r.get("datetime",""))
         if hit_sl and hit_tp: return "AMBIGUOUS",0.0,when
         if hit_tp: return "WIN",rr,when
         if hit_sl: return "LOSS",-1.0,when
@@ -155,7 +143,6 @@ def calculate_trade_levels(df,i,direction,entry_price=None):
     setup=analyze_structure_setup(df,df,df,i)
     if setup.get("valid") and setup.get("signal")==direction: return setup["trade_levels"]
     return {"valid":False,"reason":"NO_VALID_STRUCTURE_SETUP"}
-
 
 def evaluate_live_risk_guard(**kwargs): return base.evaluate_live_risk_guard(**kwargs)
 def send_telegram(message): return base.send_telegram(message)
