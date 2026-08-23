@@ -1,8 +1,4 @@
-"""Multi-Strategy Engine v10.0.
-
-Keeps the V9 standalone infrastructure/risk/Telegram API while replacing the
-single pattern gate with regime-aware strategy selection for BTC and GOLD.
-"""
+"""Multi-Strategy Engine v10.0 using only M15 and M5 for signal decisions."""
 from __future__ import annotations
 import math
 import os
@@ -11,22 +7,18 @@ import engine_v9_standalone as _v9
 from engine_v9_standalone import *
 import strategy_engine as _ms
 
-ENGINE_VERSION = "10.0-MULTI"
-MIN_RISK_REWARD = max(float(os.getenv("MIN_RISK_REWARD", "1.0")), 1.0)
-RISK_REWARD = max(float(os.getenv("RISK_REWARD", str(MIN_RISK_REWARD))), 1.0)
-H1_ATR_MIN_RATIO = float(os.getenv("H1_ATR_MIN_RATIO", "0.50"))
-H1_ATR_MAX_RATIO = float(os.getenv("H1_ATR_MAX_RATIO", "2.00"))
+ENGINE_VERSION="10.0-MULTI-M15-M5"
+MIN_RISK_REWARD=max(float(os.getenv("MIN_RISK_REWARD","1.0")),1.0)
+RISK_REWARD=max(float(os.getenv("RISK_REWARD",str(MIN_RISK_REWARD))),1.0)
 
 
-def _num(v, d=0.0):
+def _num(v,d=0.0):
     try:
-        x=float(v)
-        return x if math.isfinite(x) else d
-    except (TypeError, ValueError):
-        return d
+        x=float(v); return x if math.isfinite(x) else d
+    except (TypeError,ValueError): return d
 
 
-def _structure(df, lookback=80):
+def _structure(df,lookback=80):
     x=df.tail(lookback).reset_index(drop=True)
     if len(x)<20:return {"bias":"NEUTRAL","highs":[],"lows":[],"support":None,"resistance":None}
     highs=[]; lows=[]
@@ -63,36 +55,31 @@ def _location(m15,direction):
 
 
 def _levels(df,index,direction,invalidation,target,pattern=None):
-    old=MIN_RISK_REWARD
-    globals()["MIN_RISK_REWARD"]=1.0
-    _v9.MIN_RISK_REWARD=1.0
+    old=MIN_RISK_REWARD; globals()["MIN_RISK_REWARD"]=1.0; _v9.MIN_RISK_REWARD=1.0
     try: out=_v9.build_trade_levels(df,index,direction,invalidation,target,pattern)
     finally: globals()["MIN_RISK_REWARD"]=old; _v9.MIN_RISK_REWARD=old
-    if out.get("valid"):out["source"]="multi_strategy_structure"
+    if out.get("valid"):out["source"]="multi_strategy_m15_m5"
     return out
 
 
 def _invalidation(m5,m15,direction,strategy):
     x=m5.tail(20).reset_index(drop=True); atr=max(_num(_v9._atr(x,len(x)-1)),1e-9)
-    if strategy=="LIQUIDITY_SWEEP":
-        return _num(x.low.min())-atr*.10 if direction=="BUY" else _num(x.high.max())+atr*.10
-    s=_structure(m15); return (s.get("support") if direction=="BUY" else s.get("resistance")) or (_num(x.low.min()) if direction=="BUY" else _num(x.high.max()))
+    if strategy=="LIQUIDITY_SWEEP": return _num(x.low.min())-atr*.10 if direction=="BUY" else _num(x.high.max())+atr*.10
+    s=_structure(m15,100); return (s.get("support") if direction=="BUY" else s.get("resistance")) or (_num(x.low.min()) if direction=="BUY" else _num(x.high.max()))
 
 
-def analyze_structure_setup(m5,m15,h1,index=None):
+def analyze_structure_setup(m5,m15,index=None):
     if index is None:index=len(m5)-1
     m5=m5.iloc[:index+1].reset_index(drop=True); symbol=str(globals().get("SYMBOL","BTC/USDT")).upper()
-    if len(m5)<80 or len(m15)<100 or len(h1)<50:
+    if len(m5)<80 or len(m15)<100:
         return {"signal":"NO_TRADE","engine_version":ENGINE_VERSION,"valid":False,"strategy":"NONE","regime":"NEUTRAL","rejection_reasons":["INSUFFICIENT_CONTEXT"]}
-    ms=_ms.analyze(m5,m15,h1,symbol)
-    direction=ms.get("signal") if ms.get("signal") in ("BUY","SELL") else None
+    ms=_ms.analyze(m5,m15,symbol=symbol); direction=ms.get("signal") if ms.get("signal") in ("BUY","SELL") else None
     out=dict(ms); out["engine_version"]=ENGINE_VERSION
     out["structure_bias"]={"decision":direction or "NEUTRAL","bias":ms.get("regime_detail",{}).get("direction","NEUTRAL"),"ema_context":ms.get("regime_detail",{}).get("direction","NEUTRAL"),"volatility_state":ms.get("regime")}
     out["m15_structure"]=_structure(m15,100); out["location"]=_location(m15,direction) if direction else {"valid":False,"zone":"NO_DIRECTION"}
     out["indicator_context"]=_indicator_context_flags(m5,direction) if direction else {"role":"CONTEXT_ONLY"}
     if not direction:
-        out.update({"pattern":None,"pattern_valid":False,"trade_levels":{"valid":False,"reason":"NO_STRATEGY_SETUP"},"confirmations":[]})
-        return out
+        out.update({"pattern":None,"pattern_valid":False,"trade_levels":{"valid":False,"reason":"NO_STRATEGY_SETUP"},"confirmations":[]}); return out
     target=_v9._target_liquidity(m5,direction); invalidation=_invalidation(m5,m15,direction,ms.get("strategy")); levels=_levels(m5,len(m5)-1,direction,invalidation,target,ms.get("strategy")) if target is not None and invalidation is not None else {"valid":False,"reason":"NO_LEVELS"}
     reasons=list(out.get("rejection_reasons") or [])
     if target is None:reasons.append("NO_LIQUIDITY_TARGET")
@@ -100,15 +87,11 @@ def analyze_structure_setup(m5,m15,h1,index=None):
     out["rejection_reasons"]=reasons; out["trade_levels"]=levels; out["target_liquidity"]=target; out["invalidation"]=invalidation
     out["pattern"]={"name":ms.get("strategy"),"direction":direction,"quality":"CLEAR","context_bars":ms.get("analysis_window",{}).get("m5_setup_bars",20)}
     out["pattern_valid"]=bool(ms.get("valid")); out["m5_trigger"]={"strategy":ms.get("strategy"),"direction":direction,"trigger_candles":ms.get("trigger_candle_count",3)}
-    out["pullback"]={"strategy":ms.get("strategy"),"valid":ms.get("strategy") in ("TREND_PULLBACK","EMA_PULLBACK")}
-    out["liquidity_event"]={"strategy":ms.get("strategy"),"detected":ms.get("strategy")=="LIQUIDITY_SWEEP"}
-    out["confirmations"]=["REGIME_SELECTED",f"STRATEGY_{ms.get('strategy')}","CLOSED_M5_TRIGGER"]
-    out["valid"]=bool(ms.get("valid")) and bool(levels.get("valid")) and not reasons
-    out["signal"]=direction if out["valid"] else "NO_TRADE"
-    out["setup_key"]=f"{direction}:{ms.get('strategy','NONE')}:{index}"
+    out["pullback"]={"strategy":ms.get("strategy"),"valid":ms.get("strategy") in ("TREND_PULLBACK","EMA_PULLBACK")}; out["liquidity_event"]={"strategy":ms.get("strategy"),"detected":ms.get("strategy")=="LIQUIDITY_SWEEP"}
+    out["confirmations"]=["M15_REGIME_SELECTED",f"STRATEGY_{ms.get('strategy')}","CLOSED_M5_TRIGGER"]
+    out["valid"]=bool(ms.get("valid")) and bool(levels.get("valid")) and not reasons; out["signal"]=direction if out["valid"] else "NO_TRADE"; out["setup_key"]=f"{direction}:{ms.get('strategy','NONE')}:{index}"
     if not out["valid"] and not reasons:out["rejection_reasons"]=["TRADE_LEVELS_INVALID"]
     return out
 
 
-def calculate_indicators(df):
-    return _indicator_context(df)
+def calculate_indicators(df): return _indicator_context(df)
