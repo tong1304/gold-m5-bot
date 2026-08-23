@@ -1,11 +1,4 @@
-"""Replay the live M5 signal logic using real LSE historical OHLCV.
-
-Usage:
-    python replay_signal_history.py --start 2026-08-01 --end 2026-08-23
-    python replay_signal_history.py --start 2026-08-01 --end 2026-08-23 --symbol BTC
-
-Statistics-only: no Telegram alert and no live order is sent.
-"""
+"""Replay the live M5 signal logic using real LSE historical OHLCV."""
 from __future__ import annotations
 
 import argparse
@@ -18,7 +11,6 @@ import pandas as pd
 
 import engine_v5 as engine
 import engine_v42 as base
-from binance_data import BinanceMarketData
 from pattern_engine import detect_all, confluence
 from signal_history import history
 from live_scanner import _build_trade_levels, _levels_ready, _resolve_m5_direction
@@ -57,7 +49,11 @@ def _normalize(result):
 
 
 def _fetch_lse(symbol, start, end, timeframe="5m", chunk_days=7):
-    """Fetch real LSE history in chunks below the provider's 5,000-row page cap."""
+    """Fetch real LSE history using the lse-data 0.14 candle API.
+
+    lse-data 0.14 expects start/end as YYYY-MM-DD and does not accept
+    as_dataframe. The response is normalized locally to a DataFrame.
+    """
     key = os.getenv("LSE_API_KEY", "").strip() or os.getenv("LSE_KEY", "").strip()
     if not key:
         raise RuntimeError("LSE_API_KEY/LSE_KEY is not configured")
@@ -67,21 +63,12 @@ def _fetch_lse(symbol, start, end, timeframe="5m", chunk_days=7):
     cursor = start
     while cursor < end:
         chunk_end = min(cursor + timedelta(days=chunk_days), end)
-        try:
-            result = client.candles(
-                symbol,
-                timeframe,
-                start=cursor.isoformat().replace("+00:00", "Z"),
-                end=chunk_end.isoformat().replace("+00:00", "Z"),
-                as_dataframe=True,
-            )
-        except TypeError:
-            result = client.candles(
-                symbol,
-                timeframe,
-                start=cursor.isoformat().replace("+00:00", "Z"),
-                end=chunk_end.isoformat().replace("+00:00", "Z"),
-            )
+        result = client.candles(
+            symbol,
+            timeframe,
+            start=cursor.date().isoformat(),
+            end=chunk_end.date().isoformat(),
+        )
         frame = _normalize(result)
         if not frame.empty:
             parts.append(frame)
@@ -153,9 +140,6 @@ def replay_symbol(symbol, start, end, dry_run=False):
     market = _configure(symbol)
     warm_start = start - timedelta(days=7)
     print(f"[{symbol}] LSE history: {start.isoformat()} -> {end.isoformat()}", flush=True)
-
-    # M5 is fetched directly from LSE. M15/H1 are derived the same way as the
-    # live LSE adapter: resampling the same M5 source into closed bars.
     m5 = _fetch_lse(market, warm_start, end, "5m", 7)
     if len(m5) < 200:
         raise RuntimeError(f"Not enough LSE M5 history for {symbol}: {len(m5)}")
