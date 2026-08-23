@@ -71,21 +71,24 @@ def _lse_frame(symbol, timeframe, limit):
     key = os.getenv("LSE_API_KEY", "").strip() or os.getenv("LSE_KEY", "").strip()
     if not key: raise RuntimeError("LSE_API_KEY/LSE_KEY is not configured")
 
-    # Do not ask the historical vault for an unbounded slice. Pin the asset
-    # class and query a recent time window so BTC cannot fall back to 2017 data.
+    # LSE /candles expects calendar dates (YYYY-MM-DD), not ISO timestamps.
+    # Keep the UTC calculation internally, then convert only the API boundary
+    # values to the format accepted by the historical vault.
     tf_minutes = TF_MINUTES[timeframe]
     rows_needed = max(int(limit), 100)
     window_minutes = max(rows_needed * tf_minutes * 2, 24 * 60)
     end = datetime.now(timezone.utc)
     start = end - timedelta(minutes=window_minutes)
-    print(f"[{symbol}] LSE QUERY: market={market} dataset={dataset} timeframe={timeframe} start={start.isoformat()} end={end.isoformat()} limit={rows_needed} order=desc", flush=True)
+    start_date = start.date().isoformat()
+    end_date = end.date().isoformat()
+    print(f"[{symbol}] LSE QUERY: market={market} dataset={dataset} timeframe={timeframe} start={start_date} end={end_date} limit={rows_needed} order=desc", flush=True)
 
     client = LSE(api_key=key)
     raw = client.candles(
         market,
         timeframe,
-        start=start.isoformat(),
-        end=end.isoformat(),
+        start=start_date,
+        end=end_date,
         limit=rows_needed,
         order="desc",
         dataset=dataset,
