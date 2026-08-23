@@ -1,30 +1,30 @@
-"""V10.3 scheduler for BTC + GOLD using LSE data.
-
-Scan cadence: every 5 minutes. M15 + M5 only. Strategy Evaluation Log is
-emitted by the strategy engine exactly once per scan; the scheduler does not
-re-emit the same candidate rows.
-"""
+"""V11 scheduler for BTC + GOLD using the V11 M5/M15 strategy-split scanner."""
 import logging, os, threading, time
 from datetime import datetime, timezone, time as dt_time
 from zoneinfo import ZoneInfo
+
 logger=logging.getLogger("signal_scheduler")
-ENGINE_VERSION="V10.3"
+ENGINE_VERSION="11.0-M5-M15-STRATEGY-SPLIT"
 _RUNNING=False; _THREAD=None; _LAST_CLOSED_CANDLE={}; _LAST_TEST_SLOT=None
 BANGKOK=ZoneInfo("Asia/Bangkok"); UTC=timezone.utc; DISPLAY_SYMBOLS=("BTC","GOLD")
 GOLD_OPEN_SUNDAY_UTC=os.getenv("GOLD_OPEN_SUNDAY_UTC","23:00"); GOLD_CLOSE_FRIDAY_UTC=os.getenv("GOLD_CLOSE_FRIDAY_UTC","22:00"); GOLD_DAILY_BREAK_START_UTC=os.getenv("GOLD_DAILY_BREAK_START_UTC","22:00"); GOLD_DAILY_BREAK_END_UTC=os.getenv("GOLD_DAILY_BREAK_END_UTC","23:00")
+
 def _interval_seconds():
     try: configured=int(os.getenv("SIGNAL_SCAN_INTERVAL_SECONDS","300"))
     except ValueError: configured=300
     return max(300,configured)
+
 def _symbols():
     out=[]
     for value in os.getenv("LIVE_SIGNAL_SYMBOLS","BTC,GOLD").split(","):
         symbol=value.strip().upper()
         if symbol in DISPLAY_SYMBOLS and symbol not in out: out.append(symbol)
     return out
+
 def _parse_time(value,fallback):
     try: h,m=str(value).split(":",1); return dt_time(int(h),int(m))
     except (TypeError,ValueError): return fallback
+
 def _asset_market_status(symbol,now_utc=None):
     now_utc=now_utc or datetime.now(UTC)
     if symbol=="BTC": return True,"OPEN_24_7"
@@ -35,13 +35,17 @@ def _asset_market_status(symbol,now_utc=None):
     if weekday==4: return (current<friday,"OPEN" if current<friday else "FRIDAY_CLOSED")
     if br_start<br_end and br_start<=current<br_end: return False,"DAILY_BREAK"
     return True,"OPEN"
+
 def _scanner():
-    import live_scanner_v9_2
-    return live_scanner_v9_2
+    """Always return the actual V11 scanner; never fall back to V9/V10 adapters."""
+    import live_scanner_v11
+    return live_scanner_v11
+
 def _notify_error(exc,context):
     text=(f"❌ <b>ระบบ {ENGINE_VERSION} Scheduler ขัดข้อง</b>\n\n" f"🕐 {datetime.now(UTC).astimezone(BANGKOK).strftime('%d/%m/%Y %H:%M:%S')} (กรุงเทพฯ)\n📍 {context}\n🔴 {type(exc).__name__}\n📝 {exc}\n\n🛑 ไม่มีการเปิดออเดอร์อัตโนมัติ")
-    try: return _scanner().engine.send_telegram(text)
+    try: return _scanner().send_telegram(text)
     except Exception: return None
+
 def _record_data_no_trade(symbol,reason):
     try:
         from signal_history import history
@@ -49,6 +53,7 @@ def _record_data_no_trade(symbol,reason):
         payload={"signal_id":signal_id,"symbol":symbol,"signal":"NO_TRADE","result":"NO_TRADE","closed_candle":candle_time,"candle_time":candle_time,"created_at":datetime.now(UTC).isoformat(),"engine_version":ENGINE_VERSION,"rejection_reasons":[str(reason)],"no_trade_reasons":[str(reason)],"data_valid":False}
         recorded=history.record_no_trade(payload); logger.warning("[%s] DATA NO_TRADE recorded=%s reason=%s",symbol,recorded,reason); return recorded
     except Exception as exc: logger.exception("[%s] Failed to record DATA NO_TRADE: %s",symbol,exc); return False
+
 def _evaluate_signal_history():
     from signal_history import history
     pending=history.pending(limit=200)
@@ -63,6 +68,7 @@ def _evaluate_signal_history():
             if updated and updated.get("result")!=before: resolved+=1; logger.warning("[SIGNAL HISTORY] %s -> %s r=%s source=LSE",row["signal_id"],updated.get("result"),updated.get("r_multiple"))
         except Exception as exc: logger.warning("[SIGNAL HISTORY] evaluate failed for %s: %s",row.get("signal_id"),exc)
     return resolved
+
 def _system_test(now_bkk):
     global _LAST_TEST_SLOT
     if now_bkk.minute%15!=0: return None
@@ -82,10 +88,11 @@ def _system_test(now_bkk):
     except Exception as exc: live_ok=False; lines.append(f"❌ LSE Live Price: {type(exc).__name__}: {exc}")
     lines += ["",f"✅ {ENGINE_VERSION} Scheduler ทำงาน","✅ LSE WebSocket Live Price" if live_ok else "⚠️ LSE WebSocket Live Price มีปัญหา","✅ Telegram Monitor","",f"ℹ️ การทดสอบนี้ไม่ใช่สัญญาณ BUY/SELL ของ {ENGINE_VERSION}"]
     try:
-        result=_scanner().engine.send_telegram("\n".join(lines)); sent=bool(isinstance(result,dict) and result.get("success"))
+        result=_scanner().send_telegram("\n".join(lines)); sent=bool(isinstance(result,dict) and result.get("success"))
         if sent: _LAST_TEST_SLOT=slot
         return {"sent":sent,"slot":slot,"telegram_result":result,"timezone":"Asia/Bangkok","live_price_ok":live_ok,"engine_version":ENGINE_VERSION}
     except Exception as exc: return {"sent":False,"slot":slot,"error_type":type(exc).__name__,"error":str(exc),"live_price_ok":live_ok,"engine_version":ENGINE_VERSION}
+
 def run_scan_cycle():
     now_bkk=datetime.now(UTC).astimezone(BANGKOK); now_utc=now_bkk.astimezone(UTC); symbols=_symbols(); logger.warning("[HEARTBEAT] %s Scheduler cycle START: %s | symbols=%s | interval=%ss | provider=LSE",ENGINE_VERSION,now_bkk.strftime("%d/%m/%Y %H:%M:%S"),symbols,_interval_seconds())
     heartbeat=_system_test(now_bkk); history_resolved=_evaluate_signal_history(); results=[]; scanner=_scanner()
@@ -98,9 +105,12 @@ def run_scan_cycle():
             closed_key=str(frame.iloc[-1]["datetime"]); logger.warning("[%s] Latest closed M5 candle: %s",symbol,closed_key)
             if _LAST_CLOSED_CANDLE.get(symbol)==closed_key: logger.warning("[%s] WAITING_NEW_CANDLE: %s",symbol,closed_key); results.append({"status":"waiting_new_candle","symbol":symbol,"timeframe":"M5","closed_candle":closed_key,"live_orders_allowed":False,"engine_version":ENGINE_VERSION}); continue
             logger.warning("[%s] Calling %s Multi-Strategy Signal Engine",symbol,ENGINE_VERSION); result=scanner.scan_once(symbol); _LAST_CLOSED_CANDLE[symbol]=closed_key; result["trigger"]="NEW_CLOSED_M5_CANDLE"; result["candle_consumed"]=True; result["market_session"]=session; result["engine_version"]=ENGINE_VERSION
+            candidates=(result.get("strategy_candidates") or (result.get("setup") or {}).get("strategy_candidates") or [])
+            for candidate in candidates:
+                logger.warning("[%s] V11 STRATEGY | %s",symbol,candidate)
             reasons=result.get("rejection_reasons") or result.get("no_trade_reasons") or (result.get("setup") or {}).get("rejection_reasons") or []
-            if result.get("signal")=="NO_TRADE": logger.warning("[%s] %s NO_TRADE strategy=%s regime=%s recorded=%s reasons=%s",symbol,ENGINE_VERSION,result.get("strategy"),result.get("regime"),result.get("recorded"),reasons)
-            else: logger.warning("[%s] %s result: signal=%s strategy=%s regime=%s status=%s recorded=%s",symbol,ENGINE_VERSION,result.get("signal"),result.get("strategy"),result.get("regime"),result.get("status"),result.get("recorded"))
+            if result.get("signal")=="NO_TRADE": logger.warning("[%s] %s NO_TRADE strategy=%s recorded=%s reasons=%s",symbol,ENGINE_VERSION,result.get("strategy"),result.get("recorded"),reasons)
+            else: logger.warning("[%s] %s result: signal=%s strategy=%s status=%s recorded=%s",symbol,ENGINE_VERSION,result.get("signal"),result.get("strategy"),result.get("status"),result.get("recorded"))
             results.append(result)
         except Exception as exc:
             message=str(exc); logger.exception("[%s] %s Scan failed",symbol,ENGINE_VERSION)
@@ -110,7 +120,9 @@ def run_scan_cycle():
     if heartbeat is not None: results.append({"status":"price_heartbeat","heartbeat":heartbeat,"timezone":"Asia/Bangkok","engine_version":ENGINE_VERSION})
     if history_resolved: results.append({"status":"signal_history_resolved","count":history_resolved,"engine_version":ENGINE_VERSION})
     logger.warning("[HEARTBEAT] %s Scheduler cycle END: processed=%d symbol(s) | provider=LSE",ENGINE_VERSION,len(results)); return results
+
 def _seconds_to_next_five_minute(): return max(1,300-(datetime.now(UTC).timestamp()%300))
+
 def _loop():
     global _RUNNING
     logger.warning("[BOOT TEST] Running immediate %s scan after scheduler startup",ENGINE_VERSION)
@@ -123,12 +135,15 @@ def _loop():
         try: run_scan_cycle()
         except Exception as exc: logger.exception("Fatal %s scheduler cycle error",ENGINE_VERSION); _notify_error(exc,f"รอบการทำงานหลักของ {ENGINE_VERSION} Scheduler")
         elapsed=time.monotonic()-started; wait=_seconds_to_next_five_minute(); logger.warning("[HEARTBEAT] %s Scheduler cycle returned; elapsed=%.2fs; next_cycle_in=%.1fs; provider=LSE",ENGINE_VERSION,elapsed,wait)
+
 def start():
     global _RUNNING,_THREAD
     if _RUNNING and _THREAD and _THREAD.is_alive(): return False
-    _RUNNING=True; _THREAD=threading.Thread(target=_loop,name="m5-btc-gold-v10-scanner",daemon=True); _THREAD.start(); logger.warning("%s Multi-Strategy Scheduler started successfully; thread=%s",ENGINE_VERSION,ENGINE_VERSION); return True
+    _RUNNING=True; _THREAD=threading.Thread(target=_loop,name="m5-btc-gold-v11-scanner",daemon=True); _THREAD.start(); logger.warning("%s Multi-Strategy Scheduler started successfully; thread=%s",ENGINE_VERSION,ENGINE_VERSION); return True
+
 def stop():
     global _RUNNING; _RUNNING=False
+
 def status():
     now=datetime.now(UTC)
     try: import live_price; live=live_price.status()
