@@ -1,3 +1,5 @@
+import pandas as pd
+
 import mt5_data
 
 
@@ -17,6 +19,28 @@ def test_normalize_bridge_candles_returns_utc_ohlcv():
     assert list(frame.columns) == ["datetime", "open", "high", "low", "close", "volume"]
     assert len(frame) == 2
     assert str(frame["datetime"].dt.tz) == "UTC"
+
+
+def test_remove_incomplete_last_candle_keeps_only_closed_bars():
+    frame = pd.DataFrame({
+        "datetime": pd.to_datetime([
+            "2026-08-23 02:20:00+00:00",
+            "2026-08-23 02:25:00+00:00",
+            "2026-08-23 02:30:00+00:00",
+        ], utc=True),
+        "open": [1, 2, 3],
+        "high": [2, 3, 4],
+        "low": [0, 1, 2],
+        "close": [1.5, 2.5, 3.5],
+        "volume": [10, 11, 12],
+    })
+    closed = mt5_data.XMMarketData.remove_incomplete_last_candle(
+        frame, now=pd.Timestamp("2026-08-23 02:27:30+00:00"), timeframe_minutes=5
+    )
+    assert closed["datetime"].tolist() == list(pd.to_datetime([
+        "2026-08-23 02:20:00+00:00",
+        "2026-08-23 02:25:00+00:00",
+    ], utc=True))
 
 
 def test_bridge_url_is_required(monkeypatch):
