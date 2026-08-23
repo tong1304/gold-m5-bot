@@ -12,29 +12,94 @@ def _safe(value):
     return value
 
 
+def _as_pattern_list(value):
+    """Normalize pattern evidence from current and older signal payload formats."""
+    if value is None:
+        return []
+    if isinstance(value, str):
+        return [{"name": value}]
+    if isinstance(value, dict):
+        if value.get("name") or value.get("pattern") or value.get("type"):
+            return [value]
+        # Some payloads store patterns by category.
+        out = []
+        for nested in value.values():
+            out.extend(_as_pattern_list(nested))
+        return out
+    if isinstance(value, (list, tuple)):
+        out = []
+        for item in value:
+            out.extend(_as_pattern_list(item))
+        return out
+    return []
+
+
 def _pattern_details(row):
-    """Extract the exact M5 evidence used for the Telegram signal from payload_json."""
+    """Extract the exact M5 evidence used for the Telegram signal.
+
+    Supports the live payload plus replay/older payloads so old database rows
+    do not display the misleading "ไม่พบข้อมูลแพทเทิร์น" message.
+    """
     try:
         payload = json.loads(row.get("payload_json") or "{}")
     except (TypeError, ValueError, json.JSONDecodeError):
         payload = {}
+    if not isinstance(payload, dict):
+        payload = {}
 
-    evidence = payload.get("evidence") or payload.get("selected_evidence") or []
-    if not isinstance(evidence, list):
-        evidence = []
+    evidence = []
+    for key in (
+        "evidence", "selected_evidence", "confirmed_patterns", "m5_patterns",
+        "patterns", "pattern", "pattern_names", "m5_evidence",
+    ):
+        candidate = _as_pattern_list(payload.get(key))
+        if candidate:
+            evidence.extend(candidate)
+            break
+
+    # Replay payloads may keep the scanner result under an analysis/result key.
+    if not evidence:
+        for container_key in ("analysis", "result", "signal_result", "scanner"):
+            nested = payload.get(container_key)
+            if isinstance(nested, dict):
+                for key in ("evidence", "selected_evidence", "confirmed_patterns", "m5_patterns", "patterns", "pattern"):
+                    candidate = _as_pattern_list(nested.get(key))
+                    if candidate:
+                        evidence.extend(candidate)
+                        break
+            if evidence:
+                break
 
     names = []
     directions = []
+    normalized = []
+    seen = set()
     for item in evidence:
         if isinstance(item, dict):
             name = item.get("name") or item.get("pattern") or item.get("type")
-            if name:
-                names.append(str(name))
             direction = item.get("direction")
-            if direction:
-                directions.append(str(direction))
-        elif item:
-            names.append(str(item))
+        else:
+            name, direction = str(item), None
+        if not name:
+            continue
+        name = str(name)
+        key = (name, str(direction or ""))
+        if key in seen:
+            continue
+        seen.add(key)
+        names.append(name)
+        if direction:
+            directions.append(str(direction))
+        normalized.append({"name": name, "direction": str(direction) if direction else None})
+
+    # A compact pattern_names array is also supported.
+    if not names:
+        compact = payload.get("pattern_names") or payload.get("patterns_used")
+        for item in _as_pattern_list(compact):
+            name = item.get("name") if isinstance(item, dict) else str(item)
+            if name and str(name) not in names:
+                names.append(str(name))
+                normalized.append({"name": str(name), "direction": None})
 
     categories = payload.get("m5_categories") or payload.get("categories") or []
     if not categories:
@@ -45,8 +110,13 @@ def _pattern_details(row):
         categories = []
 
     mtf = payload.get("mtf") or payload.get("multi_timeframe") or {}
-    h1 = mtf.get("H1", {}).get("bias") if isinstance(mtf, dict) else None
-    m15 = mtf.get("M15", {}).get("bias") if isinstance(mtf, dict) else None
+    h1 = mtf.get("H1", {}).get("bias") if isinstance(mtf, dict) and isinstance(mtf.get("H1"), dict) else None
+    m15 = mtf.get("M15", {}).get("bias") if isinstance(mtf, dict) and isinstance(mtf.get("M15"), dict) else None
+
+    # Also support flat fields written by replay.
+    h1 = h1 or payload.get("h1_bias")
+    m15 = m15 or payload.get("m15_bias")
+    m5_direction = payload.get("m5_direction") or payload.get("pattern_signal") or row.get("direction")
 
     return {
         "pattern_names": names,
@@ -54,11 +124,11 @@ def _pattern_details(row):
         "pattern_count": len(names),
         "categories": [str(x) for x in categories],
         "m5_score": payload.get("m5_score") or payload.get("score") or payload.get("confluence_score"),
-        "h1_bias": h1 or payload.get("h1_bias"),
-        "m15_bias": m15 or payload.get("m15_bias"),
-        "m5_direction": payload.get("m5_direction") or payload.get("pattern_signal") or row.get("direction"),
+        "h1_bias": h1,
+        "m15_bias": m15,
+        "m5_direction": m5_direction,
         "pattern_signal": payload.get("pattern_signal"),
-        "evidence": evidence,
+        "evidence": normalized,
     }
 
 
@@ -82,11 +152,12 @@ function esc(v){return String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&l
 function badge(v){let c=v==='WIN'?'win':v==='LOSS'?'loss':v==='OPEN'?'open':'amb';return `<span class="badge ${c}">${esc(v)}</span>`}
 function patternHtml(x){
   const names=Array.isArray(x.pattern_names)?x.pattern_names:[];
+  const dirs=Array.isArray(x.pattern_directions)?x.pattern_directions:[];
   const cats=Array.isArray(x.categories)?x.categories:[];
-  const list=names.length?names.map(n=>`<span class="pattern-name">• ${esc(n)}</span>`).join(''):'<span class="pattern-name">• ไม่พบข้อมูลแพทเทิร์นในสัญญาณเดิม</span>';
+  const list=names.length?names.map((n,i)=>`<span class="pattern-name">• ${esc(n)}${dirs[i]?` <b>[${esc(dirs[i])}]</b>`:''}</span>`).join(''):'<span class="pattern-name">• ไม่พบข้อมูลแพทเทิร์นในสัญญาณเดิม</span>';
   const meta=[];
   if(x.m5_direction) meta.push(`M5: ${esc(x.m5_direction)}`);
-  if(x.m5_score!=null) meta.push(`Score: ${esc(x.m5_score)}/100`);
+  if(x.m5_score!=null) meta.push(`Score: ${esc(x.m5_score)}`);
   if(cats.length) meta.push(`หมวด: ${esc(cats.join(', '))}`);
   return `<div class="pattern">${list}<div class="detail">${meta.join(' | ')}</div></div>`;
 }
