@@ -4,10 +4,9 @@ import math
 import threading
 import logging
 from urllib.parse import parse_qs
-from datetime import datetime
-from zoneinfo import ZoneInfo
 from flask import Response, request
-import engine_v9_core as engine
+import engine_v9_standalone as engine
+engine.base=engine
 os.environ["LIVE_SIGNAL_SYMBOLS"]="BTC,GOLD"
 SUPPORTED_SYMBOLS=("BTC/USDT","XAU/USDT")
 SYMBOL_LOCK=threading.RLock(); SERVICE_LOCK=threading.RLock(); _SERVICES_STARTED_PID=None; logger=logging.getLogger(__name__)
@@ -45,8 +44,7 @@ def _start_runtime_services():
                 from startup_notify import send_startup_notification; send_startup_notification(symbol="BTC + GOLD / LSE",engine_version=engine.ENGINE_VERSION)
             except Exception: logger.exception("Startup notification failed")
             _SERVICES_STARTED_PID=pid
-        except Exception as exc:
-            logger.exception("V9 Runtime services failed to start: %s",exc)
+        except Exception as exc: logger.exception("V9 Runtime services failed to start: %s",exc)
 @engine.app.before_request
 def _ensure_runtime_services(): _start_runtime_services()
 @engine.app.route("/")
