@@ -1,6 +1,6 @@
 import os
 import threading
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from zoneinfo import ZoneInfo
 
 import pandas as pd
@@ -14,10 +14,16 @@ _ALERTED_SIGNAL_KEYS = set()
 BANGKOK = ZoneInfo("Asia/Bangkok")
 SUPPORTED_SYMBOLS = {"BTC", "GOLD"}
 SYMBOL_MAP = {"BTC": "BTC/USD", "GOLD": "XAU/USD"}
+DATASET_MAP = {"BTC": "crypto", "GOLD": "commodity"}
+TF_MINUTES = {"1h": 60, "15m": 15, "5m": 5}
 
 
 def _market_symbol(symbol):
     return SYMBOL_MAP[(symbol or "").strip().upper()]
+
+
+def _dataset(symbol):
+    return DATASET_MAP[(symbol or "").strip().upper()]
 
 
 def _fmt_price(value):
@@ -45,8 +51,7 @@ def _validate_freshness(frame, symbol, timeframe):
     if pd.isna(latest):
         raise RuntimeError(f"DATA_INVALID: {symbol} {timeframe} latest timestamp เป็นค่าว่าง")
     latest = pd.Timestamp(latest)
-    if latest.tzinfo is None:
-        latest = latest.tz_localize("UTC")
+    if latest.tzinfo is None: latest = latest.tz_localize("UTC")
     latest = latest.tz_convert("UTC")
     now = pd.Timestamp.now(tz="UTC")
     age_minutes = (now - latest).total_seconds() / 60.0
@@ -60,24 +65,46 @@ def _validate_freshness(frame, symbol, timeframe):
 
 def _lse_frame(symbol, timeframe, limit):
     from lse import LSE
+    symbol = (symbol or "").strip().upper()
     market = _market_symbol(symbol)
+    dataset = _dataset(symbol)
     key = os.getenv("LSE_API_KEY", "").strip() or os.getenv("LSE_KEY", "").strip()
     if not key: raise RuntimeError("LSE_API_KEY/LSE_KEY is not configured")
 
-    # Request newest candles. With order="asc" + a small limit, LSE returns
-    # the oldest candles in the vault (BTC begins in 2017), causing stale-data rejection.
-    raw = LSE(api_key=key).candles(market, timeframe, limit=int(limit), order="desc")
+    # Do not ask the historical vault for an unbounded slice. Pin the asset
+    # class and query a recent time window so BTC cannot fall back to 2017 data.
+    tf_minutes = TF_MINUTES[timeframe]
+    rows_needed = max(int(limit), 100)
+    window_minutes = max(rows_needed * tf_minutes * 2, 24 * 60)
+    end = datetime.now(timezone.utc)
+    start = end - timedelta(minutes=window_minutes)
+    print(f"[{symbol}] LSE QUERY: market={market} dataset={dataset} timeframe={timeframe} start={start.isoformat()} end={end.isoformat()} limit={rows_needed} order=desc", flush=True)
+
+    client = LSE(api_key=key)
+    raw = client.candles(
+        market,
+        timeframe,
+        start=start.isoformat(),
+        end=end.isoformat(),
+        limit=rows_needed,
+        order="desc",
+        dataset=dataset,
+    )
     if isinstance(raw, dict): rows = raw.get("data") or raw.get("candles") or raw.get("rows") or []
     else: rows = raw or []
     frame = pd.DataFrame(rows)
-    if frame.empty: raise RuntimeError(f"LSE ไม่มีข้อมูล {timeframe} สำหรับ {market}")
+    if frame.empty: raise RuntimeError(f"LSE_RECENT_DATA_UNAVAILABLE: ไม่มีข้อมูลล่าสุด {timeframe} สำหรับ {market} dataset={dataset}")
     frame = frame.rename(columns={k:v for k,v in {"timestamp":"datetime","time":"datetime","ts":"datetime","o":"open","h":"high","l":"low","c":"close","v":"volume"}.items() if k in frame.columns})
-    if "datetime" not in frame.columns or not {"high","low","close"}.issubset(frame.columns): raise RuntimeError(f"LSE {market} {timeframe} response missing OHLC columns")
+    if "datetime" not in frame.columns or not {"high","low","close"}.issubset(frame.columns):
+        raise RuntimeError(f"DATA_INVALID: LSE {market} {timeframe} response missing OHLC columns")
     frame["datetime"] = pd.to_datetime(frame["datetime"], utc=True, errors="coerce")
     for col in ("open","high","low","close","volume"):
         if col in frame.columns: frame[col] = pd.to_numeric(frame[col], errors="coerce")
     frame = frame.dropna(subset=["datetime","high","low","close"]).sort_values("datetime").drop_duplicates("datetime").reset_index(drop=True)
-    frame = engine.remove_incomplete_last_candle(frame, timeframe_minutes={"1h":60,"15m":15,"5m":5}[timeframe])
+    if frame.empty: raise RuntimeError(f"DATA_INVALID: LSE {market} {timeframe} ไม่มีแท่ง OHLC ที่ใช้ได้")
+    raw_latest = frame.iloc[-1]["datetime"]
+    print(f"[{symbol}] LSE RAW DATA: rows={len(frame)} oldest={frame.iloc[0]['datetime'].isoformat()} newest={raw_latest.isoformat()} dataset={dataset}", flush=True)
+    frame = engine.remove_incomplete_last_candle(frame, timeframe_minutes=tf_minutes)
     _validate_freshness(frame, symbol, timeframe)
     return frame
 
