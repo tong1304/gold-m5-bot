@@ -1,10 +1,7 @@
-"""Structure V8 public entry point.
+"""V9 public entry point kept under the existing engine_v8 module name for compatibility."""
+import engine_v9_core
+from engine_v9_core import *
 
-The implementation is V8-native and no longer depends on engine_v42.
-"""
-import engine_v8_core
-from engine_v8_core import *
-
-base = engine_v8_core
-ENGINE_VERSION = engine_v8_core.ENGINE_VERSION
-app = engine_v8_core.app
+base = engine_v9_core
+ENGINE_VERSION = engine_v9_core.ENGINE_VERSION
+app = engine_v9_core.app
