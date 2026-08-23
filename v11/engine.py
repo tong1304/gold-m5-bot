@@ -4,6 +4,7 @@ from .common import num, atr14, ema, structure
 from .contracts import StrategyResult
 from .strategies.btc import REGISTRY as BTC_REGISTRY
 from .strategies.gold import REGISTRY as GOLD_REGISTRY
+from engine_v9_standalone import send_telegram
 
 ENGINE_VERSION="11.0-M5-M15-STRATEGY-SPLIT"
 FORWARD_BARS=12
