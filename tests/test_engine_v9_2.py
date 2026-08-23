@@ -13,15 +13,15 @@ def _bullish_structure():
     for i in range(8):
         b=100+i*3
         closes += [b, b-2, b+5, b+2, b+3, b+1]
-    return closes[:51]
+    return closes[:48]
 
 
 def _bearish_structure():
     closes=[]
     for i in range(8):
-        b=150-i*3
-        closes += [b, b+2, b-5, b-2, b-3, b-1]
-    return closes[:51]
+        b=150-i*2
+        closes += [b, b+2, b-4, b-1, b-2, b-1]
+    return closes[:48]
 
 
 class TestH1Decision(unittest.TestCase):
@@ -33,8 +33,7 @@ class TestH1Decision(unittest.TestCase):
         self.assertEqual(result["volatility_state"],"NORMAL")
 
     def test_h1_neutral_when_structure_and_ema_conflict(self):
-        closes=_bearish_structure()+[150]
-        result=engine._h1_decision(_frame(closes))
+        result=engine._h1_decision(_frame(_bearish_structure()+[205]))
         self.assertEqual(result["bias"],"SELL")
         self.assertEqual(result["ema_context"],"BUY")
         self.assertEqual(result["decision"],"NEUTRAL")
