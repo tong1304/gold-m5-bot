@@ -1,15 +1,22 @@
 """Render-only market-data adapter backed by London Strategic Edge (LSE).
 
-No MetaTrader, MT5 bridge, PC, VPS, Binance, or Twelve Data connection is
-required. LSE provides stored 5-minute candles directly; higher timeframes
-are resampled locally so the scanner uses one cached M5 dataset per symbol.
+REST supplies historical/closed candles. The official LSE WebSocket supplies
+live ticks. The scanner uses the live tick stream to build the currently
+forming M5 candle, while H1/M15 confirmation remains based on closed candles.
+No MetaTrader, MT5 bridge, PC, VPS, Binance, or Twelve Data connection is used.
 """
 import os
 import time
+import threading
 from datetime import datetime, timezone
 
 import pandas as pd
 import requests
+
+try:
+    from lse import LSE
+except ImportError:
+    LSE = None
 
 BASE_URL = os.getenv("LSE_BASE_URL", "https://api.londonstrategicedge.com/vault").rstrip("/")
 SYMBOLS = {
@@ -26,9 +33,62 @@ LOGICAL_TO_LSE = {
 }
 
 
-def _timeframe(value):
-    value = str(value).lower()
-    return {"1m":"1m", "5m":"5m", "15m":"15m", "30m":"30m", "45m":"45m", "1h":"1h", "2h":"2h", "4h":"4h", "8h":"8h", "1d":"1d"}.get(value, value)
+class _LiveTickCache:
+    """One persistent LSE WebSocket connection for the two active symbols."""
+    def __init__(self, api_key):
+        self.api_key = api_key
+        self._ticks = {}
+        self._lock = threading.RLock()
+        self._started = False
+        self._thread = None
+        self._client = None
+
+    def start(self, symbols):
+        if self._started or LSE is None or not self.api_key:
+            return
+        self._started = True
+        self._thread = threading.Thread(target=self._run, args=(list(symbols),), name="lse-live-websocket", daemon=True)
+        self._thread.start()
+
+    def _run(self, symbols):
+        while True:
+            try:
+                client = LSE(api_key=self.api_key)
+                self._client = client
+
+                def on_tick(tick):
+                    symbol = str(getattr(tick, "symbol", "")).upper()
+                    price = getattr(tick, "price", None)
+                    if not symbol or price is None:
+                        return
+                    try:
+                        price = float(price)
+                        if not price == price or price <= 0:
+                            return
+                    except (TypeError, ValueError):
+                        return
+                    ts = getattr(tick, "datetime", None)
+                    if ts is None:
+                        ts = getattr(tick, "timestamp", None)
+                    with self._lock:
+                        self._ticks[symbol] = {
+                            "price": price,
+                            "bid": getattr(tick, "bid", None),
+                            "ask": getattr(tick, "ask", None),
+                            "volume": getattr(tick, "volume", 0.0),
+                            "timestamp": ts,
+                        }
+
+                client.on("tick", on_tick)
+                client.connect(symbols=symbols)
+            except Exception as exc:
+                print(f"LSE WebSocket reconnect: {type(exc).__name__}: {exc}", flush=True)
+                time.sleep(5)
+
+    def latest(self, symbol):
+        with self._lock:
+            value = self._ticks.get(str(symbol).upper())
+            return dict(value) if value else None
 
 
 class LSEMarketData:
@@ -40,7 +100,9 @@ class LSEMarketData:
         self.base_url = BASE_URL
         self.last_provider = "lse"
         self._m5_cache = {}
-        self._cache_ttl_seconds = max(30, int(os.getenv("LSE_M5_CACHE_SECONDS", "60")))
+        self._cache_ttl_seconds = max(5, int(os.getenv("LSE_M5_CACHE_SECONDS", "15")))
+        self._live = _LiveTickCache(self.api_key)
+        self._live.start(SYMBOLS.values())
 
     @classmethod
     def market_symbol(cls, symbol):
@@ -83,24 +145,74 @@ class LSEMarketData:
                 [["datetime", "open", "high", "low", "close", "volume"]]
                 .sort_values("datetime").drop_duplicates("datetime").reset_index(drop=True))
 
+    @staticmethod
+    def _tick_datetime(value):
+        try:
+            if isinstance(value, datetime):
+                dt = value
+            elif isinstance(value, (int, float)):
+                dt = datetime.fromtimestamp(float(value), tz=timezone.utc)
+            else:
+                text = str(value).replace("Z", "+00:00")
+                dt = datetime.fromisoformat(text)
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            return dt.astimezone(timezone.utc)
+        except (TypeError, ValueError, OverflowError):
+            return datetime.now(timezone.utc)
+
+    def _append_live_m5(self, frame, provider_symbol):
+        """Build/update the currently forming M5 bar from the live WebSocket tick."""
+        tick = self._live.latest(provider_symbol)
+        if not tick:
+            return frame
+        now = self._tick_datetime(tick.get("timestamp"))
+        start = pd.Timestamp(now).floor("5min")
+        price = float(tick["price"])
+        current = frame[frame["datetime"] == start]
+        if not current.empty:
+            row = current.iloc[-1].copy()
+            row["high"] = max(float(row["high"]), price)
+            row["low"] = min(float(row["low"]), price)
+            row["close"] = price
+            row["volume"] = max(float(row.get("volume", 0.0)), float(tick.get("volume") or 0.0))
+            frame = frame[frame["datetime"] != start].copy()
+            return pd.concat([frame, pd.DataFrame([row])], ignore_index=True).sort_values("datetime").reset_index(drop=True)
+
+        if frame.empty:
+            return frame
+        last_close = float(frame.iloc[-1]["close"])
+        live_row = {
+            "datetime": start,
+            "open": last_close,
+            "high": price,
+            "low": price,
+            "close": price,
+            "volume": float(tick.get("volume") or 0.0),
+        }
+        return pd.concat([frame, pd.DataFrame([live_row])], ignore_index=True).sort_values("datetime").reset_index(drop=True)
+
     def _fetch_raw_m5(self, provider_symbol):
         now = time.monotonic()
         cached = self._m5_cache.get(provider_symbol)
         if cached and now - cached["time"] < self._cache_ttl_seconds:
-            return cached["frame"].copy()
-
-        payload = self._request("/candles", {
-            "symbol": provider_symbol,
-            "timeframe": "5m",
-            "limit": 5000,
-            "order": "desc",
-        })
-        frame = self._normalize_candles(payload)
-        if len(frame) < 2:
-            raise RuntimeError(f"LSE returned too few M5 candles: {len(frame)}")
-        self._m5_cache[provider_symbol] = {"time": now, "frame": frame.copy()}
-        print(f"LSE M5 fetched: {provider_symbol} rows={len(frame)}", flush=True)
-        return frame
+            frame = cached["frame"].copy()
+        else:
+            payload = self._request("/candles", {
+                "symbol": provider_symbol,
+                "timeframe": "5m",
+                "limit": 5000,
+                "order": "desc",
+            })
+            frame = self._normalize_candles(payload)
+            if len(frame) < 2:
+                raise RuntimeError(f"LSE returned too few M5 candles: {len(frame)}")
+            self._m5_cache[provider_symbol] = {"time": now, "frame": frame.copy()}
+            print(f"LSE M5 REST fetched: {provider_symbol} rows={len(frame)}", flush=True)
+        live = self._append_live_m5(frame, provider_symbol)
+        if len(live) != len(frame) or (not live.empty and not frame.empty and float(live.iloc[-1]["close"]) != float(frame.iloc[-1]["close"])):
+            print(f"LSE LIVE M5 updated: {provider_symbol} close={float(live.iloc[-1]['close'])}", flush=True)
+        return live
 
     @staticmethod
     def _resample(frame, minutes):
@@ -125,19 +237,17 @@ class LSEMarketData:
 
         payload = self._request("/candles", {
             "symbol": provider_symbol,
-            "timeframe": _timeframe(tf),
+            "timeframe": {"1m":"1m", "5m":"5m", "15m":"15m", "30m":"30m", "45m":"45m", "1h":"1h", "2h":"2h", "4h":"4h", "8h":"8h", "1d":"1d"}.get(tf, tf),
             "limit": min(max(int(limit), 2), 5000),
             "order": "desc",
         })
         return self._normalize_candles(payload).tail(int(limit)).reset_index(drop=True)
 
     def fetch_price(self, symbol):
-        """Return the latest available candle close from LSE.
-
-        LSE's documented REST surface exposes candles rather than a separate
-        /price endpoint, so the newest 5m close is used as the provider price.
-        """
         provider_symbol = self.market_symbol(symbol)
+        tick = self._live.latest(provider_symbol)
+        if tick:
+            return float(tick["price"]), provider_symbol
         frame = self._fetch_raw_m5(provider_symbol)
         if frame.empty:
             raise RuntimeError(f"LSE returned no price data: {provider_symbol}")
@@ -147,11 +257,14 @@ class LSEMarketData:
     def remove_incomplete_last_candle(frame, now=None, timeframe_minutes=5):
         if frame.empty:
             return frame
+        # M5 is intentionally allowed to retain the live forming bar. H1/M15
+        # continue to use closed candles for confirmation.
+        if int(timeframe_minutes) == 5 and os.getenv("LSE_USE_LIVE_M5", "true").strip().lower() == "true":
+            return frame.reset_index(drop=True)
         now = now or datetime.now(timezone.utc)
         cutoff = pd.Timestamp(now).floor(f"{int(timeframe_minutes)}min")
         return frame[frame["datetime"] < cutoff].reset_index(drop=True)
 
 
-# Compatibility aliases for the existing application imports.
 TwelveDataMarketData = LSEMarketData
 XMMarketData = LSEMarketData
