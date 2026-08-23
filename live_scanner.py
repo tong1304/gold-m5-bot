@@ -3,6 +3,7 @@ import math
 import os
 import threading
 from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
 
 import engine_v5 as engine
 import engine_v42 as base
@@ -12,6 +13,20 @@ from pattern_engine import detect_all, confluence
 _SCAN_LOCK = threading.RLock()
 _ALERTED_SIGNAL_KEYS = set()
 BINANCE = BinanceMarketData()
+BANGKOK = ZoneInfo("Asia/Bangkok")
+
+
+def _format_candle_time_bangkok(value):
+    try:
+        text = str(value).strip()
+        if text.endswith("Z"):
+            text = text[:-1] + "+00:00"
+        dt = datetime.fromisoformat(text)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.astimezone(BANGKOK).strftime("%d/%m/%Y %H:%M:%S") + " (กรุงเทพฯ)"
+    except (TypeError, ValueError, OverflowError):
+        return str(value)
 SUPPORTED_SYMBOLS = {"BTC", "ETH", "SOL", "GOLD"}
 SYMBOL_MAP = {"BTC": "BTC/USDT", "ETH": "ETH/USDT", "SOL": "SOL/USDT", "GOLD": "XAU/USDT"}
 
@@ -129,7 +144,7 @@ def _format_signal(symbol, signal, levels, confluence_result, mtf, previous_clos
     direction = "🟢 BUY — ซื้อ" if signal == "BUY" else "🔴 SELL — ขาย"
     evidence_lines = "\n".join(f"• {p['name']}" for p in evidence[:8]) or "• สัญญาณผ่านเกณฑ์ระบบ"
     categories = confluence_result["buy_categories"] if signal == "BUY" else confluence_result["sell_categories"]
-    return ("🚨 <b>พบสัญญาณเข้าออเดอร์</b>\n\n" f"{direction}\n\n" f"📊 <b>สินทรัพย์:</b> {symbol}\n" "⏱ <b>กรอบเวลาเข้า:</b> M5\n\n" f"🕯 <b>แท่งที่ใช้วิเคราะห์:</b> {candle_time}\n" f"📌 <b>ราคาปิดแท่งก่อนหน้า:</b> {_format_price(previous_close)}\n" f"🔐 <b>Signal ID:</b> {signal_id}\n\n" "🧭 <b>ยืนยันหลายไทม์เฟรม</b>\n" f"H1: {mtf['H1']['bias']} | M15: {mtf['M15']['bias']} | M5: {signal}\n\n" f"💰 <b>จุดเข้า:</b> {_format_price(levels.get('entry'))}\n" f"🛑 <b>Stop Loss:</b> {_format_price(levels.get('sl'))}\n" f"🎯 <b>Take Profit:</b> {_format_price(levels.get('tp'))}\n\n" f"📐 <b>Risk/Reward:</b> {levels.get('risk_reward')}\n" f"⭐ <b>คะแนนความสอดคล้อง M5:</b> {confluence_result['score']}/100\n" f"🔎 <b>หลักฐาน M5:</b> {len(evidence)}\n" f"🧩 <b>หมวดที่สนับสนุน:</b> {', '.join(categories) if categories else 'ไม่มี'}\n\n" "📌 <b>รูปแบบ M5:</b>\n" f"{evidence_lines}\n\n" "⚠️ <b>การเปิดออเดอร์: คุณเป็นผู้กดเอง</b>\n" "👉 กรุณาตรวจสอบราคาตลาดก่อนกดออเดอร์\n" "🤖 <b>ระบบไม่เปิดออเดอร์อัตโนมัติ</b>")
+    return ("🚨 <b>พบสัญญาณเข้าออเดอร์</b>\n\n" f"{direction}\n\n" f"📊 <b>สินทรัพย์:</b> {symbol}\n" "⏱ <b>กรอบเวลาเข้า:</b> M5\n\n" f"🕯 <b>แท่งที่ใช้วิเคราะห์:</b> {_format_candle_time_bangkok(candle_time)}\n" f"📌 <b>ราคาปิดแท่งก่อนหน้า:</b> {_format_price(previous_close)}\n" f"🔐 <b>Signal ID:</b> {signal_id}\n\n" "🧭 <b>ยืนยันหลายไทม์เฟรม</b>\n" f"H1: {mtf['H1']['bias']} | M15: {mtf['M15']['bias']} | M5: {signal}\n\n" f"💰 <b>จุดเข้า:</b> {_format_price(levels.get('entry'))}\n" f"🛑 <b>Stop Loss:</b> {_format_price(levels.get('sl'))}\n" f"🎯 <b>Take Profit:</b> {_format_price(levels.get('tp'))}\n\n" f"📐 <b>Risk/Reward:</b> {levels.get('risk_reward')}\n" f"⭐ <b>คะแนนความสอดคล้อง M5:</b> {confluence_result['score']}/100\n" f"🔎 <b>หลักฐาน M5:</b> {len(evidence)}\n" f"🧩 <b>หมวดที่สนับสนุน:</b> {', '.join(categories) if categories else 'ไม่มี'}\n\n" "📌 <b>รูปแบบ M5:</b>\n" f"{evidence_lines}\n\n" "⚠️ <b>การเปิดออเดอร์: คุณเป็นผู้กดเอง</b>\n" "👉 กรุณาตรวจสอบราคาตลาดก่อนกดออเดอร์\n" "🤖 <b>ระบบไม่เปิดออเดอร์อัตโนมัติ</b>")
 
 
 def scan_once(symbol="BTC"):
