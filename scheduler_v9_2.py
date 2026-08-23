@@ -1,4 +1,4 @@
-"""V10.0 scheduler adapter using the M15/M5 multi-strategy scanner."""
+"""V10.3 scheduler adapter using the M15/M5 multi-strategy scanner."""
 import scheduler_v9 as _base
 import live_scanner_v9_2
 _base._scanner=lambda: live_scanner_v9_2
@@ -12,7 +12,7 @@ _original_status=_base.status
 
 def status():
     payload=_original_status()
-    payload["engine_version"]="V10.0-MULTI-M15-M5"
+    payload["engine_version"]="V10.3-MULTI-M15-M5"
     payload["scanner"]="live_scanner_v9_2"
     payload["multi_strategy"]=True
     payload["timeframes"]=["15m","5m"]
