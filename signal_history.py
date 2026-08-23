@@ -49,7 +49,10 @@ class SignalHistory:
         signal_id = str(signal.get("signal_id") or "").strip()
         if not signal_id or signal.get("signal") not in ("BUY", "SELL"):
             return False
-        now = datetime.now(timezone.utc).isoformat()
+        # Live signals keep the normal insertion timestamp. Replay signals may
+        # provide created_at so the Statistics page reflects the historical
+        # candle date instead of the date the replay command was executed.
+        created_at = str(signal.get("created_at") or datetime.now(timezone.utc).isoformat())
         with self._lock, self._connect() as conn:
             conn.execute("""
                 INSERT OR IGNORE INTO signals
@@ -60,7 +63,7 @@ class SignalHistory:
                 str(signal.get("symbol", "")),
                 str(signal.get("signal")),
                 str(signal.get("closed_candle", "")),
-                now,
+                created_at,
                 _num(levels.get("entry")),
                 _num(levels.get("sl")),
                 _num(levels.get("tp")),
