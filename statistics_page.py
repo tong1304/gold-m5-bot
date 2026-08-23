@@ -57,9 +57,11 @@ const $=id=>document.getElementById(id);function esc(v){return String(v??'').rep
 
 
 def register(app):
-    @app.route('/statistics')
+    # Register both forms. Flask normally redirects slash variants, but the
+    # explicit aliases also work when the outer WSGI middleware is involved.
+    @app.route('/statistics', strict_slashes=False)
     def statistics_page(): return Response(PAGE,mimetype='text/html')
-    @app.route('/api/statistics')
+    @app.route('/api/statistics', strict_slashes=False)
     def statistics_api():
         try: days=max(1,min(int(request.args.get('days','7')),3650))
         except ValueError: days=7
@@ -67,7 +69,7 @@ def register(app):
         for row in data['rows']:
             row.update(_patterns(row));row['created_at_bangkok']=_bkk(row.get('created_at'));row['resolved_at_bangkok']=_bkk(row.get('resolved_at'))
         return Response(json.dumps(_safe(data),ensure_ascii=False),mimetype='application/json')
-    @app.route('/api/signals')
+    @app.route('/api/signals', strict_slashes=False)
     def signals_api():
         try: days=max(1,min(int(request.args.get('days','30')),3650))
         except ValueError: days=30
@@ -80,4 +82,3 @@ def register(app):
         replay_web.register(app)
     except Exception:
         import logging; logging.getLogger(__name__).exception('Failed to register Historical Replay routes')
-'''
