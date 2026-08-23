@@ -9,7 +9,7 @@ from zoneinfo import ZoneInfo
 
 from flask import Response, request
 
-import engine_v6 as engine
+import engine_v8 as engine
 
 # Publicly supported assets: GOLD + BTC only.
 os.environ["LIVE_SIGNAL_SYMBOLS"] = "BTC,GOLD"
@@ -20,8 +20,8 @@ _SERVICES_STARTED_PID = None
 logger = logging.getLogger(__name__)
 
 BASE = {
-    "BTC/USDT": {"MINIMUM_ATR": float(os.getenv("BTC_MINIMUM_ATR", "20.0")), "MIN_STOP_ATR": float(os.getenv("BTC_MIN_STOP_ATR", "1.0")), "MAX_STOP_ATR": float(os.getenv("BTC_MAX_STOP_ATR", "3.0")), "SPREAD": float(os.getenv("BTC_SPREAD", "5.0")), "SLIPPAGE": float(os.getenv("BTC_SLIPPAGE", "2.0")), "HISTORY_POINTS": int(os.getenv("BTC_HISTORY_POINTS", "200"))},
-    "XAU/USDT": {"MINIMUM_ATR": float(os.getenv("XAU_MINIMUM_ATR", "1.0")), "MIN_STOP_ATR": float(os.getenv("XAU_MIN_STOP_ATR", "1.0")), "MAX_STOP_ATR": float(os.getenv("XAU_MAX_STOP_ATR", "3.0")), "SPREAD": float(os.getenv("XAU_SPREAD", "0.50")), "SLIPPAGE": float(os.getenv("XAU_SLIPPAGE", "0.20")), "HISTORY_POINTS": int(os.getenv("XAU_HISTORY_POINTS", "200"))},
+    "BTC/USDT": {"MINIMUM_ATR": float(os.getenv("BTC_MINIMUM_ATR", "0")), "MIN_STOP_ATR": float(os.getenv("BTC_MIN_STOP_ATR", "0")), "MAX_STOP_ATR": float(os.getenv("BTC_MAX_STOP_ATR", "4.0")), "SPREAD": float(os.getenv("BTC_SPREAD", "5.0")), "SLIPPAGE": float(os.getenv("BTC_SLIPPAGE", "2.0")), "HISTORY_POINTS": int(os.getenv("BTC_HISTORY_POINTS", "200"))},
+    "XAU/USDT": {"MINIMUM_ATR": float(os.getenv("XAU_MINIMUM_ATR", "0")), "MIN_STOP_ATR": float(os.getenv("XAU_MIN_STOP_ATR", "0")), "MAX_STOP_ATR": float(os.getenv("XAU_MAX_STOP_ATR", "4.0")), "SPREAD": float(os.getenv("XAU_SPREAD", "0.50")), "SLIPPAGE": float(os.getenv("XAU_SLIPPAGE", "0.20")), "HISTORY_POINTS": int(os.getenv("XAU_HISTORY_POINTS", "200"))},
 }
 
 _original_risk_guard = engine.evaluate_live_risk_guard
@@ -29,9 +29,6 @@ _original_risk_guard = engine.evaluate_live_risk_guard
 def _runtime_risk_guard(**kwargs):
     return _original_risk_guard(**kwargs, price_jump_atr=float(os.getenv("LIVE_PRICE_JUMP_ATR", "0")), daily_loss_r=float(os.getenv("LIVE_DAILY_LOSS_R", "0")), consecutive_losses=int(os.getenv("LIVE_CONSECUTIVE_LOSSES", "0")), trades_today=int(os.getenv("LIVE_TRADES_TODAY", "0")), slippage=float(os.getenv("LIVE_SLIPPAGE", str(engine.SLIPPAGE))))
 engine.evaluate_live_risk_guard = _runtime_risk_guard
-
-M5_MIN_DIRECTIONAL_PATTERNS = 1
-M5_REQUIRE_NO_OPPOSING_PATTERN = True
 
 
 def _f(value, default=0.0):
@@ -45,7 +42,7 @@ def _f(value, default=0.0):
 def activate(symbol):
     symbol = (symbol or "BTC/USDT").strip().upper()
     if symbol not in SUPPORTED_SYMBOLS:
-        raise ValueError(f"Unsupported XM MT5 symbol mapping: {symbol}")
+        raise ValueError(f"Unsupported symbol: {symbol}")
     cfg = BASE[symbol]
     for target in (engine, engine.base):
         target.SYMBOL = symbol
@@ -143,7 +140,7 @@ def symbols():
 @engine.app.route("/signal")
 def live_signal():
     symbol = (request.args.get("symbol") or "BTC/USDT").strip().upper()
-    if symbol not in SUPPORTED_SYMBOLS: return _json_response({"status":"error","message":f"Unsupported XM MT5 symbol mapping: {symbol}","supported_symbols":list(SUPPORTED_SYMBOLS),"live_orders_allowed":False},400)
+    if symbol not in SUPPORTED_SYMBOLS: return _json_response({"status":"error","message":f"Unsupported symbol: {symbol}","supported_symbols":list(SUPPORTED_SYMBOLS),"live_orders_allowed":False},400)
     try:
         import live_scanner
         with SYMBOL_LOCK: activate(symbol); return _json_response(live_scanner.scan_once("BTC" if symbol == "BTC/USDT" else "GOLD"),200)
@@ -154,7 +151,7 @@ def live_signal():
 @engine.app.route("/validation")
 def validation():
     symbol = (request.args.get("symbol") or "BTC/USDT").strip().upper()
-    if symbol not in SUPPORTED_SYMBOLS: return _json_response({"status":"error","message":f"Unsupported XM MT5 symbol mapping: {symbol}","supported_symbols":list(SUPPORTED_SYMBOLS),"live_orders_allowed":False},400)
+    if symbol not in SUPPORTED_SYMBOLS: return _json_response({"status":"error","message":f"Unsupported symbol: {symbol}","supported_symbols":list(SUPPORTED_SYMBOLS),"live_orders_allowed":False},400)
     try: bars=max(100,min(int(request.args.get("bars","1000")),1000))
     except (TypeError,ValueError): return _json_response({"status":"error","message":"bars must be an integer between 100 and 1000","live_orders_allowed":False},400)
     try:
@@ -171,13 +168,13 @@ def validation_diagnostics():
     try: bars=max(100,min(int(request.args.get("bars","1000")),1000))
     except (TypeError,ValueError): bars=1000
     result={"status":"ok","engine_version":engine.ENGINE_VERSION,"exchange":"LSE","symbol":symbol,"bars":bars,"live_orders_allowed":False,"stages":{}}
-    if symbol not in SUPPORTED_SYMBOLS: result.update({"status":"error","message":f"Unsupported XM MT5 symbol mapping: {symbol}"}); return _json_response(result,400)
+    if symbol not in SUPPORTED_SYMBOLS: result.update({"status":"error","message":f"Unsupported symbol: {symbol}"}); return _json_response(result,400)
     try:
         activate(symbol); result["stages"]["activate"]={"ok":True}; import validate_v5; result["stages"]["import_validate_v5"]={"ok":True}
-        df=validate_v5.fetch_candles(symbol,"5min",bars); result["stages"]["fetch_xm_mt5_ohlcv"]={"ok":True,"rows":len(df)}
+        df=validate_v5.fetch_candles(symbol,"5min",bars); result["stages"]["fetch_ohlcv"]={"ok":True,"rows":len(df)}
         from binance_data import BinanceMarketData
         df=BinanceMarketData.remove_incomplete_last_candle(df,timeframe_minutes=5); result["stages"]["closed_candles"]={"ok":True,"rows":len(df)}
-        if len(df)<100: raise RuntimeError(f"Only {len(df)} closed XM MT5 candles returned")
+        if len(df)<100: raise RuntimeError(f"Only {len(df)} closed candles returned")
         df=engine.base.calculate_indicators(df); index=max(50,min(len(df)-int(engine.FORWARD_BARS)-2,len(df)-1)); analyzed=engine.analyze_structure_setup(df,df,df,index)
         result["stages"]["indicators"]={"ok":True,"rows":len(df)}; result["stages"]["analyze_candle"]={"ok":True,"index":index,"valid":analyzed.get("valid"),"signal":analyzed.get("signal"),"reasons":analyzed.get("rejection_reasons")}; result["status"]="diagnostics_ok"; return _json_response(result)
     except Exception as exc:
@@ -206,11 +203,7 @@ class MultiSymbolMiddleware:
         params=parse_qs(environ.get("QUERY_STRING", ""),keep_blank_values=True); requested=params.get("symbol",["BTC/USDT"])[0]
         with SYMBOL_LOCK:
             names=("SYMBOL","MINIMUM_ATR","MIN_STOP_ATR","MAX_STOP_ATR","SPREAD","SLIPPAGE","SIGNAL_HISTORY_POINTS","MIN_RISK_REWARD","RISK_REWARD")
-            # V7 intentionally does not require MINIMUM_ATR/MIN_STOP_ATR/MAX_STOP_ATR.
-            # These are compatibility settings supplied by activate(). Use safe
-            # snapshots so missing legacy attributes cannot break every HTTP route.
-            previous={n:getattr(engine,n,None) for n in names}
-            previous_base={n:getattr(engine.base,n,None) for n in names}
+            previous={n:getattr(engine,n,None) for n in names}; previous_base={n:getattr(engine.base,n,None) for n in names}
             try: activate(requested); return self.application(environ,start_response)
             except ValueError as exc:
                 body=json.dumps(_json_safe({"status":"error","engine_version":engine.ENGINE_VERSION,"exchange":"LSE","symbol":requested,"message":str(exc),"live_orders_allowed":False})).encode(); start_response("400 BAD REQUEST",[("Content-Type","application/json"),("Content-Length",str(len(body)))]); return [body]
