@@ -63,7 +63,10 @@ def _lse_frame(symbol, timeframe, limit):
     market = _market_symbol(symbol)
     key = os.getenv("LSE_API_KEY", "").strip() or os.getenv("LSE_KEY", "").strip()
     if not key: raise RuntimeError("LSE_API_KEY/LSE_KEY is not configured")
-    raw = LSE(api_key=key).candles(market, timeframe, limit=int(limit), order="asc")
+
+    # Request newest candles. With order="asc" + a small limit, LSE returns
+    # the oldest candles in the vault (BTC begins in 2017), causing stale-data rejection.
+    raw = LSE(api_key=key).candles(market, timeframe, limit=int(limit), order="desc")
     if isinstance(raw, dict): rows = raw.get("data") or raw.get("candles") or raw.get("rows") or []
     else: rows = raw or []
     frame = pd.DataFrame(rows)
