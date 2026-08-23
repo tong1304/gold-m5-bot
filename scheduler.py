@@ -98,16 +98,16 @@ def _get_closed_candle_key(symbol):
 
 def _send_price_heartbeat(now_bkk):
     global _LAST_PRICE_HEARTBEAT
-    if now_bkk.minute not in (0, 30): return None
+    if now_bkk.minute % 5 != 0: return None
     slot = now_bkk.strftime("%Y-%m-%d %H:%M")
     if slot == _LAST_PRICE_HEARTBEAT: return None
     now_utc = now_bkk.astimezone(UTC)
-    lines = ["🧪 <b>ทดสอบระบบทุก 30 นาที</b>", "", f"🕐 เวลา: {now_bkk.strftime('%d/%m/%Y %H:%M')} (กรุงเทพฯ)", ""]
+    lines = ["🧪 <b>ทดสอบระบบทุก 5 นาที</b>", "", f"🕐 เวลา: {now_bkk.strftime('%d/%m/%Y %H:%M')} (กรุงเทพฯ)", ""]
     feed_ok = True
     try: live_scanner = _get_live_scanner()
     except Exception as exc:
         live_scanner = None; feed_ok = False
-        logger.warning("Twelve Data scanner unavailable for 30-minute system test: %s", exc)
+        logger.warning("Twelve Data scanner unavailable for 5-minute system test: %s", exc)
         lines.append(f"❌ Twelve Data: ไม่พร้อมใช้งาน ({type(exc).__name__})"); lines.append(f"   └ {str(exc)}")
     for symbol in _symbols():
         market_open, session = _asset_market_status(symbol, now_utc)
@@ -125,7 +125,7 @@ def _send_price_heartbeat(now_bkk):
         else:
             import engine_v5 as engine; result = engine.send_telegram("\n".join(lines))
     except Exception as exc:
-        logger.exception("30-minute system test Telegram send failed: %s", exc)
+        logger.exception("5-minute system test Telegram send failed: %s", exc)
         return {"sent": False, "slot": slot, "telegram_result": None, "error_type": type(exc).__name__, "error": str(exc), "timezone": "Asia/Bangkok"}
     sent = bool(isinstance(result, dict) and result.get("success"))
     if sent: _LAST_PRICE_HEARTBEAT = slot
@@ -135,7 +135,7 @@ def _send_price_heartbeat(now_bkk):
 
 def run_scan_cycle():
     now_bkk = datetime.now(UTC).astimezone(BANGKOK); now_utc = now_bkk.astimezone(UTC); symbols = _symbols()
-    logger.warning("[HEARTBEAT] Scheduler scan cycle START: %s | symbols=%s | interval=%ss | test_slots=:00/:30", now_bkk.strftime("%d/%m/%Y %H:%M:%S"), symbols, _interval_seconds())
+    logger.warning("[HEARTBEAT] Scheduler scan cycle START: %s | symbols=%s | interval=%ss | test_slots=every_5_minutes", now_bkk.strftime("%d/%m/%Y %H:%M:%S"), symbols, _interval_seconds())
     heartbeat = _send_price_heartbeat(now_bkk); results = []
     if not symbols: raise RuntimeError("ไม่มีสินทรัพย์ที่เปิดใช้งานใน LIVE_SIGNAL_SYMBOLS")
     try: live_scanner = _get_live_scanner()
@@ -169,13 +169,13 @@ def run_scan_cycle():
 
 def _loop():
     global _RUNNING
-    logger.warning("M5 Signal Scheduler thread started; interval=%ss; symbols=%s; test_slots=:00/:30 Asia/Bangkok", _interval_seconds(), _symbols())
+    logger.warning("M5 Signal Scheduler thread started; interval=%ss; symbols=%s; test_slots=every_5_minutes Asia/Bangkok", _interval_seconds(), _symbols())
     while _RUNNING:
         cycle_started = time.monotonic()
         try: run_scan_cycle()
         except Exception as exc: logger.exception("Fatal scheduler cycle error"); _notify_scheduler_error(exc, context="รอบการทำงานหลักของ Scheduler")
         elapsed = time.monotonic() - cycle_started
-        logger.warning("[HEARTBEAT] Scheduler cycle returned; elapsed=%.2fs; next_scan_in=%ss; test_slots=:00/:30", elapsed, _interval_seconds())
+        logger.warning("[HEARTBEAT] Scheduler cycle returned; elapsed=%.2fs; next_scan_in=%ss; test_slots=every_5_minutes", elapsed, _interval_seconds())
         time.sleep(_interval_seconds())
     logger.warning("M5 Signal Scheduler thread stopped")
 
@@ -194,4 +194,4 @@ def stop():
 def status():
     alive = bool(_RUNNING and _THREAD and _THREAD.is_alive()); now_utc = datetime.now(UTC)
     market_sessions = {symbol: {"open": _asset_market_status(symbol, now_utc)[0], "session": _asset_market_status(symbol, now_utc)[1]} for symbol in _symbols()}
-    return {"running": alive, "interval_seconds": _interval_seconds(), "symbols": _symbols(), "market_sessions": market_sessions, "test_slots": ":00/:30", "timezone": "Asia/Bangkok", "provider": "twelve_data"}
+    return {"running": alive, "interval_seconds": _interval_seconds(), "symbols": _symbols(), "market_sessions": market_sessions, "test_slots": "every_5_minutes", "timezone": "Asia/Bangkok", "provider": "twelve_data"}
