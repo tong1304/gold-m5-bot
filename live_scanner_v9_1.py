@@ -1,7 +1,7 @@
 """V9.1 live scanner adapter."""
 import os
 from datetime import datetime, timezone
-import live_scanner as _base
+import live_scanner_v9 as _base
 import engine_v9_1 as engine
 SUPPORTED_SYMBOLS=_base.SUPPORTED_SYMBOLS
 _SCAN_LOCK=_base._SCAN_LOCK
