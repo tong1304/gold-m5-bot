@@ -78,10 +78,13 @@ def scan_once(symbol="BTC"):
         setup=engine.analyze_structure_setup(m5,frames["15m"],frames["1h"],index); candle_time=str(m5.iloc[index].get("datetime",""))
         setup["candle_time"]=candle_time; setup["symbol"]=symbol; setup["previous_close"]=float(m5.iloc[index]["close"]); setup["engine_version"]=engine.ENGINE_VERSION
         signal=setup.get("signal"); valid=signal in ("BUY","SELL") and _levels_ready(setup.get("trade_levels"),signal); setup["valid"]=valid
-        setup_key=setup.get("setup_key") or f"{symbol}|{candle_time}|{signal}"; signal_id=f"{symbol}-{candle_time.replace(':','').replace('-','').replace(' ','-')}-{signal}"; setup["signal_id"]=signal_id
+        setup_key=setup.get("setup_key") or f"{symbol}|{candle_time}|{signal}"; signal_id=f"{symbol}-{candle_time.replace(':','').replace('-','').replace(' ','-')}-{signal if valid else 'NO_TRADE'}"; setup["signal_id"]=signal_id
         if not valid:
-            print(f"[{symbol}] V8 NO_TRADE reasons={setup.get('rejection_reasons')}",flush=True)
-            return {"status":"no_trade","engine_version":engine.ENGINE_VERSION,"symbol":symbol,"signal":"NO_TRADE",**setup}
+            created_at=datetime.now(timezone.utc).isoformat()
+            no_trade_payload={**setup,"signal":"NO_TRADE","result":"NO_TRADE","created_at":created_at,"no_trade_reasons":setup.get("rejection_reasons") or []}
+            recorded=history.record_no_trade(no_trade_payload)
+            print(f"[{symbol}] V8 NO_TRADE recorded={recorded} reasons={setup.get('rejection_reasons')}",flush=True)
+            return {"status":"no_trade","engine_version":engine.ENGINE_VERSION,"symbol":symbol,"signal":"NO_TRADE","recorded":recorded,**setup}
         if setup_key in _ALERTED_SIGNAL_KEYS:
             return {"status":"duplicate_suppressed","engine_version":engine.ENGINE_VERSION,"symbol":symbol,"signal":signal,"signal_id":signal_id,"setup_key":setup_key}
         payload={"signal_id":signal_id,"symbol":symbol,"signal":signal,"closed_candle":candle_time,"created_at":datetime.now(timezone.utc).isoformat(),"engine_version":engine.ENGINE_VERSION,"replay":False,"pattern_signal":signal,"m5_direction":signal,"v8_setup":setup,"v6_setup":setup,"structure_bias":setup.get("structure_bias"),"location":setup.get("location"),"liquidity_event":setup.get("liquidity_event"),"m5_trigger":setup.get("m5_trigger"),"pullback":setup.get("pullback"),"target_liquidity":setup.get("target_liquidity"),"rejection_reasons":setup.get("rejection_reasons"),"trade_levels":setup["trade_levels"],"mtf":{"H1":{"bias":setup.get("structure_bias",{}).get("bias")},"M15":{"bias":setup.get("m15_structure",{}).get("bias")},"M5":signal}}
