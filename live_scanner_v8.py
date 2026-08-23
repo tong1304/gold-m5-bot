@@ -72,15 +72,16 @@ def _lse_frame(symbol, timeframe, limit):
     if not key: raise RuntimeError("LSE_API_KEY/LSE_KEY is not configured")
 
     # LSE /candles expects calendar dates (YYYY-MM-DD), not ISO timestamps.
-    # Keep the UTC calculation internally, then convert only the API boundary
-    # values to the format accepted by the historical vault.
+    # The vault treats the end date as an upper date boundary, so use the
+    # following UTC calendar date to include today's intraday candles.
+    # Keep all calculations in UTC; only the API boundary uses date strings.
     tf_minutes = TF_MINUTES[timeframe]
     rows_needed = max(int(limit), 100)
     window_minutes = max(rows_needed * tf_minutes * 2, 24 * 60)
     end = datetime.now(timezone.utc)
     start = end - timedelta(minutes=window_minutes)
     start_date = start.date().isoformat()
-    end_date = end.date().isoformat()
+    end_date = (end.date() + timedelta(days=1)).isoformat()
     print(f"[{symbol}] LSE QUERY: market={market} dataset={dataset} timeframe={timeframe} start={start_date} end={end_date} limit={rows_needed} order=desc", flush=True)
 
     client = LSE(api_key=key)
