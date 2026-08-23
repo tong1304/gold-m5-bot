@@ -117,15 +117,22 @@ def run_scan_cycle():
     for symbol in symbols:
         try:
             open_,session=_asset_market_status(symbol,now_utc)
-            if not open_: results.append({"status":"market_closed","symbol":symbol,"session":session,"live_orders_allowed":False}); continue
+            if not open_:
+                logger.warning("[%s] MARKET CLOSED: %s",symbol,session)
+                results.append({"status":"market_closed","symbol":symbol,"session":session,"live_orders_allowed":False}); continue
+            logger.warning("[%s] Fetching closed M5 candles from LSE",symbol)
             frame=scanner._lse_frame(symbol,"5m",max(100,int(os.getenv("LIVE_SIGNAL_HISTORY","200"))))
             if frame.empty: raise RuntimeError(f"ไม่มีแท่ง M5 จาก LSE สำหรับ {symbol}")
             closed_key=str(frame.iloc[-1]["datetime"])
+            logger.warning("[%s] Latest closed M5 candle: %s",symbol,closed_key)
             if _LAST_CLOSED_CANDLE.get(symbol)==closed_key:
+                logger.warning("[%s] WAITING_NEW_CANDLE: %s",symbol,closed_key)
                 results.append({"status":"waiting_new_candle","symbol":symbol,"timeframe":"M5","closed_candle":closed_key,"live_orders_allowed":False}); continue
+            logger.warning("[%s] Calling V8 Signal Engine",symbol)
             result=scanner.scan_once(symbol)
             _LAST_CLOSED_CANDLE[symbol]=closed_key
             result["trigger"]="NEW_CLOSED_M5_CANDLE"; result["candle_consumed"]=True; result["market_session"]=session
+            logger.warning("[%s] V8 result: signal=%s status=%s recorded=%s",symbol,result.get("signal"),result.get("status"),result.get("recorded"))
             results.append(result)
         except Exception as exc:
             logger.exception("[%s] Scan failed",symbol); _notify_error(exc,f"การสแกน {symbol}"); results.append({"status":"scan_error","symbol":symbol,"error_type":type(exc).__name__,"message":str(exc),"live_orders_allowed":False})
@@ -141,12 +148,20 @@ def _seconds_to_next_five_minute():
 
 def _loop():
     global _RUNNING
-    wait=_seconds_to_next_five_minute(); logger.warning("M5 Signal Scheduler thread started; first_cycle_in=%.1fs; interval=%ss; provider=LSE",wait,_interval_seconds()); time.sleep(wait)
+    logger.warning("[BOOT TEST] Running immediate V8 scan after scheduler startup")
+    try:
+        run_scan_cycle()
+    except Exception as exc:
+        logger.exception("Immediate scheduler cycle failed"); _notify_error(exc,"รอบทดสอบทันทีหลัง Scheduler เริ่ม")
     while _RUNNING:
+        wait=_seconds_to_next_five_minute()
+        logger.warning("[HEARTBEAT] Next scheduled cycle in %.1fs",wait)
+        time.sleep(wait)
+        if not _RUNNING: break
         started=time.monotonic()
         try: run_scan_cycle()
         except Exception as exc: logger.exception("Fatal scheduler cycle error"); _notify_error(exc,"รอบการทำงานหลักของ Scheduler")
-        elapsed=time.monotonic()-started; wait=_seconds_to_next_five_minute(); logger.warning("[HEARTBEAT] Scheduler cycle returned; elapsed=%.2fs; next_cycle_in=%.1fs; provider=LSE",elapsed,wait); time.sleep(wait)
+        elapsed=time.monotonic()-started; wait=_seconds_to_next_five_minute(); logger.warning("[HEARTBEAT] Scheduler cycle returned; elapsed=%.2fs; next_cycle_in=%.1fs; provider=LSE",elapsed,wait)
 
 
 def start():
