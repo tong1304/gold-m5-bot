@@ -1,4 +1,4 @@
-"""Multi-Strategy Engine v10.0 using only M15 and M5 for signal decisions."""
+"""Multi-Strategy Engine v10.3 using only M15 and M5 for signal decisions."""
 from __future__ import annotations
 import math
 import os
@@ -7,7 +7,7 @@ import engine_v9_standalone as _v9
 from engine_v9_standalone import *
 import strategy_engine as _ms
 
-ENGINE_VERSION="10.0-MULTI-M15-M5"
+ENGINE_VERSION="10.3-MULTI-M15-M5"
 MIN_RISK_REWARD=max(float(os.getenv("MIN_RISK_REWARD","1.0")),1.0)
 RISK_REWARD=max(float(os.getenv("RISK_REWARD",str(MIN_RISK_REWARD))),1.0)
 
