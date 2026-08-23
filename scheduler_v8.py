@@ -152,9 +152,9 @@ def run_scan_cycle():
         except Exception as exc:
             message=str(exc)
             logger.exception("[%s] Scan failed",symbol)
-            if "STALE_MARKET_DATA" in message or "DATA_INVALID" in message:
+            if any(tag in message for tag in ("STALE_MARKET_DATA","DATA_INVALID","LSE_RECENT_DATA_UNAVAILABLE")):
                 recorded=_record_data_no_trade(symbol,message)
-                results.append({"status":"data_invalid","symbol":symbol,"signal":"NO_TRADE","recorded":recorded,"reason":message,"live_orders_allowed":False})
+                results.append({"status":"data_invalid","symbol":symbol,"signal":"NO_TRADE","recorded":recorded,"reason":message,"data_valid":False,"live_orders_allowed":False})
             else:
                 _notify_error(exc,f"การสแกน {symbol}")
                 results.append({"status":"scan_error","symbol":symbol,"error_type":type(exc).__name__,"message":message,"live_orders_allowed":False})
