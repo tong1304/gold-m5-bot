@@ -1,12 +1,14 @@
-"""V10.0 scheduler for BTC + GOLD using LSE data.
+"""V10.1 scheduler for BTC + GOLD using LSE data.
 
-Scan cadence: every 5 minutes. System heartbeat: every 15 minutes at 00/15/30/45 Asia/Bangkok.
+Scan cadence: every 5 minutes. M15 + M5 only. Strategy Evaluation Log is
+emitted for every candidate strategy after each scan so rejected conditions
+are visible in Render logs without changing signal selection.
 """
 import logging, os, threading, time
 from datetime import datetime, timezone, time as dt_time
 from zoneinfo import ZoneInfo
 logger=logging.getLogger("signal_scheduler")
-ENGINE_VERSION="V10.0"
+ENGINE_VERSION="V10.1"
 _RUNNING=False; _THREAD=None; _LAST_CLOSED_CANDLE={}; _LAST_TEST_SLOT=None
 BANGKOK=ZoneInfo("Asia/Bangkok"); UTC=timezone.utc; DISPLAY_SYMBOLS=("BTC","GOLD")
 GOLD_OPEN_SUNDAY_UTC=os.getenv("GOLD_OPEN_SUNDAY_UTC","23:00"); GOLD_CLOSE_FRIDAY_UTC=os.getenv("GOLD_CLOSE_FRIDAY_UTC","22:00"); GOLD_DAILY_BREAK_START_UTC=os.getenv("GOLD_DAILY_BREAK_START_UTC","22:00"); GOLD_DAILY_BREAK_END_UTC=os.getenv("GOLD_DAILY_BREAK_END_UTC","23:00")
@@ -84,6 +86,35 @@ def _system_test(now_bkk):
         if sent: _LAST_TEST_SLOT=slot
         return {"sent":sent,"slot":slot,"telegram_result":result,"timezone":"Asia/Bangkok","live_price_ok":live_ok,"engine_version":ENGINE_VERSION}
     except Exception as exc: return {"sent":False,"slot":slot,"error_type":type(exc).__name__,"error":str(exc),"live_price_ok":live_ok,"engine_version":ENGINE_VERSION}
+def _log_strategy_evaluation(symbol,result,m5_frame):
+    """Emit one diagnostic block per candidate without changing the decision."""
+    candidates=result.get("strategy_candidates") or []
+    regime=result.get("regime","UNKNOWN")
+    if not candidates:
+        logger.warning("[%s] STRATEGY EVALUATION | regime=%s | candidates=NONE",symbol,regime)
+        return
+    try:
+        import strategy_engine as se
+    except Exception as exc:
+        logger.warning("[%s] STRATEGY EVALUATION unavailable: %s",symbol,exc)
+        return
+    logger.warning("[%s] STRATEGY EVALUATION START | regime=%s | count=%d",symbol,regime,len(candidates))
+    for item in candidates:
+        name=str(item.get("strategy","UNKNOWN")); direction=str(item.get("direction","UNKNOWN")); passed=bool(item.get("passed"))
+        reasons=[]
+        try:
+            if hasattr(se,"_diagnose"):
+                diagnosed_pass, diagnosed_reasons=se._diagnose(name,m5_frame,direction)
+                if diagnosed_pass and passed: reasons=["SETUP_VALID"]
+                else: reasons=list(diagnosed_reasons or [])
+            else:
+                reasons=["SETUP_VALID"] if passed else ["SETUP_NOT_FOUND"]
+        except Exception as exc:
+            reasons=[f"DIAGNOSTIC_ERROR:{type(exc).__name__}"]
+        status="PASS" if passed else "FAIL"
+        logger.warning("[%s] STRATEGY EVAL | strategy=%s | direction=%s | status=%s | reason=%s",symbol,name,direction,status,reasons)
+    passed_names=[str(x.get("strategy")) for x in candidates if x.get("passed")]
+    logger.warning("[%s] STRATEGY EVALUATION SUMMARY | PASS=%s | FAIL=%d",symbol,passed_names or "NONE",sum(1 for x in candidates if not x.get("passed")))
 def run_scan_cycle():
     now_bkk=datetime.now(UTC).astimezone(BANGKOK); now_utc=now_bkk.astimezone(UTC); symbols=_symbols(); logger.warning("[HEARTBEAT] %s Scheduler cycle START: %s | symbols=%s | interval=%ss | provider=LSE",ENGINE_VERSION,now_bkk.strftime("%d/%m/%Y %H:%M:%S"),symbols,_interval_seconds())
     heartbeat=_system_test(now_bkk); history_resolved=_evaluate_signal_history(); results=[]; scanner=_scanner()
@@ -96,6 +127,7 @@ def run_scan_cycle():
             closed_key=str(frame.iloc[-1]["datetime"]); logger.warning("[%s] Latest closed M5 candle: %s",symbol,closed_key)
             if _LAST_CLOSED_CANDLE.get(symbol)==closed_key: logger.warning("[%s] WAITING_NEW_CANDLE: %s",symbol,closed_key); results.append({"status":"waiting_new_candle","symbol":symbol,"timeframe":"M5","closed_candle":closed_key,"live_orders_allowed":False,"engine_version":ENGINE_VERSION}); continue
             logger.warning("[%s] Calling %s Multi-Strategy Signal Engine",symbol,ENGINE_VERSION); result=scanner.scan_once(symbol); _LAST_CLOSED_CANDLE[symbol]=closed_key; result["trigger"]="NEW_CLOSED_M5_CANDLE"; result["candle_consumed"]=True; result["market_session"]=session; result["engine_version"]=ENGINE_VERSION
+            _log_strategy_evaluation(symbol,result,frame)
             reasons=result.get("rejection_reasons") or result.get("no_trade_reasons") or (result.get("setup") or {}).get("rejection_reasons") or []
             if result.get("signal")=="NO_TRADE": logger.warning("[%s] %s NO_TRADE strategy=%s regime=%s recorded=%s reasons=%s",symbol,ENGINE_VERSION,result.get("strategy"),result.get("regime"),result.get("recorded"),reasons)
             else: logger.warning("[%s] %s result: signal=%s strategy=%s regime=%s status=%s recorded=%s",symbol,ENGINE_VERSION,result.get("signal"),result.get("strategy"),result.get("regime"),result.get("status"),result.get("recorded"))
@@ -124,7 +156,7 @@ def _loop():
 def start():
     global _RUNNING,_THREAD
     if _RUNNING and _THREAD and _THREAD.is_alive(): return False
-    _RUNNING=True; _THREAD=threading.Thread(target=_loop,name="m5-btc-gold-v10-scanner",daemon=True); _THREAD.start(); logger.warning("%s Multi-Strategy Scheduler started successfully; thread=%s",ENGINE_VERSION,_THREAD.name); return True
+    _RUNNING=True; _THREAD=threading.Thread(target=_loop,name="m5-btc-gold-v10-scanner",daemon=True); _THREAD.start(); logger.warning("%s Multi-Strategy Scheduler started successfully; thread=%s",ENGINE_VERSION,ENGINE_VERSION); return True
 def stop():
     global _RUNNING; _RUNNING=False
 def status():
