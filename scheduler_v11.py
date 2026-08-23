@@ -1,8 +1,11 @@
 """V11 scheduler adapter."""
 import scheduler_v9 as _base
 import live_scanner_v11
+from v11 import engine as v11_engine
 
+# Reuse the proven scheduler loop/session handling, but route every scan to V11.
 _base._scanner=lambda: live_scanner_v11
+_base.ENGINE_VERSION=v11_engine.ENGINE_VERSION
 run_scan_cycle=_base.run_scan_cycle
 start=_base.start
 stop=_base.stop
@@ -12,4 +15,4 @@ _interval_seconds=_base._interval_seconds
 _original_status=_base.status
 
 def status():
-    payload=_original_status(); payload.update({"engine_version":"11.0-M5-M15-STRATEGY-SPLIT","scanner":"live_scanner_v11","multi_strategy":True,"timeframes":["5m","15m"]}); return payload
+    payload=_original_status(); payload.update({"engine_version":v11_engine.ENGINE_VERSION,"scanner":"live_scanner_v11","multi_strategy":True,"timeframes":["5m","15m"]}); return payload
