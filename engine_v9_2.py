@@ -1,5 +1,7 @@
-"""V9.2 signal engine: H1 structure + EMA context + volatility state + M15 location + M5 trigger.
-Indicators are decision context on H1 only; no weighted scoring. Minimum RR is 1.0R.
+"""Multi-Strategy Engine v10.0.
+
+Keeps the V9 standalone infrastructure/risk/Telegram API while replacing the
+single pattern gate with regime-aware strategy selection for BTC and GOLD.
 """
 from __future__ import annotations
 import math
@@ -7,8 +9,9 @@ import os
 import pandas as pd
 import engine_v9_standalone as _v9
 from engine_v9_standalone import *
+import strategy_engine as _ms
 
-ENGINE_VERSION = "9.2"
+ENGINE_VERSION = "10.0-MULTI"
 MIN_RISK_REWARD = max(float(os.getenv("MIN_RISK_REWARD", "1.0")), 1.0)
 RISK_REWARD = max(float(os.getenv("RISK_REWARD", str(MIN_RISK_REWARD))), 1.0)
 H1_ATR_MIN_RATIO = float(os.getenv("H1_ATR_MIN_RATIO", "0.50"))
@@ -17,256 +20,94 @@ H1_ATR_MAX_RATIO = float(os.getenv("H1_ATR_MAX_RATIO", "2.00"))
 
 def _num(v, d=0.0):
     try:
-        x = float(v)
+        x=float(v)
         return x if math.isfinite(x) else d
     except (TypeError, ValueError):
         return d
 
 
-def _swing_structure(df, left=2, right=2, lookback=80):
-    if df is None or len(df) < 20:
-        return {"bias": "NEUTRAL", "highs": [], "lows": [], "support": None, "resistance": None}
-    x = df.reset_index(drop=True).tail(lookback).reset_index(drop=True)
-    highs, lows = [], []
-    for i in range(left, len(x) - right):
-        h = _num(x.iloc[i].high)
-        l = _num(x.iloc[i].low)
-        window_h = max(_num(v) for v in x.high.iloc[i-left:i+right+1])
-        window_l = min(_num(v) for v in x.low.iloc[i-left:i+right+1])
-        if h >= window_h and h > max(_num(v) for v in x.high.iloc[i-left:i]):
-            highs.append((i, h))
-        if l <= window_l and l < min(_num(v) for v in x.low.iloc[i-left:i]):
-            lows.append((i, l))
-    highs, lows = highs[-5:], lows[-5:]
-    bias = "NEUTRAL"
-    if len(highs) >= 2 and len(lows) >= 2:
-        hh = highs[-1][1] > highs[-2][1]
-        hl = lows[-1][1] > lows[-2][1]
-        lh = highs[-1][1] < highs[-2][1]
-        ll = lows[-1][1] < lows[-2][1]
-        if hh and hl:
-            bias = "BUY"
-        elif lh and ll:
-            bias = "SELL"
-    return {"bias": bias, "highs": [v for _, v in highs], "lows": [v for _, v in lows],
-            "support": lows[-1][1] if lows else None, "resistance": highs[-1][1] if highs else None}
-
-
-def _h1_indicators(df):
-    x = df.reset_index(drop=True).copy()
-    close = pd.to_numeric(x.close, errors="coerce")
-    x["ema20"] = close.ewm(span=20, adjust=False).mean()
-    x["ema50"] = close.ewm(span=50, adjust=False).mean()
-    prev_close = close.shift(1)
-    tr = pd.concat([
-        pd.to_numeric(x.high, errors="coerce") - pd.to_numeric(x.low, errors="coerce"),
-        (pd.to_numeric(x.high, errors="coerce") - prev_close).abs(),
-        (pd.to_numeric(x.low, errors="coerce") - prev_close).abs(),
-    ], axis=1).max(axis=1)
-    x["atr14"] = tr.rolling(14, min_periods=14).mean()
-    return x
-
-
-def _h1_decision(df):
-    """Strict H1 gate: structure + EMA20/EMA50 alignment + normal ATR state.
-    No scoring: every required condition must agree or H1 becomes NEUTRAL.
-    """
-    structure = _swing_structure(df, lookback=80)
-    x = _h1_indicators(df)
-    if len(x) < 50:
-        return {**structure, "decision": "NEUTRAL", "ema_context": "NEUTRAL",
-                "volatility_state": "INSUFFICIENT_DATA", "atr_ratio": None}
-    r = x.iloc[-1]
-    close = _num(r.close)
-    ema20 = _num(r.ema20)
-    ema50 = _num(r.ema50)
-    atr = _num(r.atr14)
-    atr_series = x["atr14"].dropna().tail(30)
-    median_atr = _num(atr_series.median(), 0.0)
-    atr_ratio = atr / median_atr if median_atr > 0 else 0.0
-
-    if close > ema20 > ema50:
-        ema_context = "BUY"
-    elif close < ema20 < ema50:
-        ema_context = "SELL"
-    else:
-        ema_context = "NEUTRAL"
-
-    if median_atr <= 0 or not math.isfinite(atr_ratio):
-        volatility_state = "INSUFFICIENT_DATA"
-    elif H1_ATR_MIN_RATIO <= atr_ratio <= H1_ATR_MAX_RATIO:
-        volatility_state = "NORMAL"
-    else:
-        volatility_state = "EXTREME"
-
-    decision = structure["bias"] if (
-        structure["bias"] in ("BUY", "SELL")
-        and ema_context == structure["bias"]
-        and volatility_state == "NORMAL"
-    ) else "NEUTRAL"
-    return {
-        **structure,
-        "decision": decision,
-        "ema_context": ema_context,
-        "ema20": ema20,
-        "ema50": ema50,
-        "atr14": atr,
-        "atr_median30": median_atr,
-        "atr_ratio": round(atr_ratio, 3) if atr_ratio else None,
-        "volatility_state": volatility_state,
-    }
-
-
-def _sr_location(df, direction, lookback=64):
-    if df is None or len(df) < 30:
-        return {"valid": False, "zone": "INSUFFICIENT_DATA"}
-    x = df.tail(lookback).reset_index(drop=True)
-    hi = _num(x.high.max()); lo = _num(x.low.min()); width = max(hi - lo, 1e-12)
-    close = _num(x.iloc[-1].close); mid = lo + width * 0.5; swing = _swing_structure(x)
-    support = swing.get("support") or lo; resistance = swing.get("resistance") or hi
-    atr = max(_v9._atr(x, len(x) - 1), 1e-9)
-    near_support = abs(close - support) <= max(atr, width * 0.10)
-    near_resistance = abs(close - resistance) <= max(atr, width * 0.10)
-    if direction == "BUY":
-        valid = close <= mid or near_support; zone = "DISCOUNT_SUPPORT" if valid else "PREMIUM"
-    else:
-        valid = close >= mid or near_resistance; zone = "PREMIUM_RESISTANCE" if valid else "DISCOUNT"
-    return {"valid": bool(valid), "zone": zone, "range_high": hi, "range_low": lo,
-            "mid": mid, "support": support, "resistance": resistance,
-            "near_support": near_support, "near_resistance": near_resistance}
-
-
-def _candle_quality(row, direction, atr):
-    o, h, l, c = map(_num, (row.open, row.high, row.low, row.close))
-    body = abs(c - o); rng = max(h - l, 1e-12); upper = h - max(o, c); lower = min(o, c) - l
-    return {"body": body, "range": rng, "upper_wick": upper, "lower_wick": lower,
-            "body_ratio": body / rng, "close_location": (c - l) / rng,
-            "directional": (c > o) if direction == "BUY" else (c < o), "atr": atr}
-
-
-def _m5_pattern_v92(df, direction):
-    if df is None or len(df) < 25:
-        return None
-    x = df.reset_index(drop=True); i = len(x) - 1; r = x.iloc[i]; q = x.iloc[i-1]; p3 = x.iloc[i-2]
-    atr = max(_v9._atr(x, i), 1e-9); rq = _candle_quality(r, direction, atr)
-    o, h, l, c = map(_num, (r.open, r.high, r.low, r.close)); qh, ql = map(_num, (q.high, q.low)); p3h, p3l = _num(p3.high), _num(p3.low)
-    p = _v9._candle_pattern(x, direction)
-    if p and p.get("name") not in ("BULLISH_BREAKOUT", "BEARISH_BREAKOUT"):
-        p["quality"] = "CLEAR"; p["context_bars"] = 2; return p
-    if qh < p3h and ql > p3l and rq["directional"] and rq["body_ratio"] >= 0.30:
-        if direction == "BUY" and c > p3h and c > qh:
-            return {"name":"INSIDE_BAR_BREAKOUT","direction":"BUY","index":i,"strength":"CLEAR","quality":"CLEAR","context_bars":3}
-        if direction == "SELL" and c < p3l and c < ql:
-            return {"name":"INSIDE_BAR_BREAKOUT","direction":"SELL","index":i,"strength":"CLEAR","quality":"CLEAR","context_bars":3}
-    start = max(3, i - 12)
-    for j in range(start, i - 1):
-        base = x.iloc[max(0, j-4):j]
-        if len(base) < 3: continue
-        level = _num(base.high.max()) if direction == "BUY" else _num(base.low.min())
-        b = x.iloc[j]; bo, bh, bl, bc = map(_num, (b.open, b.high, b.low, b.close))
-        bq = _candle_quality(b, direction, max(_v9._atr(x, j), 1e-9))
-        broke = (bc > level and bq["body_ratio"] >= 0.30 and bc > bo) if direction == "BUY" else (bc < level and bq["body_ratio"] >= 0.30 and bc < bo)
-        if not broke: continue
-        if direction == "BUY":
-            retest_touch = l <= level + atr * 0.55; held = c >= level; confirm = c > o and rq["body_ratio"] >= 0.25
-        else:
-            retest_touch = h >= level - atr * 0.55; held = c <= level; confirm = c < o and rq["body_ratio"] >= 0.25
-        if retest_touch and held and confirm and i - j <= 5:
-            return {"name":"BULLISH_BREAKOUT_RETEST" if direction == "BUY" else "BEARISH_BREAKOUT_RETEST","direction":direction,"index":i,"strength":"CLEAR","quality":"CLEAR","context_bars":i-j+1,"level":level,"breakout_index":j}
-    if p:
-        p["quality"] = "CLEAR"; p["context_bars"] = 2; return p
-    window = x.iloc[max(0, i-18):i+1].reset_index(drop=True); wi = len(window) - 1
-    if len(window) >= 10:
-        swings_low, swings_high = [], []
-        for k in range(2, wi-2):
-            lo_k, hi_k = _num(window.iloc[k].low), _num(window.iloc[k].high)
-            if lo_k <= min(_num(v) for v in window.low.iloc[k-2:k+3]): swings_low.append(k)
-            if hi_k >= max(_num(v) for v in window.high.iloc[k-2:k+3]): swings_high.append(k)
-        tol = atr * 0.75
-        if direction == "BUY" and len(swings_low) >= 2:
-            a, b = swings_low[-2], swings_low[-1]; la, lb = _num(window.iloc[a].low), _num(window.iloc[b].low); neckline = _num(window.iloc[a:b+1].high.max())
-            if abs(la-lb) <= tol and wi-b <= 3 and c > neckline and c > o and rq["body_ratio"] >= .25:
-                return {"name":"DOUBLE_BOTTOM_BREAKOUT","direction":"BUY","index":i,"strength":"CLEAR","quality":"CLEAR","context_bars":wi-a+1,"neckline":neckline}
-        if direction == "SELL" and len(swings_high) >= 2:
-            a, b = swings_high[-2], swings_high[-1]; ha, hb = _num(window.iloc[a].high), _num(window.iloc[b].high); neckline = _num(window.iloc[a:b+1].low.min())
-            if abs(ha-hb) <= tol and wi-b <= 3 and c < neckline and c < o and rq["body_ratio"] >= .25:
-                return {"name":"DOUBLE_TOP_BREAKOUT","direction":"SELL","index":i,"strength":"CLEAR","quality":"CLEAR","context_bars":wi-a+1,"neckline":neckline}
-    return None
+def _structure(df, lookback=80):
+    x=df.tail(lookback).reset_index(drop=True)
+    if len(x)<20:return {"bias":"NEUTRAL","highs":[],"lows":[],"support":None,"resistance":None}
+    highs=[]; lows=[]
+    for i in range(2,len(x)-2):
+        h=_num(x.high.iloc[i]); l=_num(x.low.iloc[i])
+        if h>=max(_num(v) for v in x.high.iloc[i-2:i+3]):highs.append(h)
+        if l<=min(_num(v) for v in x.low.iloc[i-2:i+3]):lows.append(l)
+    hh=len(highs)>=2 and highs[-1]>highs[-2]; hl=len(lows)>=2 and lows[-1]>lows[-2]
+    lh=len(highs)>=2 and highs[-1]<highs[-2]; ll=len(lows)>=2 and lows[-1]<lows[-2]
+    bias="BUY" if hh and hl else "SELL" if lh and ll else "NEUTRAL"
+    return {"bias":bias,"highs":highs[-5:],"lows":lows[-5:],"support":lows[-1] if lows else None,"resistance":highs[-1] if highs else None}
 
 
 def _indicator_context(df):
-    x = df.copy(); c = pd.to_numeric(x.close, errors="coerce")
-    x["ema20"] = c.ewm(span=20, adjust=False).mean(); x["ema50"] = c.ewm(span=50, adjust=False).mean()
-    delta = c.diff(); gain = delta.clip(lower=0).rolling(14, min_periods=5).mean(); loss = (-delta.clip(upper=0)).rolling(14, min_periods=5).mean()
-    rs = gain / loss.replace(0, float("nan")); x["rsi14"] = 100 - (100 / (1 + rs)); ema12 = c.ewm(span=12, adjust=False).mean(); ema26 = c.ewm(span=26, adjust=False).mean()
-    x["macd"] = ema12 - ema26; x["macd_signal"] = x["macd"].ewm(span=9, adjust=False).mean(); x["atr14"] = _v9.calculate_indicators(x)["atr14"]
+    x=df.copy(); c=pd.to_numeric(x.close,errors="coerce")
+    x["ema20"]=c.ewm(span=20,adjust=False).mean(); x["ema50"]=c.ewm(span=50,adjust=False).mean()
+    d=c.diff(); gain=d.clip(lower=0).rolling(14,min_periods=5).mean(); loss=(-d.clip(upper=0)).rolling(14,min_periods=5).mean()
+    rs=gain/loss.replace(0,float("nan")); x["rsi14"]=100-(100/(1+rs))
+    e12=c.ewm(span=12,adjust=False).mean(); e26=c.ewm(span=26,adjust=False).mean(); x["macd"]=e12-e26; x["macd_signal"]=x["macd"].ewm(span=9,adjust=False).mean(); x["atr14"]=_v9.calculate_indicators(x)["atr14"]
     return x
 
 
-def _indicator_context_flags(df, direction):
-    x = _indicator_context(df); r = x.iloc[-1]
-    ema_ok = (_num(r.close) >= _num(r.ema20)) if direction == "BUY" else (_num(r.close) <= _num(r.ema20))
-    macd_ok = (_num(r.macd) >= _num(r.macd_signal)) if direction == "BUY" else (_num(r.macd) <= _num(r.macd_signal))
-    rsi = _num(r.rsi14, 50.0)
-    return {"ema20_ok": bool(ema_ok), "macd_ok": bool(macd_ok), "rsi14": round(rsi, 2), "rsi_extreme": bool(rsi >= 75 or rsi <= 25), "role": "CONTEXT_ONLY"}
+def _indicator_context_flags(df,direction):
+    x=_indicator_context(df); r=x.iloc[-1]; rsi=_num(r.rsi14,50)
+    return {"ema20_ok":bool((_num(r.close)>=_num(r.ema20)) if direction=="BUY" else (_num(r.close)<=_num(r.ema20))),"macd_ok":bool((_num(r.macd)>=_num(r.macd_signal)) if direction=="BUY" else (_num(r.macd)<=_num(r.macd_signal))),"rsi14":round(rsi,2),"rsi_extreme":bool(rsi>=75 or rsi<=25),"role":"CONTEXT_ONLY"}
 
 
-def build_trade_levels(df, index, direction, invalidation, target, pattern=None):
-    old_min = _v9.MIN_RISK_REWARD; _v9.MIN_RISK_REWARD = 1.0
-    try: levels = _v9.build_trade_levels(df, index, direction, invalidation, target, pattern)
-    finally: _v9.MIN_RISK_REWARD = old_min
-    if levels.get("reason") == "RR_BELOW_2R": levels["reason"] = "RR_BELOW_1R"
-    if levels.get("valid"): levels["source"] = "structure_v9_2"
-    return levels
+def _location(m15,direction):
+    x=m15.tail(64).reset_index(drop=True); hi=_num(x.high.max()); lo=_num(x.low.min()); close=_num(x.close.iloc[-1]); width=max(hi-lo,1e-12); mid=lo+width*.5
+    s=_structure(x); support=s.get("support") or lo; resistance=s.get("resistance") or hi
+    atr=max(_num(_v9._atr(x,len(x)-1)),1e-9); near_s=abs(close-support)<=max(atr,width*.1); near_r=abs(close-resistance)<=max(atr,width*.1)
+    valid=(close<=mid or near_s) if direction=="BUY" else (close>=mid or near_r)
+    return {"valid":bool(valid),"zone":"DISCOUNT_SUPPORT" if direction=="BUY" and valid else "PREMIUM_RESISTANCE" if direction=="SELL" and valid else "PREMIUM" if direction=="BUY" else "DISCOUNT","range_high":hi,"range_low":lo,"mid":mid,"support":support,"resistance":resistance,"near_support":near_s,"near_resistance":near_r}
 
 
-def analyze_structure_setup(m5, m15, h1, index=None):
-    if index is None: index = len(m5) - 1
-    m5 = m5.iloc[:index+1].reset_index(drop=True)
-    if len(m5) < 80 or len(m15) < 60 or len(h1) < 60:
-        return {"signal":"NO_TRADE","engine_version":ENGINE_VERSION,"valid":False,"rejection_reasons":["INSUFFICIENT_CONTEXT"]}
-    h1s = _h1_decision(h1); direction = h1s["decision"]
-    if direction not in ("BUY", "SELL"):
-        reasons = ["H1_NEUTRAL"]
-        if h1s.get("bias") in ("BUY", "SELL") and h1s.get("ema_context") != h1s.get("bias"):
-            reasons.append("H1_EMA_CONFLICT")
-        if h1s.get("volatility_state") == "EXTREME":
-            reasons.append("H1_VOLATILITY_EXTREME")
-        return {"signal":"NO_TRADE","engine_version":ENGINE_VERSION,"valid":False,"rejection_reasons":reasons,"structure_bias":h1s}
+def _levels(df,index,direction,invalidation,target,pattern=None):
+    old=MIN_RISK_REWARD
+    globals()["MIN_RISK_REWARD"]=1.0
+    _v9.MIN_RISK_REWARD=1.0
+    try: out=_v9.build_trade_levels(df,index,direction,invalidation,target,pattern)
+    finally: globals()["MIN_RISK_REWARD"]=old; _v9.MIN_RISK_REWARD=old
+    if out.get("valid"):out["source"]="multi_strategy_structure"
+    return out
 
-    m15s = _swing_structure(m15); loc = _sr_location(m15, direction); reasons = []
-    if m15s["bias"] in ("BUY", "SELL") and m15s["bias"] != direction: reasons.append("M15_OPPOSES_H1")
-    if not loc["valid"]: reasons.append("M15_LOCATION_INVALID")
-    pattern = _m5_pattern_v92(m5, direction)
-    if not pattern: reasons.append("NO_CLEAR_M5_PATTERN")
-    if pattern and pattern.get("direction") != direction: reasons.append("PATTERN_DIRECTION_MISMATCH")
 
-    sweep = None; mss = None; retest = {"valid":False,"reason":"NO_MSS_BOS_CONFIRMATION"}; target = None; invalidation = None; levels = {"valid":False,"reason":None}
-    if pattern and not any(r in reasons for r in ("M15_OPPOSES_H1", "M15_LOCATION_INVALID", "PATTERN_DIRECTION_MISMATCH")):
-        sweep = _v9._find_sweep(m5, direction); mss = _v9._find_mss(m5, sweep, direction)
-        if sweep and not mss: mss = _v9._find_mss(m5, sweep, direction, window=16)
-        retest = _v9._retest(m5, mss, direction) if mss else {"valid":False,"reason":"NO_MSS_BOS_CONFIRMATION"}
-        if pattern.get("name") not in ("BULLISH_BREAKOUT","BEARISH_BREAKOUT","INSIDE_BAR_BREAKOUT","BULLISH_BREAKOUT_RETEST","BEARISH_BREAKOUT_RETEST","DOUBLE_BOTTOM_BREAKOUT","DOUBLE_TOP_BREAKOUT") and mss is None:
-            reasons.append("NO_M5_CONFIRMATION")
-        entry = _num(m5.iloc[-1].close); target = _v9._target_liquidity(m5, direction, entry)
-        if target is None: reasons.append("NO_LIQUIDITY_TARGET")
-        invalidation = sweep["extreme"] if sweep else (loc.get("support") if direction == "BUY" else loc.get("resistance"))
-        if target is not None and invalidation is not None:
-            levels = build_trade_levels(m5, len(m5)-1, direction, invalidation, target, pattern)
-            if not levels.get("valid"): reasons.append(levels.get("reason", "LEVELS_INVALID"))
+def _invalidation(m5,m15,direction,strategy):
+    x=m5.tail(20).reset_index(drop=True); atr=max(_num(_v9._atr(x,len(x)-1)),1e-9)
+    if strategy=="LIQUIDITY_SWEEP":
+        return _num(x.low.min())-atr*.10 if direction=="BUY" else _num(x.high.max())+atr*.10
+    s=_structure(m15); return (s.get("support") if direction=="BUY" else s.get("resistance")) or (_num(x.low.min()) if direction=="BUY" else _num(x.high.max()))
 
-    indicators = _indicator_context_flags(m5, direction); confirmations = ["H1_EMA_ALIGNED", "H1_VOLATILITY_NORMAL"]
-    if pattern: confirmations.append("CLEAR_M5_PATTERN")
-    if sweep: confirmations.append("LIQUIDITY_SWEEP")
-    if mss: confirmations.append("MSS_BOS")
-    if retest.get("valid"): confirmations.append("M5_RETEST_CONFIRMATION")
-    signal = direction if not reasons else "NO_TRADE"
-    return {"signal":signal,"engine_version":ENGINE_VERSION,"valid":signal in ("BUY","SELL") and levels.get("valid",False),
-            "structure_bias":h1s,"m15_structure":m15s,"location":loc,"pattern":pattern,"pattern_valid":bool(pattern),
-            "confirmations":confirmations,"liquidity_event":sweep,"m5_trigger":mss,"pullback":retest,
-            "target_liquidity":target,"invalidation":invalidation,"trade_levels":levels,"indicator_context":indicators,
-            "setup_key":f"{direction}:{(pattern or {}).get('name','NONE')}:{sweep.get('index') if sweep else 'NO_SWEEP'}:{mss.get('index') if mss else 'NO_MSS'}",
-            "rejection_reasons":reasons}
+
+def analyze_structure_setup(m5,m15,h1,index=None):
+    if index is None:index=len(m5)-1
+    m5=m5.iloc[:index+1].reset_index(drop=True); symbol=str(globals().get("SYMBOL","BTC/USDT")).upper()
+    if len(m5)<80 or len(m15)<100 or len(h1)<50:
+        return {"signal":"NO_TRADE","engine_version":ENGINE_VERSION,"valid":False,"strategy":"NONE","regime":"NEUTRAL","rejection_reasons":["INSUFFICIENT_CONTEXT"]}
+    ms=_ms.analyze(m5,m15,h1,symbol)
+    direction=ms.get("signal") if ms.get("signal") in ("BUY","SELL") else None
+    out=dict(ms); out["engine_version"]=ENGINE_VERSION
+    out["structure_bias"]={"decision":direction or "NEUTRAL","bias":ms.get("regime_detail",{}).get("direction","NEUTRAL"),"ema_context":ms.get("regime_detail",{}).get("direction","NEUTRAL"),"volatility_state":ms.get("regime")}
+    out["m15_structure"]=_structure(m15,100); out["location"]=_location(m15,direction) if direction else {"valid":False,"zone":"NO_DIRECTION"}
+    out["indicator_context"]=_indicator_context_flags(m5,direction) if direction else {"role":"CONTEXT_ONLY"}
+    if not direction:
+        out.update({"pattern":None,"pattern_valid":False,"trade_levels":{"valid":False,"reason":"NO_STRATEGY_SETUP"},"confirmations":[]})
+        return out
+    target=_v9._target_liquidity(m5,direction); invalidation=_invalidation(m5,m15,direction,ms.get("strategy")); levels=_levels(m5,len(m5)-1,direction,invalidation,target,ms.get("strategy")) if target is not None and invalidation is not None else {"valid":False,"reason":"NO_LEVELS"}
+    reasons=list(out.get("rejection_reasons") or [])
+    if target is None:reasons.append("NO_LIQUIDITY_TARGET")
+    if not levels.get("valid"):reasons.append(levels.get("reason","LEVELS_INVALID"))
+    out["rejection_reasons"]=reasons; out["trade_levels"]=levels; out["target_liquidity"]=target; out["invalidation"]=invalidation
+    out["pattern"]={"name":ms.get("strategy"),"direction":direction,"quality":"CLEAR","context_bars":ms.get("analysis_window",{}).get("m5_setup_bars",20)}
+    out["pattern_valid"]=bool(ms.get("valid")); out["m5_trigger"]={"strategy":ms.get("strategy"),"direction":direction,"trigger_candles":ms.get("trigger_candle_count",3)}
+    out["pullback"]={"strategy":ms.get("strategy"),"valid":ms.get("strategy") in ("TREND_PULLBACK","EMA_PULLBACK")}
+    out["liquidity_event"]={"strategy":ms.get("strategy"),"detected":ms.get("strategy")=="LIQUIDITY_SWEEP"}
+    out["confirmations"]=["REGIME_SELECTED",f"STRATEGY_{ms.get('strategy')}","CLOSED_M5_TRIGGER"]
+    out["valid"]=bool(ms.get("valid")) and bool(levels.get("valid")) and not reasons
+    out["signal"]=direction if out["valid"] else "NO_TRADE"
+    out["setup_key"]=f"{direction}:{ms.get('strategy','NONE')}:{index}"
+    if not out["valid"] and not reasons:out["rejection_reasons"]=["TRADE_LEVELS_INVALID"]
+    return out
 
 
 def calculate_indicators(df):
