@@ -40,11 +40,15 @@ class SignalHistory:
                     payload_json TEXT
                 )
             """)
+            # Existing deployments already have this table.  NO_TRADE is stored
+            # in the existing result/direction fields, so no destructive migration
+            # is required.
             conn.execute("CREATE INDEX IF NOT EXISTS idx_signals_created_at ON signals(created_at DESC)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_signals_result ON signals(result)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_signals_symbol ON signals(symbol)")
 
     def record_signal(self, signal):
+        """Record an actual BUY/SELL trade signal."""
         levels = signal.get("trade_levels") or {}
         signal_id = str(signal.get("signal_id") or "").strip()
         if not signal_id or signal.get("signal") not in ("BUY", "SELL"):
@@ -54,19 +58,56 @@ class SignalHistory:
             before = conn.total_changes
             conn.execute("""
                 INSERT OR IGNORE INTO signals
-                (signal_id, symbol, direction, candle_time, created_at, entry, sl, tp, risk_reward, payload_json)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                (signal_id, symbol, direction, candle_time, created_at, entry, sl, tp, risk_reward, result, telegram_sent, payload_json)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'OPEN', ?, ?)
             """, (
                 signal_id,
                 str(signal.get("symbol", "")),
                 str(signal.get("signal")),
-                str(signal.get("closed_candle", "")),
+                str(signal.get("closed_candle", signal.get("candle_time", ""))),
                 created_at,
                 _num(levels.get("entry")),
                 _num(levels.get("sl")),
                 _num(levels.get("tp")),
-                _num(levels.get("risk_reward")),
+                _num(levels.get("risk_reward", levels.get("effective_rr"))),
+                1 if signal.get("telegram_alert_sent", True) else 0,
                 json.dumps(signal, ensure_ascii=False, default=str),
+            ))
+            return conn.total_changes > before
+
+    def record_no_trade(self, signal):
+        """Record a V8 decision where the system deliberately did not enter."""
+        signal_id = str(signal.get("signal_id") or "").strip()
+        symbol = str(signal.get("symbol") or "").strip().upper()
+        candle_time = str(signal.get("closed_candle") or signal.get("candle_time") or "")
+        if not signal_id or symbol not in ("BTC", "GOLD") or not candle_time:
+            return False
+
+        reasons = signal.get("rejection_reasons") or []
+        if not isinstance(reasons, list):
+            reasons = [str(reasons)]
+        payload = dict(signal)
+        payload["signal"] = "NO_TRADE"
+        payload["result"] = "NO_TRADE"
+        payload["no_trade_reasons"] = [str(x) for x in reasons]
+        created_at = str(signal.get("created_at") or datetime.now(timezone.utc).isoformat())
+
+        with self._lock, self._connect() as conn:
+            before = conn.total_changes
+            conn.execute("""
+                INSERT OR IGNORE INTO signals
+                (signal_id, symbol, direction, candle_time, created_at,
+                 entry, sl, tp, risk_reward, result, r_multiple, resolved_at,
+                 telegram_sent, payload_json)
+                VALUES (?, ?, 'NO_TRADE', ?, ?, NULL, NULL, NULL, NULL,
+                        'NO_TRADE', NULL, ?, 0, ?)
+            """, (
+                signal_id,
+                symbol,
+                candle_time,
+                created_at,
+                candle_time,
+                json.dumps(payload, ensure_ascii=False, default=str),
             ))
             return conn.total_changes > before
 
@@ -131,15 +172,13 @@ class SignalHistory:
 
     def list_signals(self, days=30, symbol=None, result=None, limit=200):
         days = max(0, min(int(days), 3650))
-        # created_at may be stored as ISO-8601 (T/+00:00) by historical replay
-        # while SQLite datetime('now') is formatted with a space. Normalize both
-        # sides through SQLite datetime() so replay rows are not silently omitted.
         where = ["datetime(created_at) >= datetime('now', ?)"]
         params = [f"-{days} days"]
         if symbol and symbol.upper() in ("BTC", "GOLD"):
             where.append("symbol=?")
             params.append(symbol.upper())
-        if result and result.upper() in ("OPEN", "WIN", "LOSS", "AMBIGUOUS", "EXPIRED"):
+        allowed_results = ("OPEN", "WIN", "LOSS", "AMBIGUOUS", "EXPIRED", "NO_TRADE")
+        if result and result.upper() in allowed_results:
             where.append("result=?")
             params.append(result.upper())
         params.append(max(1, min(int(limit), 1000)))
@@ -152,13 +191,27 @@ class SignalHistory:
         wins = sum(r["result"] == "WIN" for r in rows)
         losses = sum(r["result"] == "LOSS" for r in rows)
         open_ = sum(r["result"] == "OPEN" for r in rows)
+        no_trade = sum(r["result"] == "NO_TRADE" for r in rows)
         ambiguous = sum(r["result"] == "AMBIGUOUS" for r in rows)
         decided = wins + losses
         net_r = round(sum(float(r["r_multiple"] or 0) for r in rows if r["result"] in ("WIN", "LOSS")), 4)
         win_rate = round((wins / decided) * 100, 2) if decided else 0.0
-        return {"period_days": days, "symbol": symbol or "ALL", "total": len(rows), "wins": wins,
-                "losses": losses, "open": open_, "ambiguous": ambiguous, "decided": decided,
-                "win_rate": win_rate, "net_r": net_r, "rows": rows}
+        trade_count = wins + losses + open_ + ambiguous
+        return {
+            "period_days": days,
+            "symbol": symbol or "ALL",
+            "total": len(rows),
+            "trade_count": trade_count,
+            "no_trade": no_trade,
+            "wins": wins,
+            "losses": losses,
+            "open": open_,
+            "ambiguous": ambiguous,
+            "decided": decided,
+            "win_rate": win_rate,
+            "net_r": net_r,
+            "rows": rows,
+        }
 
 
 def _num(value):
