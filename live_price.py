@@ -23,8 +23,15 @@ _AUTHENTICATED = False
 _TICKS_RECEIVED = 0
 _LAST_TICK_AT = None
 _STARTED_AT = None
+_STATE_SINCE = None
 _LOOP_STATE = "stopped"
 _RESTART_COUNT = 0
+
+# A websocket can stay inside connect() without raising an exception.  That
+# previously made the worker look alive while no connection/tick ever arrived.
+# Force a reconnect when the connection state does not advance in time.
+CONNECT_TIMEOUT_SECONDS = max(10.0, float(os.getenv("LIVE_PRICE_CONNECT_TIMEOUT_SECONDS", "30")))
+AUTH_TICK_TIMEOUT_SECONDS = max(15.0, float(os.getenv("LIVE_PRICE_AUTH_TICK_TIMEOUT_SECONDS", "45")))
 
 
 def _api_key():
@@ -38,10 +45,23 @@ def _max_age():
         return 30.0
 
 
+def _set_state(state):
+    global _LOOP_STATE, _STATE_SINCE
+    _LOOP_STATE = state
+    _STATE_SINCE = time.monotonic()
+
+
+def _state_age():
+    if _STATE_SINCE is None:
+        return None
+    return max(0.0, time.monotonic() - _STATE_SINCE)
+
+
 def _set_tick(tick):
-    global _LAST_ERROR, _TICKS_RECEIVED, _LAST_TICK_AT, _CONNECTED, _LOOP_STATE
+    global _LAST_ERROR, _TICKS_RECEIVED, _LAST_TICK_AT, _CONNECTED
     symbol = str(getattr(tick, "symbol", "") or "").upper()
     if symbol not in SYMBOLS:
+        logger.warning("[LIVE PRICE] Ignoring unsupported tick symbol=%s", symbol)
         return
     try:
         price = float(getattr(tick, "price", None))
@@ -66,48 +86,48 @@ def _set_tick(tick):
         _TICKS_RECEIVED += 1
         _LAST_TICK_AT = received_at
         _CONNECTED = True
-        _LOOP_STATE = "receiving_ticks"
-    logger.info("[LIVE PRICE] %s price=%s timestamp=%s replay=%s", symbol, price, timestamp, bool(getattr(tick, "replay", False)))
+        _set_state("receiving_ticks")
+    logger.info("[LIVE PRICE] TICK %s price=%s timestamp=%s replay=%s", symbol, price, timestamp, bool(getattr(tick, "replay", False)))
 
 
 def _on_connected(*_args):
-    global _CONNECTED, _LOOP_STATE
+    global _CONNECTED
     with _LOCK:
         _CONNECTED = True
-        _LOOP_STATE = "connected_waiting_for_authentication"
-    logger.info("[LIVE PRICE] LSE WebSocket connected")
+        _set_state("connected_waiting_for_authentication")
+    logger.info("[LIVE PRICE] CONNECTED")
 
 
 def _on_authenticated(*_args):
-    global _AUTHENTICATED, _CONNECTED, _LOOP_STATE
+    global _AUTHENTICATED, _CONNECTED
     with _LOCK:
         _AUTHENTICATED = True
         _CONNECTED = True
-        _LOOP_STATE = "authenticated_waiting_for_tick"
-    logger.info("[LIVE PRICE] LSE WebSocket authenticated")
+        _set_state("authenticated_waiting_for_tick")
+    logger.info("[LIVE PRICE] AUTHENTICATED; subscriptions=%s", ", ".join(SYMBOLS))
 
 
 def _on_disconnected(*_args):
-    global _CONNECTED, _AUTHENTICATED, _LOOP_STATE
+    global _CONNECTED, _AUTHENTICATED
     with _LOCK:
         _CONNECTED = False
         _AUTHENTICATED = False
-        _LOOP_STATE = "disconnected_reconnecting" if _RUNNING else "stopped"
-    logger.warning("[LIVE PRICE] LSE WebSocket disconnected")
+        _set_state("disconnected_reconnecting" if _RUNNING else "stopped")
+    logger.warning("[LIVE PRICE] DISCONNECTED")
 
 
 def _on_error(error):
-    global _LAST_ERROR, _LOOP_STATE
+    global _LAST_ERROR
     with _LOCK:
         _LAST_ERROR = f"{type(error).__name__}: {error}"
-        _LOOP_STATE = "error_reconnecting"
-    logger.error("[LIVE PRICE] LSE WebSocket error: %s", error)
+        _set_state("error_reconnecting")
+    logger.error("[LIVE PRICE] ERROR: %s", error)
 
 
 def _stream_loop():
-    global _CLIENT, _LAST_ERROR, _CONNECTED, _AUTHENTICATED, _LOOP_STATE
+    global _CLIENT, _LAST_ERROR, _CONNECTED, _AUTHENTICATED
     with _LOCK:
-        _LOOP_STATE = "starting"
+        _set_state("starting")
     logger.warning("[LIVE PRICE] Worker thread entered")
 
     while _RUNNING:
@@ -117,7 +137,7 @@ def _stream_loop():
                 _LAST_ERROR = "LSE_API_KEY is not configured"
                 _CONNECTED = False
                 _AUTHENTICATED = False
-                _LOOP_STATE = "waiting_for_api_key"
+                _set_state("waiting_for_api_key")
             logger.error("[LIVE PRICE] LSE_API_KEY is not configured")
             time.sleep(10)
             continue
@@ -134,20 +154,22 @@ def _stream_loop():
                 _CLIENT = client
                 _CONNECTED = False
                 _AUTHENTICATED = False
-                _LOOP_STATE = "connecting"
+                _set_state("connecting")
             logger.warning("[LIVE PRICE] Connecting LSE WebSocket: %s", ", ".join(SYMBOLS))
+            # lse-data 0.14 supports connect(symbols=[...]) and emits
+            # connected/authenticated/tick events on this same client.
             client.connect(symbols=list(SYMBOLS))
             if _RUNNING:
                 with _LOCK:
                     _LAST_ERROR = _LAST_ERROR or "LSE connect() returned while service was running"
-                    _LOOP_STATE = "connect_returned_reconnecting"
-                logger.error("[LIVE PRICE] LSE connect() returned unexpectedly; reconnecting")
+                    _set_state("connect_returned_reconnecting")
+                logger.error("[LIVE PRICE] connect() returned unexpectedly; reconnecting")
         except Exception as exc:
             with _LOCK:
                 _LAST_ERROR = f"{type(exc).__name__}: {exc}"
                 _CONNECTED = False
                 _AUTHENTICATED = False
-                _LOOP_STATE = "exception_reconnecting"
+                _set_state("exception_reconnecting")
             logger.exception("[LIVE PRICE] WebSocket connection failed")
         finally:
             with _LOCK:
@@ -164,14 +186,14 @@ def _stream_loop():
             time.sleep(5)
 
     with _LOCK:
-        _LOOP_STATE = "stopped"
+        _set_state("stopped")
         _CONNECTED = False
         _AUTHENTICATED = False
     logger.warning("[LIVE PRICE] Worker thread exited")
 
 
 def _watchdog_loop():
-    global _THREAD, _RESTART_COUNT, _LAST_ERROR, _LOOP_STATE, _CONNECTED, _AUTHENTICATED
+    global _THREAD, _RESTART_COUNT, _LAST_ERROR, _CONNECTED, _AUTHENTICATED, _CLIENT
     logger.warning("[LIVE PRICE] Watchdog started")
     while _RUNNING:
         time.sleep(10)
@@ -179,34 +201,37 @@ def _watchdog_loop():
             break
         restart = False
         reason = None
+        client = None
         with _LOCK:
             alive = bool(_THREAD and _THREAD.is_alive())
+            state_age = _state_age()
             last_age = _age_seconds(_LAST_TICK_AT) if _LAST_TICK_AT else None
-            # A dead worker must always be restarted.
+
+            # The critical fix: connect() can block while the thread remains
+            # alive.  If no connected/authenticated/tick progress occurs within
+            # the timeout, forcibly disconnect and recreate the worker.
             if not alive:
                 restart = True
                 reason = "worker_not_alive"
-            # If we previously received ticks but they have gone stale, force a reconnect.
+            elif _LOOP_STATE == "connecting" and state_age is not None and state_age > CONNECT_TIMEOUT_SECONDS:
+                restart = True
+                reason = f"connect_timeout_{state_age:.1f}s"
+            elif _LOOP_STATE in ("connected_waiting_for_authentication", "authenticated_waiting_for_tick") and state_age is not None and state_age > AUTH_TICK_TIMEOUT_SECONDS:
+                restart = True
+                reason = f"tick_timeout_{state_age:.1f}s"
             elif _TICKS_RECEIVED > 0 and last_age is not None and last_age > _max_age():
                 restart = True
                 reason = f"stale_ticks_{last_age:.1f}s"
-                _CONNECTED = False
-                _AUTHENTICATED = False
-                _LOOP_STATE = "stale_reconnecting"
-                client = _CLIENT
-            else:
-                client = None
 
             if restart:
                 _RESTART_COUNT += 1
                 restart_no = _RESTART_COUNT
                 _LAST_ERROR = f"Live price watchdog restart: {reason}"
-                _LOOP_STATE = "watchdog_restarting"
-                if reason != "worker_not_alive":
-                    client = _CLIENT
-                    _CLIENT = None
-                else:
-                    client = None
+                _CONNECTED = False
+                _AUTHENTICATED = False
+                _set_state("watchdog_restarting")
+                client = _CLIENT
+                _CLIENT = None
                 if not alive:
                     _THREAD = threading.Thread(target=_stream_loop, name="lse-live-price", daemon=True)
                     _THREAD.start()
@@ -221,13 +246,13 @@ def _watchdog_loop():
 
 
 def start():
-    global _RUNNING, _THREAD, _WATCHDOG_THREAD, _STARTED_AT, _LOOP_STATE
+    global _RUNNING, _THREAD, _WATCHDOG_THREAD, _STARTED_AT
     with _LOCK:
         if _RUNNING and _THREAD and _THREAD.is_alive():
             return False
         _RUNNING = True
         _STARTED_AT = datetime.now(timezone.utc).isoformat()
-        _LOOP_STATE = "starting"
+        _set_state("starting")
         _THREAD = threading.Thread(target=_stream_loop, name="lse-live-price", daemon=True)
         _THREAD.start()
         if not _WATCHDOG_THREAD or not _WATCHDOG_THREAD.is_alive():
@@ -238,14 +263,14 @@ def start():
 
 
 def stop():
-    global _RUNNING, _CLIENT, _CONNECTED, _AUTHENTICATED, _LOOP_STATE
+    global _RUNNING, _CLIENT, _CONNECTED, _AUTHENTICATED
     _RUNNING = False
     with _LOCK:
         client = _CLIENT
         _CLIENT = None
         _CONNECTED = False
         _AUTHENTICATED = False
-        _LOOP_STATE = "stopping"
+        _set_state("stopping")
     try:
         if client is not None:
             client.disconnect()
@@ -282,7 +307,7 @@ def status():
         running = bool(_RUNNING and thread_alive)
         last_tick_at = _LAST_TICK_AT
         last_age = _age_seconds(last_tick_at) if last_tick_at else None
-        # Never report a stale/disconnected stream as connected/authenticated.
+        state_age = _state_age()
         fresh = last_age is None or last_age <= _max_age()
         connected = bool(running and _CONNECTED and fresh)
         authenticated = bool(running and _AUTHENTICATED and fresh)
@@ -306,6 +331,9 @@ def status():
         "worker_thread_alive": thread_alive,
         "watchdog_alive": watchdog_alive,
         "loop_state": loop_state,
+        "state_age_seconds": state_age,
+        "connect_timeout_seconds": CONNECT_TIMEOUT_SECONDS,
+        "auth_tick_timeout_seconds": AUTH_TICK_TIMEOUT_SECONDS,
         "restart_count": restart_count,
         "started_at": started_at,
     }
