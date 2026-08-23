@@ -5,3 +5,4 @@ pandas
 requests
 python-dotenv
 scipy
+lse-data>=0.14.0
