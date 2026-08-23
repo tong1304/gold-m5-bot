@@ -15,6 +15,8 @@ import engine_v5 as engine
 os.environ["LIVE_SIGNAL_SYMBOLS"] = "BTC,GOLD"
 SUPPORTED_SYMBOLS = ("BTC/USDT", "XAU/USDT")
 SYMBOL_LOCK = threading.RLock()
+SERVICE_LOCK = threading.RLock()
+_SERVICES_STARTED_PID = None
 logger = logging.getLogger(__name__)
 
 BASE = {
@@ -71,6 +73,63 @@ def _json_safe(value):
 
 def _json_response(payload, status=200):
     return Response(json.dumps(_json_safe(payload), ensure_ascii=False, allow_nan=False), status=status, mimetype="application/json")
+
+
+def _start_runtime_services():
+    """Start background services inside the actual Gunicorn worker process.
+
+    Gunicorn imports the WSGI application before forking workers. Starting
+    WebSocket/background threads at module import time therefore creates them
+    in the pre-fork process; the child worker then sees dead thread objects.
+    This function is process-aware and is called by Flask before the first
+    request, so the live-price WebSocket and scheduler belong to the serving
+    worker that also owns the HTTP API.
+    """
+    global _SERVICES_STARTED_PID
+    pid = os.getpid()
+    if _SERVICES_STARTED_PID == pid:
+        return
+    with SERVICE_LOCK:
+        if _SERVICES_STARTED_PID == pid:
+            return
+        if os.getenv("ENABLE_SIGNAL_SCHEDULER", "true").strip().lower() != "true":
+            logger.warning("Signal Scheduler disabled by ENABLE_SIGNAL_SCHEDULER")
+            _SERVICES_STARTED_PID = pid
+            return
+        try:
+            import live_price
+            live_price.start()
+            import scheduler
+            scheduler.start()
+            logger.info("Signal Scheduler + Live Price started in Gunicorn worker pid=%s", pid)
+            try:
+                from startup_notify import send_startup_notification
+                send_startup_notification(symbol="BTC + GOLD / LSE", engine_version="5.0")
+            except Exception as exc:
+                logger.exception("Startup notification failed: %s", exc)
+            _SERVICES_STARTED_PID = pid
+        except Exception as exc:
+            logger.exception("Runtime services failed to start in worker pid=%s", pid)
+            try:
+                from telegram_notify import send_telegram_message
+                now_bkk = datetime.now(ZoneInfo("Asia/Bangkok")).strftime("%d/%m/%Y %H:%M:%S")
+                send_telegram_message(
+                    "❌ ระบบ Runtime Services ขัดข้อง\n\n"
+                    f"🕐 เวลา: {now_bkk} (กรุงเทพฯ)\n"
+                    "⚠️ ไม่สามารถเริ่ม Live Price / Scheduler ใน worker ได้\n\n"
+                    f"🔴 ประเภทข้อผิดพลาด: {type(exc).__name__}\n"
+                    f"📝 รายละเอียด: {str(exc)}\n\n"
+                    "🛑 ไม่มีการเปิดออเดอร์อัตโนมัติ"
+                )
+            except Exception:
+                logger.exception("Runtime service error Telegram notification failed")
+            # Do not mark the PID as initialized after a failed start. A later
+            # request can retry startup after a transient provider/config issue.
+
+
+@engine.app.before_request
+def _ensure_runtime_services():
+    _start_runtime_services()
 
 
 @engine.app.route("/")
@@ -176,30 +235,6 @@ class MultiSymbolMiddleware:
                 for n,v in previous_base.items(): setattr(engine.base,n,v)
 
 app=MultiSymbolMiddleware(engine.app)
-
-if os.getenv("ENABLE_SIGNAL_SCHEDULER", "true").strip().lower() == "true":
-    try:
-        import live_price
-        live_price.start()
-        import scheduler
-        scheduler.start()
-        logger.info("Signal Scheduler started successfully for BTC + GOLD via LSE")
-    except Exception as exc:
-        logger.exception("Signal Scheduler failed to start")
-        try:
-            from telegram_notify import send_telegram_message
-            now_bkk = datetime.now(ZoneInfo("Asia/Bangkok")).strftime("%d/%m/%Y %H:%M:%S")
-            send_telegram_message("❌ ระบบแจ้งเตือน Scheduler ขัดข้อง\n\n" f"🕐 เวลา: {now_bkk} (กรุงเทพฯ)\n" "⚠️ ไม่สามารถเริ่มระบบสแกนสัญญาณอัตโนมัติได้\n\n" f"🔴 ประเภทข้อผิดพลาด: {type(exc).__name__}\n" f"📝 รายละเอียด: {str(exc)}\n\n" "🛑 ระบบจะไม่ถือว่า Scheduler ทำงานอยู่\n" "🖐️ ไม่มีการเปิดออเดอร์อัตโนมัติ")
-        except Exception as telegram_exc:
-            logger.exception("Scheduler error Telegram notification failed: %s", telegram_exc)
-else:
-    logger.warning("Signal Scheduler disabled by ENABLE_SIGNAL_SCHEDULER")
-
-try:
-    from startup_notify import send_startup_notification
-    send_startup_notification(symbol="BTC + GOLD / LSE", engine_version="5.0")
-except Exception as exc:
-    logger.exception("Startup notification failed: %s", exc)
 
 if __name__ == "__main__":
     port=int(os.getenv("PORT","10000"))
