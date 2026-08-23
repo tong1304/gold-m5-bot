@@ -63,6 +63,21 @@ def _notify_error(exc,context):
     except Exception: return None
 
 
+def _record_data_no_trade(symbol, reason):
+    try:
+        from signal_history import history
+        now=datetime.now(UTC).replace(second=0,microsecond=0)
+        candle_time=now.isoformat()
+        signal_id=f"{symbol}-{now.strftime('%Y%m%d-%H%M')}-NO_TRADE-DATA"
+        payload={"signal_id":signal_id,"symbol":symbol,"signal":"NO_TRADE","result":"NO_TRADE","closed_candle":candle_time,"candle_time":candle_time,"created_at":datetime.now(UTC).isoformat(),"engine_version":"V8","rejection_reasons":[str(reason)],"no_trade_reasons":[str(reason)],"data_valid":False}
+        recorded=history.record_no_trade(payload)
+        logger.warning("[%s] DATA NO_TRADE recorded=%s reason=%s",symbol,recorded,reason)
+        return recorded
+    except Exception as exc:
+        logger.exception("[%s] Failed to record DATA NO_TRADE: %s",symbol,exc)
+        return False
+
+
 def _evaluate_signal_history():
     from signal_history import history
     pending=history.pending(limit=200)
@@ -135,7 +150,14 @@ def run_scan_cycle():
             logger.warning("[%s] V8 result: signal=%s status=%s recorded=%s",symbol,result.get("signal"),result.get("status"),result.get("recorded"))
             results.append(result)
         except Exception as exc:
-            logger.exception("[%s] Scan failed",symbol); _notify_error(exc,f"การสแกน {symbol}"); results.append({"status":"scan_error","symbol":symbol,"error_type":type(exc).__name__,"message":str(exc),"live_orders_allowed":False})
+            message=str(exc)
+            logger.exception("[%s] Scan failed",symbol)
+            if "STALE_MARKET_DATA" in message or "DATA_INVALID" in message:
+                recorded=_record_data_no_trade(symbol,message)
+                results.append({"status":"data_invalid","symbol":symbol,"signal":"NO_TRADE","recorded":recorded,"reason":message,"live_orders_allowed":False})
+            else:
+                _notify_error(exc,f"การสแกน {symbol}")
+                results.append({"status":"scan_error","symbol":symbol,"error_type":type(exc).__name__,"message":message,"live_orders_allowed":False})
     if heartbeat is not None: results.append({"status":"price_heartbeat","heartbeat":heartbeat,"timezone":"Asia/Bangkok"})
     if history_resolved: results.append({"status":"signal_history_resolved","count":history_resolved})
     logger.warning("[HEARTBEAT] Scheduler cycle END: processed=%d symbol(s) | provider=LSE",len(results))
