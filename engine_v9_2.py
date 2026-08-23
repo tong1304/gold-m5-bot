@@ -80,7 +80,12 @@ def analyze_structure_setup(m5,m15,index=None):
     out["indicator_context"]=_indicator_context_flags(m5,direction) if direction else {"role":"CONTEXT_ONLY"}
     if not direction:
         out.update({"pattern":None,"pattern_valid":False,"trade_levels":{"valid":False,"reason":"NO_STRATEGY_SETUP"},"confirmations":[]}); return out
-    target=_v9._target_liquidity(m5,direction); invalidation=_invalidation(m5,m15,direction,ms.get("strategy")); levels=_levels(m5,len(m5)-1,direction,invalidation,target,ms.get("strategy")) if target is not None and invalidation is not None else {"valid":False,"reason":"NO_LEVELS"}
+    # _target_liquidity requires the entry price so it can select the nearest
+    # historical liquidity level on the correct side of the actual execution.
+    # Keep this identical to the execution-price model used by build_trade_levels.
+    entry=_v9.execution_price(m5.iloc[-1].close,direction)
+    target=_v9._target_liquidity(m5,direction,entry)
+    invalidation=_invalidation(m5,m15,direction,ms.get("strategy")); levels=_levels(m5,len(m5)-1,direction,invalidation,target,ms.get("strategy")) if target is not None and invalidation is not None else {"valid":False,"reason":"NO_LEVELS"}
     reasons=list(out.get("rejection_reasons") or [])
     if target is None:reasons.append("NO_LIQUIDITY_TARGET")
     if not levels.get("valid"):reasons.append(levels.get("reason","LEVELS_INVALID"))
