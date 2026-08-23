@@ -11,6 +11,15 @@ _load_frames = _base._load_frames
 _fmt_time = _base._fmt_time
 _fmt_price = _base._fmt_price
 
+# Backward-compatible scheduler data API.
+# scheduler_v9 historically called _lse_frame() directly; the multi-timeframe
+# scanner now loads all required closed frames through _load_frames().
+def _lse_frame(symbol, timeframe="5m", history_points=200):
+    frames = _load_frames(symbol)
+    if timeframe not in frames:
+        raise ValueError(f"Unsupported loaded timeframe: {timeframe}")
+    return frames[timeframe]
+
 
 def _levels_ready(levels, direction=None):
     if not isinstance(levels,dict) or not levels.get("valid",False): return False
