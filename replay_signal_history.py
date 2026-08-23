@@ -1,10 +1,13 @@
-"""Replay Structure V6 against real LSE historical OHLCV.
+"""Replay Structure V8 against real LSE historical OHLCV.
 
 Usage:
     python replay_signal_history.py --start 2026-08-01 --end 2026-08-23 --symbol BTC --dry-run
     python replay_signal_history.py --start 2026-08-01 --end 2026-08-23 --symbol ALL
 
 Dry-run never writes signal history and never sends Telegram.
+
+The replay deliberately uses the same V8 engine as live scanning so historical
+statistics measure the current signal model instead of a legacy V6 model.
 """
 from __future__ import annotations
 
@@ -16,7 +19,7 @@ from zoneinfo import ZoneInfo
 
 import pandas as pd
 
-import engine_v6 as engine
+import engine_v8 as engine
 import engine_v42 as base
 from signal_history import history
 
@@ -121,11 +124,11 @@ def replay_symbol(symbol, start, end, dry_run=False):
     for i in range(100, len(m5)-1):
         ts = pd.Timestamp(m5.iloc[i]["datetime"])
         if ts < pd.Timestamp(start) or ts >= pd.Timestamp(end): continue
-        # Critical: context frames end at the decision candle. Future M15/H1 bars
-        # never participate in the V6 decision.
+        # V8 receives only candles that existed at the decision timestamp.
+        m5_ctx = m5.iloc[:i+1].reset_index(drop=True)
         m15_ctx, h1_ctx = _context(m15, ts), _context(h1, ts)
-        if len(m15_ctx) < 30 or len(h1_ctx) < 30: continue
-        setup = engine.analyze_structure_setup(m5, m15_ctx, h1_ctx, i)
+        if len(m15_ctx) < 60 or len(h1_ctx) < 60 or len(m5_ctx) < 80: continue
+        setup = engine.analyze_structure_setup(m5_ctx, m15_ctx, h1_ctx, len(m5_ctx)-1)
         if setup.get("signal") not in ("BUY","SELL") or not setup.get("valid"):
             for reason in setup.get("rejection_reasons", []): rejected[reason] = rejected.get(reason, 0) + 1
             continue
@@ -136,11 +139,11 @@ def replay_symbol(symbol, start, end, dry_run=False):
         if setup_key: used_setup_keys.add(setup_key)
         levels = setup["trade_levels"]
         signal = setup["signal"]
-        signal_id = f"REPLAY-V6-{symbol}-{ts.strftime('%Y%m%dT%H%MZ')}-{signal}"
+        signal_id = f"REPLAY-V8-{symbol}-{ts.strftime('%Y%m%dT%H%MZ')}-{signal}"
         payload = {
             "signal_id":signal_id,"symbol":symbol,"signal":signal,"closed_candle":ts.isoformat(),"created_at":ts.isoformat(),
             "replay":True,"replay_source":"LSE_HISTORICAL_OHLCV","engine_version":engine.ENGINE_VERSION,
-            "pattern_signal":signal,"m5_direction":signal,"v6_setup":setup,
+            "pattern_signal":signal,"m5_direction":signal,"v8_setup":setup,"v6_setup":setup,
             "structure_bias":setup.get("structure_bias"),"location":setup.get("location"),
             "liquidity_event":setup.get("liquidity_event"),"m5_trigger":setup.get("m5_trigger"),
             "pullback":setup.get("pullback"),"target_liquidity":setup.get("target_liquidity"),
@@ -155,11 +158,11 @@ def replay_symbol(symbol, start, end, dry_run=False):
             if history.record_signal(payload): inserted += 1
             if result != "OPEN": history.set_result(signal_id,result,r_multiple,resolved)
 
-    return {"symbol":symbol,"generated":generated,"inserted":inserted,"outcomes":outcomes,"rejected":dict(sorted(rejected.items(), key=lambda x:x[1], reverse=True)[:15])}
+    return {"symbol":symbol,"engine_version":engine.ENGINE_VERSION,"generated":generated,"inserted":inserted,"outcomes":outcomes,"rejected":dict(sorted(rejected.items(), key=lambda x:x[1], reverse=True)[:15])}
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Replay Structure V6 on real LSE historical M5")
+    parser = argparse.ArgumentParser(description="Replay Structure V8 on real LSE historical M5")
     parser.add_argument("--start", required=True); parser.add_argument("--end", required=True)
     parser.add_argument("--symbol", choices=["BTC","GOLD","ALL"], default="ALL")
     parser.add_argument("--dry-run", action="store_true")
