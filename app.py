@@ -9,7 +9,7 @@ from zoneinfo import ZoneInfo
 
 from flask import Response, request
 
-import engine_v5 as engine
+import engine_v6 as engine
 
 # Publicly supported assets: GOLD + BTC only.
 os.environ["LIVE_SIGNAL_SYMBOLS"] = "BTC,GOLD"
@@ -78,24 +78,18 @@ def _json_response(payload, status=200):
 def _start_runtime_services():
     global _SERVICES_STARTED_PID
     pid = os.getpid()
-    if _SERVICES_STARTED_PID == pid:
-        return
+    if _SERVICES_STARTED_PID == pid: return
     with SERVICE_LOCK:
-        if _SERVICES_STARTED_PID == pid:
-            return
+        if _SERVICES_STARTED_PID == pid: return
         if os.getenv("ENABLE_SIGNAL_SCHEDULER", "true").strip().lower() != "true":
-            logger.warning("Signal Scheduler disabled by ENABLE_SIGNAL_SCHEDULER")
-            _SERVICES_STARTED_PID = pid
-            return
+            logger.warning("Signal Scheduler disabled by ENABLE_SIGNAL_SCHEDULER"); _SERVICES_STARTED_PID = pid; return
         try:
-            import live_price
-            live_price.start()
-            import scheduler
-            scheduler.start()
+            import live_price; live_price.start()
+            import scheduler; scheduler.start()
             logger.info("Signal Scheduler + Live Price started in Gunicorn worker pid=%s", pid)
             try:
                 from startup_notify import send_startup_notification
-                send_startup_notification(symbol="BTC + GOLD / LSE", engine_version="5.0")
+                send_startup_notification(symbol="BTC + GOLD / LSE", engine_version=engine.ENGINE_VERSION)
             except Exception as exc:
                 logger.exception("Startup notification failed: %s", exc)
             _SERVICES_STARTED_PID = pid
@@ -117,20 +111,16 @@ def _ensure_runtime_services():
 @engine.app.route("/")
 def health():
     try:
-        import live_price
-        live = live_price.status()
+        import live_price; live = live_price.status()
     except Exception as exc:
         live = {"running": False, "provider": "LSE", "transport": "WebSocket", "error": str(exc)}
-    return _json_response({"status":"ok","service":"gold-m5-bot","engine_version":engine.ENGINE_VERSION,"exchange":"LSE","symbols":["BTC/USD","XAU/USD"],"timeframe":"M5","live_price":live,"live_orders_allowed":False})
+    return _json_response({"status":"ok","service":"gold-m5-bot","engine_version":engine.ENGINE_VERSION,"exchange":"LSE","symbols":["BTC/USD","XAU/USD"],"timeframe":"M5 trigger + H1/M15 confirmation","live_price":live,"live_orders_allowed":False})
 
 
 @engine.app.route("/live-price")
 def live_price_status():
     try:
-        import live_price
-        payload = live_price.status()
-        payload["status"] = "ok"
-        return _json_response(payload)
+        import live_price; payload = live_price.status(); payload["status"] = "ok"; return _json_response(payload)
     except Exception as exc:
         return _json_response({"status":"live_price_error","provider":"LSE","transport":"WebSocket","error_type":type(exc).__name__,"message":str(exc)},502)
 
@@ -138,10 +128,8 @@ def live_price_status():
 @engine.app.route("/live-price/<symbol>")
 def live_price_symbol(symbol):
     try:
-        import live_price
-        value = live_price.get(symbol)
-        if value is None:
-            return _json_response({"status":"waiting","provider":"LSE","transport":"WebSocket","symbol":symbol.upper(),"message":"ยังไม่ได้รับ live tick จาก LSE"},202)
+        import live_price; value = live_price.get(symbol)
+        if value is None: return _json_response({"status":"waiting","provider":"LSE","transport":"WebSocket","symbol":symbol.upper(),"message":"ยังไม่ได้รับ live tick จาก LSE"},202)
         return _json_response({"status":"ok","provider":"LSE","transport":"WebSocket","latest":value})
     except Exception as exc:
         return _json_response({"status":"live_price_error","provider":"LSE","transport":"WebSocket","error_type":type(exc).__name__,"message":str(exc)},502)
@@ -159,7 +147,8 @@ def live_signal():
     try:
         import live_scanner
         with SYMBOL_LOCK: activate(symbol); return _json_response(live_scanner.scan_once("BTC" if symbol == "BTC/USDT" else "GOLD"),200)
-    except Exception as exc: return _json_response({"status":"signal_error","engine_version":engine.ENGINE_VERSION,"exchange":"LSE","symbol":symbol,"error_type":type(exc).__name__,"message":str(exc),"telegram_alert_sent":False,"live_orders_allowed":False},502)
+    except Exception as exc:
+        return _json_response({"status":"signal_error","engine_version":engine.ENGINE_VERSION,"exchange":"LSE","symbol":symbol,"error_type":type(exc).__name__,"message":str(exc),"telegram_alert_sent":False,"live_orders_allowed":False},502)
 
 
 @engine.app.route("/validation")
@@ -172,7 +161,8 @@ def validation():
         import validate_v5
         with SYMBOL_LOCK: activate(symbol); report=validate_v5.run(symbol,bars)
         report["endpoint"]="/validation"; report["request"]={"symbol":symbol,"bars":bars}; report["live_orders_allowed"]=False; return _json_response(report)
-    except Exception as exc: return _json_response({"status":"validation_error","engine_version":engine.ENGINE_VERSION,"exchange":"LSE","symbol":symbol,"bars":bars,"error_type":type(exc).__name__,"message":str(exc),"live_orders_allowed":False},502)
+    except Exception as exc:
+        return _json_response({"status":"validation_error","engine_version":engine.ENGINE_VERSION,"exchange":"LSE","symbol":symbol,"bars":bars,"error_type":type(exc).__name__,"message":str(exc),"live_orders_allowed":False},502)
 
 
 @engine.app.route("/validation/diagnostics")
@@ -188,20 +178,20 @@ def validation_diagnostics():
         from binance_data import BinanceMarketData
         df=BinanceMarketData.remove_incomplete_last_candle(df,timeframe_minutes=5); result["stages"]["closed_candles"]={"ok":True,"rows":len(df)}
         if len(df)<100: raise RuntimeError(f"Only {len(df)} closed XM MT5 candles returned")
-        df=engine.base.calculate_indicators(df); index=max(50,min(len(df)-int(engine.FORWARD_BARS)-2,len(df)-1)); analyzed=engine.base.analyze_candle(df,index)
-        result["stages"]["indicators"]={"ok":True,"rows":len(df)}; result["stages"]["analyze_candle"]={"ok":True,"index":index,"valid":analyzed.get("valid") if isinstance(analyzed,dict) else None,"signal":analyzed.get("signal") if isinstance(analyzed,dict) else None,"score":analyzed.get("score") if isinstance(analyzed,dict) else None}; result["status"]="diagnostics_ok"; return _json_response(result)
-    except Exception as exc: result.update({"status":"diagnostics_error","error_type":type(exc).__name__,"message":str(exc)}); return _json_response(result,502)
+        df=engine.base.calculate_indicators(df); index=max(50,min(len(df)-int(engine.FORWARD_BARS)-2,len(df)-1)); analyzed=engine.analyze_structure_setup(df,df,df,index)
+        result["stages"]["indicators"]={"ok":True,"rows":len(df)}; result["stages"]["analyze_candle"]={"ok":True,"index":index,"valid":analyzed.get("valid"),"signal":analyzed.get("signal"),"reasons":analyzed.get("rejection_reasons")}; result["status"]="diagnostics_ok"; return _json_response(result)
+    except Exception as exc:
+        result.update({"status":"diagnostics_error","error_type":type(exc).__name__,"message":str(exc)}); return _json_response(result,502)
 
 
 @engine.app.route("/scheduler/status")
 def scheduler_status():
     try:
         import scheduler; return _json_response({"status":"ok",**scheduler.status()})
-    except Exception as exc: return _json_response({"status":"scheduler_error","error_type":type(exc).__name__,"message":str(exc),"live_orders_allowed":False},502)
+    except Exception as exc:
+        return _json_response({"status":"scheduler_error","error_type":type(exc).__name__,"message":str(exc),"live_orders_allowed":False},502)
 
 
-# Signal statistics/history UI and API must be registered on the real Flask
-# application BEFORE it is wrapped by MultiSymbolMiddleware.
 try:
     import statistics_page
     statistics_page.register(engine.app)
