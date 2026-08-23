@@ -76,15 +76,6 @@ def _json_response(payload, status=200):
 
 
 def _start_runtime_services():
-    """Start background services inside the actual Gunicorn worker process.
-
-    Gunicorn imports the WSGI application before forking workers. Starting
-    WebSocket/background threads at module import time therefore creates them
-    in the pre-fork process; the child worker then sees dead thread objects.
-    This function is process-aware and is called by Flask before the first
-    request, so the live-price WebSocket and scheduler belong to the serving
-    worker that also owns the HTTP API.
-    """
     global _SERVICES_STARTED_PID
     pid = os.getpid()
     if _SERVICES_STARTED_PID == pid:
@@ -113,18 +104,9 @@ def _start_runtime_services():
             try:
                 from telegram_notify import send_telegram_message
                 now_bkk = datetime.now(ZoneInfo("Asia/Bangkok")).strftime("%d/%m/%Y %H:%M:%S")
-                send_telegram_message(
-                    "❌ ระบบ Runtime Services ขัดข้อง\n\n"
-                    f"🕐 เวลา: {now_bkk} (กรุงเทพฯ)\n"
-                    "⚠️ ไม่สามารถเริ่ม Live Price / Scheduler ใน worker ได้\n\n"
-                    f"🔴 ประเภทข้อผิดพลาด: {type(exc).__name__}\n"
-                    f"📝 รายละเอียด: {str(exc)}\n\n"
-                    "🛑 ไม่มีการเปิดออเดอร์อัตโนมัติ"
-                )
+                send_telegram_message("❌ ระบบ Runtime Services ขัดข้อง\n\n" f"🕐 เวลา: {now_bkk} (กรุงเทพฯ)\n" "⚠️ ไม่สามารถเริ่ม Live Price / Scheduler ใน worker ได้\n\n" f"🔴 ประเภทข้อผิดพลาด: {type(exc).__name__}\n" f"📝 รายละเอียด: {str(exc)}\n\n" "🛑 ไม่มีการเปิดออเดอร์อัตโนมัติ")
             except Exception:
                 logger.exception("Runtime service error Telegram notification failed")
-            # Do not mark the PID as initialized after a failed start. A later
-            # request can retry startup after a transient provider/config issue.
 
 
 @engine.app.before_request
@@ -216,6 +198,16 @@ def scheduler_status():
     try:
         import scheduler; return _json_response({"status":"ok",**scheduler.status()})
     except Exception as exc: return _json_response({"status":"scheduler_error","error_type":type(exc).__name__,"message":str(exc),"live_orders_allowed":False},502)
+
+
+# Signal statistics/history UI and API must be registered on the real Flask
+# application BEFORE it is wrapped by MultiSymbolMiddleware.
+try:
+    import statistics_page
+    statistics_page.register(engine.app)
+    logger.info("Signal Statistics routes registered: /statistics /api/statistics /api/signals")
+except Exception:
+    logger.exception("Failed to register Signal Statistics routes")
 
 
 class MultiSymbolMiddleware:
