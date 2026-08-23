@@ -75,12 +75,40 @@ def _json_response(payload, status=200):
 
 @engine.app.route("/")
 def health():
-    return _json_response({"status":"ok","service":"gold-m5-bot","engine_version":engine.ENGINE_VERSION,"exchange":"XM MT5","symbols":list(SUPPORTED_SYMBOLS),"timeframe":"M5","live_orders_allowed":False})
+    try:
+        import live_price
+        live = live_price.status()
+    except Exception as exc:
+        live = {"running": False, "provider": "LSE", "transport": "WebSocket", "error": str(exc)}
+    return _json_response({"status":"ok","service":"gold-m5-bot","engine_version":engine.ENGINE_VERSION,"exchange":"LSE","symbols":["BTC/USD","XAU/USD"],"timeframe":"M5","live_price":live,"live_orders_allowed":False})
+
+
+@engine.app.route("/live-price")
+def live_price_status():
+    try:
+        import live_price
+        payload = live_price.status()
+        payload["status"] = "ok"
+        return _json_response(payload)
+    except Exception as exc:
+        return _json_response({"status":"live_price_error","provider":"LSE","transport":"WebSocket","error_type":type(exc).__name__,"message":str(exc)},502)
+
+
+@engine.app.route("/live-price/<symbol>")
+def live_price_symbol(symbol):
+    try:
+        import live_price
+        value = live_price.get(symbol)
+        if value is None:
+            return _json_response({"status":"waiting","provider":"LSE","transport":"WebSocket","symbol":symbol.upper(),"message":"ยังไม่ได้รับ live tick จาก LSE"},202)
+        return _json_response({"status":"ok","provider":"LSE","transport":"WebSocket","latest":value})
+    except Exception as exc:
+        return _json_response({"status":"live_price_error","provider":"LSE","transport":"WebSocket","error_type":type(exc).__name__,"message":str(exc)},502)
 
 
 @engine.app.route("/symbols")
 def symbols():
-    return _json_response({"status":"ok","engine_version":engine.ENGINE_VERSION,"exchange":"XM MT5","symbols":list(SUPPORTED_SYMBOLS),"mt5_symbols":{"BTC":os.getenv("MT5_BTC_SYMBOL","BTCUSD"),"GOLD":os.getenv("MT5_GOLD_SYMBOL","XAUUSD")},"timeframe":"M5 trigger + H1/M15 confirmation","market_data":"XM MetaTrader 5 bridge","live_orders_allowed":False})
+    return _json_response({"status":"ok","engine_version":engine.ENGINE_VERSION,"exchange":"LSE","symbols":["BTC/USD","XAU/USD"],"mt5_symbols":{"BTC":os.getenv("MT5_BTC_SYMBOL","BTCUSD"),"GOLD":os.getenv("MT5_GOLD_SYMBOL","XAUUSD")},"timeframe":"M5 trigger + H1/M15 confirmation","market_data":"LSE historical + LSE WebSocket live price","live_orders_allowed":False})
 
 
 @engine.app.route("/signal")
@@ -90,7 +118,7 @@ def live_signal():
     try:
         import live_scanner
         with SYMBOL_LOCK: activate(symbol); return _json_response(live_scanner.scan_once("BTC" if symbol == "BTC/USDT" else "GOLD"),200)
-    except Exception as exc: return _json_response({"status":"signal_error","engine_version":engine.ENGINE_VERSION,"exchange":"XM MT5","symbol":symbol,"error_type":type(exc).__name__,"message":str(exc),"telegram_alert_sent":False,"live_orders_allowed":False},502)
+    except Exception as exc: return _json_response({"status":"signal_error","engine_version":engine.ENGINE_VERSION,"exchange":"LSE","symbol":symbol,"error_type":type(exc).__name__,"message":str(exc),"telegram_alert_sent":False,"live_orders_allowed":False},502)
 
 
 @engine.app.route("/validation")
@@ -103,7 +131,7 @@ def validation():
         import validate_v5
         with SYMBOL_LOCK: activate(symbol); report=validate_v5.run(symbol,bars)
         report["endpoint"]="/validation"; report["request"]={"symbol":symbol,"bars":bars}; report["live_orders_allowed"]=False; return _json_response(report)
-    except Exception as exc: return _json_response({"status":"validation_error","engine_version":engine.ENGINE_VERSION,"exchange":"XM MT5","symbol":symbol,"bars":bars,"error_type":type(exc).__name__,"message":str(exc),"live_orders_allowed":False},502)
+    except Exception as exc: return _json_response({"status":"validation_error","engine_version":engine.ENGINE_VERSION,"exchange":"LSE","symbol":symbol,"bars":bars,"error_type":type(exc).__name__,"message":str(exc),"live_orders_allowed":False},502)
 
 
 @engine.app.route("/validation/diagnostics")
@@ -111,7 +139,7 @@ def validation_diagnostics():
     symbol=(request.args.get("symbol") or "BTC/USDT").strip().upper()
     try: bars=max(100,min(int(request.args.get("bars","1000")),1000))
     except (TypeError,ValueError): bars=1000
-    result={"status":"ok","engine_version":engine.ENGINE_VERSION,"exchange":"XM MT5","symbol":symbol,"bars":bars,"live_orders_allowed":False,"stages":{}}
+    result={"status":"ok","engine_version":engine.ENGINE_VERSION,"exchange":"LSE","symbol":symbol,"bars":bars,"live_orders_allowed":False,"stages":{}}
     if symbol not in SUPPORTED_SYMBOLS: result.update({"status":"error","message":f"Unsupported XM MT5 symbol mapping: {symbol}"}); return _json_response(result,400)
     try:
         activate(symbol); result["stages"]["activate"]={"ok":True}; import validate_v5; result["stages"]["import_validate_v5"]={"ok":True}
@@ -139,10 +167,10 @@ class MultiSymbolMiddleware:
             names=("SYMBOL","MINIMUM_ATR","MIN_STOP_ATR","MAX_STOP_ATR","SPREAD","SLIPPAGE","SIGNAL_HISTORY_POINTS","MIN_RISK_REWARD","RISK_REWARD"); previous={n:getattr(engine,n) for n in names}; previous_base={n:getattr(engine.base,n) for n in names}
             try: activate(requested); return self.application(environ,start_response)
             except ValueError as exc:
-                body=json.dumps(_json_safe({"status":"error","engine_version":engine.ENGINE_VERSION,"exchange":"XM MT5","symbol":requested,"message":str(exc),"live_orders_allowed":False})).encode(); start_response("400 BAD REQUEST",[("Content-Type","application/json"),("Content-Length",str(len(body)))]); return [body]
+                body=json.dumps(_json_safe({"status":"error","engine_version":engine.ENGINE_VERSION,"exchange":"LSE","symbol":requested,"message":str(exc),"live_orders_allowed":False})).encode(); start_response("400 BAD REQUEST",[("Content-Type","application/json"),("Content-Length",str(len(body)))]); return [body]
             except Exception as exc:
                 logger.exception("Application request failed: %s", exc)
-                body=json.dumps(_json_safe({"status":"application_error","engine_version":getattr(engine,"ENGINE_VERSION","unknown"),"exchange":"XM MT5","symbol":requested,"error_type":type(exc).__name__,"message":str(exc),"live_orders_allowed":False})).encode(); start_response("500 INTERNAL SERVER ERROR",[("Content-Type","application/json"),("Content-Length",str(len(body)))]); return [body]
+                body=json.dumps(_json_safe({"status":"application_error","engine_version":getattr(engine,"ENGINE_VERSION","unknown"),"exchange":"LSE","symbol":requested,"error_type":type(exc).__name__,"message":str(exc),"live_orders_allowed":False})).encode(); start_response("500 INTERNAL SERVER ERROR",[("Content-Type","application/json"),("Content-Length",str(len(body)))]); return [body]
             finally:
                 for n,v in previous.items(): setattr(engine,n,v)
                 for n,v in previous_base.items(): setattr(engine.base,n,v)
@@ -151,9 +179,11 @@ app=MultiSymbolMiddleware(engine.app)
 
 if os.getenv("ENABLE_SIGNAL_SCHEDULER", "true").strip().lower() == "true":
     try:
+        import live_price
+        live_price.start()
         import scheduler
         scheduler.start()
-        logger.info("Signal Scheduler started successfully for BTC + GOLD via XM MT5")
+        logger.info("Signal Scheduler started successfully for BTC + GOLD via LSE")
     except Exception as exc:
         logger.exception("Signal Scheduler failed to start")
         try:
@@ -167,7 +197,7 @@ else:
 
 try:
     from startup_notify import send_startup_notification
-    send_startup_notification(symbol="BTC + GOLD / XM MT5", engine_version="5.0")
+    send_startup_notification(symbol="BTC + GOLD / LSE", engine_version="5.0")
 except Exception as exc:
     logger.exception("Startup notification failed: %s", exc)
 
