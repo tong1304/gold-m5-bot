@@ -1,8 +1,8 @@
-"""V9.1 live scanner adapter."""
+"""Compatibility scanner adapter: legacy V9.1 entry now uses V9.2 engine."""
 import os, logging
 from datetime import datetime, timezone
 import live_scanner_v9 as _base
-import engine_v9_1 as engine
+import engine_v9_2 as engine
 logger=logging.getLogger("signal_scheduler")
 SUPPORTED_SYMBOLS=_base.SUPPORTED_SYMBOLS
 _SCAN_LOCK=_base._SCAN_LOCK
@@ -22,8 +22,9 @@ def _levels_ready(levels,direction=None):
     except (TypeError,ValueError,KeyError): return False
 
 def _format_telegram(symbol,setup,signal_id):
-    direction=setup["signal"]; levels=setup["trade_levels"]; loc=setup.get("location") or {}; h1=setup.get("structure_bias",{}).get("bias","NEUTRAL"); pattern=(setup.get("pattern") or {}).get("name","-"); ind=setup.get("indicator_context") or {}; side="🟢 BUY — ซื้อ" if direction=="BUY" else "🔴 SELL — ขาย"
-    return ("🚨 <b>V9.1 Pattern Signal</b>\n\n" f"{side}\n\n📊 <b>สินทรัพย์:</b> {symbol}\n⏱ <b>Entry TF:</b> M5\n🕯 <b>แท่ง:</b> {_fmt_time(setup.get('candle_time'))}\n🔐 <b>Signal ID:</b> {signal_id}\n\n" f"🧭 <b>H1 Structure:</b> {h1}\n📍 <b>M15 Location:</b> {loc.get('zone','-')}\n🕯 <b>M5 Pattern:</b> {pattern}\n📐 <b>RR:</b> {levels['risk_reward']}R\n🛑 <b>SL:</b> {_fmt_price(levels['sl'])}\n🎯 <b>TP:</b> {_fmt_price(levels['tp'])}\n\n" f"📊 <b>Indicators:</b> EMA={'PASS' if ind.get('ema20_ok') else 'context'} | MACD={'PASS' if ind.get('macd_ok') else 'context'} | RSI={ind.get('rsi14','-')}\n\n⚠️ ระบบไม่เปิดออเดอร์อัตโนมัติ")
+    direction=setup["signal"]; levels=setup["trade_levels"]; loc=setup.get("location") or {}; h1=setup.get("structure_bias",{}); pattern=(setup.get("pattern") or {}).get("name","-"); ind=setup.get("indicator_context") or {}; side="🟢 BUY — ซื้อ" if direction=="BUY" else "🔴 SELL — ขาย"
+    h1_text=f"{h1.get('bias','NEUTRAL')} | EMA={h1.get('ema_context','NEUTRAL')} | ATR={h1.get('volatility_state','-')}"
+    return ("🚨 <b>V9.2 Pattern Signal</b>\n\n" f"{side}\n\n📊 <b>สินทรัพย์:</b> {symbol}\n⏱ <b>Entry TF:</b> M5\n🕯 <b>แท่ง:</b> {_fmt_time(setup.get('candle_time'))}\n🔐 <b>Signal ID:</b> {signal_id}\n\n" f"🧭 <b>H1 Decision:</b> {h1_text}\n📍 <b>M15 Location:</b> {loc.get('zone','-')}\n🕯 <b>M5 Pattern:</b> {pattern}\n📐 <b>RR:</b> {levels['risk_reward']}R\n🛑 <b>SL:</b> {_fmt_price(levels['sl'])}\n🎯 <b>TP:</b> {_fmt_price(levels['tp'])}\n\n" f"📊 <b>M5 Indicators:</b> EMA={'PASS' if ind.get('ema20_ok') else 'context'} | MACD={'PASS' if ind.get('macd_ok') else 'context'} | RSI={ind.get('rsi14','-')}\n\n⚠️ ระบบไม่เปิดออเดอร์อัตโนมัติ")
 
 def scan_once(symbol="BTC"):
     symbol=(symbol or "BTC").strip().upper()
@@ -40,7 +41,7 @@ def scan_once(symbol="BTC"):
             reasons=setup.get("rejection_reasons") or ["NO_TRADE_REASON_UNSPECIFIED"]
             payload={**setup,"signal":"NO_TRADE","result":"NO_TRADE","created_at":datetime.now(timezone.utc).isoformat(),"no_trade_reasons":reasons,"rejection_reasons":reasons}; recorded=_base.history.record_no_trade(payload); logger.warning("[%s] %s NO_TRADE recorded=%s reasons=%s",symbol,engine.ENGINE_VERSION,recorded,reasons); return {"status":"no_trade","engine_version":engine.ENGINE_VERSION,"symbol":symbol,"signal":"NO_TRADE","recorded":recorded,"rejection_reasons":reasons,"no_trade_reasons":reasons,**setup}
         if setup_key in _ALERTED_SIGNAL_KEYS or _base.history.get(signal_id): return {"status":"duplicate_suppressed","engine_version":engine.ENGINE_VERSION,"symbol":symbol,"signal":signal,"signal_id":signal_id,"setup_key":setup_key}
-        payload={"signal_id":signal_id,"symbol":symbol,"signal":signal,"closed_candle":candle_time,"created_at":datetime.now(timezone.utc).isoformat(),"engine_version":engine.ENGINE_VERSION,"replay":False,"pattern_signal":signal,"m5_direction":signal,"v9_setup":setup,"structure_bias":setup.get("structure_bias"),"location":setup.get("location"),"liquidity_event":setup.get("liquidity_event"),"m5_trigger":setup.get("m5_trigger"),"pullback":setup.get("pullback"),"target_liquidity":setup.get("target_liquidity"),"rejection_reasons":setup.get("rejection_reasons"),"trade_levels":setup["trade_levels"],"mtf":{"H1":{"bias":setup.get("structure_bias",{}).get("bias")},"M15":{"bias":setup.get("m15_structure",{}).get("bias")},"M5":signal}}
+        payload={"signal_id":signal_id,"symbol":symbol,"signal":signal,"closed_candle":candle_time,"created_at":datetime.now(timezone.utc).isoformat(),"engine_version":engine.ENGINE_VERSION,"replay":False,"pattern_signal":signal,"m5_direction":signal,"v9_setup":setup,"structure_bias":setup.get("structure_bias"),"location":setup.get("location"),"liquidity_event":setup.get("liquidity_event"),"m5_trigger":setup.get("m5_trigger"),"pullback":setup.get("pullback"),"target_liquidity":setup.get("target_liquidity"),"rejection_reasons":setup.get("rejection_reasons"),"trade_levels":setup["trade_levels"],"mtf":{"H1":{"bias":setup.get("structure_bias",{}).get("decision")},"M15":{"bias":setup.get("m15_structure",{}).get("bias")},"M5":signal}}
         recorded=_base.history.record_signal(payload); telegram_result=engine.send_telegram(_format_telegram(symbol,setup,signal_id)); _ALERTED_SIGNAL_KEYS.add(setup_key)
         logger.warning("[%s] %s SIGNAL=%s recorded=%s telegram=%s pattern=%s RR=%s",symbol,engine.ENGINE_VERSION,signal,recorded,bool(telegram_result.get("success")),(setup.get("pattern") or {}).get("name","-"),setup.get("trade_levels",{}).get("risk_reward"))
         return {"status":"signal_sent" if telegram_result.get("success") else "signal_recorded_telegram_failed","engine_version":engine.ENGINE_VERSION,"symbol":symbol,"signal":signal,"signal_id":signal_id,"recorded":recorded,"telegram":telegram_result,"telegram_alert_sent":bool(telegram_result.get("success")),"setup":setup}
