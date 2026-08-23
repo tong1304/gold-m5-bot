@@ -33,6 +33,31 @@ def _fmt_time(value):
     except (TypeError, ValueError): return str(value)
 
 
+def _data_max_age_minutes(timeframe):
+    defaults = {"5m": 20.0, "15m": 45.0, "1h": 150.0}
+    return float(os.getenv(f"LIVE_MAX_AGE_{timeframe.upper()}_MINUTES", defaults[timeframe]))
+
+
+def _validate_freshness(frame, symbol, timeframe):
+    if frame.empty:
+        raise RuntimeError(f"DATA_INVALID: LSE ไม่มีข้อมูล {timeframe} สำหรับ {symbol}")
+    latest = frame.iloc[-1]["datetime"]
+    if pd.isna(latest):
+        raise RuntimeError(f"DATA_INVALID: {symbol} {timeframe} latest timestamp เป็นค่าว่าง")
+    latest = pd.Timestamp(latest)
+    if latest.tzinfo is None:
+        latest = latest.tz_localize("UTC")
+    latest = latest.tz_convert("UTC")
+    now = pd.Timestamp.now(tz="UTC")
+    age_minutes = (now - latest).total_seconds() / 60.0
+    max_age = _data_max_age_minutes(timeframe)
+    print(f"[{symbol}] DATA CHECK {timeframe}: latest={latest.isoformat()} age={age_minutes:.1f}m max={max_age:.1f}m", flush=True)
+    if age_minutes < -2.0:
+        raise RuntimeError(f"DATA_INVALID: {symbol} {timeframe} timestamp is in the future latest={latest.isoformat()}")
+    if age_minutes > max_age:
+        raise RuntimeError(f"STALE_MARKET_DATA: {symbol} {timeframe} latest={latest.isoformat()} age={age_minutes:.1f}m max={max_age:.1f}m")
+
+
 def _lse_frame(symbol, timeframe, limit):
     from lse import LSE
     market = _market_symbol(symbol)
@@ -49,7 +74,9 @@ def _lse_frame(symbol, timeframe, limit):
     for col in ("open","high","low","close","volume"):
         if col in frame.columns: frame[col] = pd.to_numeric(frame[col], errors="coerce")
     frame = frame.dropna(subset=["datetime","high","low","close"]).sort_values("datetime").drop_duplicates("datetime").reset_index(drop=True)
-    return engine.remove_incomplete_last_candle(frame, timeframe_minutes={"1h":60,"15m":15,"5m":5}[timeframe])
+    frame = engine.remove_incomplete_last_candle(frame, timeframe_minutes={"1h":60,"15m":15,"5m":5}[timeframe])
+    _validate_freshness(frame, symbol, timeframe)
+    return frame
 
 
 def _load_frames(symbol):
