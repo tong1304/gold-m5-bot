@@ -9,7 +9,7 @@ import threading
 from datetime import datetime, timezone, timedelta
 import pandas as pd
 import engine_v9_core as engine
-import history_store as history
+from signal_history import history
 from lse_data import Client
 
 SUPPORTED_SYMBOLS=("BTC","GOLD")
