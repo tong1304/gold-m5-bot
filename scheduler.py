@@ -20,10 +20,8 @@ GOLD_CLOSE_FRIDAY_UTC = os.getenv("GOLD_CLOSE_FRIDAY_UTC", "22:00")
 GOLD_DAILY_BREAK_START_UTC = os.getenv("GOLD_DAILY_BREAK_START_UTC", "22:00")
 GOLD_DAILY_BREAK_END_UTC = os.getenv("GOLD_DAILY_BREAK_END_UTC", "23:00")
 
-
 def _interval_seconds():
     return max(10, int(os.getenv("SIGNAL_SCAN_INTERVAL_SECONDS", "15")))
-
 
 def _symbols():
     raw = os.getenv("LIVE_SIGNAL_SYMBOLS", "BTC,GOLD")
@@ -34,7 +32,6 @@ def _symbols():
             result.append(symbol)
     return result
 
-
 def _parse_utc_time(value, fallback):
     try:
         hour, minute = str(value).strip().split(":", 1)
@@ -42,7 +39,6 @@ def _parse_utc_time(value, fallback):
     except (TypeError, ValueError):
         logger.warning("Invalid UTC session time %r; using %s", value, fallback)
         return fallback
-
 
 def _gold_market_status(now_utc):
     sunday_open = _parse_utc_time(GOLD_OPEN_SUNDAY_UTC, dt_time(23, 0))
@@ -56,7 +52,6 @@ def _gold_market_status(now_utc):
     if break_start < break_end and break_start <= current < break_end: return False, "DAILY_BREAK"
     return True, "OPEN"
 
-
 def _asset_market_status(symbol, now_utc=None):
     now_utc = now_utc or datetime.now(UTC)
     symbol = (symbol or "").upper()
@@ -64,11 +59,9 @@ def _asset_market_status(symbol, now_utc=None):
     if symbol == "GOLD": return _gold_market_status(now_utc)
     return False, "UNKNOWN_MARKET_SESSION"
 
-
 def _get_live_scanner():
     import live_scanner
     return live_scanner
-
 
 def _notify_scheduler_error(exc, context="Scheduler"):
     now_bkk = datetime.now(UTC).astimezone(BANGKOK).strftime("%d/%m/%Y %H:%M:%S")
@@ -85,7 +78,6 @@ def _notify_scheduler_error(exc, context="Scheduler"):
             logger.exception("Scheduler error Telegram notification failed: %s", telegram_exc); return None
     logger.warning("Scheduler error Telegram notification result: %s", result); return result
 
-
 def _get_closed_candle_key(symbol):
     live_scanner = _get_live_scanner(); market_symbol = DISPLAY_TO_MARKET[symbol]
     logger.warning("[%s] Fetching latest closed M5 candle from Twelve Data symbol=%s", symbol, market_symbol)
@@ -95,19 +87,18 @@ def _get_closed_candle_key(symbol):
     row = df.iloc[-1]; key = str(row.get("datetime", row.name))
     logger.warning("[%s] Latest closed M5 candle: %s", symbol, key); return key
 
-
 def _send_price_heartbeat(now_bkk):
     global _LAST_PRICE_HEARTBEAT
-    if now_bkk.minute % 5 != 0: return None
+    if now_bkk.minute % 15 != 0: return None
     slot = now_bkk.strftime("%Y-%m-%d %H:%M")
     if slot == _LAST_PRICE_HEARTBEAT: return None
     now_utc = now_bkk.astimezone(UTC)
-    lines = ["🧪 <b>ทดสอบระบบทุก 5 นาที</b>", "", f"🕐 เวลา: {now_bkk.strftime('%d/%m/%Y %H:%M')} (กรุงเทพฯ)", ""]
+    lines = ["🧪 <b>ทดสอบระบบทุก 15 นาที</b>", "", f"🕐 เวลา: {now_bkk.strftime('%d/%m/%Y %H:%M')} (กรุงเทพฯ)", ""]
     feed_ok = True
     try: live_scanner = _get_live_scanner()
     except Exception as exc:
         live_scanner = None; feed_ok = False
-        logger.warning("Twelve Data scanner unavailable for 5-minute system test: %s", exc)
+        logger.warning("Twelve Data scanner unavailable for 15-minute system test: %s", exc)
         lines.append(f"❌ Twelve Data: ไม่พร้อมใช้งาน ({type(exc).__name__})"); lines.append(f"   └ {str(exc)}")
     for symbol in _symbols():
         market_open, session = _asset_market_status(symbol, now_utc)
@@ -125,17 +116,16 @@ def _send_price_heartbeat(now_bkk):
         else:
             import engine_v5 as engine; result = engine.send_telegram("\n".join(lines))
     except Exception as exc:
-        logger.exception("5-minute system test Telegram send failed: %s", exc)
+        logger.exception("15-minute system test Telegram send failed: %s", exc)
         return {"sent": False, "slot": slot, "telegram_result": None, "error_type": type(exc).__name__, "error": str(exc), "timezone": "Asia/Bangkok"}
     sent = bool(isinstance(result, dict) and result.get("success"))
     if sent: _LAST_PRICE_HEARTBEAT = slot
     else: logger.warning("Price monitor Telegram send failed: %s", result)
     return {"sent": sent, "slot": slot, "telegram_result": result, "timezone": "Asia/Bangkok"}
 
-
 def run_scan_cycle():
     now_bkk = datetime.now(UTC).astimezone(BANGKOK); now_utc = now_bkk.astimezone(UTC); symbols = _symbols()
-    logger.warning("[HEARTBEAT] Scheduler scan cycle START: %s | symbols=%s | interval=%ss | test_slots=every_5_minutes", now_bkk.strftime("%d/%m/%Y %H:%M:%S"), symbols, _interval_seconds())
+    logger.warning("[HEARTBEAT] Scheduler scan cycle START: %s | symbols=%s | interval=%ss | test_slots=00/15/30/45 Asia/Bangkok", now_bkk.strftime("%d/%m/%Y %H:%M:%S"), symbols, _interval_seconds())
     heartbeat = _send_price_heartbeat(now_bkk); results = []
     if not symbols: raise RuntimeError("ไม่มีสินทรัพย์ที่เปิดใช้งานใน LIVE_SIGNAL_SYMBOLS")
     try: live_scanner = _get_live_scanner()
@@ -166,32 +156,28 @@ def run_scan_cycle():
     if heartbeat is not None: results.append({"status":"price_heartbeat","heartbeat":heartbeat,"timezone":"Asia/Bangkok"})
     logger.warning("[HEARTBEAT] Scheduler scan cycle END: processed=%d symbol(s)", len(symbols)); return results
 
-
 def _loop():
     global _RUNNING
-    logger.warning("M5 Signal Scheduler thread started; interval=%ss; symbols=%s; test_slots=every_5_minutes Asia/Bangkok", _interval_seconds(), _symbols())
+    logger.warning("M5 Signal Scheduler thread started; interval=%ss; symbols=%s; test_slots=00/15/30/45 Asia/Bangkok", _interval_seconds(), _symbols())
     while _RUNNING:
         cycle_started = time.monotonic()
         try: run_scan_cycle()
         except Exception as exc: logger.exception("Fatal scheduler cycle error"); _notify_scheduler_error(exc, context="รอบการทำงานหลักของ Scheduler")
         elapsed = time.monotonic() - cycle_started
-        logger.warning("[HEARTBEAT] Scheduler cycle returned; elapsed=%.2fs; next_scan_in=%ss; test_slots=every_5_minutes", elapsed, _interval_seconds())
+        logger.warning("[HEARTBEAT] Scheduler cycle returned; elapsed=%.2fs; next_scan_in=%ss; test_slots=00/15/30/45 Asia/Bangkok", elapsed, _interval_seconds())
         time.sleep(_interval_seconds())
     logger.warning("M5 Signal Scheduler thread stopped")
-
 
 def start():
     global _RUNNING, _THREAD
     if _RUNNING and _THREAD and _THREAD.is_alive(): return False
     _RUNNING = True; _THREAD = threading.Thread(target=_loop, name="m5-btc-gold-scanner", daemon=True); _THREAD.start(); logger.warning("Signal Scheduler started successfully; thread=%s", _THREAD.name); return True
 
-
 def stop():
     global _RUNNING
     _RUNNING = False; logger.warning("Signal Scheduler stop requested")
 
-
 def status():
     alive = bool(_RUNNING and _THREAD and _THREAD.is_alive()); now_utc = datetime.now(UTC)
     market_sessions = {symbol: {"open": _asset_market_status(symbol, now_utc)[0], "session": _asset_market_status(symbol, now_utc)[1]} for symbol in _symbols()}
-    return {"running": alive, "interval_seconds": _interval_seconds(), "symbols": _symbols(), "market_sessions": market_sessions, "test_slots": "every_5_minutes", "timezone": "Asia/Bangkok", "provider": "twelve_data"}
+    return {"running": alive, "interval_seconds": _interval_seconds(), "symbols": _symbols(), "market_sessions": market_sessions, "test_slots": "00/15/30/45", "timezone": "Asia/Bangkok", "provider": "twelve_data"}
