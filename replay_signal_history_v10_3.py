@@ -1,5 +1,9 @@
-"""V10.3 historical replay: M15 context + M5 setup/trigger, no H1.
-Uses the same live ``analyze_structure_setup`` path and persists historical outcomes.
+"""V10.3 historical replay: date-range simulation using real LSE OHLCV.
+
+The requested dates are the simulation window. Internally the engine scans every
+closed M5 candle in that window, using only candles available up to that point.
+A 14-day warm-up is loaded before the requested start so indicators have context.
+M15 is fetched from LSE directly (not rebuilt from future M5 candles).
 Replay is dry with respect to Telegram/orders.
 """
 from __future__ import annotations
@@ -21,12 +25,14 @@ SYMBOLS = {"BTC": "BTC/USD", "GOLD": "XAU/USD"}
 
 
 def _bounds(a, b):
+    """Interpret date-only input as an inclusive Bangkok calendar-date range."""
     s = datetime.fromisoformat(a)
     e = datetime.fromisoformat(b)
     if s.tzinfo is None:
         s = s.replace(tzinfo=BANGKOK)
     if e.tzinfo is None:
         e = e.replace(tzinfo=BANGKOK)
+    # UI sends dates, so 2026-08-24 means the whole Bangkok day.
     if e.time() == datetime.min.time():
         e += timedelta(days=1)
     return s.astimezone(timezone.utc), e.astimezone(timezone.utc)
@@ -56,32 +62,51 @@ def _normalize(raw):
     df["datetime"] = pd.to_datetime(df["datetime"], utc=True, errors="coerce")
     for c in ("open", "high", "low", "close", "volume"):
         df[c] = pd.to_numeric(df[c], errors="coerce")
-    return df.dropna(subset=required).sort_values("datetime").drop_duplicates("datetime").reset_index(drop=True)
+    return (df.dropna(subset=required)
+              .sort_values("datetime")
+              .drop_duplicates("datetime")
+              .reset_index(drop=True))
 
 
-def _fetch(symbol, start, end, timeframe="5m", chunk_days=6):
+def _fetch(symbol, start, end, timeframe="5m"):
+    """Fetch all historical bars without silently losing data to LSE limit=200.
+
+    The previous implementation advanced by several days while requesting only
+    200 rows, which can discard a large part of M5 history.  Here each request is
+    smaller than the 200-row provider cap and uses timestamps, so the requested
+    date range is actually covered.
+    """
     key = os.getenv("LSE_API_KEY", "").strip() or os.getenv("LSE_KEY", "").strip()
     if not key:
         raise RuntimeError("LSE_API_KEY/LSE_KEY is not configured")
     client = LSE(api_key=key)
-    parts, cursor = [], start
+
+    # Keep every request below the provider's 200-row limit, with a small safety
+    # margin. M5: <= 16h40m; M15: <= 50h. Use shorter windows to avoid edge loss.
+    chunk = timedelta(hours=12) if timeframe == "5m" else timedelta(hours=36)
+    parts = []
+    cursor = start
     while cursor < end:
-        ce = min(cursor + timedelta(days=chunk_days), end)
-        raw = client.candles(SYMBOLS[symbol], timeframe, start=cursor.date().isoformat(), end=ce.date().isoformat(), limit=200, order="desc")
+        ce = min(cursor + chunk, end)
+        raw = client.candles(
+            SYMBOLS[symbol], timeframe,
+            start=cursor.isoformat(),
+            end=ce.isoformat(),
+            limit=200,
+            order="asc",
+        )
         frame = _normalize(raw)
         if not frame.empty:
             parts.append(frame)
+        # Always advance by our requested window; overlap is removed after merge.
         cursor = ce
+
     if not parts:
         raise RuntimeError(f"LSE returned no {timeframe} candles for {symbol}")
-    return pd.concat(parts, ignore_index=True).sort_values("datetime").drop_duplicates("datetime").reset_index(drop=True)
-
-
-def _resample(m5, minutes):
-    return (m5.set_index("datetime")[["open", "high", "low", "close", "volume"]]
-            .resample(f"{minutes}min", label="left", closed="left")
-            .agg({"open":"first","high":"max","low":"min","close":"last","volume":"sum"})
-            .dropna(subset=["open","high","low","close"]).reset_index())
+    return (pd.concat(parts, ignore_index=True)
+              .sort_values("datetime")
+              .drop_duplicates("datetime")
+              .reset_index(drop=True))
 
 
 def _context(frame, ts):
@@ -95,6 +120,7 @@ def _resolve(direction, entry, sl, tp, future):
         hi, lo = float(c.high), float(c.low)
         hit_sl = lo <= sl if direction == "BUY" else hi >= sl
         hit_tp = hi >= tp if direction == "BUY" else lo <= tp
+        # Intrabar OHLC cannot tell which level was hit first.
         if hit_sl and hit_tp:
             return "AMBIGUOUS", 0.0, str(c.datetime)
         if hit_tp:
@@ -109,7 +135,6 @@ def _empty_strategy_stats():
 
 
 def aggregate_strategy_stats(candidates, results_by_strategy=None):
-    """Aggregate candidate evaluations and every replay outcome by strategy."""
     results_by_strategy = results_by_strategy or {}
     stats = {}
     for candidate in candidates or []:
@@ -130,7 +155,6 @@ def aggregate_strategy_stats(candidates, results_by_strategy=None):
 
 
 def replay_overall_status(results):
-    """Do not report the whole replay as failed when only one symbol failed."""
     statuses = [str(r.get("status")) for r in results]
     if statuses and all(s == "completed" for s in statuses):
         return "completed"
@@ -140,8 +164,10 @@ def replay_overall_status(results):
 
 
 def replay_symbol(symbol, start, end, dry_run=False):
-    m5 = _fetch(symbol, start - timedelta(days=14), end, "5m", 6)
-    m15 = _resample(m5, 15)
+    warmup = timedelta(days=14)
+    history_start = start - warmup
+    m5 = _fetch(symbol, history_start, end, "5m")
+    m15 = _fetch(symbol, history_start, end, "15m")
     if len(m5) < 150 or len(m15) < 100:
         raise RuntimeError(f"Not enough history for {symbol}: M5={len(m5)} M15={len(m15)}")
 
@@ -155,6 +181,8 @@ def replay_symbol(symbol, start, end, dry_run=False):
     engine.MIN_RISK_REWARD = 1.0
     engine.RISK_REWARD = max(float(os.getenv("RISK_REWARD", "1.0")), 1.0)
 
+    # One complete day can contain hundreds of evaluations. This is intentional:
+    # the user selects a DAY; the engine internally evaluates each closed M5 bar.
     for i in range(100, len(m5) - 1):
         ts = pd.Timestamp(m5.iloc[i].datetime)
         if ts < start_ts or ts >= end_ts:
@@ -164,15 +192,14 @@ def replay_symbol(symbol, start, end, dry_run=False):
         if len(m15c) < 100:
             continue
 
-        # Exact live path: live_scanner_v9_2 also calls this function.
         setup = engine.analyze_structure_setup(m5c, m15c, len(m5c)-1)
         candidates = setup.get("strategy_candidates") or []
         all_candidates.extend(candidates)
-
         setup.update({
             "candle_time": ts.isoformat(), "closed_candle": ts.isoformat(), "symbol": symbol,
             "engine_version": engine.ENGINE_VERSION, "strategy_candidates": candidates,
             "replay": True, "replay_source": "LSE_HISTORICAL_OHLCV_V10.3",
+            "replay_start": start_ts.isoformat(), "replay_end": end_ts.isoformat(),
         })
         signal = setup.get("signal")
         levels = setup.get("trade_levels") or {}
@@ -211,8 +238,25 @@ def replay_symbol(symbol, start, end, dry_run=False):
             if result != "OPEN":
                 history.set_result(sid,result,r,when)
 
+    # Daily summary is deliberately independent of candle-level output.
+    day_rows = defaultdict(lambda: {"evaluated":0,"signals":0,"WIN":0,"LOSS":0,"OPEN":0,"AMBIGUOUS":0,"NO_TRADE":0})
+    for i in range(100, len(m5) - 1):
+        ts = pd.Timestamp(m5.iloc[i].datetime)
+        if start_ts <= ts < end_ts:
+            day_rows[ts.tz_convert(BANGKOK).date().isoformat()]["evaluated"] += 1
+    # Signal counts above are global; per-day signal rows are available from DB.
+    # Keep a compact deterministic date list for the UI even when there are no signals.
+    requested_days=[]
+    d=start_ts.tz_convert(BANGKOK).date()
+    last=(end_ts-timedelta(microseconds=1)).tz_convert(BANGKOK).date()
+    while d <= last:
+        requested_days.append(d.isoformat()); d += timedelta(days=1)
+
     return {
         "status":"completed", "symbol":symbol, "engine_version":engine.ENGINE_VERSION, "provider":"LSE",
+        "replay_mode":"DATE_RANGE", "start":start_ts.isoformat(), "end":end_ts.isoformat(),
+        "warmup_days":14, "m5_bars":len(m5), "m15_bars":len(m15),
+        "requested_days":requested_days, "evaluated_closed_m5_candles":sum(x["evaluated"] for x in day_rows.values()),
         "generated":generated, "inserted":inserted, "outcomes":outcomes,
         "rejected":dict(rejected.most_common(30)),
         "strategy_stats":aggregate_strategy_stats(all_candidates, results_by_strategy),
@@ -223,12 +267,10 @@ def main():
     p=argparse.ArgumentParser(); p.add_argument("--start",required=True); p.add_argument("--end",required=True); p.add_argument("--symbol",choices=["BTC","GOLD","ALL"],default="ALL"); p.add_argument("--dry-run",action="store_true"); a=p.parse_args()
     start,end=_bounds(a.start,a.end); results=[]
     for s in (["BTC","GOLD"] if a.symbol=="ALL" else [a.symbol]):
-        try:
-            results.append(replay_symbol(s,start,end,a.dry_run))
-        except Exception as exc:
-            results.append({"symbol":s,"engine_version":engine.ENGINE_VERSION,"status":"failed","error":f"{type(exc).__name__}: {exc}"})
+        try: results.append(replay_symbol(s,start,end,a.dry_run))
+        except Exception as exc: results.append({"symbol":s,"engine_version":engine.ENGINE_VERSION,"status":"failed","error":f"{type(exc).__name__}: {exc}"})
     status=replay_overall_status(results)
-    print(json.dumps({"status":"dry-run" if a.dry_run and status=="completed" else status,"engine_version":engine.ENGINE_VERSION,"provider":"LSE","start":a.start,"end":a.end,"results":results},ensure_ascii=False,separators=(",",":")))
+    print(json.dumps({"status":"dry-run" if a.dry_run and status=="completed" else status,"engine_version":engine.ENGINE_VERSION,"provider":"LSE","replay_mode":"DATE_RANGE","start":start.isoformat(),"end":end.isoformat(),"results":results},ensure_ascii=False,separators=(",",":")))
 
 
 if __name__=="__main__":
