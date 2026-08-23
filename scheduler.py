@@ -9,7 +9,7 @@ logger = logging.getLogger("signal_scheduler")
 _RUNNING = False
 _THREAD = None
 _LAST_CLOSED_CANDLE = {}
-_LAST_PRICE_HEARTBEAT = None
+_LAST_TEST_SLOT = None
 BANGKOK = ZoneInfo("Asia/Bangkok")
 UTC = timezone.utc
 DISPLAY_SYMBOLS = ("BTC", "GOLD")
@@ -23,7 +23,13 @@ GOLD_DAILY_BREAK_END_UTC = os.getenv("GOLD_DAILY_BREAK_END_UTC", "23:00")
 
 
 def _interval_seconds():
-    return max(10, int(os.getenv("SIGNAL_SCAN_INTERVAL_SECONDS", "15")))
+    # One cycle per 5-minute candle keeps the free Twelve Data allowance safe.
+    # A configured value may increase the interval, but never decrease it.
+    try:
+        configured = int(os.getenv("SIGNAL_SCAN_INTERVAL_SECONDS", "300"))
+    except ValueError:
+        configured = 300
+    return max(300, configured)
 
 
 def _symbols():
@@ -41,17 +47,21 @@ def _parse_utc_time(value, fallback):
         hour, minute = str(value).strip().split(":", 1)
         return dt_time(int(hour), int(minute))
     except (TypeError, ValueError):
-        logger.warning("Invalid UTC session time %r; using %s", value, fallback)
         return fallback
 
 
-def _gold_market_status(now_utc):
+def _asset_market_status(symbol, now_utc=None):
+    now_utc = now_utc or datetime.now(UTC)
+    symbol = (symbol or "").upper()
+    if symbol == "BTC":
+        return True, "OPEN_24_7"
+    if symbol != "GOLD":
+        return False, "UNKNOWN_MARKET_SESSION"
     sunday_open = _parse_utc_time(GOLD_OPEN_SUNDAY_UTC, dt_time(23, 0))
     friday_close = _parse_utc_time(GOLD_CLOSE_FRIDAY_UTC, dt_time(22, 0))
     break_start = _parse_utc_time(GOLD_DAILY_BREAK_START_UTC, dt_time(22, 0))
     break_end = _parse_utc_time(GOLD_DAILY_BREAK_END_UTC, dt_time(23, 0))
-    weekday = now_utc.weekday()
-    current = now_utc.time()
+    weekday, current = now_utc.weekday(), now_utc.time()
     if weekday == 5:
         return False, "WEEKEND_CLOSED"
     if weekday == 6:
@@ -63,100 +73,72 @@ def _gold_market_status(now_utc):
     return True, "OPEN"
 
 
-def _asset_market_status(symbol, now_utc=None):
-    now_utc = now_utc or datetime.now(UTC)
-    symbol = (symbol or "").upper()
-    if symbol == "BTC":
-        return True, "OPEN_24_7"
-    if symbol == "GOLD":
-        return _gold_market_status(now_utc)
-    return False, "UNKNOWN_MARKET_SESSION"
-
-
-def _get_live_scanner():
+def _scanner():
     import live_scanner
     return live_scanner
 
 
-def _notify_scheduler_error(exc, context="Scheduler"):
-    now_bkk = datetime.now(UTC).astimezone(BANGKOK).strftime("%d/%m/%Y %H:%M:%S")
+def _notify_error(exc, context):
     message = (
         "❌ <b>ระบบ Scheduler ขัดข้อง</b>\n\n"
-        f"🕐 เวลา: {now_bkk} (กรุงเทพฯ)\n"
-        f"📍 จุดที่เกิดปัญหา: {context}\n"
-        f"🔴 ประเภทข้อผิดพลาด: {type(exc).__name__}\n"
-        f"📝 รายละเอียด: {exc}\n\n"
-        "🛑 ระบบสแกนสัญญาณอัตโนมัติอาจหยุดทำงาน\n"
-        "🖐️ ไม่มีการเปิดออเดอร์อัตโนมัติ"
+        f"🕐 {datetime.now(UTC).astimezone(BANGKOK).strftime('%d/%m/%Y %H:%M:%S')} (กรุงเทพฯ)\n"
+        f"📍 {context}\n🔴 {type(exc).__name__}\n📝 {exc}\n\n"
+        "🛑 ไม่มีการเปิดออเดอร์อัตโนมัติ"
     )
     try:
-        live_scanner = _get_live_scanner()
-        return live_scanner.engine.send_telegram(message)
+        return _scanner().engine.send_telegram(message)
     except Exception:
         try:
             import engine_v5 as engine
             return engine.send_telegram(message)
-        except Exception as telegram_exc:
-            logger.exception("Scheduler error Telegram notification failed: %s", telegram_exc)
+        except Exception:
+            logger.exception("Scheduler Telegram error notification failed")
             return None
 
 
-def _get_closed_candle_key(symbol):
-    live_scanner = _get_live_scanner()
-    market_symbol = DISPLAY_TO_MARKET[symbol]
-    logger.warning("[%s] Fetching latest closed M5 candle from Twelve Data symbol=%s", symbol, market_symbol)
-    df = live_scanner.BINANCE.fetch_candles(market_symbol, "5m", 10)
-    df = live_scanner.BINANCE.remove_incomplete_last_candle(df, timeframe_minutes=5)
-    if df.empty:
+def _closed_frame(symbol):
+    scanner = _scanner()
+    market = DISPLAY_TO_MARKET[symbol]
+    frame = scanner.BINANCE.fetch_candles(market, "5m", 10)
+    frame = scanner.BINANCE.remove_incomplete_last_candle(frame, timeframe_minutes=5)
+    if frame.empty:
         raise RuntimeError(f"ยังไม่มีแท่ง M5 ที่ปิดแล้วสำหรับ {symbol}")
-    row = df.iloc[-1]
-    key = str(row.get("datetime", row.name))
-    logger.warning("[%s] Latest closed M5 candle: %s", symbol, key)
-    return key
+    return frame
 
 
-def _send_price_heartbeat(now_bkk):
-    global _LAST_PRICE_HEARTBEAT
-    # System test is intentionally every 5 minutes: 00, 05, 10, 15, ...
+def _system_test(now_bkk):
+    global _LAST_TEST_SLOT
     if now_bkk.minute % 5 != 0:
         return None
     slot = now_bkk.strftime("%Y-%m-%d %H:%M")
-    if slot == _LAST_PRICE_HEARTBEAT:
+    if slot == _LAST_TEST_SLOT:
         return None
 
-    now_utc = now_bkk.astimezone(UTC)
     lines = [
         "🧪 <b>ทดสอบระบบทุก 5 นาที</b>",
         "",
         f"🕐 เวลา: {now_bkk.strftime('%d/%m/%Y %H:%M')} (กรุงเทพฯ)",
         "",
     ]
+    scanner = None
     feed_ok = True
+    frames = {}
     try:
-        live_scanner = _get_live_scanner()
+        scanner = _scanner()
+        for symbol in _symbols():
+            market_open, session = _asset_market_status(symbol, now_bkk.astimezone(UTC))
+            if not market_open:
+                lines.append(f"⏸ {symbol}: ตลาดปิด ({session})")
+                continue
+            frame = _closed_frame(symbol)
+            frames[symbol] = frame
+            price = float(frame.iloc[-1]["close"])
+            candle = str(frame.iloc[-1]["datetime"])
+            lines.append(f"📊 {symbol}: <b>{price:,.8f}</b> | M5 ปิด: {candle}")
     except Exception as exc:
-        live_scanner = None
         feed_ok = False
-        logger.warning("Twelve Data scanner unavailable for 5-minute system test: %s", exc)
-        lines.append(f"❌ Twelve Data: ไม่พร้อมใช้งาน ({type(exc).__name__})")
-        lines.append(f"   └ {exc}")
-
-    for symbol in _symbols():
-        market_open, session = _asset_market_status(symbol, now_utc)
-        if not market_open:
-            lines.append(f"⏸ {symbol}: ตลาดปิด ({session})")
-            continue
-        if live_scanner is None:
-            lines.append(f"❌ {symbol}: ดึงราคาจาก Twelve Data ไม่ได้")
-            continue
-        try:
-            price, _ = live_scanner.BINANCE.fetch_price(DISPLAY_TO_MARKET[symbol])
-            lines.append(f"📊 {symbol}: <b>{price:,.8f}</b>")
-        except Exception as exc:
-            feed_ok = False
-            logger.exception("Twelve Data price monitor failed for %s", symbol)
-            lines.append(f"❌ {symbol}: ดึงราคาจาก Twelve Data ไม่ได้")
-            lines.append(f"   └ {type(exc).__name__}: {exc}")
+        logger.exception("Twelve Data 5-minute system test failed")
+        lines.append(f"❌ Twelve Data: {type(exc).__name__}: {exc}")
 
     lines.extend([
         "",
@@ -164,33 +146,18 @@ def _send_price_heartbeat(now_bkk):
         "✅ Twelve Data Price Feed" if feed_ok else "⚠️ Twelve Data Price Feed มีข้อผิดพลาด",
         "✅ Telegram Monitor",
         "",
-        "ℹ️ ข้อความนี้เป็นการทดสอบระบบ",
-        "⛔ ไม่ใช่สัญญาณ BUY/SELL",
+        "ℹ️ การทดสอบนี้ไม่ใช่สัญญาณ BUY/SELL",
     ])
-    text = "\n".join(lines)
     try:
-        if live_scanner is not None:
-            result = live_scanner.engine.send_telegram(text)
-        else:
-            import engine_v5 as engine
-            result = engine.send_telegram(text)
+        result = (scanner.engine.send_telegram("\n".join(lines)) if scanner is not None
+                  else __import__("engine_v5").send_telegram("\n".join(lines)))
+        sent = bool(isinstance(result, dict) and result.get("success"))
+        if sent:
+            _LAST_TEST_SLOT = slot
+        return {"sent": sent, "slot": slot, "telegram_result": result, "timezone": "Asia/Bangkok"}
     except Exception as exc:
-        logger.exception("5-minute system test Telegram send failed: %s", exc)
-        return {
-            "sent": False,
-            "slot": slot,
-            "telegram_result": None,
-            "error_type": type(exc).__name__,
-            "error": str(exc),
-            "timezone": "Asia/Bangkok",
-        }
-
-    sent = bool(isinstance(result, dict) and result.get("success"))
-    if sent:
-        _LAST_PRICE_HEARTBEAT = slot
-    else:
-        logger.warning("Price monitor Telegram send failed: %s", result)
-    return {"sent": sent, "slot": slot, "telegram_result": result, "timezone": "Asia/Bangkok"}
+        logger.exception("5-minute system test Telegram send failed")
+        return {"sent": False, "slot": slot, "error_type": type(exc).__name__, "error": str(exc)}
 
 
 def run_scan_cycle():
@@ -198,71 +165,35 @@ def run_scan_cycle():
     now_utc = now_bkk.astimezone(UTC)
     symbols = _symbols()
     logger.warning(
-        "[HEARTBEAT] Scheduler scan cycle START: %s | symbols=%s | interval=%ss | test_slots=every_5_minutes Asia/Bangkok",
+        "[HEARTBEAT] Scheduler cycle START: %s | symbols=%s | interval=%ss | test_slots=every_5_minutes Asia/Bangkok",
         now_bkk.strftime("%d/%m/%Y %H:%M:%S"), symbols, _interval_seconds(),
     )
-    heartbeat = _send_price_heartbeat(now_bkk)
+    heartbeat = _system_test(now_bkk)
     results = []
-    if not symbols:
-        raise RuntimeError("ไม่มีสินทรัพย์ที่เปิดใช้งานใน LIVE_SIGNAL_SYMBOLS")
-
     try:
-        live_scanner = _get_live_scanner()
+        scanner = _scanner()
     except Exception as exc:
-        logger.warning("[%s] Twelve Data scanner unavailable; skip signal scans: %s", ",".join(symbols), exc)
-        for symbol in symbols:
-            results.append({
-                "status": "twelve_data_unavailable",
-                "symbol": symbol,
-                "market_symbol": DISPLAY_TO_MARKET[symbol],
-                "error_type": type(exc).__name__,
-                "message": str(exc),
-                "telegram_alert_sent": False,
-                "live_orders_allowed": False,
-                "scan_skipped": True,
-            })
-        if heartbeat is not None:
-            results.append({"status": "price_heartbeat", "heartbeat": heartbeat, "timezone": "Asia/Bangkok"})
-        return results
+        logger.warning("Twelve Data scanner unavailable: %s", exc)
+        _notify_error(exc, "เริ่มต้น market-data scanner")
+        return [{"status": "twelve_data_unavailable", "error_type": type(exc).__name__, "message": str(exc)}]
 
     for symbol in symbols:
         try:
-            logger.warning("[%s] Scan step START", symbol)
-            if symbol not in live_scanner.SUPPORTED_SYMBOLS:
+            if symbol not in scanner.SUPPORTED_SYMBOLS:
                 raise RuntimeError(f"ไม่รองรับสินทรัพย์: {symbol}")
             market_open, session = _asset_market_status(symbol, now_utc)
             if not market_open:
-                results.append({
-                    "status": "market_closed",
-                    "symbol": symbol,
-                    "market_symbol": DISPLAY_TO_MARKET[symbol],
-                    "session": session,
-                    "telegram_alert_sent": False,
-                    "live_orders_allowed": False,
-                    "scan_skipped": True,
-                })
+                results.append({"status": "market_closed", "symbol": symbol, "session": session, "live_orders_allowed": False})
                 continue
-
-            closed_key = _get_closed_candle_key(symbol)
-            previous = _LAST_CLOSED_CANDLE.get(symbol)
-            if previous == closed_key:
-                results.append({
-                    "status": "waiting_new_candle",
-                    "symbol": symbol,
-                    "timeframe": "M5",
-                    "closed_candle": closed_key,
-                    "message": "ยังไม่มีแท่ง M5 ใหม่ปิด ระบบรอแท่งถัดไป",
-                    "telegram_alert_sent": False,
-                    "live_orders_allowed": False,
-                })
+            frame = _closed_frame(symbol)
+            closed_key = str(frame.iloc[-1]["datetime"])
+            if _LAST_CLOSED_CANDLE.get(symbol) == closed_key:
+                results.append({"status": "waiting_new_candle", "symbol": symbol, "timeframe": "M5", "closed_candle": closed_key, "live_orders_allowed": False})
                 continue
-
-            result = live_scanner.scan_once(symbol)
-            telegram_sent = bool(isinstance(result, dict) and result.get("telegram_alert_sent"))
+            result = scanner.scan_once(symbol)
             valid_signal = bool(isinstance(result, dict) and result.get("valid"))
-            if valid_signal and not telegram_sent:
-                logger.warning("[%s] VALID signal detected but Telegram alert was not confirmed; candle=%s will be retried", symbol, closed_key)
-            else:
+            telegram_sent = bool(isinstance(result, dict) and result.get("telegram_alert_sent"))
+            if not (valid_signal and not telegram_sent):
                 _LAST_CLOSED_CANDLE[symbol] = closed_key
             result["trigger"] = "NEW_CLOSED_M5_CANDLE"
             result["candle_consumed"] = not (valid_signal and not telegram_sent)
@@ -270,41 +201,26 @@ def run_scan_cycle():
             results.append(result)
         except Exception as exc:
             logger.exception("[%s] Scan failed", symbol)
-            _notify_scheduler_error(exc, context=f"การสแกน {symbol}")
-            results.append({
-                "status": "scan_error",
-                "symbol": symbol,
-                "error_type": type(exc).__name__,
-                "message": str(exc),
-                "telegram_alert_sent": False,
-                "live_orders_allowed": False,
-            })
+            _notify_error(exc, f"การสแกน {symbol}")
+            results.append({"status": "scan_error", "symbol": symbol, "error_type": type(exc).__name__, "message": str(exc), "live_orders_allowed": False})
 
     if heartbeat is not None:
         results.append({"status": "price_heartbeat", "heartbeat": heartbeat, "timezone": "Asia/Bangkok"})
-    logger.warning("[HEARTBEAT] Scheduler scan cycle END: processed=%d symbol(s)", len(symbols))
+    logger.warning("[HEARTBEAT] Scheduler cycle END: processed=%d symbol(s)", len(results))
     return results
 
 
 def _loop():
     global _RUNNING
-    logger.warning(
-        "M5 Signal Scheduler thread started; interval=%ss; symbols=%s; test_slots=every_5_minutes Asia/Bangkok",
-        _interval_seconds(), _symbols(),
-    )
+    logger.warning("M5 Signal Scheduler thread started; interval=%ss; symbols=%s; test_slots=every_5_minutes Asia/Bangkok", _interval_seconds(), _symbols())
     while _RUNNING:
-        cycle_started = time.monotonic()
+        started = time.monotonic()
         try:
             run_scan_cycle()
         except Exception as exc:
             logger.exception("Fatal scheduler cycle error")
-            _notify_scheduler_error(exc, context="รอบการทำงานหลักของ Scheduler")
-        elapsed = time.monotonic() - cycle_started
-        logger.warning(
-            "[HEARTBEAT] Scheduler cycle returned; elapsed=%.2fs; next_scan_in=%ss; test_slots=every_5_minutes Asia/Bangkok",
-            elapsed, _interval_seconds(),
-        )
-        time.sleep(_interval_seconds())
+            _notify_error(exc, "รอบการทำงานหลักของ Scheduler")
+        time.sleep(max(1, _interval_seconds() - int(time.monotonic() - started)))
     logger.warning("M5 Signal Scheduler thread stopped")
 
 
@@ -322,24 +238,16 @@ def start():
 def stop():
     global _RUNNING
     _RUNNING = False
-    logger.warning("Signal Scheduler stop requested")
 
 
 def status():
-    alive = bool(_RUNNING and _THREAD and _THREAD.is_alive())
-    now_utc = datetime.now(UTC)
+    now = datetime.now(UTC)
     return {
-        "running": alive,
+        "running": bool(_RUNNING and _THREAD and _THREAD.is_alive()),
         "interval_seconds": _interval_seconds(),
         "symbols": _symbols(),
-        "market_sessions": {
-            symbol: {
-                "open": _asset_market_status(symbol, now_utc)[0],
-                "session": _asset_market_status(symbol, now_utc)[1],
-            }
-            for symbol in _symbols()
-        },
         "test_slots": "every_5_minutes",
         "timezone": "Asia/Bangkok",
         "provider": "twelve_data",
+        "market_sessions": {s: {"open": _asset_market_status(s, now)[0], "session": _asset_market_status(s, now)[1]} for s in _symbols()},
     }
