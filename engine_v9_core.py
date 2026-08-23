@@ -31,11 +31,20 @@ _find_sweep = base._find_sweep
 _find_mss = base._find_mss
 _retest = base._retest
 _target_liquidity = base._target_liquidity
-execution_price = base.execution_price
 resolve_trade = base.resolve_trade
 remove_incomplete_last_candle = base.remove_incomplete_last_candle
 evaluate_live_risk_guard = base.evaluate_live_risk_guard
-send_telegram = base.send_telegram
+
+
+def execution_price(raw, side):
+    adverse = max(float(SPREAD) / 2.0 + float(SLIPPAGE), 0.0)
+    p = _f(raw)
+    return p + adverse if side == "BUY" else p - adverse
+
+
+def send_telegram(message):
+    text = str(message).replace("Structure V8", "Structure V9").replace("V8 Setup", "V9 Setup")
+    return base.send_telegram(text)
 
 
 def _candle_pattern(df, direction):
