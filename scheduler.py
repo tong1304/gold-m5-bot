@@ -5,8 +5,6 @@ import logging
 from datetime import datetime, timezone, time as dt_time
 from zoneinfo import ZoneInfo
 
-import live_scanner
-
 logger = logging.getLogger("signal_scheduler")
 
 _RUNNING = False
@@ -77,27 +75,39 @@ def _asset_market_status(symbol, now_utc=None):
     return False, "UNKNOWN_MARKET_SESSION"
 
 
+def _get_live_scanner():
+    """Load MT5-dependent scanner only when a scan/price check actually needs it."""
+    import live_scanner
+    return live_scanner
+
+
 def _notify_scheduler_error(exc, context="Scheduler"):
+    now_bkk = datetime.now(UTC).astimezone(BANGKOK).strftime("%d/%m/%Y %H:%M:%S")
+    message = (
+        "❌ <b>ระบบ Scheduler ขัดข้อง</b>\n\n"
+        f"🕐 เวลา: {now_bkk} (กรุงเทพฯ)\n"
+        f"📍 จุดที่เกิดปัญหา: {context}\n"
+        f"🔴 ประเภทข้อผิดพลาด: {type(exc).__name__}\n"
+        f"📝 รายละเอียด: {str(exc)}\n\n"
+        "🛑 ระบบสแกนสัญญาณอัตโนมัติอาจหยุดทำงาน\n"
+        "🖐️ ไม่มีการเปิดออเดอร์อัตโนมัติ"
+    )
     try:
-        now_bkk = datetime.now(UTC).astimezone(BANGKOK).strftime("%d/%m/%Y %H:%M:%S")
-        message = (
-            "❌ <b>ระบบ Scheduler ขัดข้อง</b>\n\n"
-            f"🕐 เวลา: {now_bkk} (กรุงเทพฯ)\n"
-            f"📍 จุดที่เกิดปัญหา: {context}\n"
-            f"🔴 ประเภทข้อผิดพลาด: {type(exc).__name__}\n"
-            f"📝 รายละเอียด: {str(exc)}\n\n"
-            "🛑 ระบบสแกนสัญญาณอัตโนมัติอาจหยุดทำงาน\n"
-            "🖐️ ไม่มีการเปิดออเดอร์อัตโนมัติ"
-        )
+        live_scanner = _get_live_scanner()
         result = live_scanner.engine.send_telegram(message)
-        logger.warning("Scheduler error Telegram notification result: %s", result)
-        return result
-    except Exception as telegram_exc:
-        logger.exception("Scheduler error Telegram notification failed: %s", telegram_exc)
-        return None
+    except Exception:
+        try:
+            import engine_v5 as engine
+            result = engine.send_telegram(message)
+        except Exception as telegram_exc:
+            logger.exception("Scheduler error Telegram notification failed: %s", telegram_exc)
+            return None
+    logger.warning("Scheduler error Telegram notification result: %s", result)
+    return result
 
 
 def _get_closed_candle_key(symbol):
+    live_scanner = _get_live_scanner()
     market_symbol = DISPLAY_TO_MARKET[symbol]
     logger.warning("[%s] Fetching latest closed M5 candle from XM MT5 symbol=%s", symbol, market_symbol)
     df = live_scanner.BINANCE.fetch_candles(market_symbol, "5m", 10)
@@ -126,10 +136,22 @@ def _send_price_heartbeat(now_bkk):
         "",
     ]
     feed_ok = True
+    try:
+        live_scanner = _get_live_scanner()
+    except Exception as exc:
+        live_scanner = None
+        feed_ok = False
+        logger.warning("XM MT5 scanner unavailable for 30-minute system test: %s", exc)
+        lines.append(f"❌ XM MT5: Bridge ไม่พร้อมใช้งาน ({type(exc).__name__})")
+        lines.append(f"   └ {str(exc)}")
+
     for symbol in _symbols():
         market_open, session = _asset_market_status(symbol, now_utc)
         if not market_open:
             lines.append(f"⏸ {symbol}: ตลาดปิด ({session})")
+            continue
+        if live_scanner is None:
+            lines.append(f"❌ {symbol}: ดึงราคา XM MT5 ไม่ได้")
             continue
         try:
             price, _ = live_scanner.BINANCE.fetch_price(DISPLAY_TO_MARKET[symbol])
@@ -148,7 +170,15 @@ def _send_price_heartbeat(now_bkk):
         "ℹ️ ข้อความนี้เป็นการทดสอบระบบ",
         "⛔ ไม่ใช่สัญญาณ BUY/SELL",
     ])
-    result = live_scanner.engine.send_telegram("\n".join(lines))
+    try:
+        if live_scanner is not None:
+            result = live_scanner.engine.send_telegram("\n".join(lines))
+        else:
+            import engine_v5 as engine
+            result = engine.send_telegram("\n".join(lines))
+    except Exception as exc:
+        logger.exception("30-minute system test Telegram send failed: %s", exc)
+        return {"sent": False, "slot": slot, "telegram_result": None, "error_type": type(exc).__name__, "error": str(exc), "timezone": "Asia/Bangkok"}
     sent = bool(isinstance(result, dict) and result.get("success"))
     if sent:
         _LAST_PRICE_HEARTBEAT = slot
@@ -169,6 +199,17 @@ def run_scan_cycle():
     results = []
     if not symbols:
         raise RuntimeError("ไม่มีสินทรัพย์ที่เปิดใช้งานใน LIVE_SIGNAL_SYMBOLS")
+
+    try:
+        live_scanner = _get_live_scanner()
+    except Exception as exc:
+        logger.warning("[%s] MT5 scanner unavailable; skip signal scans: %s", ",".join(symbols), exc)
+        for symbol in symbols:
+            results.append({"status":"mt5_bridge_unavailable","symbol":symbol,"market_symbol":DISPLAY_TO_MARKET[symbol],"error_type":type(exc).__name__,"message":str(exc),"telegram_alert_sent":False,"live_orders_allowed":False,"scan_skipped":True})
+        if heartbeat is not None:
+            results.append({"status":"price_heartbeat","heartbeat":heartbeat,"timezone":"Asia/Bangkok"})
+        logger.warning("[HEARTBEAT] Scheduler cycle END: MT5 scanner unavailable; heartbeat=%s", heartbeat)
+        return results
 
     for symbol in symbols:
         try:
