@@ -1,4 +1,11 @@
-"""Replay the live M5 signal logic using real LSE historical OHLCV."""
+"""Replay the live M5 signal logic using real LSE historical OHLCV.
+
+Usage:
+    python replay_signal_history.py --start 2026-08-01 --end 2026-08-23
+    python replay_signal_history.py --start 2026-08-01 --end 2026-08-23 --symbol BTC
+
+Statistics-only: no Telegram alert and no live order is sent.
+"""
 from __future__ import annotations
 
 import argparse
@@ -48,35 +55,51 @@ def _normalize(result):
               .sort_values("datetime").drop_duplicates("datetime").reset_index(drop=True))
 
 
-def _fetch_lse(symbol, start, end, timeframe="5m", chunk_days=7):
-    """Fetch real LSE history using the lse-data 0.14 candle API.
+def _fetch_lse(symbol, start, end, timeframe="5m", chunk_days=6):
+    """Fetch real LSE history with the lse-data 0.14 API.
 
-    lse-data 0.14 expects start/end as YYYY-MM-DD and does not accept
-    as_dataframe. The response is normalized locally to a DataFrame.
+    IMPORTANT: lse-data 0.14 requires candle start/end in YYYY-MM-DD form.
+    Passing ISO timestamps causes HTTP 400 "invalid date" errors.  We also
+    avoid the unsupported as_dataframe argument and normalize the returned
+    object locally.
     """
     key = os.getenv("LSE_API_KEY", "").strip() or os.getenv("LSE_KEY", "").strip()
     if not key:
         raise RuntimeError("LSE_API_KEY/LSE_KEY is not configured")
+
     from lse import LSE
     client = LSE(api_key=key)
     parts = []
     cursor = start
+
     while cursor < end:
         chunk_end = min(cursor + timedelta(days=chunk_days), end)
+        start_date = cursor.date().isoformat()
+        end_date = chunk_end.date().isoformat()
+        print(f"[{symbol}] LSE candles request: {start_date} -> {end_date} ({timeframe})", flush=True)
+
+        # The provider API accepts calendar dates, not timestamps.
         result = client.candles(
             symbol,
             timeframe,
-            start=cursor.date().isoformat(),
-            end=chunk_end.date().isoformat(),
+            start=start_date,
+            end=end_date,
         )
         frame = _normalize(result)
         if not frame.empty:
             parts.append(frame)
+
+        # Advance by the exact chunk boundary. Duplicate boundary candles are
+        # removed after concatenation.
         cursor = chunk_end
+
     if not parts:
         raise RuntimeError(f"LSE returned no {timeframe} candles for {symbol}")
+
     return (pd.concat(parts, ignore_index=True)
-              .sort_values("datetime").drop_duplicates("datetime").reset_index(drop=True))
+              .sort_values("datetime")
+              .drop_duplicates("datetime")
+              .reset_index(drop=True))
 
 
 def _configure(symbol):
@@ -140,7 +163,8 @@ def replay_symbol(symbol, start, end, dry_run=False):
     market = _configure(symbol)
     warm_start = start - timedelta(days=7)
     print(f"[{symbol}] LSE history: {start.isoformat()} -> {end.isoformat()}", flush=True)
-    m5 = _fetch_lse(market, warm_start, end, "5m", 7)
+
+    m5 = _fetch_lse(market, warm_start, end, "5m", 6)
     if len(m5) < 200:
         raise RuntimeError(f"Not enough LSE M5 history for {symbol}: {len(m5)}")
     m5 = base.calculate_indicators(m5)
