@@ -10,6 +10,7 @@ _RUNNING = False
 _THREAD = None
 _LAST_CLOSED_CANDLE = {}
 _LAST_TEST_SLOT = None
+_WEB_REGISTERED = False
 BANGKOK = ZoneInfo("Asia/Bangkok")
 UTC = timezone.utc
 DISPLAY_SYMBOLS = ("BTC", "GOLD")
@@ -89,18 +90,58 @@ def _notify_error(exc, context):
             return None
 
 
-def _closed_frame(symbol):
+def _closed_frame(symbol, limit=10):
     scanner = _scanner()
-    frame = scanner.BINANCE.fetch_candles(DISPLAY_TO_MARKET[symbol], "5m", 10)
+    frame = scanner.BINANCE.fetch_candles(DISPLAY_TO_MARKET[symbol], "5m", limit)
     frame = scanner.BINANCE.remove_incomplete_last_candle(frame, timeframe_minutes=5)
     if frame.empty:
         raise RuntimeError(f"ยังไม่มีแท่ง M5 ที่ปิดแล้วสำหรับ {symbol}")
     return frame
 
 
+def _evaluate_signal_history():
+    try:
+        from signal_history import history
+        pending = history.pending(limit=200)
+        if not pending:
+            return 0
+        scanner = _scanner()
+        resolved = 0
+        for row in pending:
+            try:
+                market = DISPLAY_TO_MARKET.get(row["symbol"], row["symbol"])
+                frame = scanner.BINANCE.fetch_candles(market, "5m", 200)
+                frame = scanner.BINANCE.remove_incomplete_last_candle(frame, timeframe_minutes=5)
+                candles = frame.to_dict("records")
+                before = row["result"]
+                updated = history.evaluate_candles(row["signal_id"], candles)
+                if updated and updated.get("result") != before:
+                    resolved += 1
+                    logger.warning("[SIGNAL HISTORY] %s -> %s r=%s", row["signal_id"], updated.get("result"), updated.get("r_multiple"))
+            except Exception as exc:
+                logger.warning("[SIGNAL HISTORY] evaluate failed for %s: %s", row.get("signal_id"), exc)
+        return resolved
+    except Exception as exc:
+        logger.warning("[SIGNAL HISTORY] history evaluator unavailable: %s", exc)
+        return 0
+
+
+def _register_statistics_routes():
+    global _WEB_REGISTERED
+    if _WEB_REGISTERED:
+        return
+    try:
+        import engine_v5 as engine
+        from statistics_page import register
+        register(engine.app)
+        _WEB_REGISTERED = True
+        logger.warning("Signal Statistics routes registered: /statistics /api/statistics /api/signals")
+    except Exception as exc:
+        logger.exception("Signal Statistics routes registration failed: %s", exc)
+
+
 def _system_test(now_bkk):
     global _LAST_TEST_SLOT
-    # Telegram system notification every 15 minutes: 00, 15, 30, 45 Bangkok time.
     if now_bkk.minute % 15 != 0:
         return None
     slot = now_bkk.strftime("%Y-%m-%d %H:%M")
@@ -149,6 +190,7 @@ def run_scan_cycle():
     symbols = _symbols()
     logger.warning("[HEARTBEAT] Scheduler cycle START: %s | symbols=%s | interval=%ss | test_slots=every_15_minutes Asia/Bangkok | provider=LSE", now_bkk.strftime("%d/%m/%Y %H:%M:%S"), symbols, _interval_seconds())
     heartbeat = _system_test(now_bkk)
+    history_resolved = _evaluate_signal_history()
     results = []
     try:
         scanner = _scanner()
@@ -175,6 +217,13 @@ def run_scan_cycle():
             telegram_sent = bool(isinstance(result, dict) and result.get("telegram_alert_sent"))
             if not (valid and not telegram_sent):
                 _LAST_CLOSED_CANDLE[symbol] = closed_key
+            if telegram_sent and valid:
+                try:
+                    from signal_history import history
+                    history.record_signal(result)
+                    logger.warning("[SIGNAL HISTORY] recorded %s %s %s", result.get("signal_id"), symbol, result.get("signal"))
+                except Exception as exc:
+                    logger.exception("[SIGNAL HISTORY] record failed: %s", exc)
             result["trigger"] = "NEW_CLOSED_M5_CANDLE"
             result["candle_consumed"] = not (valid and not telegram_sent)
             result["market_session"] = session
@@ -185,6 +234,8 @@ def run_scan_cycle():
             results.append({"status": "scan_error", "symbol": symbol, "error_type": type(exc).__name__, "message": str(exc), "live_orders_allowed": False})
     if heartbeat is not None:
         results.append({"status": "price_heartbeat", "heartbeat": heartbeat, "timezone": "Asia/Bangkok"})
+    if history_resolved:
+        results.append({"status": "signal_history_resolved", "count": history_resolved})
     logger.warning("[HEARTBEAT] Scheduler cycle END: processed=%d symbol(s) | provider=LSE", len(results))
     return results
 
@@ -197,7 +248,6 @@ def _seconds_to_next_five_minute():
 
 def _loop():
     global _RUNNING
-    # Scan remains every 5 minutes; Telegram system test is every 15 minutes.
     wait = _seconds_to_next_five_minute()
     logger.warning("M5 Signal Scheduler thread started; first_cycle_in=%.1fs; interval=%ss; test_slots=00,15,30,45 Asia/Bangkok; provider=LSE", wait, _interval_seconds())
     time.sleep(wait)
@@ -217,6 +267,7 @@ def _loop():
 
 def start():
     global _RUNNING, _THREAD
+    _register_statistics_routes()
     if _RUNNING and _THREAD and _THREAD.is_alive():
         return False
     _RUNNING = True
@@ -238,4 +289,4 @@ def status():
         live = live_price.status()
     except Exception as exc:
         live = {"running": False, "error": f"{type(exc).__name__}: {exc}"}
-    return {"running": bool(_RUNNING and _THREAD and _THREAD.is_alive()), "interval_seconds": _interval_seconds(), "symbols": _symbols(), "test_slots": "00,15,30,45", "timezone": "Asia/Bangkok", "provider": "LSE", "live_price": live, "market_sessions": {s: {"open": _asset_market_status(s, now)[0], "session": _asset_market_status(s, now)[1]} for s in _symbols()}}
+    return {"running": bool(_RUNNING and _THREAD and _THREAD.is_alive()), "interval_seconds": _interval_seconds(), "symbols": _symbols(), "test_slots": "00,15,30,45", "timezone": "Asia/Bangkok", "provider": "LSE", "live_price": live, "statistics_page": "/statistics", "statistics_api": "/api/statistics", "market_sessions": {s: {"open": _asset_market_status(s, now)[0], "session": _asset_market_status(s, now)[1]} for s in _symbols()}}
