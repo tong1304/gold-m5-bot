@@ -37,6 +37,9 @@ class ReplayV103ContractTests(unittest.TestCase):
             "close": base + 0.5,
             "volume": 1.0,
         })
+        # Force the latest closed candle below an earlier high so BUY has a
+        # real historical liquidity target on the correct side of entry.
+        frame.loc[rows - 1, ["open", "high", "low", "close"]] = [149.0, 152.0, 148.0, 150.0]
         m5 = frame.iloc[-80:].reset_index(drop=True)
         m15 = frame.reset_index(drop=True)
 
@@ -55,7 +58,7 @@ class ReplayV103ContractTests(unittest.TestCase):
 
         self.assertIn("trade_levels", result)
         self.assertIn("target_liquidity", result)
-        self.assertNotEqual(result.get("target_liquidity"), None)
+        self.assertIsNotNone(result.get("target_liquidity"))
 
 
 if __name__ == "__main__":
