@@ -65,7 +65,6 @@ def build_trade_levels(df,index,direction,invalidation,target,pattern=None):
     old_min=_v9.MIN_RISK_REWARD; _v9.MIN_RISK_REWARD=1.0
     try: levels=_v9.build_trade_levels(df,index,direction,invalidation,target,pattern)
     finally: _v9.MIN_RISK_REWARD=old_min
-    # Base V9 may still emit the legacy 2R label; V9.1 policy is 1R.
     if levels.get("reason")=="RR_BELOW_2R": levels["reason"]="RR_BELOW_1R"
     if levels.get("valid"): levels["source"]="structure_v9_1"
     return levels
@@ -82,14 +81,24 @@ def analyze_structure_setup(m5,m15,h1,index=None):
     pattern=_m5_pattern_v91(m5,direction)
     if not pattern:reasons.append("NO_CLEAR_M5_PATTERN")
     if pattern and pattern.get("direction")!=direction:reasons.append("PATTERN_DIRECTION_MISMATCH")
-    sweep=_v9._find_sweep(m5,direction); mss=_v9._find_mss(m5,sweep,direction)
-    if sweep and not mss:mss=_v9._find_mss(m5,sweep,direction,window=16)
-    retest=_v9._retest(m5,mss,direction) if mss else {"valid":False,"reason":"NO_MSS_BOS_CONFIRMATION"}
-    if pattern and pattern.get("name") not in ("BULLISH_BREAKOUT","BEARISH_BREAKOUT","INSIDE_BAR_BREAKOUT","BULLISH_BREAKOUT_RETEST","BEARISH_BREAKOUT_RETEST") and mss is None:reasons.append("NO_M5_CONFIRMATION")
-    entry=_num(m5.iloc[-1].close); target=_v9._target_liquidity(m5,direction,entry)
-    if target is None:reasons.append("NO_LIQUIDITY_TARGET")
-    invalidation=sweep["extreme"] if sweep else (loc.get("support") if direction=="BUY" else loc.get("resistance")); levels=build_trade_levels(m5,len(m5)-1,direction,invalidation,target,pattern)
-    if not levels.get("valid"):reasons.append(levels.get("reason","LEVELS_INVALID"))
+
+    # Pattern-first risk evaluation: do not calculate or report RR until a
+    # valid M5 pattern exists. This prevents misleading RR_BELOW_1R on a
+    # setup that has no actionable entry/invalidation yet.
+    sweep=None; mss=None; retest={"valid":False,"reason":"NO_MSS_BOS_CONFIRMATION"}; target=None; invalidation=None
+    levels={"valid":False,"reason":None}
+    if pattern and not any(r in reasons for r in ("M15_OPPOSES_H1","M15_LOCATION_INVALID","PATTERN_DIRECTION_MISMATCH")):
+        sweep=_v9._find_sweep(m5,direction); mss=_v9._find_mss(m5,sweep,direction)
+        if sweep and not mss:mss=_v9._find_mss(m5,sweep,direction,window=16)
+        retest=_v9._retest(m5,mss,direction) if mss else {"valid":False,"reason":"NO_MSS_BOS_CONFIRMATION"}
+        if pattern.get("name") not in ("BULLISH_BREAKOUT","BEARISH_BREAKOUT","INSIDE_BAR_BREAKOUT","BULLISH_BREAKOUT_RETEST","BEARISH_BREAKOUT_RETEST") and mss is None:reasons.append("NO_M5_CONFIRMATION")
+        entry=_num(m5.iloc[-1].close); target=_v9._target_liquidity(m5,direction,entry)
+        if target is None:reasons.append("NO_LIQUIDITY_TARGET")
+        invalidation=sweep["extreme"] if sweep else (loc.get("support") if direction=="BUY" else loc.get("resistance"))
+        if target is not None and invalidation is not None:
+            levels=build_trade_levels(m5,len(m5)-1,direction,invalidation,target,pattern)
+            if not levels.get("valid"):reasons.append(levels.get("reason","LEVELS_INVALID"))
+
     indicators=_indicator_context_flags(m5,direction); confirmations=[]
     if pattern:confirmations.append("CLEAR_M5_PATTERN")
     if sweep:confirmations.append("LIQUIDITY_SWEEP")
