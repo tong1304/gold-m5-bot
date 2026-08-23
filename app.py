@@ -205,7 +205,12 @@ class MultiSymbolMiddleware:
     def __call__(self,environ,start_response):
         params=parse_qs(environ.get("QUERY_STRING", ""),keep_blank_values=True); requested=params.get("symbol",["BTC/USDT"])[0]
         with SYMBOL_LOCK:
-            names=("SYMBOL","MINIMUM_ATR","MIN_STOP_ATR","MAX_STOP_ATR","SPREAD","SLIPPAGE","SIGNAL_HISTORY_POINTS","MIN_RISK_REWARD","RISK_REWARD"); previous={n:getattr(engine,n) for n in names}; previous_base={n:getattr(engine.base,n) for n in names}
+            names=("SYMBOL","MINIMUM_ATR","MIN_STOP_ATR","MAX_STOP_ATR","SPREAD","SLIPPAGE","SIGNAL_HISTORY_POINTS","MIN_RISK_REWARD","RISK_REWARD")
+            # V7 intentionally does not require MINIMUM_ATR/MIN_STOP_ATR/MAX_STOP_ATR.
+            # These are compatibility settings supplied by activate(). Use safe
+            # snapshots so missing legacy attributes cannot break every HTTP route.
+            previous={n:getattr(engine,n,None) for n in names}
+            previous_base={n:getattr(engine.base,n,None) for n in names}
             try: activate(requested); return self.application(environ,start_response)
             except ValueError as exc:
                 body=json.dumps(_json_safe({"status":"error","engine_version":engine.ENGINE_VERSION,"exchange":"LSE","symbol":requested,"message":str(exc),"live_orders_allowed":False})).encode(); start_response("400 BAD REQUEST",[("Content-Type","application/json"),("Content-Length",str(len(body)))]); return [body]
