@@ -10,7 +10,7 @@ from datetime import datetime, timezone, timedelta
 import pandas as pd
 import engine_v9_core as engine
 from signal_history import history
-from lse_data import Client
+from lse.client import Client
 
 SUPPORTED_SYMBOLS=("BTC","GOLD")
 _SCAN_LOCK=threading.Lock()
