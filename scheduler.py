@@ -100,39 +100,47 @@ def _closed_frame(symbol):
 
 def _system_test(now_bkk):
     global _LAST_TEST_SLOT
-    # System notification every 15 minutes: 00, 15, 30, 45 Bangkok time.
+    # Telegram system notification every 15 minutes: 00, 15, 30, 45 Bangkok time.
     if now_bkk.minute % 15 != 0:
         return None
     slot = now_bkk.strftime("%Y-%m-%d %H:%M")
     if slot == _LAST_TEST_SLOT:
         return None
     lines = ["🧪 <b>ทดสอบระบบทุก 15 นาที</b>", "", f"🕐 เวลา: {now_bkk.strftime('%d/%m/%Y %H:%M')} (กรุงเทพฯ)", ""]
-    scanner = None
     feed_ok = True
+    live_ok = True
     try:
-        scanner = _scanner()
+        import live_price
+        live_status = live_price.status()
         for symbol in _symbols():
             open_, session = _asset_market_status(symbol, now_bkk.astimezone(UTC))
             if not open_:
                 lines.append(f"⏸ {symbol}: ตลาดปิด ({session})")
                 continue
-            frame = _closed_frame(symbol)
-            row = frame.iloc[-1]
-            lines.append(f"📊 {symbol}: <b>{float(row['close']):,.8f}</b> | M5 ปิด: {row['datetime']}")
+            live = live_price.get(symbol)
+            if not live or live.get("age_seconds") is None or float(live.get("age_seconds", 999999)) > float(os.getenv("MAX_LIVE_PRICE_AGE_SECONDS", "30")):
+                live_ok = False
+                lines.append(f"⚠️ {symbol}: ยังไม่มี Live Tick ที่สดพอ")
+                continue
+            lines.append(f"💹 {symbol}: <b>{float(live['price']):,.8f}</b> | Live age: {float(live['age_seconds']):.1f}s")
+        if not live_status.get("running"):
+            live_ok = False
     except Exception as exc:
+        live_ok = False
         feed_ok = False
-        logger.exception("LSE 15-minute system test failed")
-        lines.append(f"❌ LSE: {type(exc).__name__}: {exc}")
-    lines += ["", "✅ Scheduler ทำงาน", "✅ LSE Price Feed" if feed_ok else "⚠️ LSE Price Feed มีข้อผิดพลาด", "✅ Telegram Monitor", "", "ℹ️ การทดสอบนี้ไม่ใช่สัญญาณ BUY/SELL"]
+        logger.exception("LSE live price system test failed")
+        lines.append(f"❌ LSE Live Price: {type(exc).__name__}: {exc}")
+    lines += ["", "✅ Scheduler ทำงาน", "✅ LSE WebSocket Live Price" if live_ok else "⚠️ LSE WebSocket Live Price มีปัญหา", "✅ Telegram Monitor", "", "ℹ️ การทดสอบนี้ไม่ใช่สัญญาณ BUY/SELL"]
     try:
-        result = scanner.engine.send_telegram("\n".join(lines)) if scanner else __import__("engine_v5").send_telegram("\n".join(lines))
+        scanner = _scanner()
+        result = scanner.engine.send_telegram("\n".join(lines))
         sent = bool(isinstance(result, dict) and result.get("success"))
         if sent:
             _LAST_TEST_SLOT = slot
-        return {"sent": sent, "slot": slot, "telegram_result": result, "timezone": "Asia/Bangkok"}
+        return {"sent": sent, "slot": slot, "telegram_result": result, "timezone": "Asia/Bangkok", "live_price_ok": live_ok, "feed_ok": feed_ok}
     except Exception as exc:
         logger.exception("15-minute system test Telegram send failed")
-        return {"sent": False, "slot": slot, "error_type": type(exc).__name__, "error": str(exc)}
+        return {"sent": False, "slot": slot, "error_type": type(exc).__name__, "error": str(exc), "live_price_ok": live_ok, "feed_ok": feed_ok}
 
 
 def run_scan_cycle():
@@ -225,4 +233,9 @@ def stop():
 
 def status():
     now = datetime.now(UTC)
-    return {"running": bool(_RUNNING and _THREAD and _THREAD.is_alive()), "interval_seconds": _interval_seconds(), "symbols": _symbols(), "test_slots": "00,15,30,45", "timezone": "Asia/Bangkok", "provider": "LSE", "market_sessions": {s: {"open": _asset_market_status(s, now)[0], "session": _asset_market_status(s, now)[1]} for s in _symbols()}}
+    try:
+        import live_price
+        live = live_price.status()
+    except Exception as exc:
+        live = {"running": False, "error": f"{type(exc).__name__}: {exc}"}
+    return {"running": bool(_RUNNING and _THREAD and _THREAD.is_alive()), "interval_seconds": _interval_seconds(), "symbols": _symbols(), "test_slots": "00,15,30,45", "timezone": "Asia/Bangkok", "provider": "LSE", "live_price": live, "market_sessions": {s: {"open": _asset_market_status(s, now)[0], "session": _asset_market_status(s, now)[1]} for s in _symbols()}}
