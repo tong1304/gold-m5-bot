@@ -1,2 +1,2 @@
-"""V8 statistics page entry point."""
-from statistics_page_v8 import *
+"""V9 statistics page entry point."""
+from statistics_page_v9 import *
