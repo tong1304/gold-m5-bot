@@ -1,0 +1,87 @@
+name: Apply V10.1 strategy evaluation fix
+
+on:
+  push:
+    paths:
+      - '.github/workflows/fix-v10-1-evaluation.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Patch strategy evaluation
+        shell: python
+        run: |
+          from pathlib import Path
+          import re
+
+          p = Path('scheduler_v9.py')
+          s = p.read_text(encoding='utf-8')
+          start = s.index('def _log_strategy_evaluation(')
+          end = s.index('\ndef run_scan_cycle(', start)
+          new = '''def _log_strategy_evaluation(symbol,result,m5_frame):
+    """Diagnostic-only evaluation of every strategy allowed by the current M15 regime.
+
+    This does not change signal selection. It exposes every candidate strategy and
+    both BUY/SELL checks when the M15 regime has no directional bias, so NO_TRADE
+    can be explained instead of only showing the first selector result.
+    """
+    regime_detail = result.get("regime_detail") or result.get("regime_context") or {}
+    regime = result.get("regime") or regime_detail.get("name") or "NEUTRAL"
+    regime_direction = regime_detail.get("direction") or result.get("structure_bias", {}).get("decision") or "NEUTRAL"
+    try:
+        import strategy_engine as se
+        symbol_key = "GOLD" if symbol.upper() in ("GOLD", "XAU", "XAU/USD") else "BTC"
+        candidates = list(se._candidate_order(symbol_key, regime))
+    except Exception as exc:
+        logger.warning("[%s] STRATEGY EVALUATION unavailable: %s", symbol, exc)
+        return
+    if not candidates:
+        logger.warning("[%s] STRATEGY EVALUATION START | regime=%s | direction=%s | count=0", symbol, regime, regime_direction)
+        logger.warning("[%s] STRATEGY EVALUATION SUMMARY | PASS=NONE | FAIL=0 | candidates=NONE", symbol)
+        return
+    logger.warning("[%s] STRATEGY EVALUATION START | regime=%s | direction=%s | strategies=%s", symbol, regime, regime_direction, candidates)
+    passed = []
+    failed = 0
+    for name in candidates:
+        try:
+            directions = se._candidate_directions(name, regime, m5_frame, regime_direction)
+            if not directions:
+                directions = [regime_direction] if regime_direction in ("BUY", "SELL") else ["BUY", "SELL"]
+            for direction in directions:
+                try:
+                    ok, reasons = se._diagnose(name, m5_frame, direction)
+                    reasons = list(reasons or [])
+                    status = "PASS" if ok else "FAIL"
+                    if ok:
+                        passed.append(f"{name}:{direction}")
+                    else:
+                        failed += 1
+                    logger.warning("[%s] STRATEGY EVAL | strategy=%s | direction=%s | status=%s | reason=%s", symbol, name, direction, status, reasons or ["SETUP_VALID"])
+                except Exception as exc:
+                    failed += 1
+                    logger.warning("[%s] STRATEGY EVAL | strategy=%s | direction=%s | status=ERROR | reason=%s", symbol, name, direction, type(exc).__name__ + ":" + str(exc))
+        except Exception as exc:
+            failed += 1
+            logger.warning("[%s] STRATEGY EVAL | strategy=%s | direction=UNRESOLVED | status=ERROR | reason=%s", symbol, name, type(exc).__name__ + ":" + str(exc))
+    logger.warning("[%s] STRATEGY EVALUATION SUMMARY | PASS=%s | FAIL=%d | strategies=%d", symbol, passed or "NONE", failed, len(candidates))
+'''
+          p.write_text(s[:start] + new + s[end:], encoding='utf-8')
+
+          e = Path('engine_v9_2.py')
+          es = e.read_text(encoding='utf-8')
+          es = es.replace('ENGINE_VERSION="10.0-MULTI-M15-M5"', 'ENGINE_VERSION="10.1-MULTI-M15-M5"', 1)
+          e.write_text(es, encoding='utf-8')
+
+      - name: Commit patch
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add scheduler_v9.py engine_v9_2.py
+          git diff --cached --quiet || git commit -m 'Fix V10.1 full strategy evaluation diagnostics'
+          git push
