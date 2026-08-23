@@ -1,10 +1,9 @@
-"""V10.3 historical replay: date-range simulation using real LSE OHLCV.
+"""V10.3 historical replay using real LSE OHLCV.
 
-The requested dates are the simulation window. Internally the engine scans every
-closed M5 candle in that window, using only candles available up to that point.
-A 14-day warm-up is loaded before the requested start so indicators have context.
-M15 is fetched from LSE directly (not rebuilt from future M5 candles).
-Replay is dry with respect to Telegram/orders.
+The user selects calendar dates (Bangkok time). Replay internally evaluates every
+closed M5 candle in that date range, with a 14-day warm-up. LSE requests use the
+provider's required YYYY-MM-DD date format; timestamps are used only locally for
+filtering and look-ahead-safe simulation.
 """
 from __future__ import annotations
 
@@ -12,7 +11,7 @@ import argparse
 import json
 import os
 from collections import Counter, defaultdict
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timezone, timedelta, date
 
 import pandas as pd
 from zoneinfo import ZoneInfo
@@ -26,16 +25,25 @@ SYMBOLS = {"BTC": "BTC/USD", "GOLD": "XAU/USD"}
 
 def _bounds(a, b):
     """Interpret date-only input as an inclusive Bangkok calendar-date range."""
-    s = datetime.fromisoformat(a)
-    e = datetime.fromisoformat(b)
-    if s.tzinfo is None:
-        s = s.replace(tzinfo=BANGKOK)
-    if e.tzinfo is None:
-        e = e.replace(tzinfo=BANGKOK)
-    # UI sends dates, so 2026-08-24 means the whole Bangkok day.
-    if e.time() == datetime.min.time():
-        e += timedelta(days=1)
-    return s.astimezone(timezone.utc), e.astimezone(timezone.utc)
+    def parse(value):
+        text = str(value).strip()
+        # Date-only is the canonical Replay UI format.
+        if len(text) == 10:
+            d = date.fromisoformat(text)
+            return datetime(d.year, d.month, d.day, tzinfo=BANGKOK)
+        dt = datetime.fromisoformat(text)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=BANGKOK)
+        return dt.astimezone(BANGKOK)
+
+    s_local = parse(a)
+    e_local = parse(b)
+    # End date is inclusive for the UI/API. A date-only end means the whole day.
+    if len(str(b).strip()) == 10:
+        e_local += timedelta(days=1)
+    elif e_local <= s_local:
+        raise ValueError("end must be after start")
+    return s_local.astimezone(timezone.utc), e_local.astimezone(timezone.utc)
 
 
 def _normalize(raw):
@@ -69,44 +77,54 @@ def _normalize(raw):
 
 
 def _fetch(symbol, start, end, timeframe="5m"):
-    """Fetch all historical bars without silently losing data to LSE limit=200.
+    """Fetch historical data using only LSE's accepted YYYY-MM-DD parameters.
 
-    The previous implementation advanced by several days while requesting only
-    200 rows, which can discard a large part of M5 history.  Here each request is
-    smaller than the 200-row provider cap and uses timestamps, so the requested
-    date range is actually covered.
+    LSE rejects ISO timestamps in start/end. We therefore request one calendar
+    day at a time. A full day contains 288 M5 bars / 96 M15 bars, so the replay
+    request uses a configurable limit (default 1000) rather than the old 200-bar
+    cap. If the provider returns fewer rows, the result is still merged safely.
     """
     key = os.getenv("LSE_API_KEY", "").strip() or os.getenv("LSE_KEY", "").strip()
     if not key:
         raise RuntimeError("LSE_API_KEY/LSE_KEY is not configured")
     client = LSE(api_key=key)
+    request_limit = max(200, min(int(os.getenv("LSE_REPLAY_LIMIT", "1000")), 5000))
 
-    # Keep every request below the provider's 200-row limit, with a small safety
-    # margin. M5: <= 16h40m; M15: <= 50h. Use shorter windows to avoid edge loss.
-    chunk = timedelta(hours=12) if timeframe == "5m" else timedelta(hours=36)
+    # Convert UTC bounds to Bangkok calendar dates because the provider accepts
+    # dates, while Replay's public contract is Bangkok calendar days.
+    local_start = pd.Timestamp(start).tz_convert(BANGKOK).date()
+    local_end_exclusive = pd.Timestamp(end).tz_convert(BANGKOK).date()
+    days = []
+    d = local_start
+    while d <= local_end_exclusive:
+        days.append(d)
+        d += timedelta(days=1)
+
     parts = []
-    cursor = start
-    while cursor < end:
-        ce = min(cursor + chunk, end)
+    for d in days:
+        # Never send datetime strings to LSE. This is the critical fix.
+        day_text = d.isoformat()
         raw = client.candles(
             SYMBOLS[symbol], timeframe,
-            start=cursor.isoformat(),
-            end=ce.isoformat(),
-            limit=200,
+            start=day_text,
+            end=day_text,
+            limit=request_limit,
             order="asc",
         )
         frame = _normalize(raw)
         if not frame.empty:
             parts.append(frame)
-        # Always advance by our requested window; overlap is removed after merge.
-        cursor = ce
 
     if not parts:
         raise RuntimeError(f"LSE returned no {timeframe} candles for {symbol}")
-    return (pd.concat(parts, ignore_index=True)
+    merged = (pd.concat(parts, ignore_index=True)
               .sort_values("datetime")
               .drop_duplicates("datetime")
               .reset_index(drop=True))
+    # Keep only the actual warm-up + requested window. The provider may interpret
+    # an end date inclusively, so local filtering is mandatory.
+    return merged[(merged.datetime >= pd.Timestamp(start)) &
+                  (merged.datetime < pd.Timestamp(end))].reset_index(drop=True)
 
 
 def _context(frame, ts):
@@ -120,7 +138,6 @@ def _resolve(direction, entry, sl, tp, future):
         hi, lo = float(c.high), float(c.low)
         hit_sl = lo <= sl if direction == "BUY" else hi >= sl
         hit_tp = hi >= tp if direction == "BUY" else lo <= tp
-        # Intrabar OHLC cannot tell which level was hit first.
         if hit_sl and hit_tp:
             return "AMBIGUOUS", 0.0, str(c.datetime)
         if hit_tp:
@@ -181,8 +198,7 @@ def replay_symbol(symbol, start, end, dry_run=False):
     engine.MIN_RISK_REWARD = 1.0
     engine.RISK_REWARD = max(float(os.getenv("RISK_REWARD", "1.0")), 1.0)
 
-    # One complete day can contain hundreds of evaluations. This is intentional:
-    # the user selects a DAY; the engine internally evaluates each closed M5 bar.
+    # User selects the DATE. The engine evaluates every closed M5 candle in it.
     for i in range(100, len(m5) - 1):
         ts = pd.Timestamp(m5.iloc[i].datetime)
         if ts < start_ts or ts >= end_ts:
@@ -238,14 +254,7 @@ def replay_symbol(symbol, start, end, dry_run=False):
             if result != "OPEN":
                 history.set_result(sid,result,r,when)
 
-    # Daily summary is deliberately independent of candle-level output.
-    day_rows = defaultdict(lambda: {"evaluated":0,"signals":0,"WIN":0,"LOSS":0,"OPEN":0,"AMBIGUOUS":0,"NO_TRADE":0})
-    for i in range(100, len(m5) - 1):
-        ts = pd.Timestamp(m5.iloc[i].datetime)
-        if start_ts <= ts < end_ts:
-            day_rows[ts.tz_convert(BANGKOK).date().isoformat()]["evaluated"] += 1
-    # Signal counts above are global; per-day signal rows are available from DB.
-    # Keep a compact deterministic date list for the UI even when there are no signals.
+    evaluated = int(((m5.datetime >= start_ts) & (m5.datetime < end_ts)).sum())
     requested_days=[]
     d=start_ts.tz_convert(BANGKOK).date()
     last=(end_ts-timedelta(microseconds=1)).tz_convert(BANGKOK).date()
@@ -256,7 +265,7 @@ def replay_symbol(symbol, start, end, dry_run=False):
         "status":"completed", "symbol":symbol, "engine_version":engine.ENGINE_VERSION, "provider":"LSE",
         "replay_mode":"DATE_RANGE", "start":start_ts.isoformat(), "end":end_ts.isoformat(),
         "warmup_days":14, "m5_bars":len(m5), "m15_bars":len(m15),
-        "requested_days":requested_days, "evaluated_closed_m5_candles":sum(x["evaluated"] for x in day_rows.values()),
+        "requested_days":requested_days, "evaluated_closed_m5_candles":evaluated,
         "generated":generated, "inserted":inserted, "outcomes":outcomes,
         "rejected":dict(rejected.most_common(30)),
         "strategy_stats":aggregate_strategy_stats(all_candidates, results_by_strategy),
@@ -264,11 +273,19 @@ def replay_symbol(symbol, start, end, dry_run=False):
 
 
 def main():
-    p=argparse.ArgumentParser(); p.add_argument("--start",required=True); p.add_argument("--end",required=True); p.add_argument("--symbol",choices=["BTC","GOLD","ALL"],default="ALL"); p.add_argument("--dry-run",action="store_true"); a=p.parse_args()
-    start,end=_bounds(a.start,a.end); results=[]
+    p=argparse.ArgumentParser()
+    p.add_argument("--start",required=True)
+    p.add_argument("--end",required=True)
+    p.add_argument("--symbol",choices=["BTC","GOLD","ALL"],default="ALL")
+    p.add_argument("--dry-run",action="store_true")
+    a=p.parse_args()
+    start,end=_bounds(a.start,a.end)
+    results=[]
     for s in (["BTC","GOLD"] if a.symbol=="ALL" else [a.symbol]):
-        try: results.append(replay_symbol(s,start,end,a.dry_run))
-        except Exception as exc: results.append({"symbol":s,"engine_version":engine.ENGINE_VERSION,"status":"failed","error":f"{type(exc).__name__}: {exc}"})
+        try:
+            results.append(replay_symbol(s,start,end,a.dry_run))
+        except Exception as exc:
+            results.append({"symbol":s,"engine_version":engine.ENGINE_VERSION,"status":"failed","error":f"{type(exc).__name__}: {exc}"})
     status=replay_overall_status(results)
     print(json.dumps({"status":"dry-run" if a.dry_run and status=="completed" else status,"engine_version":engine.ENGINE_VERSION,"provider":"LSE","replay_mode":"DATE_RANGE","start":start.isoformat(),"end":end.isoformat(),"results":results},ensure_ascii=False,separators=(",",":")))
 
