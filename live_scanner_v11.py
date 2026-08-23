@@ -10,12 +10,14 @@ logger=logging.getLogger("signal_scheduler")
 SUPPORTED_SYMBOLS=_base.SUPPORTED_SYMBOLS
 _SCAN_LOCK=_base._SCAN_LOCK
 _ALERTED_SIGNAL_KEYS=_base._ALERTED_SIGNAL_KEYS
+# Compatibility surface for scheduler_v9.py while the V11 scanner owns analysis.
+_lse_frame=_base._lse_frame
 
 
 def _load_frames(symbol):
     points=max(100,int(os.getenv("LIVE_SIGNAL_HISTORY","200"))); frames={}
     for tf in ("15m","5m"):
-        frame=_base._lse_frame(symbol,tf,points)
+        frame=_lse_frame(symbol,tf,points)
         if len(frame)<60:raise RuntimeError(f"Insufficient closed LSE data for {symbol} {tf}: {len(frame)}")
         frames[tf]=frame.reset_index(drop=True)
     latest=frames["5m"].iloc[-1]["datetime"]
