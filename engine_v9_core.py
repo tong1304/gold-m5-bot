@@ -167,7 +167,10 @@ def analyze_structure_setup(m5, m15, h1, index=None):
         reasons.append(levels.get("reason","LEVELS_INVALID"))
 
     signal = direction if not reasons else "NO_TRADE"
-    setup_key = f"{direction}:{pattern_ctx.get('pattern',{}).get('name','NONE')}:{sweep['index'] if sweep else 'NO_SWEEP'}:{mss['index'] if mss else 'NO_MSS'}"
+    pattern_name = ((pattern_ctx.get("pattern") or {}).get("name") or "NONE")
+    sweep_index = sweep.get("index") if isinstance(sweep, dict) else "NO_SWEEP"
+    mss_index = mss.get("index") if isinstance(mss, dict) else "NO_MSS"
+    setup_key = f"{direction}:{pattern_name}:{sweep_index}:{mss_index}"
     return {"signal":signal,"engine_version":ENGINE_VERSION,"valid":signal in ("BUY","SELL") and levels.get("valid",False),"structure_bias":h1s,"m15_structure":m15s,"location":loc,"pattern":pattern_ctx.get("pattern"),"pattern_valid":pattern_ctx["valid"],"confirmations":confirmations,"liquidity_event":sweep,"m5_trigger":mss,"pullback":retest,"target_liquidity":target,"invalidation":invalidation,"trade_levels":levels,"setup_key":setup_key,"rejection_reasons":reasons}
 
 
