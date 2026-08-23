@@ -13,6 +13,52 @@ _SCAN_LOCK=threading.Lock()
 _ALERTED_SIGNAL_KEYS=set()
 
 
+def _normalize_lse_rows(raw, symbol, timeframe):
+    """Normalize lse-data 0.14 candle responses to a list of OHLCV rows.
+
+    lse-data returns an envelope such as {"rows": N, "data": [...], ...}.
+    Older code assumed the response itself was the row list, which produced
+    DataFrames with columns like `rows`, `plan`, and `data` and then failed on
+    the missing `datetime` column.
+    """
+    if isinstance(raw, dict):
+        rows=raw.get("data")
+        if rows is None:
+            rows=raw.get("rows_data")
+        if rows is None and isinstance(raw.get("data"), dict):
+            rows=raw["data"].get("data")
+        if rows is None:
+            raise RuntimeError(f"LSE_INVALID_RESPONSE: {symbol} {timeframe} missing data rows; keys={list(raw.keys())[:20]}")
+    elif isinstance(raw, (list, tuple)):
+        rows=raw
+    else:
+        raise RuntimeError(f"LSE_INVALID_RESPONSE: {symbol} {timeframe} unexpected type={type(raw).__name__}")
+
+    if not isinstance(rows, list):
+        rows=list(rows) if rows is not None else []
+    if not rows:
+        raise RuntimeError(f"LSE returned no candles for {symbol} {timeframe}")
+
+    frame=pd.DataFrame(rows)
+    if frame.empty:
+        raise RuntimeError(f"LSE returned empty candle frame for {symbol} {timeframe}")
+
+    # lse-data uses `timestamp`; accept `datetime` too for compatibility.
+    if "datetime" not in frame.columns:
+        for candidate in ("timestamp","time","date"):
+            if candidate in frame.columns:
+                frame=frame.rename(columns={candidate:"datetime"})
+                break
+    if "datetime" not in frame.columns:
+        raise RuntimeError(f"LSE_INVALID_RESPONSE: {symbol} {timeframe} missing timestamp column; columns={list(frame.columns)}")
+
+    required=("open","high","low","close")
+    missing=[c for c in required if c not in frame.columns]
+    if missing:
+        raise RuntimeError(f"LSE_INVALID_RESPONSE: {symbol} {timeframe} missing OHLC columns={missing}; columns={list(frame.columns)}")
+    return frame
+
+
 def _lse_frame(symbol, timeframe, history_points=200):
     market={"BTC":"BTC/USD","GOLD":"XAU/USD"}[symbol]
     dataset="crypto" if symbol=="BTC" else "forex"
@@ -23,13 +69,15 @@ def _lse_frame(symbol, timeframe, history_points=200):
     client=LSE(api_key=os.environ["LSE_API_KEY"])
     print(f"[{symbol}] LSE QUERY: market={market} dataset={dataset} timeframe={timeframe} start={start} end={end} limit={history_points} order=desc",flush=True)
     raw=client.candles(market,timeframe,start=start,end=end,limit=history_points,order="desc")
-    frame=pd.DataFrame(raw)
-    if frame.empty: raise RuntimeError(f"LSE returned no candles for {symbol} {timeframe}")
-    frame["datetime"]=pd.to_datetime(frame["datetime"],utc=True)
+    frame=_normalize_lse_rows(raw,symbol,timeframe)
+    print(f"[{symbol}] LSE RAW DATA: rows={len(frame)} dataset={dataset}",flush=True)
+    frame["datetime"]=pd.to_datetime(frame["datetime"],utc=True,errors="coerce")
     for col in ("open","high","low","close"):
         frame[col]=pd.to_numeric(frame[col],errors="coerce")
     frame=frame.dropna(subset=["datetime","open","high","low","close"]).sort_values("datetime").reset_index(drop=True)
-    print(f"[{symbol}] LSE RAW DATA: rows={len(frame)} oldest={frame.iloc[0]['datetime'].isoformat()} newest={frame.iloc[-1]['datetime'].isoformat()} dataset={dataset}",flush=True)
+    if frame.empty:
+        raise RuntimeError(f"LSE returned no valid OHLC candles for {symbol} {timeframe}")
+    print(f"[{symbol}] LSE NORMALIZED: rows={len(frame)} oldest={frame.iloc[0]['datetime'].isoformat()} newest={frame.iloc[-1]['datetime'].isoformat()} dataset={dataset}",flush=True)
     frame=engine.remove_incomplete_last_candle(frame,timeframe)
     _validate_freshness(frame,symbol,timeframe)
     print(f"[{symbol}] Latest closed {timeframe} candle: {frame.iloc[-1]['datetime']}",flush=True)
