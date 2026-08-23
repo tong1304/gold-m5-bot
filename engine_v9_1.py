@@ -65,6 +65,8 @@ def build_trade_levels(df,index,direction,invalidation,target,pattern=None):
     old_min=_v9.MIN_RISK_REWARD; _v9.MIN_RISK_REWARD=1.0
     try: levels=_v9.build_trade_levels(df,index,direction,invalidation,target,pattern)
     finally: _v9.MIN_RISK_REWARD=old_min
+    # Base V9 may still emit the legacy 2R label; V9.1 policy is 1R.
+    if levels.get("reason")=="RR_BELOW_2R": levels["reason"]="RR_BELOW_1R"
     if levels.get("valid"): levels["source"]="structure_v9_1"
     return levels
 
@@ -87,7 +89,7 @@ def analyze_structure_setup(m5,m15,h1,index=None):
     entry=_num(m5.iloc[-1].close); target=_v9._target_liquidity(m5,direction,entry)
     if target is None:reasons.append("NO_LIQUIDITY_TARGET")
     invalidation=sweep["extreme"] if sweep else (loc.get("support") if direction=="BUY" else loc.get("resistance")); levels=build_trade_levels(m5,len(m5)-1,direction,invalidation,target,pattern)
-    if not levels.get("valid"):reasons.append("RR_BELOW_1R" if levels.get("risk_reward",0)<1 else levels.get("reason","LEVELS_INVALID"))
+    if not levels.get("valid"):reasons.append(levels.get("reason","LEVELS_INVALID"))
     indicators=_indicator_context_flags(m5,direction); confirmations=[]
     if pattern:confirmations.append("CLEAR_M5_PATTERN")
     if sweep:confirmations.append("LIQUIDITY_SWEEP")
