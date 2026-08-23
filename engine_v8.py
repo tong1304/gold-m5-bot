@@ -50,8 +50,6 @@ def _ema_bias(df):
     last = _f(c.iloc[-1])
     if last > e20 and e20 >= e50: return "BUY"
     if last < e20 and e20 <= e50: return "SELL"
-    # Use slope as secondary directional structure so a single EMA crossover
-    # does not block a valid liquidity/MSS setup.
     slope = _f(e20 - c.ewm(span=20, adjust=False).mean().iloc[-6])
     return "BUY" if slope > 0 else "SELL" if slope < 0 else "NEUTRAL"
 
@@ -62,7 +60,6 @@ def _structure(df, lookback=30):
     hi, lo = _f(x.high.max()), _f(x.low.min())
     bias = _ema_bias(df)
     c = _f(df.iloc[-1].close)
-    # Breakout can establish structure even when EMA is only neutral.
     if c > hi: bias = "BUY"
     elif c < lo: bias = "SELL"
     return {"bias":bias,"high":hi,"low":lo}
@@ -74,8 +71,6 @@ def _location(df, direction, lookback=48):
     hi, lo = _f(x.high.max()), _f(x.low.min())
     width = max(hi-lo, 1e-9)
     c = _f(df.iloc[-1].close)
-    # Wider 60/40 acceptance avoids rejecting a valid setup merely because
-    # price is near the middle of the range.
     if direction == "BUY":
         valid = c <= lo + width * 0.60
         zone = "DISCOUNT" if c <= lo + width * 0.50 else "MID_DISCOUNT"
@@ -136,8 +131,6 @@ def _retest(df, mss, direction, tolerance_atr=0.45):
         touched=_f(r.low)<=level+tol; held=_f(r.close)>=level; confirm=_f(r.close)>_f(r.open)
     else:
         touched=_f(r.high)>=level-tol; held=_f(r.close)<=level; confirm=_f(r.close)<_f(r.open)
-    # A clean continuation candle immediately after MSS is also accepted as
-    # confirmation; this prevents waiting forever for a textbook retest.
     continuation = i > mss["index"] and ((direction=="BUY" and _f(r.close)>level) or (direction=="SELL" and _f(r.close)<level))
     valid=bool(touched and held and confirm) or bool(continuation and i-mss["index"]<=3 and confirm)
     return {"valid":valid,"level":level,"touched":bool(touched),"held":bool(held),"confirmation":bool(confirm),"continuation":bool(continuation),"reason":None if valid else "WAITING_FOR_PULLBACK_CONFIRMATION"}
@@ -145,8 +138,6 @@ def _retest(df, mss, direction, tolerance_atr=0.45):
 
 def _target_liquidity(df, direction, entry, lookback=120):
     x=df.iloc[:-1].tail(lookback)
-    # Use meaningful swing extremes, not the nearest single tick, and require
-    # enough room for the 2R constraint.
     if direction=="BUY":
         candidates=sorted([_f(v) for v in x.high if _f(v)>entry])
     else:
@@ -177,26 +168,19 @@ def analyze_structure_setup(m5,m15,h1,index=None):
     if len(m5)<80 or len(m15)<60 or len(h1)<60:
         return {"signal":"NO_TRADE","engine_version":ENGINE_VERSION,"valid":False,"rejection_reasons":["INSUFFICIENT_CONTEXT"]}
     h1s=_structure(h1); m15s=_structure(m15)
-    # H1 is directional context, but a neutral H1 is resolved from M15 rather
-    # than blocking every setup during a transition.
     direction=h1s["bias"] if h1s["bias"] in ("BUY","SELL") else m15s["bias"]
     if direction not in ("BUY","SELL"):
         return {"signal":"NO_TRADE","engine_version":ENGINE_VERSION,"valid":False,"rejection_reasons":["NO_DIRECTIONAL_STRUCTURE"],"structure_bias":h1s,"m15_structure":m15s}
     reasons=[]
-    # Opposing M15 structure is a veto; neutral M15 is allowed.
     if m15s["bias"] in ("BUY","SELL") and m15s["bias"] != direction:
         reasons.append("M15_OPPOSES_H1")
     loc=_location(m15,direction)
     if not loc["valid"]: reasons.append("M15_LOCATION_INVALID")
     sweep=_find_sweep(m5,direction)
     mss=_find_mss(m5,sweep,direction)
-    # If the sweep is not immediately paired with MSS, use a recent MSS only
-    # when it is still after a recent same-direction sweep.
     if sweep and not mss:
         mss=_find_mss(m5,sweep,direction,window=16)
-    if not sweep:
-        reasons.append("NO_LIQUIDITY_SWEEP")
-        # Do not fabricate a sweep. The engine must wait for real liquidity.
+    if not sweep: reasons.append("NO_LIQUIDITY_SWEEP")
     if not mss: reasons.append("NO_MSS_BOS_AFTER_SWEEP")
     retest=_retest(m5,mss,direction)
     if not retest["valid"]: reasons.append(retest["reason"])
@@ -221,12 +205,67 @@ def resolve_trade(direction,entry,sl,tp,future):
 
 
 def calculate_trade_levels(df,i,direction,entry_price=None):
-    # Compatibility endpoint: the real MTF setup is used when possible.
     setup=analyze_structure_setup(df,df,df,i)
     if setup.get("valid") and setup.get("signal")==direction: return setup["trade_levels"]
     return {"valid":False,"reason":"NO_VALID_STRUCTURE_SETUP"}
 
-evaluate_live_risk_guard = base.evaluate_live_risk_guard
+
+def evaluate_live_risk_guard(*args, **kwargs):
+    """V8-native live risk guard.
+
+    Kept as a stable compatibility interface for app.py. All limits are opt-in
+    through arguments or LIVE_* environment variables; zero means disabled.
+    """
+    def num(name, default=0.0):
+        value = kwargs.get(name, default)
+        try:
+            value = float(value)
+            return value if math.isfinite(value) else default
+        except (TypeError, ValueError):
+            return default
+
+    def integer(name, default=0):
+        try:
+            return int(kwargs.get(name, default))
+        except (TypeError, ValueError):
+            return default
+
+    price_jump_atr = num("price_jump_atr", 0.0)
+    daily_loss_r = num("daily_loss_r", 0.0)
+    consecutive_losses = integer("consecutive_losses", 0)
+    trades_today = integer("trades_today", 0)
+    slippage = num("slippage", 0.0)
+
+    max_price_jump_atr = num("max_price_jump_atr", float(os.getenv("LIVE_MAX_PRICE_JUMP_ATR", "0")))
+    max_daily_loss_r = num("max_daily_loss_r", float(os.getenv("LIVE_MAX_DAILY_LOSS_R", "0")))
+    max_consecutive_losses = integer("max_consecutive_losses", int(os.getenv("LIVE_MAX_CONSECUTIVE_LOSSES", "0")))
+    max_trades_per_day = integer("max_trades_per_day", int(os.getenv("LIVE_MAX_TRADES_PER_DAY", "0")))
+    max_slippage = num("max_slippage", float(os.getenv("LIVE_MAX_SLIPPAGE", "0")))
+
+    reasons = []
+    if max_price_jump_atr > 0 and price_jump_atr >= max_price_jump_atr:
+        reasons.append("PRICE_JUMP_ATR")
+    if max_daily_loss_r > 0 and daily_loss_r <= -abs(max_daily_loss_r):
+        reasons.append("MAX_DAILY_LOSS_R")
+    if max_consecutive_losses > 0 and consecutive_losses >= max_consecutive_losses:
+        reasons.append("MAX_CONSECUTIVE_LOSSES")
+    if max_trades_per_day > 0 and trades_today >= max_trades_per_day:
+        reasons.append("MAX_TRADES_PER_DAY")
+    if max_slippage > 0 and slippage > max_slippage:
+        reasons.append("MAX_SLIPPAGE")
+
+    return {
+        "allowed": not reasons,
+        "blocked": bool(reasons),
+        "reasons": reasons,
+        "price_jump_atr": price_jump_atr,
+        "daily_loss_r": daily_loss_r,
+        "consecutive_losses": consecutive_losses,
+        "trades_today": trades_today,
+        "slippage": slippage,
+    }
+
+
 send_telegram = base.send_telegram
 calculate_indicators = base.calculate_indicators
 remove_incomplete_last_candle = base.remove_incomplete_last_candle
