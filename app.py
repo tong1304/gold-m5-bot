@@ -84,6 +84,19 @@ def validation():
         with SYMBOL_LOCK: activate(symbol); report=validate_v5.run(symbol,bars)
         report["endpoint"]="/validation"; report["request"]={"symbol":symbol,"bars":bars}; report["live_orders_allowed"]=False; return _json_response(report)
     except Exception as exc:return _json_response({"status":"validation_error","engine_version":engine.ENGINE_VERSION,"exchange":"LSE","symbol":symbol,"bars":bars,"error_type":type(exc).__name__,"message":str(exc),"live_orders_allowed":False},502)
+@engine.app.route("/validation-v91")
+def validation_v91():
+    symbol=(request.args.get("symbol") or "BTC/USDT").strip().upper()
+    if symbol not in SUPPORTED_SYMBOLS:return _json_response({"status":"error","message":f"Unsupported symbol: {symbol}","supported_symbols":list(SUPPORTED_SYMBOLS),"live_orders_allowed":False},400)
+    try:bars=max(150,min(int(request.args.get("bars","1000")),1000))
+    except Exception:return _json_response({"status":"error","message":"bars must be an integer between 150 and 1000","live_orders_allowed":False},400)
+    try:
+        import validate_v9_1
+        with SYMBOL_LOCK:
+            activate(symbol); report=validate_v9_1.run(symbol,bars)
+        report["endpoint"]="/validation-v91"; report["request"]={"symbol":symbol,"bars":bars}; report["live_orders_allowed"]=False
+        return _json_response(report)
+    except Exception as exc:return _json_response({"status":"validation_error","engine_version":engine.ENGINE_VERSION,"exchange":"LSE","symbol":symbol,"bars":bars,"error_type":type(exc).__name__,"message":str(exc),"live_orders_allowed":False},502)
 @engine.app.route("/scheduler/status")
 def scheduler_status():
     try:import scheduler; return _json_response({"status":"ok",**scheduler.status()})
