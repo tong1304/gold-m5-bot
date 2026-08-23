@@ -1,8 +1,8 @@
 """Runtime safety overrides loaded automatically by Python before the app.
 
-Keeps the live engine at minimum 2R and, when the Render/Gunicorn process
-starts with an empty signal database, launches one isolated V8 historical
-replay so /statistics has real data to display. The replay subprocess is
+Keeps the live engine at minimum 2R and, when historical NO_TRADE data is
+missing, launches one isolated V8 historical replay so /statistics contains
+both trade outcomes and rejected/no-entry decisions. The replay subprocess is
 marked so it cannot recursively bootstrap itself.
 """
 import os
@@ -29,7 +29,9 @@ def _bootstrap_statistics():
         return
     try:
         from signal_history import history
-        if history.list_signals(days=3650, limit=1):
+        # Backfill when there are no NO_TRADE rows, even if older deployments
+        # already contain BUY/SELL rows. This makes the migration one-time.
+        if history.list_signals(days=3650, result="NO_TRADE", limit=1):
             return
     except Exception:
         return
