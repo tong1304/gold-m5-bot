@@ -91,24 +91,22 @@ def _notify_error(exc, context):
 
 def _closed_frame(symbol):
     scanner = _scanner()
-    provider_symbol = DISPLAY_TO_MARKET[symbol]
-    frame = scanner.BINANCE.fetch_candles(provider_symbol, "5m", 10)
+    frame = scanner.BINANCE.fetch_candles(DISPLAY_TO_MARKET[symbol], "5m", 10)
     frame = scanner.BINANCE.remove_incomplete_last_candle(frame, timeframe_minutes=5)
     if frame.empty:
-        raise RuntimeError(f"LSE ยังไม่มีแท่ง M5 ที่ปิดแล้วสำหรับ {provider_symbol}")
-    row = frame.iloc[-1]
-    logger.warning("[%s] LSE latest CLOSED M5: %s | close=%s", symbol, row["datetime"], row["close"])
+        raise RuntimeError(f"ยังไม่มีแท่ง M5 ที่ปิดแล้วสำหรับ {symbol}")
     return frame
 
 
 def _system_test(now_bkk):
     global _LAST_TEST_SLOT
-    if now_bkk.minute % 5 != 0:
+    # System notification every 15 minutes: 00, 15, 30, 45 Bangkok time.
+    if now_bkk.minute % 15 != 0:
         return None
     slot = now_bkk.strftime("%Y-%m-%d %H:%M")
     if slot == _LAST_TEST_SLOT:
         return None
-    lines = ["🧪 <b>ทดสอบระบบทุก 5 นาที</b>", "", f"🕐 เวลา: {now_bkk.strftime('%d/%m/%Y %H:%M')} (กรุงเทพฯ)", ""]
+    lines = ["🧪 <b>ทดสอบระบบทุก 15 นาที</b>", "", f"🕐 เวลา: {now_bkk.strftime('%d/%m/%Y %H:%M')} (กรุงเทพฯ)", ""]
     scanner = None
     feed_ok = True
     try:
@@ -117,14 +115,13 @@ def _system_test(now_bkk):
             open_, session = _asset_market_status(symbol, now_bkk.astimezone(UTC))
             if not open_:
                 lines.append(f"⏸ {symbol}: ตลาดปิด ({session})")
-                logger.warning("[%s] LSE system test skipped: market %s", symbol, session)
                 continue
             frame = _closed_frame(symbol)
             row = frame.iloc[-1]
-            lines.append(f"📊 {symbol}: <b>{float(row['close']):,.8f}</b> | LSE M5 ปิด: {row['datetime']}")
+            lines.append(f"📊 {symbol}: <b>{float(row['close']):,.8f}</b> | M5 ปิด: {row['datetime']}")
     except Exception as exc:
         feed_ok = False
-        logger.exception("LSE 5-minute system test failed")
+        logger.exception("LSE 15-minute system test failed")
         lines.append(f"❌ LSE: {type(exc).__name__}: {exc}")
     lines += ["", "✅ Scheduler ทำงาน", "✅ LSE Price Feed" if feed_ok else "⚠️ LSE Price Feed มีข้อผิดพลาด", "✅ Telegram Monitor", "", "ℹ️ การทดสอบนี้ไม่ใช่สัญญาณ BUY/SELL"]
     try:
@@ -134,7 +131,7 @@ def _system_test(now_bkk):
             _LAST_TEST_SLOT = slot
         return {"sent": sent, "slot": slot, "telegram_result": result, "timezone": "Asia/Bangkok"}
     except Exception as exc:
-        logger.exception("5-minute system test Telegram send failed")
+        logger.exception("15-minute system test Telegram send failed")
         return {"sent": False, "slot": slot, "error_type": type(exc).__name__, "error": str(exc)}
 
 
@@ -142,14 +139,14 @@ def run_scan_cycle():
     now_bkk = datetime.now(UTC).astimezone(BANGKOK)
     now_utc = now_bkk.astimezone(UTC)
     symbols = _symbols()
-    logger.warning("[HEARTBEAT] Scheduler cycle START: %s | symbols=%s | interval=%ss | test_slots=every_5_minutes Asia/Bangkok | provider=LSE", now_bkk.strftime("%d/%m/%Y %H:%M:%S"), symbols, _interval_seconds())
+    logger.warning("[HEARTBEAT] Scheduler cycle START: %s | symbols=%s | interval=%ss | test_slots=every_15_minutes Asia/Bangkok | provider=LSE", now_bkk.strftime("%d/%m/%Y %H:%M:%S"), symbols, _interval_seconds())
     heartbeat = _system_test(now_bkk)
     results = []
     try:
         scanner = _scanner()
     except Exception as exc:
         logger.warning("LSE scanner unavailable: %s", exc)
-        _notify_error(exc, "เริ่มต้น LSE market-data scanner")
+        _notify_error(exc, "เริ่มต้น market-data scanner")
         return [{"status": "lse_unavailable", "error_type": type(exc).__name__, "message": str(exc)}]
 
     for symbol in symbols:
@@ -158,7 +155,6 @@ def run_scan_cycle():
                 raise RuntimeError(f"ไม่รองรับสินทรัพย์: {symbol}")
             open_, session = _asset_market_status(symbol, now_utc)
             if not open_:
-                logger.warning("[%s] Market closed: %s; no LSE request", symbol, session)
                 results.append({"status": "market_closed", "symbol": symbol, "session": session, "live_orders_allowed": False})
                 continue
             frame = _closed_frame(symbol)
@@ -176,11 +172,11 @@ def run_scan_cycle():
             result["market_session"] = session
             results.append(result)
         except Exception as exc:
-            logger.exception("[%s] LSE scan failed", symbol)
-            _notify_error(exc, f"การสแกน {symbol} ผ่าน LSE")
+            logger.exception("[%s] Scan failed", symbol)
+            _notify_error(exc, f"การสแกน {symbol}")
             results.append({"status": "scan_error", "symbol": symbol, "error_type": type(exc).__name__, "message": str(exc), "live_orders_allowed": False})
     if heartbeat is not None:
-        results.append({"status": "price_heartbeat", "heartbeat": heartbeat, "timezone": "Asia/Bangkok", "provider": "lse"})
+        results.append({"status": "price_heartbeat", "heartbeat": heartbeat, "timezone": "Asia/Bangkok"})
     logger.warning("[HEARTBEAT] Scheduler cycle END: processed=%d symbol(s) | provider=LSE", len(results))
     return results
 
@@ -193,8 +189,9 @@ def _seconds_to_next_five_minute():
 
 def _loop():
     global _RUNNING
+    # Scan remains every 5 minutes; Telegram system test is every 15 minutes.
     wait = _seconds_to_next_five_minute()
-    logger.warning("M5 Signal Scheduler thread started; first_cycle_in=%.1fs; interval=%ss; test_slots=every_5_minutes Asia/Bangkok; provider=LSE", wait, _interval_seconds())
+    logger.warning("M5 Signal Scheduler thread started; first_cycle_in=%.1fs; interval=%ss; test_slots=00,15,30,45 Asia/Bangkok; provider=LSE", wait, _interval_seconds())
     time.sleep(wait)
     while _RUNNING:
         started = time.monotonic()
@@ -205,7 +202,7 @@ def _loop():
             _notify_error(exc, "รอบการทำงานหลักของ Scheduler")
         elapsed = time.monotonic() - started
         wait = max(1, 300 - (time.time() % 300))
-        logger.warning("[HEARTBEAT] Scheduler cycle returned; elapsed=%.2fs; next_cycle_in=%.1fs; test_slots=every_5_minutes Asia/Bangkok; provider=LSE", elapsed, wait)
+        logger.warning("[HEARTBEAT] Scheduler cycle returned; elapsed=%.2fs; next_cycle_in=%.1fs; test_slots=00,15,30,45 Asia/Bangkok; provider=LSE", elapsed, wait)
         time.sleep(wait)
     logger.warning("M5 Signal Scheduler thread stopped")
 
@@ -228,4 +225,4 @@ def stop():
 
 def status():
     now = datetime.now(UTC)
-    return {"running": bool(_RUNNING and _THREAD and _THREAD.is_alive()), "interval_seconds": _interval_seconds(), "symbols": _symbols(), "test_slots": "every_5_minutes", "timezone": "Asia/Bangkok", "provider": "lse", "market_sessions": {s: {"open": _asset_market_status(s, now)[0], "session": _asset_market_status(s, now)[1]} for s in _symbols()}}
+    return {"running": bool(_RUNNING and _THREAD and _THREAD.is_alive()), "interval_seconds": _interval_seconds(), "symbols": _symbols(), "test_slots": "00,15,30,45", "timezone": "Asia/Bangkok", "provider": "LSE", "market_sessions": {s: {"open": _asset_market_status(s, now)[0], "session": _asset_market_status(s, now)[1]} for s in _symbols()}}
