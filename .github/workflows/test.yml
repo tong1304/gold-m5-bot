@@ -2,7 +2,7 @@ name: Tests
 
 on:
   push:
-    branches: [main]
+    branches: [main, v11-strategy-architecture]
   workflow_dispatch:
 
 jobs:
