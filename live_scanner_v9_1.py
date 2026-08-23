@@ -1,8 +1,9 @@
 """V9.1 live scanner adapter."""
-import os
+import os, logging
 from datetime import datetime, timezone
 import live_scanner_v9 as _base
 import engine_v9_1 as engine
+logger=logging.getLogger("signal_scheduler")
 SUPPORTED_SYMBOLS=_base.SUPPORTED_SYMBOLS
 _SCAN_LOCK=_base._SCAN_LOCK
 _ALERTED_SIGNAL_KEYS=_base._ALERTED_SIGNAL_KEYS
@@ -36,8 +37,10 @@ def scan_once(symbol="BTC"):
         signal=setup.get("signal"); valid=signal in ("BUY","SELL") and _levels_ready(setup.get("trade_levels"),signal); setup["valid"]=valid
         setup_key=setup.get("setup_key") or f"{symbol}|{candle_time}|{signal}"; suffix=signal if valid else "NO_TRADE"; signal_id=f"{symbol}-{str(candle_time).replace(':','').replace('-','').replace(' ','-')}-{suffix}"; setup["signal_id"]=signal_id
         if not valid:
-            payload={**setup,"signal":"NO_TRADE","result":"NO_TRADE","created_at":datetime.now(timezone.utc).isoformat(),"no_trade_reasons":setup.get("rejection_reasons") or []}; recorded=_base.history.record_no_trade(payload); print(f"[{symbol}] V9.1 NO_TRADE recorded={recorded} reasons={setup.get('rejection_reasons')}",flush=True); return {"status":"no_trade","engine_version":engine.ENGINE_VERSION,"symbol":symbol,"signal":"NO_TRADE","recorded":recorded,**setup}
+            reasons=setup.get("rejection_reasons") or ["NO_TRADE_REASON_UNSPECIFIED"]
+            payload={**setup,"signal":"NO_TRADE","result":"NO_TRADE","created_at":datetime.now(timezone.utc).isoformat(),"no_trade_reasons":reasons,"rejection_reasons":reasons}; recorded=_base.history.record_no_trade(payload); logger.warning("[%s] %s NO_TRADE recorded=%s reasons=%s",symbol,engine.ENGINE_VERSION,recorded,reasons); return {"status":"no_trade","engine_version":engine.ENGINE_VERSION,"symbol":symbol,"signal":"NO_TRADE","recorded":recorded,"rejection_reasons":reasons,"no_trade_reasons":reasons,**setup}
         if setup_key in _ALERTED_SIGNAL_KEYS or _base.history.get(signal_id): return {"status":"duplicate_suppressed","engine_version":engine.ENGINE_VERSION,"symbol":symbol,"signal":signal,"signal_id":signal_id,"setup_key":setup_key}
         payload={"signal_id":signal_id,"symbol":symbol,"signal":signal,"closed_candle":candle_time,"created_at":datetime.now(timezone.utc).isoformat(),"engine_version":engine.ENGINE_VERSION,"replay":False,"pattern_signal":signal,"m5_direction":signal,"v9_setup":setup,"structure_bias":setup.get("structure_bias"),"location":setup.get("location"),"liquidity_event":setup.get("liquidity_event"),"m5_trigger":setup.get("m5_trigger"),"pullback":setup.get("pullback"),"target_liquidity":setup.get("target_liquidity"),"rejection_reasons":setup.get("rejection_reasons"),"trade_levels":setup["trade_levels"],"mtf":{"H1":{"bias":setup.get("structure_bias",{}).get("bias")},"M15":{"bias":setup.get("m15_structure",{}).get("bias")},"M5":signal}}
         recorded=_base.history.record_signal(payload); telegram_result=engine.send_telegram(_format_telegram(symbol,setup,signal_id)); _ALERTED_SIGNAL_KEYS.add(setup_key)
+        logger.warning("[%s] %s SIGNAL=%s recorded=%s telegram=%s pattern=%s RR=%s",symbol,engine.ENGINE_VERSION,signal,recorded,bool(telegram_result.get("success")),(setup.get("pattern") or {}).get("name","-"),setup.get("trade_levels",{}).get("risk_reward"))
         return {"status":"signal_sent" if telegram_result.get("success") else "signal_recorded_telegram_failed","engine_version":engine.ENGINE_VERSION,"symbol":symbol,"signal":signal,"signal_id":signal_id,"recorded":recorded,"telegram":telegram_result,"telegram_alert_sent":bool(telegram_result.get("success")),"setup":setup}
