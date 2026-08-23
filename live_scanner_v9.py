@@ -14,83 +14,73 @@ _ALERTED_SIGNAL_KEYS=set()
 
 
 def _normalize_lse_rows(raw, symbol, timeframe):
-    """Normalize lse-data 0.14 candle responses to a list of OHLCV rows.
-
-    lse-data returns an envelope such as {"rows": N, "data": [...], ...}.
-    Older code assumed the response itself was the row list, which produced
-    DataFrames with columns like `rows`, `plan`, and `data` and then failed on
-    the missing `datetime` column.
-    """
     if isinstance(raw, dict):
         rows=raw.get("data")
-        if rows is None:
-            rows=raw.get("rows_data")
-        if rows is None and isinstance(raw.get("data"), dict):
-            rows=raw["data"].get("data")
+        if isinstance(rows, dict): rows=rows.get("data") or rows.get("rows")
+        if rows is None: rows=raw.get("rows_data")
         if rows is None:
             raise RuntimeError(f"LSE_INVALID_RESPONSE: {symbol} {timeframe} missing data rows; keys={list(raw.keys())[:20]}")
     elif isinstance(raw, (list, tuple)):
         rows=raw
     else:
         raise RuntimeError(f"LSE_INVALID_RESPONSE: {symbol} {timeframe} unexpected type={type(raw).__name__}")
-
-    if not isinstance(rows, list):
-        rows=list(rows) if rows is not None else []
-    if not rows:
-        raise RuntimeError(f"LSE returned no candles for {symbol} {timeframe}")
-
+    if not isinstance(rows,list): rows=list(rows or [])
+    if not rows: raise RuntimeError(f"LSE returned no candles for {symbol} {timeframe}")
     frame=pd.DataFrame(rows)
-    if frame.empty:
-        raise RuntimeError(f"LSE returned empty candle frame for {symbol} {timeframe}")
-
-    # lse-data uses `timestamp`; accept `datetime` too for compatibility.
+    if frame.empty: raise RuntimeError(f"LSE returned empty candle frame for {symbol} {timeframe}")
     if "datetime" not in frame.columns:
         for candidate in ("timestamp","time","date"):
             if candidate in frame.columns:
-                frame=frame.rename(columns={candidate:"datetime"})
-                break
+                frame=frame.rename(columns={candidate:"datetime"}); break
     if "datetime" not in frame.columns:
         raise RuntimeError(f"LSE_INVALID_RESPONSE: {symbol} {timeframe} missing timestamp column; columns={list(frame.columns)}")
-
-    required=("open","high","low","close")
-    missing=[c for c in required if c not in frame.columns]
-    if missing:
-        raise RuntimeError(f"LSE_INVALID_RESPONSE: {symbol} {timeframe} missing OHLC columns={missing}; columns={list(frame.columns)}")
+    missing=[c for c in ("open","high","low","close") if c not in frame.columns]
+    if missing: raise RuntimeError(f"LSE_INVALID_RESPONSE: {symbol} {timeframe} missing OHLC columns={missing}; columns={list(frame.columns)}")
     return frame
+
+
+def _timeframe_minutes(timeframe):
+    mapping={"1m":1,"5m":5,"15m":15,"30m":30,"1h":60,"4h":240,"1d":1440}
+    if timeframe not in mapping: raise ValueError(f"Unsupported timeframe: {timeframe}")
+    return mapping[timeframe]
+
+
+def _remove_incomplete_last_candle(frame,timeframe):
+    """V9-local closed-candle filter; never call legacy V8 core."""
+    minutes=_timeframe_minutes(timeframe)
+    cutoff=pd.Timestamp.now(tz="UTC").floor(f"{minutes}min")
+    return frame.loc[frame["datetime"] < cutoff].copy().reset_index(drop=True)
 
 
 def _lse_frame(symbol, timeframe, history_points=200):
     market={"BTC":"BTC/USD","GOLD":"XAU/USD"}[symbol]
     dataset="crypto" if symbol=="BTC" else "forex"
     now=datetime.now(timezone.utc)
-    days=max(2, int(history_points*5/1440)+2)
-    start=(now-timedelta(days=days)).date().isoformat()
-    end=(now+timedelta(days=1)).date().isoformat()
+    days=max(2,int(history_points*_timeframe_minutes(timeframe)/1440)+2)
+    start=(now-timedelta(days=days)).date().isoformat(); end=(now+timedelta(days=1)).date().isoformat()
     client=LSE(api_key=os.environ["LSE_API_KEY"])
     print(f"[{symbol}] LSE QUERY: market={market} dataset={dataset} timeframe={timeframe} start={start} end={end} limit={history_points} order=desc",flush=True)
     raw=client.candles(market,timeframe,start=start,end=end,limit=history_points,order="desc")
     frame=_normalize_lse_rows(raw,symbol,timeframe)
     print(f"[{symbol}] LSE RAW DATA: rows={len(frame)} dataset={dataset}",flush=True)
     frame["datetime"]=pd.to_datetime(frame["datetime"],utc=True,errors="coerce")
-    for col in ("open","high","low","close"):
-        frame[col]=pd.to_numeric(frame[col],errors="coerce")
+    for col in ("open","high","low","close"): frame[col]=pd.to_numeric(frame[col],errors="coerce")
     frame=frame.dropna(subset=["datetime","open","high","low","close"]).sort_values("datetime").reset_index(drop=True)
-    if frame.empty:
-        raise RuntimeError(f"LSE returned no valid OHLC candles for {symbol} {timeframe}")
+    if frame.empty: raise RuntimeError(f"LSE returned no valid OHLC candles for {symbol} {timeframe}")
     print(f"[{symbol}] LSE NORMALIZED: rows={len(frame)} oldest={frame.iloc[0]['datetime'].isoformat()} newest={frame.iloc[-1]['datetime'].isoformat()} dataset={dataset}",flush=True)
-    frame=engine.remove_incomplete_last_candle(frame,timeframe)
+    frame=_remove_incomplete_last_candle(frame,timeframe)
     _validate_freshness(frame,symbol,timeframe)
     print(f"[{symbol}] Latest closed {timeframe} candle: {frame.iloc[-1]['datetime']}",flush=True)
     return frame
 
 
 def _max_age(timeframe): return {"5m":20.0,"15m":45.0,"1h":150.0}.get(timeframe,60.0)
-
 def _validate_freshness(frame,symbol,timeframe):
     if frame.empty: raise RuntimeError(f"NO_CLOSED_CANDLES: {symbol} {timeframe}")
     latest=pd.Timestamp(frame.iloc[-1]["datetime"]); now=pd.Timestamp(datetime.now(timezone.utc)); age_minutes=(now-latest).total_seconds()/60.0; max_age=_max_age(timeframe)
     print(f"[{symbol}] DATA CHECK {timeframe}: latest={latest.isoformat()} age={age_minutes:.1f}m max={max_age:.1f}m",flush=True)
     if age_minutes>max_age: raise RuntimeError(f"STALE_MARKET_DATA: {symbol} {timeframe} latest={latest.isoformat()} age={age_minutes:.1f}m max={max_age:.1f}m")
+
 
 def _load_frames(symbol):
     history_points=max(100,int(os.getenv("LIVE_SIGNAL_HISTORY","200"))); frames={}
@@ -103,6 +93,7 @@ def _load_frames(symbol):
         if frames[tf].iloc[-1]["datetime"]>latest: frames[tf]=frames[tf].iloc[:-1].reset_index(drop=True)
     return frames
 
+
 def _levels_ready(levels,direction=None):
     if not isinstance(levels,dict) or not levels.get("valid",False): return False
     try:
@@ -112,18 +103,16 @@ def _levels_ready(levels,direction=None):
         return entry>0 and sl>0 and tp>0 and rr>=2.0
     except (TypeError,ValueError,KeyError): return False
 
+
 def _format_telegram(symbol,setup,signal_id):
     direction=setup["signal"]; levels=setup["trade_levels"]; sweep=setup.get("liquidity_event") or {}; mss=setup.get("m5_trigger") or {}; loc=setup.get("location") or {}; h1=setup.get("structure_bias",{}).get("bias","NEUTRAL"); m15=setup.get("m15_structure",{}).get("bias","NEUTRAL")
     side="🟢 BUY — ซื้อ" if direction=="BUY" else "🔴 SELL — ขาย"
-    return ("🚨 <b>พบสัญญาณ Structure V9</b>\n\n" f"{side}\n\n📊 <b>สินทรัพย์:</b> {symbol}\n⏱ <b>Entry TF:</b> M5\n🕯 <b>แท่ง:</b> {_fmt_time(setup.get('candle_time'))}\n" f"🔐 <b>Signal ID:</b> {signal_id}\n\n" f"🧭 <b>Structure:</b> H1={h1} | M15={m15} | M5={direction}\n" f"📍 <b>Location:</b> {loc.get('zone','-')}\n💧 <b>Liquidity:</b> {sweep.get('type','-')}\n⚡ <b>MSS/BOS:</b> {mss.get('type','-')}\n🔄 <b>Pullback:</b> CONFIRMED\n\n" f"💰 <b>Entry:</b> {_fmt_price(levels['entry'])}\n🛑 <b>SL:</b> {_fmt_price(levels['sl'])}\n🎯 <b>TP:</b> {_fmt_price(levels['tp'])}\n📐 <b>RR:</b> {levels['risk_reward']}R\n\n🧠 <b>เหตุผลเข้า:</b> Structure → Location → Liquidity Sweep → MSS/BOS → Pullback\n⚠️ ระบบไม่เปิดออเดอร์อัตโนมัติ")
+    return ("🚨 <b>พบสัญญาณ Structure V9</b>\n\n" f"{side}\n\n📊 <b>สินทรัพย์:</b> {symbol}\n⏱ <b>Entry TF:</b> M5\n🕯 <b>แท่ง:</b> {_fmt_time(setup.get('candle_time'))}\n" f"🔐 <b>Signal ID:</b> {signal_id}\n\n" f"🧭 <b>Structure:</b> H1={h1} | M15={m15} | M5={direction}\n" f"📍 <b>Location:</b> {loc.get('zone','-')}\n💧 <b>Liquidity:</b> {sweep.get('type','-')}\n⚡ <b>MSS/BOS:</b> {mss.get('type','-')}\n🔄 <b>Pullback:</b> CONFIRMED\n\n" f"💰 <b>Entry:</b> {_fmt_price(levels['entry'])}\n🛑 <b>SL:</b> {_fmt_price(levels['sl'])}\n🎯 <b>TP:</b> {_fmt_price(levels['tp'])}\n📐 <b>RR:</b> {levels['risk_reward']}R\n\n" f"🧠 <b>เหตุผลเข้า:</b> Structure → Location → Liquidity Sweep → MSS/BOS → Pullback\n⚠️ ระบบไม่เปิดออเดอร์อัตโนมัติ")
 
 def _fmt_time(value):
     try:
-        ts=pd.Timestamp(value)
-        if ts.tzinfo is None: ts=ts.tz_localize("UTC")
-        return ts.tz_convert("Asia/Bangkok").strftime("%d/%m/%Y %H:%M")
+        ts=pd.Timestamp(value); ts=ts.tz_localize("UTC") if ts.tzinfo is None else ts; return ts.tz_convert("Asia/Bangkok").strftime("%d/%m/%Y %H:%M")
     except Exception: return str(value or "-")
-
 def _fmt_price(value):
     try: return f"{float(value):,.8f}".rstrip("0").rstrip(".")
     except Exception: return str(value)
