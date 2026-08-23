@@ -6,7 +6,7 @@ from datetime import datetime, timezone, timedelta
 import pandas as pd
 import engine_v9_core as engine
 from signal_history import history
-from lse.client import Client
+from lse import LSE
 
 SUPPORTED_SYMBOLS=("BTC","GOLD")
 _SCAN_LOCK=threading.Lock()
@@ -20,9 +20,9 @@ def _lse_frame(symbol, timeframe, history_points=200):
     days=max(2, int(history_points*5/1440)+2)
     start=(now-timedelta(days=days)).date().isoformat()
     end=(now+timedelta(days=1)).date().isoformat()
-    client=Client(api_key=os.environ["LSE_API_KEY"])
+    client=LSE(api_key=os.environ["LSE_API_KEY"])
     print(f"[{symbol}] LSE QUERY: market={market} dataset={dataset} timeframe={timeframe} start={start} end={end} limit={history_points} order=desc",flush=True)
-    raw=client.candles(market,timeframe,start=start,end=end,limit=history_points,order="desc",dataset=dataset)
+    raw=client.candles(market,timeframe,start=start,end=end,limit=history_points,order="desc")
     frame=pd.DataFrame(raw)
     if frame.empty: raise RuntimeError(f"LSE returned no candles for {symbol} {timeframe}")
     frame["datetime"]=pd.to_datetime(frame["datetime"],utc=True)
