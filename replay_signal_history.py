@@ -117,28 +117,56 @@ def replay_symbol(symbol, start, end, dry_run=False):
     if len(m5) < 500: raise RuntimeError(f"Not enough LSE M5 history for {symbol}: {len(m5)}")
     m15, h1 = _resample(m5, 15), _resample(m5, 60)
     generated = inserted = 0
-    outcomes = {"WIN":0,"LOSS":0,"AMBIGUOUS":0,"OPEN":0}
+    outcomes = {"WIN":0,"LOSS":0,"AMBIGUOUS":0,"OPEN":0,"NO_TRADE":0}
     rejected = {}
     used_setup_keys = set()
 
     for i in range(100, len(m5)-1):
         ts = pd.Timestamp(m5.iloc[i]["datetime"])
         if ts < pd.Timestamp(start) or ts >= pd.Timestamp(end): continue
-        # V8 receives only candles that existed at the decision timestamp.
         m5_ctx = m5.iloc[:i+1].reset_index(drop=True)
         m15_ctx, h1_ctx = _context(m15, ts), _context(h1, ts)
         if len(m15_ctx) < 60 or len(h1_ctx) < 60 or len(m5_ctx) < 80: continue
         setup = engine.analyze_structure_setup(m5_ctx, m15_ctx, h1_ctx, len(m5_ctx)-1)
-        if setup.get("signal") not in ("BUY","SELL") or not setup.get("valid"):
+        signal = setup.get("signal")
+        valid = signal in ("BUY","SELL") and bool(setup.get("valid"))
+
+        # Every V8 decision is recorded. NO_TRADE rows are intentionally kept
+        # so statistics show how often the strategy filtered the market and why.
+        if not valid:
             for reason in setup.get("rejection_reasons", []): rejected[reason] = rejected.get(reason, 0) + 1
+            signal_id = f"REPLAY-V8-{symbol}-{ts.strftime('%Y%m%dT%H%MZ')}-NO_TRADE"
+            payload = {
+                "signal_id":signal_id,"symbol":symbol,"signal":"NO_TRADE","closed_candle":ts.isoformat(),"created_at":ts.isoformat(),
+                "replay":True,"replay_source":"LSE_HISTORICAL_OHLCV","engine_version":engine.ENGINE_VERSION,
+                "v8_setup":setup,"v6_setup":setup,"structure_bias":setup.get("structure_bias"),"location":setup.get("location"),
+                "liquidity_event":setup.get("liquidity_event"),"m5_trigger":setup.get("m5_trigger"),"pullback":setup.get("pullback"),
+                "target_liquidity":setup.get("target_liquidity"),"rejection_reasons":setup.get("rejection_reasons",[]),
+                "no_trade_reasons":setup.get("rejection_reasons",[]),
+                "mtf":{"H1":{"bias":setup.get("structure_bias",{}).get("bias")},"M15":{"bias":setup.get("m15_structure",{}).get("bias")},"M5":signal or "NONE"},
+            }
+            generated += 1
+            outcomes["NO_TRADE"] += 1
+            if not dry_run and history.record_no_trade(payload): inserted += 1
             continue
+
         setup_key = setup.get("setup_key")
         if setup_key and setup_key in used_setup_keys:
+            # This is still a real V8 decision, but it is not a new trade.
+            signal_id = f"REPLAY-V8-{symbol}-{ts.strftime('%Y%m%dT%H%MZ')}-NO_TRADE"
+            payload = {
+                "signal_id":signal_id,"symbol":symbol,"signal":"NO_TRADE","closed_candle":ts.isoformat(),"created_at":ts.isoformat(),
+                "replay":True,"replay_source":"LSE_HISTORICAL_OHLCV","engine_version":engine.ENGINE_VERSION,
+                "v8_setup":setup,"rejection_reasons":["DUPLICATE_SETUP"],"no_trade_reasons":["DUPLICATE_SETUP"],
+            }
+            generated += 1
+            outcomes["NO_TRADE"] += 1
             rejected["DUPLICATE_SETUP"] = rejected.get("DUPLICATE_SETUP", 0) + 1
+            if not dry_run and history.record_no_trade(payload): inserted += 1
             continue
         if setup_key: used_setup_keys.add(setup_key)
+
         levels = setup["trade_levels"]
-        signal = setup["signal"]
         signal_id = f"REPLAY-V8-{symbol}-{ts.strftime('%Y%m%dT%H%MZ')}-{signal}"
         payload = {
             "signal_id":signal_id,"symbol":symbol,"signal":signal,"closed_candle":ts.isoformat(),"created_at":ts.isoformat(),
