@@ -99,25 +99,92 @@ def _closed_frame(symbol, limit=10):
     return frame
 
 
+def _lse_history_frame(symbol, limit=200):
+    """Fetch the same 5m market history from LSE for result evaluation.
+
+    Signal history must be resolved against the provider used by the live system,
+    not Binance.  lse-data 0.14 exposes candles() through the same API key used
+    by the WebSocket feed.  The response shape changed across early SDK releases,
+    so this parser accepts both a direct list and {data:[...]}.
+    """
+    from lse import LSE
+    import pandas as pd
+
+    market = DISPLAY_TO_MARKET[symbol]
+    client = LSE(api_key=os.getenv("LSE_API_KEY"))
+    raw = client.candles(market, "5m", limit=int(limit), order="asc")
+    if isinstance(raw, dict):
+        rows = raw.get("data") or raw.get("candles") or raw.get("rows") or []
+    else:
+        rows = raw or []
+    if not isinstance(rows, list):
+        rows = list(rows)
+    if not rows:
+        raise RuntimeError(f"LSE ไม่มีข้อมูล M5 สำหรับ {market}")
+    frame = pd.DataFrame(rows)
+    rename = {
+        "timestamp": "datetime",
+        "time": "datetime",
+        "ts": "datetime",
+        "o": "open",
+        "h": "high",
+        "l": "low",
+        "c": "close",
+        "v": "volume",
+    }
+    frame = frame.rename(columns={k: v for k, v in rename.items() if k in frame.columns})
+    required = {"datetime", "high", "low", "close"}
+    missing = required.difference(frame.columns)
+    if missing:
+        raise RuntimeError(f"LSE M5 response missing columns: {sorted(missing)}")
+    frame["datetime"] = frame["datetime"].astype(str)
+    for col in ("open", "high", "low", "close", "volume"):
+        if col in frame.columns:
+            frame[col] = pd.to_numeric(frame[col], errors="coerce")
+    frame = frame.dropna(subset=["high", "low", "close"]).reset_index(drop=True)
+    if frame.empty:
+        raise RuntimeError(f"LSE M5 มีข้อมูลราคาไม่สมบูรณ์สำหรับ {market}")
+    return frame
+
+
+def _history_frame(symbol, limit=200):
+    """Prefer LSE history; fall back to the existing scanner source if LSE REST fails."""
+    try:
+        frame = _lse_history_frame(symbol, limit=limit)
+        logger.warning("[SIGNAL HISTORY] LSE M5 history fetched: %s rows=%d", DISPLAY_TO_MARKET[symbol], len(frame))
+        return frame, "LSE"
+    except Exception as lse_exc:
+        logger.warning("[SIGNAL HISTORY] LSE history unavailable for %s: %s", symbol, lse_exc)
+        scanner = _scanner()
+        frame = scanner.BINANCE.fetch_candles(DISPLAY_TO_MARKET[symbol], "5m", limit)
+        frame = scanner.BINANCE.remove_incomplete_last_candle(frame, timeframe_minutes=5)
+        if frame.empty:
+            raise RuntimeError(f"ไม่มีแท่ง M5 สำหรับประเมิน {symbol}; LSE error: {lse_exc}")
+        logger.warning("[SIGNAL HISTORY] fallback M5 history source=Binance: %s rows=%d", DISPLAY_TO_MARKET[symbol], len(frame))
+        return frame, "Binance-fallback"
+
+
 def _evaluate_signal_history():
+    """Resolve previously Telegram-sent signals into WIN/LOSS/AMBIGUOUS."""
     try:
         from signal_history import history
         pending = history.pending(limit=200)
         if not pending:
             return 0
-        scanner = _scanner()
         resolved = 0
         for row in pending:
             try:
-                market = DISPLAY_TO_MARKET.get(row["symbol"], row["symbol"])
-                frame = scanner.BINANCE.fetch_candles(market, "5m", 200)
-                frame = scanner.BINANCE.remove_incomplete_last_candle(frame, timeframe_minutes=5)
+                symbol = str(row.get("symbol", "")).upper()
+                if symbol not in DISPLAY_SYMBOLS:
+                    logger.warning("[SIGNAL HISTORY] unsupported stored symbol=%s", symbol)
+                    continue
+                frame, source = _history_frame(symbol, 200)
                 candles = frame.to_dict("records")
                 before = row["result"]
                 updated = history.evaluate_candles(row["signal_id"], candles)
                 if updated and updated.get("result") != before:
                     resolved += 1
-                    logger.warning("[SIGNAL HISTORY] %s -> %s r=%s", row["signal_id"], updated.get("result"), updated.get("r_multiple"))
+                    logger.warning("[SIGNAL HISTORY] %s -> %s r=%s source=%s", row["signal_id"], updated.get("result"), updated.get("r_multiple"), source)
             except Exception as exc:
                 logger.warning("[SIGNAL HISTORY] evaluate failed for %s: %s", row.get("signal_id"), exc)
         return resolved
