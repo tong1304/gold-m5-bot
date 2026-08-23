@@ -4,6 +4,7 @@ import logging
 import os
 import live_scanner_v9 as _base
 from v11 import engine
+from engine_v9_standalone import send_telegram
 
 logger=logging.getLogger("signal_scheduler")
 SUPPORTED_SYMBOLS=_base.SUPPORTED_SYMBOLS
@@ -49,5 +50,5 @@ def scan_once(symbol="BTC"):
         setup_key=f"{symbol}|{ts}|{signal}|{setup.get('strategy')}"
         if setup_key in _ALERTED_SIGNAL_KEYS or _base.history.get(signal_id):return {"status":"duplicate_suppressed","engine_version":engine.ENGINE_VERSION,"signal":signal,"signal_id":signal_id}
         payload={**setup,"signal_id":signal_id,"replay":False,"created_at":datetime.now(timezone.utc).isoformat()}
-        recorded=_base.history.record_signal(payload); telegram=engine.send_telegram(_telegram(symbol,setup)); _ALERTED_SIGNAL_KEYS.add(setup_key)
+        recorded=_base.history.record_signal(payload); telegram=send_telegram(_telegram(symbol,setup)); _ALERTED_SIGNAL_KEYS.add(setup_key)
         return {"status":"signal_sent" if telegram.get("success") else "signal_recorded_telegram_failed","engine_version":engine.ENGINE_VERSION,"symbol":symbol,"signal":signal,"strategy":setup.get("strategy"),"recorded":recorded,"telegram":telegram,"telegram_alert_sent":bool(telegram.get("success")),"setup":setup}
