@@ -31,21 +31,25 @@ def _api_key():
     return os.getenv("LSE_API_KEY", "").strip()
 
 
+def _max_age():
+    try:
+        return max(5.0, float(os.getenv("MAX_LIVE_PRICE_AGE_SECONDS", "30")))
+    except (TypeError, ValueError):
+        return 30.0
+
+
 def _set_tick(tick):
     global _LAST_ERROR, _TICKS_RECEIVED, _LAST_TICK_AT, _CONNECTED, _LOOP_STATE
     symbol = str(getattr(tick, "symbol", "") or "").upper()
     if symbol not in SYMBOLS:
         return
-    price = getattr(tick, "price", None)
     try:
-        price = float(price)
+        price = float(getattr(tick, "price", None))
     except (TypeError, ValueError):
         return
     if price <= 0:
         return
-    timestamp = getattr(tick, "timestamp", None)
-    if timestamp is None:
-        timestamp = datetime.now(timezone.utc).isoformat()
+    timestamp = getattr(tick, "timestamp", None) or datetime.now(timezone.utc).isoformat()
     received_at = datetime.now(timezone.utc).isoformat()
     with _LOCK:
         _LATEST[symbol] = {
@@ -63,13 +67,7 @@ def _set_tick(tick):
         _LAST_TICK_AT = received_at
         _CONNECTED = True
         _LOOP_STATE = "receiving_ticks"
-    logger.info(
-        "[LIVE PRICE] %s price=%s timestamp=%s replay=%s",
-        symbol,
-        price,
-        timestamp,
-        bool(getattr(tick, "replay", False)),
-    )
+    logger.info("[LIVE PRICE] %s price=%s timestamp=%s replay=%s", symbol, price, timestamp, bool(getattr(tick, "replay", False)))
 
 
 def _on_connected(*_args):
@@ -132,25 +130,13 @@ def _stream_loop():
             client.on("authenticated", _on_authenticated)
             client.on("disconnected", _on_disconnected)
             client.on("error", _on_error)
-
             with _LOCK:
                 _CLIENT = client
                 _CONNECTED = False
                 _AUTHENTICATED = False
                 _LOOP_STATE = "connecting"
-            logger.warning(
-                "[LIVE PRICE] Connecting LSE WebSocket with callbacks: %s",
-                ", ".join(SYMBOLS),
-            )
-
-            # Use the documented callback/connect API. This keeps the worker
-            # attached to the WebSocket and exposes connection/auth errors via
-            # status(), instead of relying only on the iterator interface.
+            logger.warning("[LIVE PRICE] Connecting LSE WebSocket: %s", ", ".join(SYMBOLS))
             client.connect(symbols=list(SYMBOLS))
-
-            # connect() normally blocks until disconnect/reconnect. If it
-            # returns while the service is still running, treat that as an
-            # unexpected stream termination and reconnect through the outer loop.
             if _RUNNING:
                 with _LOCK:
                     _LAST_ERROR = _LAST_ERROR or "LSE connect() returned while service was running"
@@ -185,23 +171,52 @@ def _stream_loop():
 
 
 def _watchdog_loop():
-    global _THREAD, _RESTART_COUNT, _LAST_ERROR, _LOOP_STATE
+    global _THREAD, _RESTART_COUNT, _LAST_ERROR, _LOOP_STATE, _CONNECTED, _AUTHENTICATED
     logger.warning("[LIVE PRICE] Watchdog started")
     while _RUNNING:
         time.sleep(10)
         if not _RUNNING:
             break
+        restart = False
+        reason = None
         with _LOCK:
             alive = bool(_THREAD and _THREAD.is_alive())
-            if alive:
-                continue
-            _RESTART_COUNT += 1
-            restart_no = _RESTART_COUNT
-            _LAST_ERROR = _LAST_ERROR or "Live price worker stopped unexpectedly"
-            _LOOP_STATE = "watchdog_restarting"
-            _THREAD = threading.Thread(target=_stream_loop, name="lse-live-price", daemon=True)
-            _THREAD.start()
-        logger.error("[LIVE PRICE] Watchdog restarted worker; restart_count=%s", restart_no)
+            last_age = _age_seconds(_LAST_TICK_AT) if _LAST_TICK_AT else None
+            # A dead worker must always be restarted.
+            if not alive:
+                restart = True
+                reason = "worker_not_alive"
+            # If we previously received ticks but they have gone stale, force a reconnect.
+            elif _TICKS_RECEIVED > 0 and last_age is not None and last_age > _max_age():
+                restart = True
+                reason = f"stale_ticks_{last_age:.1f}s"
+                _CONNECTED = False
+                _AUTHENTICATED = False
+                _LOOP_STATE = "stale_reconnecting"
+                client = _CLIENT
+            else:
+                client = None
+
+            if restart:
+                _RESTART_COUNT += 1
+                restart_no = _RESTART_COUNT
+                _LAST_ERROR = f"Live price watchdog restart: {reason}"
+                _LOOP_STATE = "watchdog_restarting"
+                if reason != "worker_not_alive":
+                    client = _CLIENT
+                    _CLIENT = None
+                else:
+                    client = None
+                if not alive:
+                    _THREAD = threading.Thread(target=_stream_loop, name="lse-live-price", daemon=True)
+                    _THREAD.start()
+        if restart:
+            try:
+                if client is not None:
+                    client.disconnect()
+            except Exception:
+                pass
+            logger.warning("[LIVE PRICE] Watchdog restart=%s reason=%s", restart_no, reason)
     logger.warning("[LIVE PRICE] Watchdog exited")
 
 
@@ -252,11 +267,7 @@ def _decorate(value):
     value = dict(value)
     value["age_seconds"] = _age_seconds(value.get("received_at"))
     try:
-        value["received_at_bangkok"] = (
-            datetime.fromisoformat(value["received_at"].replace("Z", "+00:00"))
-            .astimezone(BANGKOK)
-            .strftime("%d/%m/%Y %H:%M:%S")
-        )
+        value["received_at_bangkok"] = datetime.fromisoformat(value["received_at"].replace("Z", "+00:00")).astimezone(BANGKOK).strftime("%d/%m/%Y %H:%M:%S")
     except (KeyError, TypeError, ValueError):
         value["received_at_bangkok"] = None
     return value
@@ -269,10 +280,13 @@ def status():
         thread_alive = bool(_THREAD and _THREAD.is_alive())
         watchdog_alive = bool(_WATCHDOG_THREAD and _WATCHDOG_THREAD.is_alive())
         running = bool(_RUNNING and thread_alive)
-        connected = bool(_CONNECTED)
-        authenticated = bool(_AUTHENTICATED)
-        ticks = _TICKS_RECEIVED
         last_tick_at = _LAST_TICK_AT
+        last_age = _age_seconds(last_tick_at) if last_tick_at else None
+        # Never report a stale/disconnected stream as connected/authenticated.
+        fresh = last_age is None or last_age <= _max_age()
+        connected = bool(running and _CONNECTED and fresh)
+        authenticated = bool(running and _AUTHENTICATED and fresh)
+        ticks = _TICKS_RECEIVED
         started_at = _STARTED_AT
         loop_state = _LOOP_STATE
         restart_count = _RESTART_COUNT
@@ -288,7 +302,7 @@ def status():
         "last_tick_at": last_tick_at,
         "last_error": error,
         "api_key_configured": bool(_api_key()),
-        "max_live_price_age_seconds": float(os.getenv("MAX_LIVE_PRICE_AGE_SECONDS", "30")),
+        "max_live_price_age_seconds": _max_age(),
         "worker_thread_alive": thread_alive,
         "watchdog_alive": watchdog_alive,
         "loop_state": loop_state,
@@ -299,12 +313,7 @@ def status():
 
 def get(symbol):
     symbol = str(symbol or "").strip().upper()
-    market = {
-        "BTC": "BTC/USD",
-        "BTC/USD": "BTC/USD",
-        "GOLD": "XAU/USD",
-        "XAU/USD": "XAU/USD",
-    }.get(symbol)
+    market = {"BTC": "BTC/USD", "BTC/USD": "BTC/USD", "GOLD": "XAU/USD", "XAU/USD": "XAU/USD"}.get(symbol)
     if not market:
         return None
     with _LOCK:
