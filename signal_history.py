@@ -49,11 +49,9 @@ class SignalHistory:
         signal_id = str(signal.get("signal_id") or "").strip()
         if not signal_id or signal.get("signal") not in ("BUY", "SELL"):
             return False
-        # Live signals keep the normal insertion timestamp. Replay signals may
-        # provide created_at so the Statistics page reflects the historical
-        # candle date instead of the date the replay command was executed.
         created_at = str(signal.get("created_at") or datetime.now(timezone.utc).isoformat())
         with self._lock, self._connect() as conn:
+            before = conn.total_changes
             conn.execute("""
                 INSERT OR IGNORE INTO signals
                 (signal_id, symbol, direction, candle_time, created_at, entry, sl, tp, risk_reward, payload_json)
@@ -70,7 +68,7 @@ class SignalHistory:
                 _num(levels.get("risk_reward")),
                 json.dumps(signal, ensure_ascii=False, default=str),
             ))
-            return conn.total_changes > 0
+            return conn.total_changes > before
 
     def set_result(self, signal_id, result, r_multiple, resolved_at=None):
         result = str(result).upper()
@@ -133,14 +131,19 @@ class SignalHistory:
 
     def list_signals(self, days=30, symbol=None, result=None, limit=200):
         days = max(0, min(int(days), 3650))
-        where = ["created_at >= datetime('now', ?)"]
+        # created_at may be stored as ISO-8601 (T/+00:00) by historical replay
+        # while SQLite datetime('now') is formatted with a space. Normalize both
+        # sides through SQLite datetime() so replay rows are not silently omitted.
+        where = ["datetime(created_at) >= datetime('now', ?)"]
         params = [f"-{days} days"]
         if symbol and symbol.upper() in ("BTC", "GOLD"):
-            where.append("symbol=?"); params.append(symbol.upper())
+            where.append("symbol=?")
+            params.append(symbol.upper())
         if result and result.upper() in ("OPEN", "WIN", "LOSS", "AMBIGUOUS", "EXPIRED"):
-            where.append("result=?"); params.append(result.upper())
+            where.append("result=?")
+            params.append(result.upper())
         params.append(max(1, min(int(limit), 1000)))
-        query = f"SELECT * FROM signals WHERE {' AND '.join(where)} ORDER BY created_at DESC LIMIT ?"
+        query = f"SELECT * FROM signals WHERE {' AND '.join(where)} ORDER BY datetime(created_at) DESC LIMIT ?"
         with self._lock, self._connect() as conn:
             return [dict(row) for row in conn.execute(query, params).fetchall()]
 
