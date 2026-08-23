@@ -41,12 +41,20 @@ def _risk_levels(m5,direction,strategy,evidence):
     return {"valid":rr>=2.0,"entry":entry,"sl":sl,"tp":tp,"risk":risk,"risk_reward":round(rr,4),"effective_rr":round(rr,4),"target_rr":2.0,"strategy":strategy}
 
 def _candidate_directions(m5,strategy):
+    """Return both directional hypotheses so each strategy owns its setup decision.
+
+    The previous implementation used one generic M5 direction as a gate. That
+    caused a valid strategy setup to become NOT_APPLICABLE whenever the generic
+    structure/EMA detector was neutral or pointed the other way. V11 is
+    strategy-split, so every registered strategy must be allowed to inspect
+    BUY and SELL independently; the strategy itself decides which side passes.
+    We still evaluate the generic M5 direction first for efficiency, then the
+    opposite side if needed.
+    """
     d=detect_m5_direction(m5)
-    if d in ("BUY","SELL"):return [d]
-    x=m5.tail(21).reset_index(drop=True); c=num(x.close.iloc[-1]); hi=num(x.iloc[:-1].high.max()); lo=num(x.iloc[:-1].low.min())
-    if c>hi:return ["BUY"]
-    if c<lo:return ["SELL"]
-    return ["BUY","SELL"] if strategy in ("LIQUIDITY_SWEEP","SR_REVERSAL") else []
+    if d=="BUY": return ["BUY","SELL"]
+    if d=="SELL": return ["SELL","BUY"]
+    return ["BUY","SELL"]
 
 def analyze(m5,m15,symbol,index=None):
     if index is not None:m5=m5.iloc[:index+1].reset_index(drop=True)
@@ -54,7 +62,6 @@ def analyze(m5,m15,symbol,index=None):
     registry=get_strategy_registry(symbol); m15_trend=detect_m15_trend(m15); m5_direction=detect_m5_direction(m5); candidates=[]; passes=[]
     for name,fn in registry.items():
         dirs=_candidate_directions(m5,name)
-        if not dirs:candidates.append(StrategyResult.not_applicable(name,"NEUTRAL","M5_DIRECTION_UNCLEAR").as_dict()); continue
         best=None
         for direction in dirs:
             r=fn(m5,direction,{"m15":m15_trend}); best=r
