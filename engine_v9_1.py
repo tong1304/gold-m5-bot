@@ -55,15 +55,16 @@ def _m5_pattern_v91(df,direction):
     """
     if df is None or len(df)<25:return None
     x=df.reset_index(drop=True); i=len(x)-1; r=x.iloc[i]; q=x.iloc[i-1]; p3=x.iloc[i-2]; atr=max(_v9._atr(x,i),1e-9)
-    rq=_candle_quality(r,direction,atr); qq=_candle_quality(q,direction,atr)
-    o,h,l,c=map(_num,(r.open,r.high,r.low,r.close)); qo,qh,ql,qc=map(_num,(q.open,q.high,q.low,q.close)); p3h,p3l=_num(p3.high),_num(p3.low)
+    rq=_candle_quality(r,direction,atr)
+    o,h,l,c=map(_num,(r.open,r.high,r.low,r.close)); qh,ql=map(_num,(q.high,q.low)); p3h,p3l=_num(p3.high),_num(p3.low)
 
-    # 1) Single/2-candle patterns remain strict and must occur on the latest candle.
+    # Keep engulfing/pin-bar strict on the latest candle. A plain breakout is
+    # intentionally evaluated later because it may actually be a breakout-retest.
     p=_v9._candle_pattern(x,direction)
-    if p:
+    if p and p.get("name") not in ("BULLISH_BREAKOUT","BEARISH_BREAKOUT"):
         p["quality"]="CLEAR"; p["context_bars"]=2; return p
 
-    # 2) Inside-bar breakout: the previous candle is inside the candle before it,
+    # Inside-bar breakout: the previous candle is inside the candle before it,
     # and the latest candle closes through the mother bar with a decisive body.
     if qh<p3h and ql>p3l and rq["directional"] and rq["body_ratio"]>=0.30:
         if direction=="BUY" and c>p3h and c>qh:
@@ -71,7 +72,7 @@ def _m5_pattern_v91(df,direction):
         if direction=="SELL" and c<p3l and c<ql:
             return {"name":"INSIDE_BAR_BREAKOUT","direction":"SELL","index":i,"strength":"CLEAR","quality":"CLEAR","context_bars":3}
 
-    # 3) Breakout + retest: search recent candles for a real level break, then
+    # Breakout + retest: search recent candles for a real level break, then
     # require the current candle to retest and hold that level. This uses 5-12 bars.
     start=max(3,i-12)
     for j in range(start,i-1):
@@ -88,7 +89,12 @@ def _m5_pattern_v91(df,direction):
         if retest_touch and held and confirm and i-j<=5:
             return {"name":"BULLISH_BREAKOUT_RETEST" if direction=="BUY" else "BEARISH_BREAKOUT_RETEST","direction":direction,"index":i,"strength":"CLEAR","quality":"CLEAR","context_bars":i-j+1,"level":level,"breakout_index":j}
 
-    # 4) Double bottom/top: two nearby swing extremes plus a neckline break on the
+    # If the latest candle is itself a clean breakout and no retest structure
+    # exists, retain the original V9 breakout pattern.
+    if p:
+        p["quality"]="CLEAR"; p["context_bars"]=2; return p
+
+    # Double bottom/top: two nearby swing extremes plus a neckline break on the
     # latest candle. This prevents a mere two-touch resemblance from becoming a trade.
     window=x.iloc[max(0,i-18):i+1].reset_index(drop=True); wi=len(window)-1
     if len(window)>=10:
