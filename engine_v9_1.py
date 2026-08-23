@@ -1,4 +1,4 @@
-"""V9.1 signal engine: H1 structure + M15 S/R/location + M5 price-action trigger.
+"""V9.1 signal engine: H1 structure + M15 S/R/location + M5 multi-candle price-action trigger.
 Indicators are context/risk tools only; no weighted scoring. Minimum RR is 1.0R.
 """
 from __future__ import annotations
@@ -41,17 +41,74 @@ def _sr_location(df,direction,lookback=64):
     else: valid=close>=mid or near_resistance; zone="PREMIUM_RESISTANCE" if valid else "DISCOUNT"
     return {"valid":bool(valid),"zone":zone,"range_high":hi,"range_low":lo,"mid":mid,"support":support,"resistance":resistance,"near_support":near_support,"near_resistance":near_resistance}
 
+def _candle_quality(row,direction,atr):
+    o,h,l,c=map(_num,(row.open,row.high,row.low,row.close)); body=abs(c-o); rng=max(h-l,1e-12); upper=h-max(o,c); lower=min(o,c)-l
+    body_ratio=body/rng; close_location=(c-l)/rng
+    directional=(c>o) if direction=="BUY" else (c<o)
+    return {"body":body,"range":rng,"upper_wick":upper,"lower_wick":lower,"body_ratio":body_ratio,"close_location":close_location,"directional":directional,"atr":atr}
+
 def _m5_pattern_v91(df,direction):
-    p=_v9._candle_pattern(df,direction)
-    if p:p["quality"]="CLEAR"; return p
+    """Detect an actionable pattern using a recent M5 window, not only the last candle.
+
+    The last closed candle must still be the trigger/confirmation candle. Earlier
+    candles are used to build the pattern context so we do not enter on stale setups.
+    """
     if df is None or len(df)<25:return None
-    x=df.reset_index(drop=True); r=x.iloc[-1]; q=x.iloc[-2]; p3=x.iloc[-3]; o,h,l,c=map(float,(r.open,r.high,r.low,r.close)); qo,qh,ql,qc=map(float,(q.open,q.high,q.low,q.close)); body=abs(c-o); rng=max(h-l,1e-12); atr=_v9._atr(x,len(x)-1)
-    if direction=="BUY":
-        if qh<p3.high and ql>p3.low and c>qh and body>=max(atr*.18,rng*.30):return {"name":"INSIDE_BAR_BREAKOUT","direction":"BUY","index":len(x)-1,"strength":"CLEAR","quality":"CLEAR"}
-        if c>o and qc<qo and c>qc and abs(c-o)>abs(qc-qo)*1.15:return {"name":"BULLISH_BREAKOUT_RETEST","direction":"BUY","index":len(x)-1,"strength":"CLEAR","quality":"CLEAR"}
-    else:
-        if qh<p3.high and ql>p3.low and c<ql and body>=max(atr*.18,rng*.30):return {"name":"INSIDE_BAR_BREAKOUT","direction":"SELL","index":len(x)-1,"strength":"CLEAR","quality":"CLEAR"}
-        if c<o and qc>qo and c<qc and abs(c-o)>abs(qc-qo)*1.15:return {"name":"BEARISH_BREAKOUT_RETEST","direction":"SELL","index":len(x)-1,"strength":"CLEAR","quality":"CLEAR"}
+    x=df.reset_index(drop=True); i=len(x)-1; r=x.iloc[i]; q=x.iloc[i-1]; p3=x.iloc[i-2]; atr=max(_v9._atr(x,i),1e-9)
+    rq=_candle_quality(r,direction,atr); qq=_candle_quality(q,direction,atr)
+    o,h,l,c=map(_num,(r.open,r.high,r.low,r.close)); qo,qh,ql,qc=map(_num,(q.open,q.high,q.low,q.close)); p3h,p3l=_num(p3.high),_num(p3.low)
+
+    # 1) Single/2-candle patterns remain strict and must occur on the latest candle.
+    p=_v9._candle_pattern(x,direction)
+    if p:
+        p["quality"]="CLEAR"; p["context_bars"]=2; return p
+
+    # 2) Inside-bar breakout: the previous candle is inside the candle before it,
+    # and the latest candle closes through the mother bar with a decisive body.
+    if qh<p3h and ql>p3l and rq["directional"] and rq["body_ratio"]>=0.30:
+        if direction=="BUY" and c>p3h and c>qh:
+            return {"name":"INSIDE_BAR_BREAKOUT","direction":"BUY","index":i,"strength":"CLEAR","quality":"CLEAR","context_bars":3}
+        if direction=="SELL" and c<p3l and c<ql:
+            return {"name":"INSIDE_BAR_BREAKOUT","direction":"SELL","index":i,"strength":"CLEAR","quality":"CLEAR","context_bars":3}
+
+    # 3) Breakout + retest: search recent candles for a real level break, then
+    # require the current candle to retest and hold that level. This uses 5-12 bars.
+    start=max(3,i-12)
+    for j in range(start,i-1):
+        base=x.iloc[max(0,j-4):j]
+        if len(base)<3: continue
+        level=_num(base.high.max()) if direction=="BUY" else _num(base.low.min())
+        b=x.iloc[j]; bo,bh,bl,bc=map(_num,(b.open,b.high,b.low,b.close)); bq=_candle_quality(b,direction,max(_v9._atr(x,j),1e-9))
+        broke=(bc>level and bq["body_ratio"]>=0.30 and bc>bo) if direction=="BUY" else (bc<level and bq["body_ratio"]>=0.30 and bc<bo)
+        if not broke: continue
+        if direction=="BUY":
+            retest_touch=l<=level+atr*.55; held=c>=level; confirm=c>o and rq["body_ratio"]>=0.25
+        else:
+            retest_touch=h>=level-atr*.55; held=c<=level; confirm=c<o and rq["body_ratio"]>=0.25
+        if retest_touch and held and confirm and i-j<=5:
+            return {"name":"BULLISH_BREAKOUT_RETEST" if direction=="BUY" else "BEARISH_BREAKOUT_RETEST","direction":direction,"index":i,"strength":"CLEAR","quality":"CLEAR","context_bars":i-j+1,"level":level,"breakout_index":j}
+
+    # 4) Double bottom/top: two nearby swing extremes plus a neckline break on the
+    # latest candle. This prevents a mere two-touch resemblance from becoming a trade.
+    window=x.iloc[max(0,i-18):i+1].reset_index(drop=True); wi=len(window)-1
+    if len(window)>=10:
+        swings_low=[]; swings_high=[]
+        for k in range(2,wi-2):
+            lo_k=_num(window.iloc[k].low); hi_k=_num(window.iloc[k].high)
+            if lo_k<=min(_num(v) for v in window.low.iloc[k-2:k+3]): swings_low.append(k)
+            if hi_k>=max(_num(v) for v in window.high.iloc[k-2:k+3]): swings_high.append(k)
+        tol=atr*.75
+        if direction=="BUY" and len(swings_low)>=2:
+            a,b=swings_low[-2],swings_low[-1]; la,lb=_num(window.iloc[a].low),_num(window.iloc[b].low)
+            neckline=_num(window.iloc[a:b+1].high.max())
+            if abs(la-lb)<=tol and wi-b<=3 and c>neckline and c>o and rq["body_ratio"]>=.25:
+                return {"name":"DOUBLE_BOTTOM_BREAKOUT","direction":"BUY","index":i,"strength":"CLEAR","quality":"CLEAR","context_bars":wi-a+1,"neckline":neckline}
+        if direction=="SELL" and len(swings_high)>=2:
+            a,b=swings_high[-2],swings_high[-1]; ha,hb=_num(window.iloc[a].high),_num(window.iloc[b].high)
+            neckline=_num(window.iloc[a:b+1].low.min())
+            if abs(ha-hb)<=tol and wi-b<=3 and c<neckline and c<o and rq["body_ratio"]>=.25:
+                return {"name":"DOUBLE_TOP_BREAKOUT","direction":"SELL","index":i,"strength":"CLEAR","quality":"CLEAR","context_bars":wi-a+1,"neckline":neckline}
+
     return None
 
 def _indicator_context(df):
@@ -91,7 +148,7 @@ def analyze_structure_setup(m5,m15,h1,index=None):
         sweep=_v9._find_sweep(m5,direction); mss=_v9._find_mss(m5,sweep,direction)
         if sweep and not mss:mss=_v9._find_mss(m5,sweep,direction,window=16)
         retest=_v9._retest(m5,mss,direction) if mss else {"valid":False,"reason":"NO_MSS_BOS_CONFIRMATION"}
-        if pattern.get("name") not in ("BULLISH_BREAKOUT","BEARISH_BREAKOUT","INSIDE_BAR_BREAKOUT","BULLISH_BREAKOUT_RETEST","BEARISH_BREAKOUT_RETEST") and mss is None:reasons.append("NO_M5_CONFIRMATION")
+        if pattern.get("name") not in ("BULLISH_BREAKOUT","BEARISH_BREAKOUT","INSIDE_BAR_BREAKOUT","BULLISH_BREAKOUT_RETEST","BEARISH_BREAKOUT_RETEST","DOUBLE_BOTTOM_BREAKOUT","DOUBLE_TOP_BREAKOUT") and mss is None:reasons.append("NO_M5_CONFIRMATION")
         entry=_num(m5.iloc[-1].close); target=_v9._target_liquidity(m5,direction,entry)
         if target is None:reasons.append("NO_LIQUIDITY_TARGET")
         invalidation=sweep["extreme"] if sweep else (loc.get("support") if direction=="BUY" else loc.get("resistance"))
