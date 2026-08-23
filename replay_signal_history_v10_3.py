@@ -1,9 +1,9 @@
 """V10.3 historical replay using real LSE OHLCV.
 
-The user selects calendar dates (Bangkok time). Replay internally evaluates every
-closed M5 candle in that date range, with a 14-day warm-up. LSE requests use the
-provider's required YYYY-MM-DD date format; timestamps are used only locally for
-filtering and look-ahead-safe simulation.
+Replay is selected by Bangkok calendar dates. Internally every closed M5 candle
+inside the selected date range is evaluated with a 14-day warm-up. LSE's REST
+API accepts calendar dates (YYYY-MM-DD), not ISO timestamps, so each request uses
+an explicit one-day [start, next-day) range.
 """
 from __future__ import annotations
 
@@ -24,10 +24,9 @@ SYMBOLS = {"BTC": "BTC/USD", "GOLD": "XAU/USD"}
 
 
 def _bounds(a, b):
-    """Interpret date-only input as an inclusive Bangkok calendar-date range."""
+    """Return UTC bounds for an inclusive Bangkok calendar-date selection."""
     def parse(value):
         text = str(value).strip()
-        # Date-only is the canonical Replay UI format.
         if len(text) == 10:
             d = date.fromisoformat(text)
             return datetime(d.year, d.month, d.day, tzinfo=BANGKOK)
@@ -38,7 +37,6 @@ def _bounds(a, b):
 
     s_local = parse(a)
     e_local = parse(b)
-    # End date is inclusive for the UI/API. A date-only end means the whole day.
     if len(str(b).strip()) == 10:
         e_local += timedelta(days=1)
     elif e_local <= s_local:
@@ -77,12 +75,12 @@ def _normalize(raw):
 
 
 def _fetch(symbol, start, end, timeframe="5m"):
-    """Fetch historical data using only LSE's accepted YYYY-MM-DD parameters.
+    """Fetch historical bars from LSE using valid date-only request parameters.
 
-    LSE rejects ISO timestamps in start/end. We therefore request one calendar
-    day at a time. A full day contains 288 M5 bars / 96 M15 bars, so the replay
-    request uses a configurable limit (default 1000) rather than the old 200-bar
-    cap. If the provider returns fewer rows, the result is still merged safely.
+    Important: LSE returns no data when start == end. Therefore a request for
+    Bangkok calendar day D is sent as start=D and end=D+1. The previous version
+    incorrectly sent start=D/end=D, which caused the current 'no 5m candles'
+    failure even though the live LSE feed has data.
     """
     key = os.getenv("LSE_API_KEY", "").strip() or os.getenv("LSE_KEY", "").strip()
     if not key:
@@ -90,41 +88,47 @@ def _fetch(symbol, start, end, timeframe="5m"):
     client = LSE(api_key=key)
     request_limit = max(200, min(int(os.getenv("LSE_REPLAY_LIMIT", "1000")), 5000))
 
-    # Convert UTC bounds to Bangkok calendar dates because the provider accepts
-    # dates, while Replay's public contract is Bangkok calendar days.
-    local_start = pd.Timestamp(start).tz_convert(BANGKOK).date()
-    local_end_exclusive = pd.Timestamp(end).tz_convert(BANGKOK).date()
-    days = []
-    d = local_start
-    while d <= local_end_exclusive:
-        days.append(d)
-        d += timedelta(days=1)
+    start_utc = pd.Timestamp(start)
+    end_utc = pd.Timestamp(end)
+    local_first = start_utc.tz_convert(BANGKOK).date()
+    # Last calendar day that can contain a requested/warm-up candle.
+    local_last = (end_utc - pd.Timedelta(microseconds=1)).tz_convert(BANGKOK).date()
 
     parts = []
-    for d in days:
-        # Never send datetime strings to LSE. This is the critical fix.
+    d = local_first
+    while d <= local_last:
+        next_day = d + timedelta(days=1)
         day_text = d.isoformat()
-        raw = client.candles(
-            SYMBOLS[symbol], timeframe,
-            start=day_text,
-            end=day_text,
-            limit=request_limit,
-            order="asc",
-        )
+        next_day_text = next_day.isoformat()
+        try:
+            raw = client.candles(
+                SYMBOLS[symbol], timeframe,
+                start=day_text,
+                end=next_day_text,
+                limit=request_limit,
+                order="asc",
+            )
+        except Exception as exc:
+            raise RuntimeError(
+                f"LSE {timeframe} request failed for {symbol} {day_text}->{next_day_text}: {exc}"
+            ) from exc
         frame = _normalize(raw)
         if not frame.empty:
             parts.append(frame)
+        d = next_day
 
     if not parts:
-        raise RuntimeError(f"LSE returned no {timeframe} candles for {symbol}")
+        raise RuntimeError(
+            f"LSE returned no {timeframe} candles for {symbol} "
+            f"between {local_first.isoformat()} and {local_last.isoformat()}"
+        )
+
     merged = (pd.concat(parts, ignore_index=True)
               .sort_values("datetime")
               .drop_duplicates("datetime")
               .reset_index(drop=True))
-    # Keep only the actual warm-up + requested window. The provider may interpret
-    # an end date inclusively, so local filtering is mandatory.
-    return merged[(merged.datetime >= pd.Timestamp(start)) &
-                  (merged.datetime < pd.Timestamp(end))].reset_index(drop=True)
+    return merged[(merged.datetime >= start_utc) &
+                  (merged.datetime < end_utc)].reset_index(drop=True)
 
 
 def _context(frame, ts):
@@ -198,7 +202,6 @@ def replay_symbol(symbol, start, end, dry_run=False):
     engine.MIN_RISK_REWARD = 1.0
     engine.RISK_REWARD = max(float(os.getenv("RISK_REWARD", "1.0")), 1.0)
 
-    # User selects the DATE. The engine evaluates every closed M5 candle in it.
     for i in range(100, len(m5) - 1):
         ts = pd.Timestamp(m5.iloc[i].datetime)
         if ts < start_ts or ts >= end_ts:
