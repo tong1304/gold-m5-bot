@@ -1,4 +1,4 @@
-"""V9.1 scheduler for BTC + GOLD using LSE data.
+"""V10.0 scheduler for BTC + GOLD using LSE data.
 
 Scan cadence: every 5 minutes. System heartbeat: every 15 minutes at 00/15/30/45 Asia/Bangkok.
 """
@@ -6,7 +6,7 @@ import logging, os, threading, time
 from datetime import datetime, timezone, time as dt_time
 from zoneinfo import ZoneInfo
 logger=logging.getLogger("signal_scheduler")
-ENGINE_VERSION="V9.1"
+ENGINE_VERSION="V10.0"
 _RUNNING=False; _THREAD=None; _LAST_CLOSED_CANDLE={}; _LAST_TEST_SLOT=None
 BANGKOK=ZoneInfo("Asia/Bangkok"); UTC=timezone.utc; DISPLAY_SYMBOLS=("BTC","GOLD")
 GOLD_OPEN_SUNDAY_UTC=os.getenv("GOLD_OPEN_SUNDAY_UTC","23:00"); GOLD_CLOSE_FRIDAY_UTC=os.getenv("GOLD_CLOSE_FRIDAY_UTC","22:00"); GOLD_DAILY_BREAK_START_UTC=os.getenv("GOLD_DAILY_BREAK_START_UTC","22:00"); GOLD_DAILY_BREAK_END_UTC=os.getenv("GOLD_DAILY_BREAK_END_UTC","23:00")
@@ -34,8 +34,8 @@ def _asset_market_status(symbol,now_utc=None):
     if br_start<br_end and br_start<=current<br_end: return False,"DAILY_BREAK"
     return True,"OPEN"
 def _scanner():
-    import live_scanner
-    return live_scanner
+    import live_scanner_v9_2
+    return live_scanner_v9_2
 def _notify_error(exc,context):
     text=(f"❌ <b>ระบบ {ENGINE_VERSION} Scheduler ขัดข้อง</b>\n\n" f"🕐 {datetime.now(UTC).astimezone(BANGKOK).strftime('%d/%m/%Y %H:%M:%S')} (กรุงเทพฯ)\n📍 {context}\n🔴 {type(exc).__name__}\n📝 {exc}\n\n🛑 ไม่มีการเปิดออเดอร์อัตโนมัติ")
     try: return _scanner().engine.send_telegram(text)
@@ -95,10 +95,10 @@ def run_scan_cycle():
             if frame.empty: raise RuntimeError(f"ไม่มีแท่ง M5 จาก LSE สำหรับ {symbol}")
             closed_key=str(frame.iloc[-1]["datetime"]); logger.warning("[%s] Latest closed M5 candle: %s",symbol,closed_key)
             if _LAST_CLOSED_CANDLE.get(symbol)==closed_key: logger.warning("[%s] WAITING_NEW_CANDLE: %s",symbol,closed_key); results.append({"status":"waiting_new_candle","symbol":symbol,"timeframe":"M5","closed_candle":closed_key,"live_orders_allowed":False,"engine_version":ENGINE_VERSION}); continue
-            logger.warning("[%s] Calling %s Signal Engine",symbol,ENGINE_VERSION); result=scanner.scan_once(symbol); _LAST_CLOSED_CANDLE[symbol]=closed_key; result["trigger"]="NEW_CLOSED_M5_CANDLE"; result["candle_consumed"]=True; result["market_session"]=session; result["engine_version"]=ENGINE_VERSION
+            logger.warning("[%s] Calling %s Multi-Strategy Signal Engine",symbol,ENGINE_VERSION); result=scanner.scan_once(symbol); _LAST_CLOSED_CANDLE[symbol]=closed_key; result["trigger"]="NEW_CLOSED_M5_CANDLE"; result["candle_consumed"]=True; result["market_session"]=session; result["engine_version"]=ENGINE_VERSION
             reasons=result.get("rejection_reasons") or result.get("no_trade_reasons") or (result.get("setup") or {}).get("rejection_reasons") or []
-            if result.get("signal")=="NO_TRADE": logger.warning("[%s] %s NO_TRADE recorded=%s reasons=%s",symbol,ENGINE_VERSION,result.get("recorded"),reasons)
-            else: logger.warning("[%s] %s result: signal=%s status=%s recorded=%s",symbol,ENGINE_VERSION,result.get("signal"),result.get("status"),result.get("recorded"))
+            if result.get("signal")=="NO_TRADE": logger.warning("[%s] %s NO_TRADE strategy=%s regime=%s recorded=%s reasons=%s",symbol,ENGINE_VERSION,result.get("strategy"),result.get("regime"),result.get("recorded"),reasons)
+            else: logger.warning("[%s] %s result: signal=%s strategy=%s regime=%s status=%s recorded=%s",symbol,ENGINE_VERSION,result.get("signal"),result.get("strategy"),result.get("regime"),result.get("status"),result.get("recorded"))
             results.append(result)
         except Exception as exc:
             message=str(exc); logger.exception("[%s] %s Scan failed",symbol,ENGINE_VERSION)
@@ -124,7 +124,7 @@ def _loop():
 def start():
     global _RUNNING,_THREAD
     if _RUNNING and _THREAD and _THREAD.is_alive(): return False
-    _RUNNING=True; _THREAD=threading.Thread(target=_loop,name="m5-btc-gold-v9_1-scanner",daemon=True); _THREAD.start(); logger.warning("%s Signal Scheduler started successfully; thread=%s",ENGINE_VERSION,_THREAD.name); return True
+    _RUNNING=True; _THREAD=threading.Thread(target=_loop,name="m5-btc-gold-v10-scanner",daemon=True); _THREAD.start(); logger.warning("%s Multi-Strategy Scheduler started successfully; thread=%s",ENGINE_VERSION,_THREAD.name); return True
 def stop():
     global _RUNNING; _RUNNING=False
 def status():
