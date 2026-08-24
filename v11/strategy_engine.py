@@ -26,11 +26,15 @@ def _trend_filter_ok(context,direction):
     m15=context.get("m15_context",{}) or {}
     return bool(context.get("regime")=="TREND" and context.get("direction")==direction and (m15.get("adx14",context.get("adx14",0)) or 0)>20 and context.get("h1_bias")==direction and m15.get("trend_ema_alignment") in (None,"EMA20>EMA50","EMA20<EMA50"))
 def _candidate_directions(context):
+    """MTF direction gate: H1 bias constrains transition setups; neutral H1 lets M5 choose side."""
+    regime=context.get("regime")
+    h1_bias=context.get("h1_bias")
+    if regime=="TRANSITION":
+        if h1_bias in ("BUY","SELL"):
+            return [h1_bias]
+        return ["BUY","SELL"]
     direction=context.get("direction")
-    if direction in ("BUY","SELL"):
-        if context.get("regime")=="TRANSITION" and context.get("h1_bias")=="NEUTRAL":
-            return ["BUY","SELL"]
-        return [direction]
+    if direction in ("BUY","SELL"):return [direction]
     return ["BUY","SELL"]
 def _bullish_reversal(last,prev):
     engulf=last["bull"] and prev["bear"] and last["open"]<=prev["close"] and last["close"]>=prev["open"];pin=last["bull"] and last["lower_wick"]>=max(last["body"]*1.5,last["range"]*.45) and last["close_location"]>=.65;return engulf or pin
