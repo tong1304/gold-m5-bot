@@ -15,12 +15,37 @@ def _frame(times):
     )
 
 
-def test_gold_weekend_gap_is_allowed():
+def test_gold_dst_daily_break_is_allowed():
+    # 2026-08-24 is inside US daylight-saving time. Gold's normal
+    # New York 17:00-18:00 maintenance break is 21:00-22:00 UTC.
     times = [
-        "2026-08-21T21:45:00Z",
-        "2026-08-21T22:00:00Z",
-        "2026-08-23T23:00:00Z",
-        "2026-08-23T23:15:00Z",
+        "2026-08-24T20:45:00Z",
+        "2026-08-24T21:00:00Z",
+        "2026-08-24T22:00:00Z",
+        "2026-08-24T22:15:00Z",
+    ]
+    errors = validate_frame(_frame(times), minimum=2, timeframe_minutes=15, market="GOLD")
+    assert "LARGE_DATA_GAP" not in errors
+
+
+def test_gold_winter_daily_break_is_allowed():
+    # In winter the same New York 17:00-18:00 break becomes 22:00-23:00 UTC.
+    times = [
+        "2026-01-05T21:45:00Z",
+        "2026-01-05T22:00:00Z",
+        "2026-01-05T23:00:00Z",
+        "2026-01-05T23:15:00Z",
+    ]
+    errors = validate_frame(_frame(times), minimum=2, timeframe_minutes=15, market="GOLD")
+    assert "LARGE_DATA_GAP" not in errors
+
+
+def test_gold_dst_weekend_gap_is_allowed():
+    times = [
+        "2026-08-21T20:45:00Z",
+        "2026-08-21T21:00:00Z",
+        "2026-08-23T22:00:00Z",
+        "2026-08-23T22:15:00Z",
     ]
     errors = validate_frame(_frame(times), minimum=2, timeframe_minutes=15, market="GOLD")
     assert "LARGE_DATA_GAP" not in errors
