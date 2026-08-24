@@ -7,6 +7,9 @@ import pandas as pd
 
 from . import engine
 
+REPLAY_M5_CONTEXT_BARS = 100
+REPLAY_M15_CONTEXT_BARS = 100
+
 
 def resolve_outcome(signal: dict, future: pd.DataFrame):
     if signal.get("signal") not in ("BUY", "SELL"):
@@ -68,8 +71,15 @@ def _m15_context_end_positions(m5: pd.DataFrame, m15: pd.DataFrame) -> list[int]
     return [int(m15_times.searchsorted(ts - timedelta(minutes=15), side="right")) for ts in m5["datetime"]]
 
 
+def _bounded_context(frame: pd.DataFrame, end_position: int, max_bars: int) -> pd.DataFrame:
+    """Return only closed history needed by the V11 engine at this candle."""
+    end_position = max(0, min(int(end_position), len(frame)))
+    start = max(0, end_position - max_bars)
+    return frame.iloc[start:end_position].reset_index(drop=True)
+
+
 def replay_frames(m5: pd.DataFrame, m15: pd.DataFrame, symbol: str, *, limit: int|None=None, start_time=None, end_time=None, progress_callback: Callable[..., None]|None=None):
-    """Replay V11 without lookahead and report progress during the engine loop."""
+    """Replay V11 without lookahead using bounded engine contexts."""
     m5=m5.sort_values("datetime").reset_index(drop=True); m15=m15.sort_values("datetime").reset_index(drop=True)
     start_ts,end_ts=_timestamp(start_time),_timestamp(end_time); indices=list(range(60,len(m5)))
     if start_ts is not None: indices=[i for i in indices if pd.Timestamp(m5.iloc[i].datetime)>=start_ts]
@@ -77,14 +87,24 @@ def replay_frames(m5: pd.DataFrame, m15: pd.DataFrame, symbol: str, *, limit: in
     if limit: indices=indices[-limit:]
     context_ends=_m15_context_end_positions(m5,m15)
     rows=[]; total=len(indices)
+    progress_counts={"trades":0,"wins":0,"losses":0,"open":0,"ambiguous":0,"net_r":0.0}
     if progress_callback:
-        progress_callback("engine_progress", symbol=symbol, completed=0, total=total, percent=0, trades=0, wins=0, losses=0, net_r=0.0)
+        progress_callback("engine_progress", symbol=symbol, completed=0, total=total, percent=0, **progress_counts)
     for n,i in enumerate(indices, start=1):
-        ts=m5.iloc[i].datetime; context=m15.iloc[:context_ends[i]]
-        setup=engine.analyze(m5,m15=context,symbol=symbol,index=i); outcome=resolve_outcome(setup,m5.iloc[i+1:i+1+engine.FORWARD_BARS])
+        ts=m5.iloc[i].datetime
+        m5_context=_bounded_context(m5, i + 1, REPLAY_M5_CONTEXT_BARS)
+        m15_context=_bounded_context(m15, context_ends[i], REPLAY_M15_CONTEXT_BARS)
+        setup=engine.analyze(m5_context,m15=m15_context,symbol=symbol,index=None)
+        outcome=resolve_outcome(setup,m5.iloc[i+1:i+1+engine.FORWARD_BARS])
+        result=str(outcome["result"]).upper()
+        if result in ("WIN","LOSS","OPEN","AMBIGUOUS"): progress_counts["trades"] += 1
+        if result == "WIN": progress_counts["wins"] += 1
+        elif result == "LOSS": progress_counts["losses"] += 1
+        elif result == "OPEN": progress_counts["open"] += 1
+        elif result == "AMBIGUOUS": progress_counts["ambiguous"] += 1
+        if result in ("WIN","LOSS"): progress_counts["net_r"] += float(outcome.get("r_multiple") or 0.0)
         rows.append({"candle_time":str(ts),"signal":setup.get("signal","NO_TRADE"),"strategy":setup.get("strategy","NONE"),"valid":bool(setup.get("valid")),"trade_levels":setup.get("trade_levels"),"result":outcome["result"],"r_multiple":outcome["r_multiple"],"resolved_at":outcome.get("resolved_at"),"engine_version":engine.ENGINE_VERSION})
         if progress_callback and (n == total or n == 1 or n % 10 == 0):
-            partial=summarize_rows(rows)
-            progress_callback("engine_progress", symbol=symbol, completed=n, total=total, percent=round(100*n/total,1) if total else 100, trades=partial["trades"], wins=partial["wins"], losses=partial["losses"], open=partial["open"], net_r=partial["net_r"])
+            progress_callback("engine_progress", symbol=symbol, completed=n, total=total, percent=round(100*n/total,1) if total else 100, **progress_counts)
     summary=summarize_rows(rows)
     return {"status":"completed","engine_version":engine.ENGINE_VERSION,"symbol":symbol,"candles_evaluated":len(rows),"signals":sum(r["valid"] for r in rows),"wins":summary["wins"],"losses":summary["losses"],"ambiguous":summary["ambiguous"],"open":summary["open"],"net_r":summary["net_r"],"performance":summary,"rows":rows,"live_orders_allowed":False,"m15_policy":"CLOSED_AT_M5_CLOSE_MINUS_15M","lookahead_safe":True,"warmup_bars":60}
