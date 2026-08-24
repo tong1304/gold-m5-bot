@@ -1,0 +1,35 @@
+name: V12.1 M5-only Backtest Aug 21-24 2026
+
+on:
+  push:
+    paths:
+      - 'scripts/run_v12_backtest.py'
+      - 'v11/replay_m5.py'
+      - '.github/workflows/v12-backtest-2026-08-21-24.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  backtest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+      - name: Run real LSE V12.1 M5-only backtest
+        env:
+          LSE_API_KEY: ${{ secrets.LSE_API_KEY }}
+        run: python scripts/run_v12_backtest.py
+      - name: Persist results
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add backtest_results.json
+          git diff --cached --quiet || git commit -m "data: persist V12.1 backtest Aug 21-24 2026"
+          git push
