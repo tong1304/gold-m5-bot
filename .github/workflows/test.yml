@@ -1,13 +1,12 @@
-name: Tests
+name: Legacy Generic Tests (manual)
 
 on:
-  push:
-    branches: [main, v11-strategy-architecture]
   workflow_dispatch:
 
 jobs:
   unit:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
