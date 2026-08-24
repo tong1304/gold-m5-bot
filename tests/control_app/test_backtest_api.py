@@ -17,11 +17,12 @@ def test_backtest_rejects_invalid_date_range(tmp_path):
 
 def test_backtest_starts_without_telegram_call(tmp_path, monkeypatch):
     app = app_module.create_app({"DB_PATH": str(tmp_path / "state.db"), "TESTING": True})
+
     def fake_run_backtest(symbol, start, end, **kwargs):
+        run_id = kwargs["run_id"]
         class Result:
-            run_id = kwargs["run_id"]
             def to_dict(self):
-                return {"run_id": self.run_id, "statistics": {"total_trades": 0}, "trades": []}
+                return {"run_id": run_id, "statistics": {"total_trades": 0}, "trades": []}
         return Result()
 
     monkeypatch.setattr("control_app.backtest.engine.run_backtest", fake_run_backtest)
