@@ -8,38 +8,32 @@ import pandas as pd
 
 REQUIRED = ("datetime", "open", "high", "low", "close")
 _NEW_YORK = ZoneInfo("America/New_York")
-_GOLD_SESSION_CLOSE = time(17, 0)
-_GOLD_SESSION_OPEN = time(18, 0)
+_GOLD_CLOSE = time(17, 0)
+_GOLD_OPEN = time(18, 0)
 
 
 def _gold_market_closed(timestamp: pd.Timestamp) -> bool:
-    """Return whether GOLD is normally closed at a candle-open timestamp.
-
-    GOLD follows the New York session clock: the normal daily maintenance
-    break is 17:00-18:00 America/New_York, with the UTC equivalent changing
-    automatically between daylight-saving and standard time. The weekly
-    closure is from Friday 17:00 NY through Sunday 18:00 NY.
-    """
     timestamp = pd.Timestamp(timestamp)
     if timestamp.tzinfo is None:
         timestamp = timestamp.tz_localize("UTC")
     local = timestamp.tz_convert(_NEW_YORK)
     wd = local.weekday()
     current = local.time()
-
-    if wd == 5:  # Saturday
+    if wd == 5:
         return True
-    if wd == 6:  # Sunday; opens at 18:00 NY
-        return current < _GOLD_SESSION_OPEN
-    if wd == 4:  # Friday; closes at 17:00 NY
-        return current >= _GOLD_SESSION_CLOSE
-    return _GOLD_SESSION_CLOSE <= current < _GOLD_SESSION_OPEN
+    if wd == 6:
+        return current < _GOLD_OPEN
+    if wd == 4:
+        return current >= _GOLD_CLOSE
+    return _GOLD_CLOSE <= current < _GOLD_OPEN
 
 
-def _gap_is_expected_session_gap(
-    start: pd.Timestamp, end: pd.Timestamp, timeframe_minutes: int
-) -> bool:
-    """Allow only gaps whose missing candle slots are entirely inside GOLD closure windows."""
+def _gap_is_expected_session_gap(start: pd.Timestamp, end: pd.Timestamp, timeframe_minutes: int) -> bool:
+    """Check missing candle slots, including the Friday->Sunday GOLD closure.
+
+    Candle timestamps are treated as candle-open timestamps.  A gap is expected
+    only when every missing slot is inside a known GOLD closure window.
+    """
     if timeframe_minutes <= 0 or end <= start:
         return False
     missing = pd.date_range(
@@ -48,16 +42,12 @@ def _gap_is_expected_session_gap(
         freq=f"{timeframe_minutes}min",
         tz="UTC",
     )
-    return len(missing) > 0 and all(_gold_market_closed(ts) for ts in missing)
+    if len(missing) == 0:
+        return False
+    return all(_gold_market_closed(ts) for ts in missing)
 
 
-def validate_frame(
-    frame: pd.DataFrame,
-    *,
-    minimum: int = 60,
-    timeframe_minutes: int | None = None,
-    market: str | None = None,
-) -> list[str]:
+def validate_frame(frame: pd.DataFrame, *, minimum: int = 60, timeframe_minutes: int | None = None, market: str | None = None) -> list[str]:
     reasons: list[str] = []
     if not isinstance(frame, pd.DataFrame):
         return ["FRAME_NOT_DATAFRAME"]
@@ -93,21 +83,15 @@ def validate_frame(
         delta = dt.diff().dropna().dt.total_seconds() / 60.0
         if (delta <= 0).any():
             reasons.append("NONPOSITIVE_INTERVAL")
-        gap_found = False
         for index, gap in delta.items():
             if gap <= timeframe_minutes * 3:
                 continue
             start = dt.iloc[index - 1]
             end = dt.iloc[index]
-            if (
-                str(market or "").upper() == "GOLD"
-                and _gap_is_expected_session_gap(start, end, timeframe_minutes)
-            ):
+            if str(market or "").upper() == "GOLD" and _gap_is_expected_session_gap(start, end, timeframe_minutes):
                 continue
-            gap_found = True
-            break
-        if gap_found:
             reasons.append("LARGE_DATA_GAP")
+            break
     return reasons
 
 
