@@ -9,7 +9,7 @@ import live_scanner_v11
 logger=logging.getLogger("signal_scheduler")
 ENGINE_VERSION="11.1-HARDENED"
 BANGKOK=ZoneInfo("Asia/Bangkok"); UTC=timezone.utc; DISPLAY_SYMBOLS=("BTC","GOLD")
-_RUNNING=False; _THREAD=None; _LAST_CLOSED_CANDLE={}; _LAST_TEST_SLOT=None; _STARTED_AT=None; _LAST_CYCLE_AT=None; _LAST_RESULTS=[]; _CYCLE_COUNT=0
+_RUNNING=False; _THREAD=None; _LAST_CLOSED_CANDLE={}; _LAST_MONITOR_SLOT=None; _STARTED_AT=None; _LAST_CYCLE_AT=None; _LAST_RESULTS=[]; _CYCLE_COUNT=0
 
 def _interval_seconds():
     try:return max(300,int(os.getenv("SIGNAL_SCAN_INTERVAL_SECONDS","300")))
@@ -31,10 +31,69 @@ def _asset_market_status(symbol,now_utc=None):
 
 def _notify_error(exc,context):
     try:return send_telegram(f"❌ <b>{ENGINE_VERSION} Scheduler</b>\n\n🕐 {datetime.now(UTC).astimezone(BANGKOK).strftime('%d/%m/%Y %H:%M:%S')} (กรุงเทพฯ)\n📍 {context}\n🔴 {type(exc).__name__}: {exc}\n\n🛑 ไม่มีการเปิดออเดอร์อัตโนมัติ")
-    except Exception:return None
+    except Exception as notify_exc:
+        logger.warning("[V11 TELEGRAM] Error notification failed: %s",notify_exc)
+        return None
+
+def _fmt_price(value):
+    try:
+        price=float(value)
+        if price<=0:return "N/A"
+        return f"{price:,.2f}"
+    except (TypeError,ValueError):
+        return "N/A"
+
+def _live_price_line(symbol):
+    try:
+        import live_price
+        tick=live_price.get(symbol)
+        label="₿ BTC" if symbol=="BTC" else "🟠 GOLD"
+        if not tick:
+            return f"{label}: <b>N/A</b> (รอ live tick)"
+        price=_fmt_price(tick.get("price"))
+        age=tick.get("age_seconds")
+        age_text=f" · {age:.1f}s" if isinstance(age,(int,float)) else ""
+        return f"{label}: <b>{price}</b>{age_text}"
+    except Exception as exc:
+        logger.warning("[V11 TELEGRAM] Live price read failed symbol=%s: %s",symbol,exc)
+        return f"{'₿ BTC' if symbol=='BTC' else '🟠 GOLD'}: <b>N/A</b>"
+
+def _send_15m_system_monitor(now_bkk):
+    global _LAST_MONITOR_SLOT
+    if now_bkk.minute not in (0,15,30,45):
+        return False
+    slot=now_bkk.strftime("%Y-%m-%d %H:%M")
+    if slot==_LAST_MONITOR_SLOT:
+        return False
+    try:
+        import live_price
+        status=live_price.status()
+        connected="CONNECTED" if status.get("connected") else "DISCONNECTED"
+        authenticated="AUTHENTICATED" if status.get("authenticated") else "NOT AUTHENTICATED"
+        ticks=status.get("ticks_received",0)
+        msg=(
+            f"🟢 <b>V11 SYSTEM STATUS</b>\n\n"
+            f"🕐 {now_bkk.strftime('%d/%m/%Y %H:%M:%S')} (กรุงเทพฯ)\n"
+            f"⚙️ Engine: <b>{ENGINE_VERSION}</b>\n"
+            f"⏱ Scheduler: <b>RUNNING</b>\n"
+            f"📡 LSE: <b>{connected}</b>\n"
+            f"🔐 Auth: <b>{authenticated}</b>\n"
+            f"📥 Live ticks: <b>{ticks}</b>\n\n"
+            f"📊 <b>ราคาปัจจุบัน</b>\n"
+            f"{_live_price_line('GOLD')}\n"
+            f"{_live_price_line('BTC')}\n\n"
+            f"⚠️ Monitor only — ไม่ใช่สัญญาณ BUY/SELL"
+        )
+        result=send_telegram(msg)
+        _LAST_MONITOR_SLOT=slot
+        logger.warning("[V11 TELEGRAM] 15m system monitor sent slot=%s result=%s",slot,result)
+        return True
+    except Exception as exc:
+        logger.warning("[V11 TELEGRAM] 15m system monitor failed slot=%s: %s",slot,exc)
+        return False
 
 def run_scan_cycle():
-    global _LAST_TEST_SLOT,_LAST_CYCLE_AT,_LAST_RESULTS,_CYCLE_COUNT
+    global _LAST_CYCLE_AT,_LAST_RESULTS,_CYCLE_COUNT
     now_utc=datetime.now(UTC); now_bkk=now_utc.astimezone(BANGKOK); results=[]; _CYCLE_COUNT+=1; _LAST_CYCLE_AT=now_utc.isoformat()
     logger.warning("[V11 SCHEDULER] Scan cycle #%s started at %s Bangkok symbols=%s",_CYCLE_COUNT,now_bkk.strftime('%Y-%m-%d %H:%M:%S'),_symbols())
     for symbol in _symbols():
@@ -55,12 +114,7 @@ def run_scan_cycle():
             results.append(result)
         except Exception as exc:
             logger.exception("[V11 SCHEDULER] %s scan failed",symbol); _notify_error(exc,f"การสแกน {symbol}"); results.append({"status":"scan_error","symbol":symbol,"error_type":type(exc).__name__,"message":str(exc),"live_orders_allowed":False})
-    if now_bkk.minute%15==0:
-        slot=now_bkk.strftime("%Y-%m-%d %H:%M")
-        if slot!=_LAST_TEST_SLOT:
-            _LAST_TEST_SLOT=slot
-            try: send_telegram(f"🧪 <b>V11 System Monitor</b>\n\n🕐 {now_bkk.strftime('%d/%m/%Y %H:%M')} (กรุงเทพฯ)\n✅ Scheduler: Active\n✅ LSE: Connected through scanner\n⚠️ Monitor only — ไม่ใช่สัญญาณ BUY/SELL")
-            except Exception: pass
+    _send_15m_system_monitor(now_bkk)
     _LAST_RESULTS=results
     logger.warning("[V11 SCHEDULER] Scan cycle #%s finished results=%s",_CYCLE_COUNT,len(results))
     return results
