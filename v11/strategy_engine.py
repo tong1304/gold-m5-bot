@@ -5,6 +5,7 @@ import numpy as np
 from .common import num, ema, atr14, structure, candle_metrics
 
 ENGINE_NAMES={"E1":"IMPULSE_PULLBACK","E2":"TREND_PULLBACK","E3":"RANGE_BREAK_EXPANSION","E4":"BREAK_RETEST_CONTINUATION","E5":"MOMENTUM_EXPANSION","E6":"EXTREME_REJECTION_MEAN_RETURN","E7":"SWEEP_REJECTION_REVERSAL","E8":"RANGE_REJECTION"}
+ENGINE_PRIORITY={"E7":0,"E4":1,"E1":2,"E2":3,"E5":4,"E3":5,"E6":6,"E8":7}
 
 def _stable_id(prefix,*parts):
     raw="|".join("" if p is None else str(p).strip() for p in parts)
@@ -21,7 +22,9 @@ def _pivots(x):
     return highs,lows
 def _volume_ratio(x,period=20):
     v=pd.to_numeric(x.get("volume",pd.Series(1.0,index=x.index)),errors="coerce").fillna(1.0);return num(v.iloc[-1]/max(num(v.tail(period).mean(),1e-12),1e-12))
-def _trend_filter_ok(context,direction):return bool(context.get("regime")=="TREND" and context.get("direction")==direction and (context.get("m15_context",{}).get("adx14",context.get("adx14",0)) or 0)>25 and context.get("h1_bias")==direction)
+def _trend_filter_ok(context,direction):
+    m15=context.get("m15_context",{}) or {}
+    return bool(context.get("regime")=="TREND" and context.get("direction")==direction and (m15.get("adx14",context.get("adx14",0)) or 0)>20 and context.get("h1_bias")==direction and m15.get("trend_ema_alignment") in (None,"EMA20>EMA50","EMA20<EMA50"))
 def _bullish_reversal(last,prev):
     engulf=last["bull"] and prev["bear"] and last["open"]<=prev["close"] and last["close"]>=prev["open"];pin=last["bull"] and last["lower_wick"]>=max(last["body"]*1.5,last["range"]*.45) and last["close_location"]>=.65;return engulf or pin
 def _bearish_reversal(last,prev):
@@ -65,6 +68,7 @@ def evaluate_strategy(engine_id,m5,context,direction):
         rh,rl=_range_levels(x,20);close_break=last["close"]>rh if direction=="BUY" else last["close"]<rl;vr=_volume_ratio(x);ok=_e3_breakout_ok(close_break=close_break,volume_ratio=vr);anchor=rh if direction=="BUY" else rl;return _result(eid,direction,anchor,{"range_high":rh,"range_low":rl,"volume_ratio":vr,"range_width":rh-rl},86,"E3|range-break|%s|%s"%(direction,last["close"])) if ok else _fail(eid,direction,["RANGE_BREAK_EXPANSION_FAILED"])
     if eid=="E4":
         if reg!="TRANSITION":return _fail(eid,direction,["TRANSITION_FILTER_FAILED"])
+        if context.get("h1_bias") in ("BUY","SELL") and context.get("h1_bias")!=direction:return _fail(eid,direction,["H1_DIRECTION_FILTER_FAILED"])
         rh,rl=_range_levels(x,20);level=rh if direction=="BUY" else rl;prior=x.iloc[-8:-1];broken=bool((prior.close>level).any()) if direction=="BUY" else bool((prior.close<level).any());touched=last["low"]<=level+.20*a and last["close"]>=level if direction=="BUY" else last["high"]>=level-.20*a and last["close"]<=level;rejection=_bullish_reversal(last,prev) if direction=="BUY" else _bearish_reversal(last,prev);ok=broken and touched and rejection;return _result(eid,direction,level,{"retest_level":level,"broken":broken,"retest_touched":touched,"atr":a},88,"E4|break-retest|%s|%s"%(direction,last["close"])) if ok else _fail(eid,direction,["BREAK_RETEST_CONTINUATION_FAILED"])
     if eid=="E5":
         if not _trend_filter_ok(context,direction):return _fail(eid,direction,["MTF_TREND_FILTER_FAILED"])
@@ -94,13 +98,17 @@ def score_setup(result,regime,rr=None):
     if rr is not None and rr>=1.5:score+=10;components["rr"]=10
     score=min(100.0,score);return {"score":round(score,2),"qualified":score>=70,"components":components}
 
+def sort_setup_candidates(candidates):
+    """V12.1 deterministic hierarchy: E7 > E4 > trend engines > E3 > E6 > E8."""
+    return sorted(candidates,key=lambda r:(ENGINE_PRIORITY.get(str(r.get("engine")).upper(),99),-float(r.get("score_detail",{}).get("score",0) or 0),-float(r.get("quality",0) or 0)))
+
 def evaluate_all_allowed(m5,context):
     engines=context.get("allowed_engines",[]);directions=[context.get("direction")] if context.get("direction") in ("BUY","SELL") else ["BUY","SELL"];out=[]
     for eid in engines:
         for direction in directions:
             result=evaluate_strategy(eid,m5,context,direction)
             if result.get("status")=="PASS":result["score_detail"]=score_setup(result,context.get("regime","RANGE"));out.append(result)
-    out.sort(key=lambda r:(r.get("score_detail",{}).get("score",0),r.get("quality",0)),reverse=True);return out
+    return sort_setup_candidates(out)
 
 def evaluate_all_allowed_with_trace(m5,context):
     engines=context.get("allowed_engines",[]);directions=[context.get("direction")] if context.get("direction") in ("BUY","SELL") else ["BUY","SELL"];trace=[];candidates=[]
@@ -108,7 +116,7 @@ def evaluate_all_allowed_with_trace(m5,context):
         for direction in directions:
             result=evaluate_strategy(eid,m5,context,direction);trace.append(result)
             if result.get("status")=="PASS":result["score_detail"]=score_setup(result,context.get("regime","RANGE"));candidates.append(result)
-    candidates.sort(key=lambda r:(r.get("score_detail",{}).get("score",0),r.get("quality",0)),reverse=True);return candidates,trace
+    return sort_setup_candidates(candidates),trace
 
 def enrich_selected(result,symbol,regime,candle_time):
     anchor=result.get("setup_anchor");setup_id=build_setup_id(symbol,regime,result["engine"],result["direction"],anchor);trigger=build_trigger_id(result["engine"],result["direction"],candle_time,result.get("trigger_signature",""));return {**result,"setup_id":setup_id,"trigger_id":trigger,"regime":regime,"symbol":symbol}
