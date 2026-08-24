@@ -13,12 +13,18 @@ on:
 permissions:
   contents: write
 
+concurrency:
+  group: v12-backtest-2026-08-21-24
+  cancel-in-progress: false
+
 jobs:
   backtest:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
@@ -27,11 +33,45 @@ jobs:
       - name: Run real LSE V12.1 M5-only backtest
         env:
           LSE_API_KEY: ${{ secrets.LSE_API_KEY }}
-        run: python scripts/run_v12_backtest.py
-      - name: Persist results
+        run: |
+          test -n "$LSE_API_KEY"
+          python scripts/run_v12_backtest.py
+      - name: Validate persisted result
+        run: |
+          test -s backtest_results.json
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          p=json.loads(Path('backtest_results.json').read_text())
+          assert p.get('status') == 'completed', p
+          assert p.get('engine_version') == '12.1-M5-ONLY-REGIME-8-ENGINE-REENTRY', p
+          assert p.get('source') == 'LSE_HISTORICAL_M5_OHLCV', p
+          assert p.get('timeframe_mode') == 'M5-only', p
+          assert p.get('lookahead_safe') is True, p
+          assert p.get('start') == '2026-08-21 00:00:00+00:00', p.get('start')
+          assert p.get('end') == '2026-08-25 00:00:00+00:00', p.get('end')
+          assert {r.get('symbol') for r in p.get('reports', [])} == {'BTC', 'GOLD'}, p
+          for q in p.get('data_quality', []):
+              assert q.get('target_m5_rows', 0) > 0, q
+              assert q.get('warmup_bars') == 100, q
+          print('V12.1 BACKTEST VALIDATED')
+          for q in p['data_quality']:
+              print(q)
+          PY
+      - name: Upload backtest artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: v12.1-m5-backtest-2026-08-21-24
+          path: backtest_results.json
+          if-no-files-found: error
+      - name: Persist results to main
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add backtest_results.json
-          git diff --cached --quiet || git commit -m "data: persist V12.1 backtest Aug 21-24 2026"
-          git push
+          if git diff --cached --quiet; then
+            echo "backtest_results.json unchanged"
+          else
+            git commit -m "data: persist V12.1 backtest Aug 21-24 2026"
+            git push origin HEAD:main
+          fi
