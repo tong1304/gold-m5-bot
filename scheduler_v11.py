@@ -60,12 +60,23 @@ def run_scan_cycle():
             result=live_scanner_v11.scan_once(symbol);_LAST_CLOSED_CANDLE[symbol]=closed_key;result.update({"trigger":"NEW_CLOSED_M5_CANDLE","candle_consumed":True,"market_session":session,"engine_version":ENGINE_VERSION,"timeframe_mode":"M5-only"});results.append(result);logger.warning("[V12 SCHEDULER] %s result status=%s strategy=%s side=%s",symbol,result.get("status"),result.get("strategy"),result.get("signal"))
         except Exception as exc:_notify_error(exc,f"การสแกน {symbol}");results.append({"status":"scan_error","symbol":symbol,"error_type":type(exc).__name__,"message":str(exc),"live_orders_allowed":False})
     _LAST_RESULTS=results;return results
-def _seconds_to_next_boundary():return max(1,300-(datetime.now(UTC).timestamp()%300))
+def _seconds_to_next_boundary():
+    # M5 boundaries are aligned to UTC epoch. Add a small grace period so the
+    # newly closed candle is fully available from LSE before the scan begins.
+    remaining=300-(datetime.now(UTC).timestamp()%300)
+    return max(0.5,remaining+1.0)
 def _loop():
-    logger.warning("[V12 SCHEDULER] Thread entered; waiting for next closed M5 boundary")
+    logger.warning("[V12 SCHEDULER] Thread entered; performing initial M5 scan on latest closed candle")
+    # Do not wait five minutes after every Render restart. The scanner itself
+    # selects the latest CLOSED M5 candle, so an immediate startup scan is safe.
+    if _RUNNING:
+        try:run_scan_cycle()
+        except Exception as exc:logger.exception("[V12 SCHEDULER] Initial scan failed: %s",exc)
     while _RUNNING:
-        time.sleep(_seconds_to_next_boundary())
-        if _RUNNING:run_scan_cycle()
+        wait=_seconds_to_next_boundary();logger.warning("[V12 SCHEDULER] Waiting %.1fs for next closed M5 boundary",wait);time.sleep(wait)
+        if _RUNNING:
+            try:run_scan_cycle()
+            except Exception as exc:logger.exception("[V12 SCHEDULER] Scheduled scan failed: %s",exc)
 def start():
     global _RUNNING,_THREAD,_MONITOR_THREAD,_STARTED_AT
     if _RUNNING and _THREAD and _THREAD.is_alive():return False
