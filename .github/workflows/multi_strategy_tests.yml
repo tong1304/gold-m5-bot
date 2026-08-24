@@ -24,4 +24,4 @@ jobs:
       - name: Install dependencies
         run: python -m pip install --upgrade pip && pip install -r requirements.txt
       - name: Run V11 regression tests
-        run: pytest -q tests/test_v11_hardening.py tests/test_v11_contracts.py tests/test_multi_strategy.py tests/test_replay_performance.py
+        run: pytest -q tests/test_v11_hardening.py tests/test_v11_contracts.py tests/test_multi_strategy.py tests/test_replay_performance.py tests/test_v12_regime_engine_rules.py
