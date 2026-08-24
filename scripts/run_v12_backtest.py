@@ -8,7 +8,9 @@ from v11.replay_m5 import REPLAY_M5_CONTEXT_BARS,normalize_replay_window,replay_
 START="2026-08-21";END="2026-08-24";SYMBOLS=("BTC","GOLD");OUT=Path("backtest_results.json")
 def historical_m5(client,symbol,start,end):
     market={"BTC":"BTC/USD","GOLD":"XAU/USD"}[symbol];warmup=start-timedelta(minutes=5*REPLAY_M5_CONTEXT_BARS)
-    raw=client.candles(market,"5m",start=warmup.isoformat(),end=end.isoformat(),limit=5000,order="asc");rows=raw.get("data") if isinstance(raw,dict) else raw
+    # LSE candles API accepts calendar dates only (YYYY-MM-DD), not ISO timestamps.
+    api_start=warmup.date().isoformat();api_end=end.date().isoformat()
+    raw=client.candles(market,"5m",start=api_start,end=api_end,limit=5000,order="asc");rows=raw.get("data") if isinstance(raw,dict) else raw
     if isinstance(rows,dict):rows=rows.get("data") or rows.get("rows")
     if not isinstance(rows,(list,tuple)):raise RuntimeError(f"LSE_INVALID_RESPONSE:{symbol}:5m")
     frame=pd.DataFrame(rows)
@@ -23,7 +25,7 @@ def historical_m5(client,symbol,start,end):
     target=frame[(frame["datetime"]>=start)&(frame["datetime"]<end)].copy()
     if target.empty:raise RuntimeError(f"NO_TARGET_HISTORICAL_M5:{symbol}")
     gaps=target["datetime"].diff().dropna()/pd.Timedelta(minutes=5)
-    quality={"source":"LSE_HISTORICAL_M5_OHLCV","historical_rows":len(frame),"target_m5_rows":len(target),"first_target_candle":str(target.iloc[0].datetime),"last_target_candle":str(target.iloc[-1].datetime),"five_minute_gap_count":int((gaps>1).sum()),"warmup_bars":REPLAY_M5_CONTEXT_BARS}
+    quality={"source":"LSE_HISTORICAL_M5_OHLCV","historical_rows":len(frame),"target_m5_rows":len(target),"first_target_candle":str(target.iloc[0].datetime),"last_target_candle":str(target.iloc[-1].datetime),"five_minute_gap_count":int((gaps>1).sum()),"warmup_bars":REPLAY_M5_CONTEXT_BARS,"api_start":api_start,"api_end":api_end}
     return frame,quality
 def main():
     start,end=normalize_replay_window(START,END);client=LSE(api_key=os.environ["LSE_API_KEY"]);reports=[];quality=[]
