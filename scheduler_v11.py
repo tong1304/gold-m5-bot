@@ -9,7 +9,7 @@ import live_scanner_v11
 logger=logging.getLogger("signal_scheduler")
 ENGINE_VERSION="11.1-HARDENED"
 BANGKOK=ZoneInfo("Asia/Bangkok"); UTC=timezone.utc; DISPLAY_SYMBOLS=("BTC","GOLD")
-_RUNNING=False; _THREAD=None; _LAST_CLOSED_CANDLE={}; _LAST_MONITOR_SLOT=None; _STARTED_AT=None; _LAST_CYCLE_AT=None; _LAST_RESULTS=[]; _CYCLE_COUNT=0
+_RUNNING=False; _THREAD=None; _MONITOR_THREAD=None; _LAST_CLOSED_CANDLE={}; _LAST_MONITOR_SLOT=None; _STARTED_AT=None; _LAST_CYCLE_AT=None; _LAST_RESULTS=[]; _CYCLE_COUNT=0
 
 def _interval_seconds():
     try:return max(300,int(os.getenv("SIGNAL_SCAN_INTERVAL_SECONDS","300")))
@@ -58,8 +58,9 @@ def _live_price_line(symbol):
         logger.warning("[V11 TELEGRAM] Live price read failed symbol=%s: %s",symbol,exc)
         return f"{'₿ BTC' if symbol=='BTC' else '🟠 GOLD'}: <b>N/A</b>"
 
-def _send_15m_system_monitor(now_bkk):
+def _send_15m_system_monitor(now_bkk=None):
     global _LAST_MONITOR_SLOT
+    now_bkk=now_bkk or datetime.now(UTC).astimezone(BANGKOK)
     if now_bkk.minute not in (0,15,30,45):
         return False
     slot=now_bkk.strftime("%Y-%m-%d %H:%M")
@@ -92,6 +93,31 @@ def _send_15m_system_monitor(now_bkk):
         logger.warning("[V11 TELEGRAM] 15m system monitor failed slot=%s: %s",slot,exc)
         return False
 
+def _seconds_to_next_monitor_slot():
+    now=datetime.now(UTC).astimezone(BANGKOK)
+    minute=((now.minute//15)+1)*15
+    if minute>=60:
+        target=now.replace(hour=(now.hour+1)%24,minute=0,second=0,microsecond=0)
+        if now.hour==23: target=target.replace(day=now.day)+__import__('datetime').timedelta(days=1)
+    else:
+        target=now.replace(minute=minute,second=0,microsecond=0)
+    return max(0.5,(target-now).total_seconds())
+
+def _monitor_loop():
+    global _MONITOR_THREAD
+    logger.warning("[V11 TELEGRAM] 15m monitor thread entered; timezone=Asia/Bangkok slots=00,15,30,45")
+    while _RUNNING:
+        wait=_seconds_to_next_monitor_slot()
+        time.sleep(wait)
+        if not _RUNNING:break
+        try:
+            now_bkk=datetime.now(UTC).astimezone(BANGKOK)
+            _send_15m_system_monitor(now_bkk)
+        except Exception as exc:
+            logger.exception("[V11 TELEGRAM] 15m monitor loop failed")
+            _notify_error(exc,"15m Telegram system monitor")
+    logger.warning("[V11 TELEGRAM] 15m monitor thread exited")
+
 def run_scan_cycle():
     global _LAST_CYCLE_AT,_LAST_RESULTS,_CYCLE_COUNT
     now_utc=datetime.now(UTC); now_bkk=now_utc.astimezone(BANGKOK); results=[]; _CYCLE_COUNT+=1; _LAST_CYCLE_AT=now_utc.isoformat()
@@ -114,7 +140,6 @@ def run_scan_cycle():
             results.append(result)
         except Exception as exc:
             logger.exception("[V11 SCHEDULER] %s scan failed",symbol); _notify_error(exc,f"การสแกน {symbol}"); results.append({"status":"scan_error","symbol":symbol,"error_type":type(exc).__name__,"message":str(exc),"live_orders_allowed":False})
-    _send_15m_system_monitor(now_bkk)
     _LAST_RESULTS=results
     logger.warning("[V11 SCHEDULER] Scan cycle #%s finished results=%s",_CYCLE_COUNT,len(results))
     return results
@@ -133,9 +158,9 @@ def _loop():
     logger.warning("[V11 SCHEDULER] Thread exited")
 
 def start():
-    global _RUNNING,_THREAD,_STARTED_AT
+    global _RUNNING,_THREAD,_MONITOR_THREAD,_STARTED_AT
     if _RUNNING and _THREAD and _THREAD.is_alive():return False
-    _RUNNING=True; _STARTED_AT=datetime.now(UTC).isoformat(); _THREAD=threading.Thread(target=_loop,name="v11-m5-scheduler",daemon=True); _THREAD.start(); logger.warning("[V11 SCHEDULER] STARTED engine=%s interval=%ss symbols=%s timezone=Asia/Bangkok",ENGINE_VERSION,_interval_seconds(),_symbols()); return True
+    _RUNNING=True; _STARTED_AT=datetime.now(UTC).isoformat(); _THREAD=threading.Thread(target=_loop,name="v11-m5-scheduler",daemon=True); _THREAD.start(); _MONITOR_THREAD=threading.Thread(target=_monitor_loop,name="v11-telegram-15m-monitor",daemon=True); _MONITOR_THREAD.start(); logger.warning("[V11 SCHEDULER] STARTED engine=%s interval=%ss symbols=%s timezone=Asia/Bangkok",ENGINE_VERSION,_interval_seconds(),_symbols()); return True
 
 def stop():
     global _RUNNING; _RUNNING=False; logger.warning("[V11 SCHEDULER] STOP requested")
@@ -143,4 +168,4 @@ def stop():
 def status():
     try:import live_price; live=live_price.status()
     except Exception as exc:live={"running":False,"error":str(exc)}
-    return {"running":bool(_RUNNING and _THREAD and _THREAD.is_alive()),"interval_seconds":_interval_seconds(),"symbols":_symbols(),"test_slots":"00,15,30,45","timezone":"Asia/Bangkok","provider":"LSE","engine_version":ENGINE_VERSION,"scanner":"live_scanner_v11","multi_strategy":True,"timeframes":["5m","15m"],"started_at":_STARTED_AT,"last_cycle_at":_LAST_CYCLE_AT,"cycle_count":_CYCLE_COUNT,"last_results":_LAST_RESULTS,"live_price":live,"live_orders_allowed":False}
+    return {"running":bool(_RUNNING and _THREAD and _THREAD.is_alive()),"interval_seconds":_interval_seconds(),"symbols":_symbols(),"test_slots":"00,15,30,45","timezone":"Asia/Bangkok","provider":"LSE","engine_version":ENGINE_VERSION,"scanner":"live_scanner_v11","multi_strategy":True,"timeframes":["5m","15m"],"started_at":_STARTED_AT,"last_cycle_at":_LAST_CYCLE_AT,"cycle_count":_CYCLE_COUNT,"last_results":_LAST_RESULTS,"live_price":live,"telegram_monitor_running":bool(_RUNNING and _MONITOR_THREAD and _MONITOR_THREAD.is_alive()),"telegram_monitor":"00,15,30,45 Asia/Bangkok","last_monitor_slot":_LAST_MONITOR_SLOT,"live_orders_allowed":False}
