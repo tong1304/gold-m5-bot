@@ -12,7 +12,12 @@ from live_scanner_v11 import _normalize
 
 
 HISTORICAL_WARMUP = timedelta(days=2)
-HISTORICAL_CHUNK = timedelta(days=14)
+# Keep each LSE request comfortably below common candle-result limits.
+# M5: 2 days ~= 576 bars; M15: 4 days ~= 384 bars.
+HISTORICAL_CHUNK_BY_TIMEFRAME = {
+    "5m": timedelta(days=2),
+    "15m": timedelta(days=4),
+}
 
 
 def _timestamp(value):
@@ -32,8 +37,9 @@ def historical_window(start: str, end: str):
 
 
 def _historical_frame(symbol: str, timeframe: str, start: str, end: str):
-    """Fetch historical candles in bounded chunks so long replays are reliable."""
+    """Fetch historical candles in small bounded chunks for reliable replay."""
     market = {"BTC": "BTC/USD", "GOLD": "XAU/USD"}[symbol]
+    chunk_size = HISTORICAL_CHUNK_BY_TIMEFRAME[timeframe]
     fetch_start, fetch_end = historical_window(start, end)
     if len(end.strip()) == 10:
         fetch_end = fetch_end + timedelta(days=1)
@@ -42,7 +48,7 @@ def _historical_frame(symbol: str, timeframe: str, start: str, end: str):
     frames = []
     cursor = fetch_start
     while cursor < fetch_end:
-        chunk_end = min(cursor + HISTORICAL_CHUNK, fetch_end)
+        chunk_end = min(cursor + chunk_size, fetch_end)
         raw = client.candles(
             market,
             timeframe,
@@ -84,9 +90,6 @@ def main():
 
     for symbol in symbols:
         try:
-            # Fetch the requested historical window plus warm-up. The old 5,000
-            # point live-window approach could not cover a full month and could
-            # also return only recent candles instead of the selected dates.
             m5 = _historical_frame(symbol, "5m", args.start, args.end)
             m15 = _historical_frame(symbol, "15m", args.start, args.end)
             report = replay.replay_frames(
