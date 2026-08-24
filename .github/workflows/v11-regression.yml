@@ -26,7 +26,7 @@ jobs:
       - name: Python syntax check
         run: python -m compileall -q v11 app.py live_scanner_v11.py scheduler_v11.py replay_signal_history_v11.py replay_web.py
       - name: V11 hardening tests
-        run: pytest -q tests/test_v11_hardening.py tests/test_v11_import_isolation.py tests/test_v11_contracts.py tests/test_multi_strategy.py tests/test_replay_history_window.py tests/test_replay_web_payload.py tests/test_v11_regime.py tests/test_v11_strategy_filters.py tests/test_replay_strategy_filters.py
+        run: pytest -q tests/test_v11_hardening.py tests/test_v11_import_isolation.py tests/test_v11_contracts.py tests/test_multi_strategy.py tests/test_replay_history_window.py tests/test_replay_web_payload.py tests/test_v11_regime.py tests/test_v11_strategy_filters.py tests/test_replay_strategy_filters.py tests/test_engine_v11.py
       - name: Block legacy imports in V11 engine
         run: |
           ! grep -E '(^|[[:space:]])(import|from) (engine_v9|engine_v9_2|engine_v10|engine_v5|validate_v5|replay_signal_history_v10)' v11/engine.py
