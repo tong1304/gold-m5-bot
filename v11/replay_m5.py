@@ -47,7 +47,7 @@ def summarize_rows(rows):
 def replay_frames(m5,m15,h1=None,symbol=None,*,limit=None,start_time=None,end_time=None,progress_callback:Callable[...,None]|None=None):
     m5=m5.sort_values("datetime").reset_index(drop=True);m15=m15.sort_values("datetime").reset_index(drop=True);h1=(h1 if h1 is not None else pd.DataFrame(columns=m5.columns)).sort_values("datetime").reset_index(drop=True);start_ts,end_ts=None,None
     if start_time is not None or end_time is not None:start_ts,end_ts=normalize_replay_window(start_time,end_time)
-    if len(m15)<REPLAY_M15_CONTEXT_BARS or len(h1)<REPLAY_H1_CONTEXT_BARS:raise ValueError("H1 and M15 historical context are required for V12.1 MTF replay")
+    if len(m15)<REPLAY_M15_CONTEXT_BARS or len(h1)<REPLAY_H1_CONTEXT_BARS:raise ValueError("H1 and M15 historical context are required for V12.2 MTF replay")
     indices=list(range(REPLAY_M5_CONTEXT_BARS,len(m5)));m15_ends=_context_end_positions(m5,m15,15);h1_ends=_context_end_positions(m5,h1,60)
     if start_ts is not None:indices=[i for i in indices if pd.Timestamp(m5.iloc[i].datetime)>=start_ts]
     if end_ts is not None:indices=[i for i in indices if pd.Timestamp(m5.iloc[i].datetime)<end_ts]
