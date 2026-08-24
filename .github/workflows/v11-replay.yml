@@ -1,0 +1,68 @@
+name: V11 Replay (LSE)
+
+on:
+  workflow_dispatch:
+    inputs:
+      start:
+        description: 'Bangkok start date YYYY-MM-DD'
+        required: true
+        default: '2026-08-01'
+      end:
+        description: 'Bangkok end date YYYY-MM-DD (inclusive)'
+        required: true
+        default: '2026-08-24'
+      symbol:
+        description: 'Asset'
+        required: true
+        type: choice
+        options:
+          - ALL
+          - BTC
+          - GOLD
+        default: ALL
+      dry_run:
+        description: 'Do not write replay results to history'
+        required: true
+        type: boolean
+        default: true
+
+jobs:
+  replay:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      LSE_API_KEY: ${{ secrets.LSE_API_KEY }}
+      LSE_REPLAY_LIMIT: '5000'
+      RISK_REWARD: '2.0'
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Validate LSE secret
+        run: |
+          test -n "$LSE_API_KEY" || (echo 'LSE_API_KEY GitHub Actions secret is missing' >&2; exit 1)
+
+      - name: Run V11 Replay
+        run: |
+          args=(--start "${{ inputs.start }}" --end "${{ inputs.end }}" --symbol "${{ inputs.symbol }}")
+          if [ "${{ inputs.dry_run }}" = "true" ]; then args+=(--dry-run); fi
+          python replay_signal_history_v11.py "${args[@]}" | tee replay_v11.json
+
+      - name: Validate replay JSON
+        run: python -c "import json; d=json.load(open('replay_v11.json')); assert d.get('status') in ('completed','dry-run'), d; print('Replay status:', d['status'])"
+
+      - name: Upload replay result
+        uses: actions/upload-artifact@v4
+        with:
+          name: v11-replay-${{ inputs.symbol }}-${{ inputs.start }}-${{ inputs.end }}
+          path: replay_v11.json
+          retention-days: 14
