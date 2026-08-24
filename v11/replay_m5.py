@@ -1,39 +1,35 @@
 from __future__ import annotations
 from typing import Callable
+from datetime import timedelta
 import pandas as pd
 from . import engine
 from .setup_state import SetupState
-REPLAY_M5_CONTEXT_BARS=100
+REPLAY_M5_CONTEXT_BARS=100;REPLAY_M15_CONTEXT_BARS=100;REPLAY_H1_CONTEXT_BARS=100
 
 def _timestamp(value):
     if value is None or value=="":return None
     ts=pd.Timestamp(value);return ts.tz_localize("UTC") if ts.tzinfo is None else ts.tz_convert("UTC")
-
 def normalize_replay_window(start_time,end_time):
-    """Normalize an inclusive date window to UTC [start, end-exclusive)."""
     start=_timestamp(start_time);end=_timestamp(end_time)
     if start is None or end is None:raise ValueError("start_time and end_time are required")
     if len(str(end_time))<=10:end=end+pd.Timedelta(days=1)
     if end<=start:raise ValueError("end_time must be after start_time")
     return start,end
-
 def _bounded_context(frame,end_position,max_bars):
     end_position=max(0,min(int(end_position),len(frame)));return frame.iloc[max(0,end_position-max_bars):end_position].reset_index(drop=True)
-
+def _context_end_positions(m5,higher,minutes):
+    times=pd.DatetimeIndex(higher["datetime"]);return [int(times.searchsorted(ts,side="left")) for ts in m5["datetime"]]
 def _resolve_trade(trade,candle):
     high=float(candle.high);low=float(candle.low);direction=trade["signal"];levels=trade["trade_levels"];entry=float(levels["entry"]);sl=float(levels["sl"]);tp=float(levels["tp"]);hit_sl=low<=sl if direction=="BUY" else high>=sl;hit_tp=high>=tp if direction=="BUY" else low<=tp
     if hit_sl and hit_tp:return {"result":"AMBIGUOUS","r_multiple":0.0,"resolved_at":str(candle.datetime)}
     if hit_tp:return {"result":"WIN","r_multiple":round(abs(tp-entry)/abs(entry-sl),4),"resolved_at":str(candle.datetime)}
     if hit_sl:return {"result":"LOSS","r_multiple":-1.0,"resolved_at":str(candle.datetime)}
     return None
-
 def _pct(n,d):return round(100*n/d,2) if d else 0.0
-
 def _max_drawdown(values):
     equity=peak=drawdown=0.0
     for value in values:equity+=float(value);peak=max(peak,equity);drawdown=max(drawdown,peak-equity)
     return round(drawdown,4)
-
 def summarize_rows(rows):
     wins=sum(r.get("result")=="WIN" for r in rows);losses=sum(r.get("result")=="LOSS" for r in rows);open_=sum(r.get("result")=="OPEN" for r in rows);amb=sum(r.get("result")=="AMBIGUOUS" for r in rows);no_trade=sum(r.get("result")=="NO_TRADE" for r in rows);rs=[float(r.get("r_multiple") or 0) for r in rows if r.get("result") in ("WIN","LOSS")];decided=wins+losses;gross_profit=sum(r for r in rs if r>0);gross_loss=abs(sum(r for r in rs if r<0));net=sum(rs);strategies={}
     for r in rows:
@@ -49,10 +45,11 @@ def summarize_rows(rows):
         d=s["wins"]+s["losses"];s["net_r"]=round(s["net_r"],4);s["win_rate"]=_pct(s["wins"],d);s["expectancy_r"]=round(s["net_r"]/d,4) if d else 0.0
     return {"rows":len(rows),"trades":decided+open_+amb,"decided":decided,"wins":wins,"losses":losses,"open":open_,"ambiguous":amb,"no_trade":no_trade,"win_rate":_pct(wins,decided),"loss_rate":_pct(losses,decided),"net_r":round(net,4),"gross_profit_r":round(gross_profit,4),"gross_loss_r":round(gross_loss,4),"profit_factor":round(gross_profit/gross_loss,4) if gross_loss else None,"expectancy_r":round(net/decided,4) if decided else 0.0,"max_drawdown_r":_max_drawdown(rs),"strategies":strategies}
 
-def replay_frames(m5,m15=None,symbol=None,*,limit=None,start_time=None,end_time=None,progress_callback:Callable[...,None]|None=None):
-    m5=m5.sort_values("datetime").reset_index(drop=True);start_ts,end_ts=None,None
+def replay_frames(m5,m15,h1=None,symbol=None,*,limit=None,start_time=None,end_time=None,progress_callback:Callable[...,None]|None=None):
+    m5=m5.sort_values("datetime").reset_index(drop=True);m15=m15.sort_values("datetime").reset_index(drop=True);h1=(h1 if h1 is not None else pd.DataFrame(columns=m5.columns)).sort_values("datetime").reset_index(drop=True);start_ts,end_ts=None,None
     if start_time is not None or end_time is not None:start_ts,end_ts=normalize_replay_window(start_time,end_time)
-    indices=list(range(REPLAY_M5_CONTEXT_BARS,len(m5)))
+    if len(m15)<REPLAY_M15_CONTEXT_BARS or len(h1)<REPLAY_H1_CONTEXT_BARS:raise ValueError("H1 and M15 historical context are required for V12.1 MTF replay")
+    indices=list(range(REPLAY_M5_CONTEXT_BARS,len(m5)));m15_ends=_context_end_positions(m5,m15,15);h1_ends=_context_end_positions(m5,h1,60)
     if start_ts is not None:indices=[i for i in indices if pd.Timestamp(m5.iloc[i].datetime)>=start_ts]
     if end_ts is not None:indices=[i for i in indices if pd.Timestamp(m5.iloc[i].datetime)<end_ts]
     if limit:indices=indices[-int(limit):]
@@ -67,7 +64,7 @@ def replay_frames(m5,m15=None,symbol=None,*,limit=None,start_time=None,end_time=
                 for row in reversed(trades):
                     if row.get("signal_id")==trade.get("signal_id"):row.update(outcome);break
             else:still.append(trade)
-        active=still;m5_context=_bounded_context(m5,i+1,REPLAY_M5_CONTEXT_BARS);setup=engine.analyze(m5_context,symbol=symbol,setup_state=state);setup.update({"candle_time":str(ts),"closed_candle":str(ts),"symbol":symbol,"engine_version":engine.ENGINE_VERSION,"timeframe_mode":"M5-only"});signal=setup.get("signal");valid=bool(setup.get("valid")) and signal in ("BUY","SELL") and bool((setup.get("trade_levels") or {}).get("valid"))
+        active=still;m5_context=_bounded_context(m5,i+1,REPLAY_M5_CONTEXT_BARS);m15_context=_bounded_context(m15,m15_ends[i],REPLAY_M15_CONTEXT_BARS);h1_context=_bounded_context(h1,h1_ends[i],REPLAY_H1_CONTEXT_BARS);setup=engine.analyze(m5_context,m15=m15_context,h1=h1_context,symbol=symbol,setup_state=state);setup.update({"candle_time":str(ts),"closed_candle":str(ts),"symbol":symbol,"engine_version":engine.ENGINE_VERSION,"timeframe_mode":"MTF:H1→M15→M5"});signal=setup.get("signal");valid=bool(setup.get("valid")) and signal in ("BUY","SELL") and bool((setup.get("trade_levels") or {}).get("valid"))
         if valid:
             setup_id=setup.get("setup_id");different_active=any(t.get("setup_id")!=setup_id for t in active)
             if different_active:row={**setup,"signal":"NO_TRADE","valid":False,"result":"NO_TRADE","lock_reason":"DIFFERENT_SETUP_ACTIVE"}
@@ -76,4 +73,4 @@ def replay_frames(m5,m15=None,symbol=None,*,limit=None,start_time=None,end_time=
         else:row={**setup,"signal":"NO_TRADE","result":"NO_TRADE","r_multiple":0.0,"lock_reason":None}
         rows.append(row);decided=[t for t in trades if t.get("result") in ("WIN","LOSS")];wins=sum(t.get("result")=="WIN" for t in trades);losses=sum(t.get("result")=="LOSS" for t in trades);opens=sum(t.get("result")=="OPEN" for t in trades);amb=sum(t.get("result")=="AMBIGUOUS" for t in trades);net=sum(float(t.get("r_multiple") or 0) for t in decided)
         if progress_callback and (n==total or n==1 or n%10==0):progress_callback("engine_progress",symbol=symbol,completed=n,total=total,percent=round(100*n/total,1) if total else 100,trades=len(trades),wins=wins,losses=losses,open=opens,ambiguous=amb,net_r=round(net,4))
-    performance=summarize_rows(trades);evaluated=summarize_rows(rows);return {"status":"completed","engine_version":engine.ENGINE_VERSION,"symbol":symbol,"candles_evaluated":len(rows),"signals":len(trades),"wins":performance["wins"],"losses":performance["losses"],"ambiguous":performance["ambiguous"],"open":performance["open"],"net_r":performance["net_r"],"performance":{**performance,"evaluated_rows":evaluated["rows"],"locked_rows":sum(1 for r in rows if r.get("lock_reason"))},"rows":rows,"trade_history":trades,"live_orders_allowed":False,"timeframe_mode":"M5-only","lookahead_safe":True,"warmup_bars":REPLAY_M5_CONTEXT_BARS,"setup_reentry_policy":"SAME_SETUP_NEW_TRIGGER_ALLOWED_WITH_CONFIGURED_LIMIT"}
+    performance=summarize_rows(trades);evaluated=summarize_rows(rows);return {"status":"completed","engine_version":engine.ENGINE_VERSION,"symbol":symbol,"candles_evaluated":len(rows),"signals":len(trades),"wins":performance["wins"],"losses":performance["losses"],"ambiguous":performance["ambiguous"],"open":performance["open"],"net_r":performance["net_r"],"performance":{**performance,"evaluated_rows":evaluated["rows"],"locked_rows":sum(1 for r in rows if r.get("lock_reason"))},"rows":rows,"trade_history":trades,"live_orders_allowed":False,"timeframe_mode":"MTF:H1→M15→M5","mtf_policy":"H1_BIAS_M15_REGIME_M5_TRIGGER","lookahead_safe":True,"warmup_bars":REPLAY_M5_CONTEXT_BARS,"setup_reentry_policy":"SAME_SETUP_NEW_TRIGGER_ALLOWED_WITH_CONFIGURED_LIMIT"}
