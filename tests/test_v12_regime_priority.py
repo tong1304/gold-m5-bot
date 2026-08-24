@@ -6,12 +6,14 @@ from v11.strategy_engine import sort_setup_candidates
 
 
 def _trend_frame(n=100, slope=0.08):
-    close = 100 + np.arange(n) * slope
+    base = 100 + np.arange(n) * slope
+    wave = 0.45 * np.sin(np.arange(n) * np.pi / 2)
+    close = base + wave
     return pd.DataFrame({
         "datetime": pd.date_range("2026-08-25", periods=n, freq="15min", tz="UTC"),
         "open": close - 0.01,
-        "high": close + 0.04,
-        "low": close - 0.04,
+        "high": close + 0.12,
+        "low": close - 0.12,
         "close": close,
         "volume": np.full(n, 1000.0),
     })
