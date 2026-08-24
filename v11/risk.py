@@ -1,5 +1,6 @@
 from __future__ import annotations
 import math
+import pandas as pd
 from .common import num, atr14
 
 MIN_RISK_REWARD=2.0
