@@ -1,12 +1,6 @@
 name: V11 Replay (LSE)
 
 on:
-  push:
-    paths:
-      - '.github/workflows/v11-replay.yml'
-      - 'v11/**'
-      - 'replay_signal_history_v11.py'
-      - 'requirements.txt'
   workflow_dispatch:
     inputs:
       start:
@@ -32,15 +26,14 @@ on:
         type: boolean
         default: true
 
-env:
-  LSE_API_KEY: ${{ secrets.LSE_API_KEY }}
-  LSE_REPLAY_LIMIT: '5000'
-  RISK_REWARD: '2.0'
-
 jobs:
   replay:
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    env:
+      LSE_API_KEY: ${{ secrets.LSE_API_KEY }}
+      LSE_REPLAY_LIMIT: '5000'
+      RISK_REWARD: '2.0'
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -55,36 +48,41 @@ jobs:
         run: pip install -r requirements.txt
 
       - name: Validate LSE secret
+        env:
+          HAS_LSE_API_KEY: ${{ secrets.LSE_API_KEY != '' }}
         run: |
-          test -n "$LSE_API_KEY" || (echo 'LSE_API_KEY GitHub Actions secret is missing' >&2; exit 1)
+          if [ "$HAS_LSE_API_KEY" != "true" ]; then
+            echo 'ERROR: GitHub Actions cannot access repository secret LSE_API_KEY.'
+            echo 'Check Settings > Secrets and variables > Actions > Repository secrets.'
+            exit 1
+          fi
+          echo 'LSE_API_KEY repository secret is available to this workflow.'
 
       - name: Select replay parameters
-        id: params
         run: |
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            echo "start=${{ inputs.start }}" >> "$GITHUB_OUTPUT"
-            echo "end=${{ inputs.end }}" >> "$GITHUB_OUTPUT"
-            echo "symbol=${{ inputs.symbol }}" >> "$GITHUB_OUTPUT"
-            echo "dry_run=${{ inputs.dry_run }}" >> "$GITHUB_OUTPUT"
-          else
-            echo 'start=2026-08-01' >> "$GITHUB_OUTPUT"
-            echo 'end=2026-08-24' >> "$GITHUB_OUTPUT"
-            echo 'symbol=ALL' >> "$GITHUB_OUTPUT"
-            echo 'dry_run=true' >> "$GITHUB_OUTPUT"
-          fi
+          echo "START=${{ inputs.start }}" >> "$GITHUB_ENV"
+          echo "END=${{ inputs.end }}" >> "$GITHUB_ENV"
+          echo "SYMBOL=${{ inputs.symbol }}" >> "$GITHUB_ENV"
 
       - name: Run V11 Replay
         run: |
-          args=(--start "${{ steps.params.outputs.start }}" --end "${{ steps.params.outputs.end }}" --symbol "${{ steps.params.outputs.symbol }}")
-          if [ "${{ steps.params.outputs.dry_run }}" = "true" ]; then args+=(--dry-run); fi
+          args=(--start "$START" --end "$END" --symbol "$SYMBOL")
+          if [ "${{ inputs.dry_run }}" = "true" ]; then args+=(--dry-run); fi
           python replay_signal_history_v11.py "${args[@]}" | tee replay_v11.json
 
       - name: Validate replay JSON
-        run: python -c "import json; d=json.load(open('replay_v11.json')); assert d.get('status') in ('completed','dry-run'), d; print('Replay status:', d['status'])"
+        run: |
+          python - <<'PY'
+          import json
+          d=json.load(open('replay_v11.json'))
+          assert d.get('status') in ('completed','dry-run'), d
+          print('Replay status:', d['status'])
+          print('Keys:', ', '.join(sorted(d.keys())))
+          PY
 
       - name: Upload replay result
         uses: actions/upload-artifact@v4
         with:
-          name: v11-replay-${{ steps.params.outputs.symbol }}-${{ steps.params.outputs.start }}-${{ steps.params.outputs.end }}
+          name: v11-replay-${{ inputs.symbol }}-${{ inputs.start }}-${{ inputs.end }}
           path: replay_v11.json
           retention-days: 14
