@@ -15,16 +15,17 @@ on:
         description: 'Asset'
         required: true
         type: choice
-        options:
-          - ALL
-          - BTC
-          - GOLD
+        options: [ALL, BTC, GOLD]
         default: ALL
       dry_run:
         description: 'Do not write replay results to history'
         required: true
         type: boolean
         default: true
+
+concurrency:
+  group: v11-replay-${{ inputs.symbol }}-${{ inputs.start }}-${{ inputs.end }}
+  cancel-in-progress: true
 
 jobs:
   replay:
@@ -33,53 +34,36 @@ jobs:
     env:
       LSE_API_KEY: ${{ secrets.LSE_API_KEY }}
       LSE_REPLAY_LIMIT: '5000'
-      RISK_REWARD: '2.0'
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.12'
           cache: pip
-
       - name: Install dependencies
         run: pip install -r requirements.txt
-
       - name: Validate LSE secret
         env:
           HAS_LSE_API_KEY: ${{ secrets.LSE_API_KEY != '' }}
         run: |
-          if [ "$HAS_LSE_API_KEY" != "true" ]; then
-            echo 'ERROR: GitHub Actions cannot access repository secret LSE_API_KEY.'
-            echo 'Check Settings > Secrets and variables > Actions > Repository secrets.'
-            exit 1
-          fi
-          echo 'LSE_API_KEY repository secret is available to this workflow.'
-
-      - name: Select replay parameters
+          if [ "$HAS_LSE_API_KEY" != "true" ]; then exit 1; fi
+      - name: Run native V11 Replay
         run: |
-          echo "START=${{ inputs.start }}" >> "$GITHUB_ENV"
-          echo "END=${{ inputs.end }}" >> "$GITHUB_ENV"
-          echo "SYMBOL=${{ inputs.symbol }}" >> "$GITHUB_ENV"
-
-      - name: Run V11 Replay
-        run: |
-          args=(--start "$START" --end "$END" --symbol "$SYMBOL")
+          args=(--start "${{ inputs.start }}" --end "${{ inputs.end }}" --symbol "${{ inputs.symbol }}")
           if [ "${{ inputs.dry_run }}" = "true" ]; then args+=(--dry-run); fi
           python replay_signal_history_v11.py "${args[@]}" | tee replay_v11.json
-
       - name: Validate replay JSON
         run: |
           python - <<'PY'
           import json
           d=json.load(open('replay_v11.json'))
           assert d.get('status') in ('completed','dry-run'), d
+          assert d.get('engine_version') == '11.1-HARDENED', d
+          assert d.get('live_orders_allowed') is False, d
           print('Replay status:', d['status'])
-          print('Keys:', ', '.join(sorted(d.keys())))
           PY
-
       - name: Upload replay result
         uses: actions/upload-artifact@v4
         with:
