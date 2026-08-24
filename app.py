@@ -1,10 +1,11 @@
 from __future__ import annotations
-import json, math, os, threading
+import json, math, os, threading, logging
 from flask import Flask, Response, request
 from v11 import engine as v11_engine
 from v11.validation import validate as validate_v11
 
 app=Flask(__name__)
+logger=logging.getLogger("v11_app")
 SUPPORTED_SYMBOLS=("BTC/USDT","XAU/USDT")
 SERVICE_LOCK=threading.RLock(); _SERVICES_STARTED=False
 SCHEDULER_LOCK_FILE=os.getenv("V11_SCHEDULER_LOCK_FILE","/tmp/gold-m5-v11-scheduler.lock")
@@ -36,39 +37,51 @@ def _acquire_scheduler_lock():
 
 def _start_runtime_services():
     global _SERVICES_STARTED
-    if _SERVICES_STARTED or os.getenv("ENABLE_SIGNAL_SCHEDULER","true").lower()!="true": return
+    if _SERVICES_STARTED or os.getenv("ENABLE_SIGNAL_SCHEDULER","true").lower()!="true":
+        return
     with SERVICE_LOCK:
         if _SERVICES_STARTED: return
         if not _acquire_scheduler_lock():
-            _SERVICES_STARTED=True; return
+            logger.warning("[V11 STARTUP] Scheduler lock already owned by another process; this worker will not start runtime services")
+            _SERVICES_STARTED=True
+            return
         try:
-            import live_price; live_price.start()
-            import scheduler_v11 as scheduler; scheduler.start()
+            import live_price
+            live_started=live_price.start()
+            import scheduler_v11 as scheduler
+            scheduler_started=scheduler.start()
+            live_status=live_price.status()
+            scheduler_status=scheduler.status()
+            logger.warning("[V11 STARTUP] ENGINE=%s SCHEDULER=%s LIVE_PRICE=%s PROVIDER=LSE",v11_engine.ENGINE_VERSION,"RUNNING" if scheduler_status.get("running") else "NOT_RUNNING","RUNNING" if live_status.get("running") else "NOT_RUNNING")
+            logger.warning("[V11 STARTUP] scheduler_started=%s live_started=%s live_state=%s api_key=%s",scheduler_started,live_started,live_status.get("loop_state"),live_status.get("api_key_configured"))
             try:
                 from startup_notify import send_startup_notification
                 send_startup_notification(symbol="BTC + GOLD / LSE",engine_version=v11_engine.ENGINE_VERSION)
-            except Exception: pass
+            except Exception as exc:
+                logger.warning("[V11 STARTUP] Telegram startup notification failed: %s",exc)
             _SERVICES_STARTED=True
         except Exception:
             try: os.unlink(SCHEDULER_LOCK_FILE)
             except OSError: pass
+            logger.exception("[V11 STARTUP] Runtime service startup failed")
             raise
 
 @app.before_request
 def ensure_runtime_services():
     try: _start_runtime_services()
-    except Exception: pass
+    except Exception: logger.exception("[V11 STARTUP] ensure_runtime_services failed")
 
 @app.route("/")
 def health():
     try: import live_price; live=live_price.status()
     except Exception as exc: live={"running":False,"provider":"LSE","error":str(exc)}
-    return _json_response({"status":"ok","service":"gold-m5-bot","engine_version":v11_engine.ENGINE_VERSION,"exchange":"LSE","symbols":["BTC/USD","XAU/USD"],"timeframe":"M5 trigger + M15 trend","analysis_windows":{"M15_context_bars":100,"M5_setup_bars":50},"live_price":live,"live_orders_allowed":False})
+    try: import scheduler_v11; scheduler=scheduler_v11.status()
+    except Exception as exc: scheduler={"running":False,"error":str(exc)}
+    return _json_response({"status":"ok","service":"gold-m5-bot","engine_version":v11_engine.ENGINE_VERSION,"exchange":"LSE","symbols":["BTC/USD","XAU/USD"],"timeframe":"M5 trigger + M15 trend","analysis_windows":{"M15_context_bars":100,"M5_setup_bars":50},"live_price":live,"scheduler":scheduler,"live_orders_allowed":False})
 
 @app.route("/live-price")
 def live_price_status():
-    try:
-        import live_price; payload=live_price.status(); payload["status"]="ok"; return _json_response(payload)
+    try: import live_price; payload=live_price.status(); payload["status"]="ok"; return _json_response(payload)
     except Exception as exc:return _json_response({"status":"live_price_error","provider":"LSE","error_type":type(exc).__name__,"message":str(exc),"live_orders_allowed":False},502)
 
 @app.route("/live-price/<symbol>")
