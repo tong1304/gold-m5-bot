@@ -1,7 +1,7 @@
 """V11 statistics and historical replay route registration."""
 import json
 import logging
-from flask import Response
+from flask import Response, request
 import statistics_page_v11 as _statistics
 logger=logging.getLogger(__name__)
 
@@ -23,11 +23,7 @@ def register(app):
     # shape so the existing page can render useful data immediately.
     @app.after_request
     def _statistics_live_progress(response):
-        if request_path := getattr(response, "request", None):
-            path = request_path.path
-        else:
-            path = ""
-        if path != "/api/statistics" or response.mimetype != "application/json":
+        if request.path != "/api/statistics" or response.mimetype != "application/json":
             return response
         try:
             payload=json.loads(response.get_data(as_text=True))
