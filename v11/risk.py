@@ -2,9 +2,8 @@ from __future__ import annotations
 import math
 from .common import num, atr14
 
-# V12.1: a trade is allowed when the selected structural TP provides
-# at least 1.50R. The TP remains structure-driven; 1.50R is only the
-# minimum admissible reward threshold, not a fixed TP distance.
+# V12.1: structural TP must provide at least 1.50R. TP is never forced to
+# exactly 1.50R; the engine's appropriate structural target is preferred.
 MIN_RISK_REWARD=1.5
 MIN_PIVOT_BARS=2
 MAX_STRUCTURE_BARS=100
@@ -27,6 +26,32 @@ def _nearest_levels(df,direction,entry,atr):
         below=sorted({v for _,v in supports if v<entry and entry-v>=gap},reverse=True);above=sorted({v for _,v in resistances if v>entry});return (below[0] if below else None),above
     above=sorted({v for _,v in resistances if v>entry and v-entry>=gap});below=sorted({v for _,v in supports if v<entry},reverse=True);return (above[0] if above else None),below
 
+def _strategy_tp_candidates(m5,direction,strategy,evidence,entry,risk):
+    strategy=strategy.upper();out=[]
+    def add(v):
+        v=num(v,None)
+        if v is not None and ((direction=="BUY" and v>entry) or (direction=="SELL" and v<entry)):out.append(v)
+    if strategy=="E3_BREAKOUT":
+        width=num(evidence.get("range_width"),0)
+        level=num(evidence.get("range_high" if direction=="BUY" else "range_low"),None)
+        if level is not None and width>0:add(level+width*1.0 if direction=="BUY" else level-width*1.0);add(level+width*1.5 if direction=="BUY" else level-width*1.5)
+    elif strategy=="BREAK_RETEST_CONTINUATION":
+        add(evidence.get("breakout_target"));add(evidence.get("range_high" if direction=="BUY" else "range_low"))
+    elif strategy=="MOMENTUM_EXPANSION":
+        add(entry+2*risk if direction=="BUY" else entry-2*risk)
+    elif strategy=="EXTREME_REJECTION_MEAN_RETURN":
+        add(evidence.get("bb_mid"))
+        add(evidence.get("range_opposite"))
+    elif strategy=="SWEEP_REJECTION_REVERSAL":
+        add(evidence.get("opposite_liquidity"));add(evidence.get("mid_range"))
+    elif strategy=="RANGE_REJECTION":
+        add(evidence.get("range_high" if direction=="BUY" else "range_low"))
+    elif strategy=="TREND_PULLBACK":
+        add(evidence.get("swing_target"));add(evidence.get("fib_extension_1272"))
+    elif strategy=="IMPULSE_PULLBACK":
+        add(evidence.get("swing_target"))
+    return list(dict.fromkeys(out))
+
 def calculate(m5,direction:str,strategy:str,evidence:dict|None=None,*,rr:float=MIN_RISK_REWARD):
     evidence=evidence or {};direction=str(direction).upper()
     if direction not in ("BUY","SELL"):return {"valid":False,"reason":"INVALID_DIRECTION"}
@@ -40,24 +65,26 @@ def calculate(m5,direction:str,strategy:str,evidence:dict|None=None,*,rr:float=M
     if sl_level is None:return {"valid":False,"reason":"NO_STRUCTURAL_SL","entry":entry,"atr":a,"strategy":strategy}
     buffer=a*SL_BUFFER_ATR;sl=sl_level-buffer if direction=="BUY" else sl_level+buffer;risk=abs(entry-sl)
     if risk<=0:return {"valid":False,"reason":"INVALID_RISK","entry":entry,"sl":sl}
+
+    preferred=_strategy_tp_candidates(x,direction,strategy,evidence,entry,risk)
+    generic=[v for v,_ in _nearest_levels(x,direction,entry,a)[1]] if False else tp_levels
     candidates=[]
-    for level in tp_levels:
+    for level in preferred+generic:
         reward=(level-entry) if direction=="BUY" else (entry-level)
-        if reward>0:candidates.append((level,reward/risk))
+        if reward>0 and level not in [p[0] for p in candidates]:candidates.append((level,reward/risk))
     if not candidates:return {"valid":False,"reason":"NO_OPPOSING_STRUCTURE","entry":entry,"sl":sl,"risk":risk,"strategy":strategy}
 
-    # Select the nearest structural TP that satisfies the minimum RR.
-    # Do not force TP to exactly 1.50R: a 1.6R/2R/etc. structure is valid.
-    qualifying=[item for item in candidates if item[1] >= MIN_RISK_REWARD]
+    qualifying=[item for item in candidates if item[1]>=MIN_RISK_REWARD]
     if not qualifying:
         first_level,first_rr=candidates[0]
         return {"valid":False,"reason":"STRUCTURE_RR_BELOW_1_5","entry":entry,"sl":sl,"risk":risk,"first_tp":first_level,"first_tp_rr":round(first_rr,4),"target_rr":MIN_RISK_REWARD,"strategy":strategy}
 
-    first_level,first_rr=qualifying[0]
-    out=[{"price":first_level,"risk_reward":round(first_rr,4),"type":"PRIMARY"}];previous=first_level;safe_limit=a*SAFE_ZONE_ATR
+    first_level,first_rr=qualifying[0];out=[{"price":first_level,"risk_reward":round(first_rr,4),"type":"PRIMARY"}];previous=first_level;safe_limit=a*SAFE_ZONE_ATR
     for level,level_rr in candidates:
         if level==first_level:continue
         if abs(level-previous)>=safe_limit and level_rr>=MIN_RISK_REWARD:
             out.append({"price":level,"risk_reward":round(level_rr,4),"type":"EXTENSION"});previous=level
         if len(out)>=MAX_TP_LEVELS:break
-    tp=first_level;effective_rr=abs(tp-entry)/risk;result={"valid":True,"entry":entry,"sl":sl,"tp":tp,"risk":risk,"risk_reward":round(effective_rr,4),"effective_rr":round(effective_rr,4),"target_rr":MIN_RISK_REWARD,"structure_level":sl_level,"structure_type":"support" if direction=="BUY" else "resistance","sl_buffer":buffer,"safe_zone_buffer":safe_limit,"tp_levels":out,"tp_structure_levels":[v["price"] for v in out],"atr":a,"strategy":strategy};result["support" if direction=="BUY" else "resistance"]=sl_level;return result
+    tp=first_level;effective_rr=abs(tp-entry)/risk
+    result={"valid":True,"entry":entry,"sl":sl,"tp":tp,"risk":risk,"risk_reward":round(effective_rr,4),"effective_rr":round(effective_rr,4),"target_rr":MIN_RISK_REWARD,"structure_level":sl_level,"structure_type":"support" if direction=="BUY" else "resistance","sl_buffer":buffer,"safe_zone_buffer":safe_limit,"tp_levels":out,"tp_structure_levels":[v["price"] for v in out],"atr":a,"strategy":strategy,"tp_selection":"ENGINE_STRUCTURE_THEN_NEAREST_STRUCTURE"}
+    result["support" if direction=="BUY" else "resistance"]=sl_level;return result
