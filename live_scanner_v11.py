@@ -1,6 +1,6 @@
 """Hardened V11 live scanner using closed candles, persistent history and active-signal locking."""
 from __future__ import annotations
-import os,threading
+import os,threading,json
 from datetime import datetime,timezone,timedelta
 import pandas as pd
 from lse import LSE
@@ -21,13 +21,13 @@ def _normalize(raw,symbol,timeframe):
     frame["datetime"]=pd.to_datetime(frame["datetime"],utc=True,errors="coerce")
     for c in ("open","high","low","close"):frame[c]=pd.to_numeric(frame[c],errors="coerce")
     frame=frame.dropna(subset=["datetime","open","high","low","close"]).sort_values("datetime").drop_duplicates("datetime",keep="last").reset_index(drop=True)
-    frame=require_closed(frame,timeframe_minutes={"5m":5,"15m":15}[timeframe]); errors=validate_frame(frame,minimum=60,timeframe_minutes={"5m":5,"15m":15}[timeframe],market=symbol)
+    frame=require_closed(frame,timeframe_minutes={"5m":5,"15m":15}[timeframe]);errors=validate_frame(frame,minimum=60,timeframe_minutes={"5m":5,"15m":15}[timeframe],market=symbol)
     if errors:raise RuntimeError(f"LSE_DATA_QUALITY:{symbol}:{timeframe}:{errors}")
     return frame
 def _lse_frame(symbol,timeframe,points=200):
-    market={"BTC":"BTC/USD","GOLD":"XAU/USD"}[symbol]; minutes={"5m":5,"15m":15}[timeframe]; now=datetime.now(timezone.utc); days=max(2,int(points*minutes/1440)+2); client=LSE(api_key=os.environ["LSE_API_KEY"]); raw=client.candles(market,timeframe,start=(now-timedelta(days=days)).date().isoformat(),end=(now+timedelta(days=1)).date().isoformat(),limit=points,order="desc"); frame=_normalize(raw,symbol,timeframe)
+    market={"BTC":"BTC/USD","GOLD":"XAU/USD"}[symbol];minutes={"5m":5,"15m":15}[timeframe];now=datetime.now(timezone.utc);days=max(2,int(points*minutes/1440)+2);client=LSE(api_key=os.environ["LSE_API_KEY"]);raw=client.candles(market,timeframe,start=(now-timedelta(days=days)).date().isoformat(),end=(now+timedelta(days=1)).date().isoformat(),limit=points,order="desc");frame=_normalize(raw,symbol,timeframe)
     if frame.empty:raise RuntimeError(f"NO_CLOSED_CANDLES:{symbol}:{timeframe}")
-    age=(pd.Timestamp.now(tz="UTC")-frame.iloc[-1].datetime).total_seconds()/60; maximum=20.0 if timeframe=="5m" else 45.0
+    age=(pd.Timestamp.now(tz="UTC")-frame.iloc[-1].datetime).total_seconds()/60;maximum=20.0 if timeframe=="5m" else 45.0
     if age>maximum:raise RuntimeError(f"STALE_MARKET_DATA:{symbol}:{timeframe}:age={age:.1f}m")
     return frame
 def _load_frames(symbol):
@@ -49,7 +49,7 @@ def _telegram_text(symbol,setup):
     d=setup["signal"];l=setup["trade_levels"];m15=setup["m15_trend"];side="🟢 BUY — ซื้อ" if d=="BUY" else "🔴 SELL — ขาย";strategy=setup.get("strategy","NONE");current=_live_price(symbol)
     return (f"🚨 <b>พบสัญญาณเข้าออเดอร์ V11</b>\n\n{side}\n\n📊 <b>สินทรัพย์:</b> {symbol}\n💵 <b>ราคาปัจจุบัน:</b> {current}\n⏱ <b>กรอบเวลาเข้า:</b> M5\n🕯 <b>แท่งที่ใช้:</b> {setup.get('candle_time')}\n🧭 <b>แนวโน้ม M15:</b> {m15.get('direction')}\n🧠 <b>Strategy:</b> {strategy}\n\n💰 <b>จุดเข้า:</b> {_fmt(l['entry'])}\n🛑 <b>จุดตัดขาดทุน (SL):</b> {_fmt(l['sl'])}\n🎯 <b>เป้าหมาย (TP):</b> {_fmt(l['tp'])}\n📐 <b>Risk/Reward:</b> {l['risk_reward']}R\n\n⚠️ ระบบนี้เป็นระบบแจ้งเตือนเท่านั้น ไม่มีการเปิดออเดอร์อัตโนมัติ")
 def _setup_key(setup):
-    ev=setup.get("selected_strategy",{}).get("evidence") or {};anchor=ev.get("setup_anchor",ev.get("breakout_level",ev.get("sweep_level",ev.get("vwap",""))));
+    ev=setup.get("selected_strategy",{}).get("evidence") or {};anchor=ev.get("setup_anchor",ev.get("breakout_level",ev.get("sweep_level",ev.get("vwap",""))))
     try:anchor=f"{float(anchor):.8f}"
     except (TypeError,ValueError):anchor=str(anchor)
     return f"{setup.get('symbol')}|{setup.get('strategy')}|{setup.get('signal')}|{anchor}"
@@ -58,13 +58,9 @@ def scan_once(symbol="BTC"):
     if symbol not in SUPPORTED_SYMBOLS:raise ValueError(f"Unsupported symbol: {symbol}")
     with _SCAN_LOCK:
         frames=_load_frames(symbol);m5=frames["5m"];setup=engine.analyze(m5,frames["15m"],symbol,len(m5)-1);ts=str(m5.iloc[-1].datetime);setup.update({"candle_time":ts,"closed_candle":ts,"symbol":symbol,"engine_version":engine.ENGINE_VERSION,"live_orders_allowed":False})
-        # Resolve an existing signal from newly closed candles before looking for another setup.
-        resolved=history.resolve_open_for_symbol(symbol,m5.to_dict("records"))
-        active=history.active_for_symbol(symbol)
-        if active:
-            return {"status":"active_signal_locked","engine_version":engine.ENGINE_VERSION,"symbol":symbol,"active_signals":[{"signal_id":r["signal_id"],"direction":r["direction"],"strategy":json_load(r.get("payload_json"),"strategy"),"entry":r["entry"],"sl":r["sl"],"tp":r["tp"]} for r in active],"resolved_this_scan":resolved,"closed_candle":ts,"live_orders_allowed":False}
-        signal=setup.get("signal");levels=setup.get("trade_levels") or {};valid=signal in ("BUY","SELL") and _levels_ready(levels,signal);setup["valid"]=valid
-        suffix=signal if valid else "NO_TRADE";signal_id=f"V11-{symbol}-{ts.replace(':','').replace('-','').replace(' ','-')}-{suffix}";setup["signal_id"]=signal_id
+        resolved=history.resolve_open_for_symbol(symbol,m5.to_dict("records"));active=history.active_for_symbol(symbol)
+        if active:return {"status":"active_signal_locked","engine_version":engine.ENGINE_VERSION,"symbol":symbol,"active_signals":[{"signal_id":r["signal_id"],"direction":r["direction"],"strategy":json_load(r.get("payload_json"),"strategy"),"entry":r["entry"],"sl":r["sl"],"tp":r["tp"]} for r in active],"resolved_this_scan":resolved,"closed_candle":ts,"live_orders_allowed":False}
+        signal=setup.get("signal");levels=setup.get("trade_levels") or {};valid=signal in ("BUY","SELL") and _levels_ready(levels,signal);setup["valid"]=valid;suffix=signal if valid else "NO_TRADE";signal_id=f"V11-{symbol}-{ts.replace(':','').replace('-','').replace(' ','-')}-{suffix}";setup["signal_id"]=signal_id
         if not valid:
             recorded=history.record_no_trade({**setup,"signal":"NO_TRADE","result":"NO_TRADE","created_at":datetime.now(timezone.utc).isoformat()});return {"status":"no_trade","engine_version":engine.ENGINE_VERSION,"symbol":symbol,"signal":"NO_TRADE","recorded":recorded,"rejection_reasons":setup.get("rejection_reasons",[]),**setup}
         setup["setup_key"]=_setup_key(setup)
