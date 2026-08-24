@@ -1,98 +1,100 @@
 from __future__ import annotations
 import pandas as pd
 from ..contracts import StrategyResult
-from ..common import num, ema, atr14
+from ..common import num, ema, atr14, candle_metrics
 
-STRATEGIES=("TREND_PULLBACK","LIQUIDITY_SWEEP","MSS_PULLBACK","BREAKOUT_RETEST","OPENING_RANGE_BREAKOUT","VWAP_MEAN_REVERSION","SWEEP_MSS_FVG")
-def _x(m5,n=80): return m5.tail(n).reset_index(drop=True).copy()
+STRATEGIES=("TREND_PULLBACK","BREAKOUT_RETEST","LIQUIDITY_SWEEP","VWAP_MOMENTUM_PULLBACK","OPENING_RANGE_BREAKOUT")
+MIN_BODY_RATIO=.45
+MAX_STRUCTURE_BARS=100
+
+def _x(m5): return m5.tail(MAX_STRUCTURE_BARS).reset_index(drop=True).copy()
 def _atr(x):
-    try:return max(num(atr14(x).iloc[-1]),1e-12)
-    except Exception:return max(num((x.high-x.low).tail(14).mean()),1e-12)
-def _candle(x,i=-1):
-    r=x.iloc[i]; o,h,l,c=map(float,(r.open,r.high,r.low,r.close)); rng=max(h-l,1e-12); return o,h,l,c,rng,(c-o)/rng
-def _swing_levels(x,lookback=20):
-    z=x.iloc[:-2].tail(lookback); return num(z.low.min()),num(z.high.max())
-def _regime(ctx): return ctx.get("regime") or {}
-def _pass(name,direction,evidence,quality=70,freshness=0): return StrategyResult.pass_(name,direction,evidence,quality,freshness)
-def _fail(name,direction,reason): return StrategyResult.fail(name,direction,[reason])
+    a=atr14(x).dropna()
+    return num(a.iloc[-1]) if len(a) else num((x.high-x.low).tail(14).mean(),1e-12)
+def _pivot_points(x):
+    highs=[]; lows=[]
+    for i in range(2,len(x)-2):
+        h=num(x.high.iloc[i]); l=num(x.low.iloc[i])
+        if h>=max(num(v) for v in x.high.iloc[i-2:i+3]): highs.append((i,h))
+        if l<=min(num(v) for v in x.low.iloc[i-2:i+3]): lows.append((i,l))
+    return highs,lows
+def _confirm(last,prev,direction):
+    if direction=="BUY": return last["bull"] and last["body_ratio"]>=MIN_BODY_RATIO and last["close"]>prev["high"]
+    return last["bear"] and last["body_ratio"]>=MIN_BODY_RATIO and last["close"]<prev["low"]
 
 def trend_pullback(m5,direction,ctx):
-    x=_x(m5,60)
-    if len(x)<30:return _fail("TREND_PULLBACK",direction,"INSUFFICIENT_M5_CONTEXT")
-    td=(ctx.get("m15") or {}).get("direction","NEUTRAL"); reg=_regime(ctx); e20=ema(x,20); e50=ema(x,50); c=num(x.close.iloc[-1]); a=_atr(x)
-    if direction!=td:return _fail("TREND_PULLBACK",direction,"M15_DIRECTION_MISMATCH")
-    trend_strength=reg.get("trend_strength")
-    if trend_strength is not None and trend_strength<0.35:return _fail("TREND_PULLBACK",direction,"TREND_STRENGTH_TOO_WEAK")
+    x=_x(m5); a=_atr(x); last=candle_metrics(x.iloc[-1]); prev=candle_metrics(x.iloc[-2]); e20=ema(x,20); e50=ema(x,50); td=(ctx.get("m15") or {}).get("direction","NEUTRAL")
+    if td!=direction:return StrategyResult.fail("TREND_PULLBACK",direction,["M15_TREND_MISMATCH"])
+    c=last["close"]; trend=(c>e20.iloc[-1]>e50.iloc[-1]) if direction=="BUY" else (c<e20.iloc[-1]<e50.iloc[-1])
+    highs,lows=_pivot_points(x)
     if direction=="BUY":
-        trend=c>e20.iloc[-1]>e50.iloc[-1]; touched=x.low.tail(5).min()<=e20.tail(5).max()+.25*a; confirm=_candle(x)[5]>.20; support=num(x.low.tail(8).min()); opposing=num(x.high.tail(20).max())
-        structure_room=(opposing-c)/a
+        anchor=lows[-1][1] if lows else num(x.low.min()); touched=x.low.tail(8).min()<=max(float(e20.tail(8).max()),anchor)+.25*a; protected=anchor
+        future=[v for _,v in highs if v>c]; room=(max(future)-c) if future else a*3
     else:
-        trend=c<e20.iloc[-1]<e50.iloc[-1]; touched=x.high.tail(5).max()>=e20.tail(5).min()-.25*a; confirm=_candle(x)[5]<-.20; support=num(x.high.tail(8).max()); opposing=num(x.low.tail(20).min())
-        structure_room=(c-opposing)/a
-    if structure_room<0.75:return _fail("TREND_PULLBACK",direction,"OPPOSING_STRUCTURE_TOO_CLOSE")
-    return _pass("TREND_PULLBACK",direction,{"support":support,"atr":a,"ema20":num(e20.iloc[-1]),"ema50":num(e50.iloc[-1]),"structure_room_atr":structure_room},82,0) if trend and touched and confirm else _fail("TREND_PULLBACK",direction,"PULLBACK_CONFIRMATION_NOT_FOUND")
-
-def liquidity_sweep(m5,direction,ctx):
-    x=_x(m5,40)
-    if len(x)<25:return _fail("LIQUIDITY_SWEEP",direction,"INSUFFICIENT_M5_CONTEXT")
-    a=_atr(x); o,h,l,c,rng,body=_candle(x); low,high=_swing_levels(x,20); reg=_regime(ctx); td=(ctx.get("m15") or {}).get("direction","NEUTRAL")
-    trend_strength=reg.get("trend_strength")
-    if td!=direction and trend_strength is not None and trend_strength>=1.0:return _fail("LIQUIDITY_SWEEP",direction,"STRONG_COUNTERTREND_SWEEP_REJECTED")
-    if direction=="BUY": ok=l<low and c>low and body>.20; support=l-.10*a
-    else: ok=h>high and c<high and body<-.20; support=h+.10*a
-    return _pass("LIQUIDITY_SWEEP",direction,{"support":support,"sweep_level":low if direction=="BUY" else high,"atr":a,"m15_direction":td},86,0) if ok else _fail("LIQUIDITY_SWEEP",direction,"NO_LIQUIDITY_SWEEP")
-
-def mss_pullback(m5,direction,ctx):
-    x=_x(m5,45)
-    if len(x)<30:return _fail("MSS_PULLBACK",direction,"INSUFFICIENT_M5_CONTEXT")
-    a=_atr(x); prior=x.iloc[-12:-3]; last=x.iloc[-3:]; ph=num(prior.high.max()); pl=num(prior.low.min()); c=num(x.close.iloc[-1]); o,h,l,cc,rng,body=_candle(x)
-    if direction=="BUY": broken=c>ph; pullback=num(last.low.min())>pl; support=num(last.low.min())-.10*a; displacement=body>.25
-    else: broken=c<pl; pullback=num(last.high.max())<ph; support=num(last.high.max())+.10*a; displacement=body<-.25
-    return _pass("MSS_PULLBACK",direction,{"support":support,"broken_level":ph if direction=="BUY" else pl,"atr":a},84,0) if broken and pullback and displacement else _fail("MSS_PULLBACK",direction,"MSS_PULLBACK_NOT_CONFIRMED")
+        anchor=highs[-1][1] if highs else num(x.high.max()); touched=x.high.tail(8).max()>=min(float(e20.tail(8).min()),anchor)-.25*a; protected=anchor
+        future=[v for _,v in lows if v<c]; room=(c-min(future)) if future else a*3
+    if not trend:return StrategyResult.fail("TREND_PULLBACK",direction,["EMA20_EMA50_TREND_FAILED"])
+    if not touched:return StrategyResult.fail("TREND_PULLBACK",direction,["PULLBACK_NOT_IN_SAFE_ZONE"])
+    if not _confirm(last,prev,direction):return StrategyResult.fail("TREND_PULLBACK",direction,["CANDLE_CONFIRMATION_FAILED"])
+    if room<2*a:return StrategyResult.fail("TREND_PULLBACK",direction,["OPPOSING_STRUCTURE_TOO_CLOSE"])
+    return StrategyResult.pass_("TREND_PULLBACK",direction,{"support":protected if direction=="BUY" else None,"resistance":protected if direction=="SELL" else None,"ema20":num(e20.iloc[-1]),"ema50":num(e50.iloc[-1]),"atr":a,"setup_anchor":protected},84,0)
 
 def breakout_retest(m5,direction,ctx):
-    x=_x(m5,45)
-    if len(x)<25:return _fail("BREAKOUT_RETEST",direction,"INSUFFICIENT_M5_CONTEXT")
-    a=_atr(x); lo,hi=_swing_levels(x,18); prev=x.iloc[-4:-1]; c=num(x.close.iloc[-1]); o,h,l,cc,rng,body=_candle(x)
-    if direction=="BUY": level=hi; broke=num(prev.close.max())>level; retest=l<=level+.20*a and c>level; support=min(l,level-.10*a); confirm=body>.10
-    else: level=lo; broke=num(prev.close.min())<level; retest=h>=level-.20*a and c<level; support=max(h,level+.10*a); confirm=body<-.10
-    return _pass("BREAKOUT_RETEST",direction,{"support":support,"breakout_level":level,"atr":a},80,0) if broke and retest and confirm else _fail("BREAKOUT_RETEST",direction,"BREAKOUT_RETEST_NOT_CONFIRMED")
+    x=_x(m5); a=_atr(x); last=candle_metrics(x.iloc[-1]); highs,lows=_pivot_points(x); level=None; breakout_i=None
+    levels=[v for _,v in (highs if direction=="BUY" else lows)]
+    for lv in reversed(levels):
+        if sum(abs(v-lv)<=.30*a for v in levels)>=2: level=lv; break
+    if level is None:return StrategyResult.fail("BREAKOUT_RETEST",direction,["NO_REPEATED_STRUCTURE_LEVEL"])
+    for i in range(len(x)-2,0,-1):
+        cm=candle_metrics(x.iloc[i]); broke=(cm["close"]>level and cm["bull"]) if direction=="BUY" else (cm["close"]<level and cm["bear"])
+        if broke: breakout_i=i; break
+    if breakout_i is None:return StrategyResult.fail("BREAKOUT_RETEST",direction,["NO_CONFIRMED_BREAKOUT"])
+    retest=x.iloc[breakout_i+1:]
+    touched=(num(retest.low.min())<=level+.25*a and last["close"]>level) if direction=="BUY" else (num(retest.high.max())>=level-.25*a and last["close"]<level)
+    if not touched:return StrategyResult.fail("BREAKOUT_RETEST",direction,["RETEST_ZONE_NOT_REACHED"])
+    if not _confirm(last,candle_metrics(x.iloc[-2]),direction):return StrategyResult.fail("BREAKOUT_RETEST",direction,["RETEST_CONFIRMATION_FAILED"])
+    return StrategyResult.pass_("BREAKOUT_RETEST",direction,{"breakout_level":level,"support":level if direction=="BUY" else None,"resistance":level if direction=="SELL" else None,"retest_low":num(retest.low.min()),"retest_high":num(retest.high.max()),"atr":a,"setup_anchor":level},86,0)
+
+def liquidity_sweep(m5,direction,ctx):
+    x=_x(m5); a=_atr(x); highs,lows=_pivot_points(x)
+    if direction=="BUY":
+        if not lows:return StrategyResult.fail("LIQUIDITY_SWEEP",direction,["NO_LIQUIDITY_LOW"])
+        level=lows[-1][1]; sweep=candle_metrics(x.iloc[-2]); confirm=candle_metrics(x.iloc[-1]); ok=sweep["low"]<level and sweep["close"]>level and sweep["lower_wick"]>=max(sweep["body"],a*.15) and confirm["bull"] and confirm["close"]>sweep["high"]
+        evidence={"sweep_level":level,"support":sweep["low"]-.10*a,"atr":a,"setup_anchor":level}
+    else:
+        if not highs:return StrategyResult.fail("LIQUIDITY_SWEEP",direction,["NO_LIQUIDITY_HIGH"])
+        level=highs[-1][1]; sweep=candle_metrics(x.iloc[-2]); confirm=candle_metrics(x.iloc[-1]); ok=sweep["high"]>level and sweep["close"]<level and sweep["upper_wick"]>=max(sweep["body"],a*.15) and confirm["bear"] and confirm["close"]<sweep["low"]
+        evidence={"sweep_level":level,"resistance":sweep["high"]+.10*a,"atr":a,"setup_anchor":level}
+    return StrategyResult.pass_("LIQUIDITY_SWEEP",direction,evidence,90,0) if ok else StrategyResult.fail("LIQUIDITY_SWEEP",direction,["SWEEP_RECLAIM_NOT_CONFIRMED"])
+
+def _session_vwap(x):
+    if "datetime" not in x:return None
+    ts=pd.to_datetime(x.datetime,utc=True,errors="coerce"); typical=(x.high+x.low+x.close)/3; vol=pd.to_numeric(x.get("volume",pd.Series(1.0,index=x.index)),errors="coerce").fillna(1).clip(lower=1e-9)
+    if ts.notna().any():
+        d=ts.dt.date; return (typical*vol).groupby(d).cumsum()/vol.groupby(d).cumsum()
+    return (typical*vol).cumsum()/vol.cumsum()
+
+def vwap_momentum_pullback(m5,direction,ctx):
+    x=_x(m5); a=_atr(x); vw=_session_vwap(x)
+    if vw is None or len(vw)==0:return StrategyResult.fail("VWAP_MOMENTUM_PULLBACK",direction,["VWAP_UNAVAILABLE"])
+    last=candle_metrics(x.iloc[-1]); prev=candle_metrics(x.iloc[-2]); v=float(vw.iloc[-1]); c=last["close"]; slope=float(vw.iloc[-1]-vw.iloc[max(0,len(vw)-4)]); momentum=abs(c-num(x.close.iloc[max(0,len(x)-6)]))/max(a,1e-12)
+    if direction=="BUY": ok=c>v and slope>0 and momentum>=1.0 and prev["low"]<=v+.30*a and last["bull"] and last["body_ratio"]>=MIN_BODY_RATIO and c>prev["high"]; support=prev["low"]-.10*a
+    else: ok=c<v and slope<0 and momentum>=1.0 and prev["high"]>=v-.30*a and last["bear"] and last["body_ratio"]>=MIN_BODY_RATIO and c<prev["low"]; support=prev["high"]+.10*a
+    if not ok:return StrategyResult.fail("VWAP_MOMENTUM_PULLBACK",direction,["VWAP_MOMENTUM_PULLBACK_NOT_CONFIRMED"])
+    return StrategyResult.pass_("VWAP_MOMENTUM_PULLBACK",direction,{"vwap":v,"vwap_slope":slope,"momentum_atr":momentum,"support":support if direction=="BUY" else None,"resistance":support if direction=="SELL" else None,"atr":a,"setup_anchor":v},82,0)
 
 def opening_range_breakout(m5,direction,ctx):
-    x=_x(m5,100)
-    if len(x)<20:return _fail("OPENING_RANGE_BREAKOUT",direction,"INSUFFICIENT_M5_CONTEXT")
-    ts=pd.to_datetime(x["datetime"],errors="coerce",utc=True) if "datetime" in x else None; dayx=x
-    if ts is not None and ts.notna().any(): dayx=x.loc[ts.dt.date==ts.iloc[-1].date()].reset_index(drop=True)
-    if len(dayx)<8:return _fail("OPENING_RANGE_BREAKOUT",direction,"OPENING_RANGE_NOT_READY")
-    orb=dayx.iloc[:6]; rh=num(orb.high.max()); rl=num(orb.low.min()); c=num(dayx.close.iloc[-1]); a=_atr(x); o,h,l,cc,rng,body=_candle(x); reg=_regime(ctx)
-    orb_width=max(rh-rl,1e-12); compression=reg.get("compression_ratio"); range_ratio=reg.get("range_ratio")
-    if compression is not None and compression>0.90:return _fail("OPENING_RANGE_BREAKOUT",direction,"OPENING_RANGE_NOT_COMPRESSED")
-    if range_ratio is not None and range_ratio<0.60:return _fail("OPENING_RANGE_BREAKOUT",direction,"OPENING_RANGE_TOO_TIGHT")
-    body_ratio=abs(body)
-    if direction=="BUY": ok=c>rh and body>.15 and body_ratio>=.35 and (c-rh)<=1.00*a; support=rh-.10*a
-    else: ok=c<rl and body<-.15 and body_ratio>=.35 and (rl-c)<=1.00*a; support=rl+.10*a
-    return _pass("OPENING_RANGE_BREAKOUT",direction,{"support":support,"opening_range_high":rh,"opening_range_low":rl,"atr":a,"compression_ratio":compression},78,0) if ok else _fail("OPENING_RANGE_BREAKOUT",direction,"OPENING_RANGE_BREAK_NOT_CONFIRMED")
+    x=_x(m5); a=_atr(x)
+    if "datetime" not in x:return StrategyResult.fail("OPENING_RANGE_BREAKOUT",direction,["DATETIME_REQUIRED"])
+    ts=pd.to_datetime(x.datetime,utc=True,errors="coerce"); latest=ts.iloc[-1]; day=x.loc[ts.dt.date==latest.date()].reset_index(drop=True)
+    if len(day)<2:return StrategyResult.fail("OPENING_RANGE_BREAKOUT",direction,["OPENING_RANGE_NOT_READY"])
+    window=max(10,int(ctx.get("opening_range_minutes",30))); start=pd.Timestamp(day.datetime.iloc[0]); end=start+pd.Timedelta(minutes=window); orb=day[pd.to_datetime(day.datetime,utc=True)<=end]
+    if len(orb)<2 or len(day)<=len(orb):return StrategyResult.fail("OPENING_RANGE_BREAKOUT",direction,["OPENING_RANGE_NOT_READY"])
+    rh=num(orb.high.max()); rl=num(orb.low.min()); last=candle_metrics(day.iloc[-1]); prior=candle_metrics(day.iloc[-2]); width=rh-rl
+    if width<=0 or width>2.0*a:return StrategyResult.fail("OPENING_RANGE_BREAKOUT",direction,["OPENING_RANGE_VOLATILITY_UNSUITABLE"])
+    if direction=="BUY": ok=last["close"]>rh and last["bull"] and last["body_ratio"]>=MIN_BODY_RATIO and prior["low"]<=rh+.30*a; support=rh-.10*a
+    else: ok=last["close"]<rl and last["bear"] and last["body_ratio"]>=MIN_BODY_RATIO and prior["high"]>=rl-.30*a; support=rl+.10*a
+    if not ok:return StrategyResult.fail("OPENING_RANGE_BREAKOUT",direction,["OPENING_RANGE_BREAKOUT_NOT_CONFIRMED"])
+    return StrategyResult.pass_("OPENING_RANGE_BREAKOUT",direction,{"opening_range_high":rh,"opening_range_low":rl,"support":support if direction=="BUY" else None,"resistance":support if direction=="SELL" else None,"atr":a,"setup_anchor":rh if direction=="BUY" else rl},80,0)
 
-def vwap_mean_reversion(m5,direction,ctx):
-    x=_x(m5,80)
-    if len(x)<30:return _fail("VWAP_MEAN_REVERSION",direction,"INSUFFICIENT_M5_CONTEXT")
-    if (ctx.get("m15") or {}).get("direction","NEUTRAL")!="NEUTRAL":return _fail("VWAP_MEAN_REVERSION",direction,"TREND_REGIME_NOT_RANGE")
-    typical=(x.high+x.low+x.close)/3; vol=pd.to_numeric(x.get("volume",pd.Series(1.0,index=x.index)),errors="coerce").fillna(1.0).clip(lower=1e-9); ts=pd.to_datetime(x["datetime"],errors="coerce",utc=True) if "datetime" in x else None
-    if ts is not None and ts.notna().any(): vwap=(typical*vol).groupby(ts.dt.date).cumsum()/vol.groupby(ts.dt.date).cumsum()
-    else:vwap=(typical*vol).cumsum()/vol.cumsum()
-    vw=num(vwap.iloc[-1]); c=num(x.close.iloc[-1]); a=_atr(x); o,h,l,cc,rng,body=_candle(x); distance=abs(c-vw)/a; reg=_regime(ctx)
-    trend_strength=reg.get("trend_strength"); body_ratio=abs(body)
-    if trend_strength is not None and trend_strength>=1.25 and body_ratio>=0.55:return _fail("VWAP_MEAN_REVERSION",direction,"STRONG_TREND_CONTINUATION")
-    if direction=="BUY": ok=distance>=1.80 and c<vw-1.80*a and body>.10; support=l-.10*a
-    else: ok=distance>=1.80 and c>vw+1.80*a and body<-.10; support=h+.10*a
-    return _pass("VWAP_MEAN_REVERSION",direction,{"support":support,"vwap":vw,"target_price":vw,"atr":a,"distance_atr":distance},76,0) if ok else _fail("VWAP_MEAN_REVERSION",direction,"VWAP_REVERSION_NOT_CONFIRMED")
-
-def sweep_mss_fvg(m5,direction,ctx):
-    x=_x(m5,50)
-    if len(x)<30:return _fail("SWEEP_MSS_FVG",direction,"INSUFFICIENT_M5_CONTEXT")
-    a=_atr(x); low,high=_swing_levels(x,20); r1=x.iloc[-3]; r2=x.iloc[-2]; r3=x.iloc[-1]; c=float(r3.close); o2,h2,l2,c2=map(float,(r2.open,r2.high,r2.low,r2.close))
-    if direction=="BUY": sweep=float(r1.low)<low and float(r1.close)>low; displacement=c2>o2 and c2-o2>.45*a and float(r2.low)>float(r1.low); fvg=float(r3.low)>float(r1.high); retest=float(r3.low)<=float(r1.high)+.20*a and c>float(r1.high); support=float(r1.low)-.10*a
-    else: sweep=float(r1.high)>high and float(r1.close)<high; displacement=c2<o2 and o2-c2>.45*a and float(r2.high)<float(r1.high); fvg=float(r3.high)<float(r1.low); retest=float(r3.high)>=float(r1.low)-.20*a and c<float(r1.low); support=float(r1.high)+.10*a
-    return _pass("SWEEP_MSS_FVG",direction,{"support":support,"fvg_high":float(r1.high),"fvg_low":float(r1.low),"atr":a},90,0) if sweep and displacement and fvg and retest else _fail("SWEEP_MSS_FVG",direction,"SWEEP_MSS_FVG_NOT_CONFIRMED")
-
-REGISTRY={"TREND_PULLBACK":trend_pullback,"LIQUIDITY_SWEEP":liquidity_sweep,"MSS_PULLBACK":mss_pullback,"BREAKOUT_RETEST":breakout_retest,"OPENING_RANGE_BREAKOUT":opening_range_breakout,"VWAP_MEAN_REVERSION":vwap_mean_reversion,"SWEEP_MSS_FVG":sweep_mss_fvg}
+REGISTRY={"TREND_PULLBACK":trend_pullback,"BREAKOUT_RETEST":breakout_retest,"LIQUIDITY_SWEEP":liquidity_sweep,"VWAP_MOMENTUM_PULLBACK":vwap_momentum_pullback,"OPENING_RANGE_BREAKOUT":opening_range_breakout}
