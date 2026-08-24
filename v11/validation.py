@@ -1,6 +1,6 @@
 from __future__ import annotations
 from collections import defaultdict
-from .replay import replay_frames
+from .replay_m5 import replay_frames
 from . import engine
 def validate(m5,m15=None,symbol=None,*,limit=1000):
     report=replay_frames(m5,None,symbol,limit=limit);by=defaultdict(lambda:{"signals":0,"wins":0,"losses":0,"ambiguous":0,"open":0,"net_r":0.0})
