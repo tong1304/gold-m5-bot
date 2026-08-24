@@ -1,6 +1,5 @@
 from __future__ import annotations
 from typing import Callable
-from datetime import timedelta
 import pandas as pd
 from . import engine
 from .setup_state import SetupState
@@ -18,7 +17,7 @@ def normalize_replay_window(start_time,end_time):
 def _bounded_context(frame,end_position,max_bars):
     end_position=max(0,min(int(end_position),len(frame)));return frame.iloc[max(0,end_position-max_bars):end_position].reset_index(drop=True)
 def _context_end_positions(m5,higher,minutes):
-    times=pd.DatetimeIndex(higher["datetime"]);return [int(times.searchsorted(ts,side="left")) for ts in m5["datetime"]]
+    times=pd.DatetimeIndex(higher["datetime"]);return [int(times.searchsorted(ts-pd.Timedelta(minutes=minutes),side="right")) for ts in m5["datetime"]]
 def _resolve_trade(trade,candle):
     high=float(candle.high);low=float(candle.low);direction=trade["signal"];levels=trade["trade_levels"];entry=float(levels["entry"]);sl=float(levels["sl"]);tp=float(levels["tp"]);hit_sl=low<=sl if direction=="BUY" else high>=sl;hit_tp=high>=tp if direction=="BUY" else low<=tp
     if hit_sl and hit_tp:return {"result":"AMBIGUOUS","r_multiple":0.0,"resolved_at":str(candle.datetime)}
