@@ -50,4 +50,6 @@ def calculate(m5,direction: str,strategy: str,evidence: dict|None=None,*,rr: flo
     if not all(math.isfinite(v) for v in (sl,tp,risk)) or min(entry,sl,tp)<=0:return {"valid":False,"reason":"INVALID_RISK"}
     effective_rr=abs(tp-entry)/risk
     valid=effective_rr>=MIN_RISK_REWARD and ((direction=="BUY" and sl<entry<tp) or (direction=="SELL" and sl>entry>tp))
-    return {"valid":bool(valid),"entry":entry,"sl":sl,"tp":tp,"risk":risk,"risk_reward":round(effective_rr,4),"effective_rr":round(effective_rr,4),"target_rr":MIN_RISK_REWARD,"structure_level":raw,"structure_type":level_name,"sl_buffer":buffer,"strategy":strategy}
+    levels={"valid":bool(valid),"entry":entry,"sl":sl,"tp":tp,"risk":risk,"risk_reward":round(effective_rr,4),"effective_rr":round(effective_rr,4),"target_rr":MIN_RISK_REWARD,"structure_level":raw,"structure_type":level_name,"sl_buffer":buffer,"strategy":strategy}
+    levels["support" if direction=="BUY" else "resistance"]=raw
+    return levels
