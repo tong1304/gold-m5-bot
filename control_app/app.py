@@ -49,13 +49,7 @@ def create_app(test_config: dict | None = None) -> Flask:
 
     @app.get("/api/health")
     def health():
-        return jsonify(
-            status="ok",
-            service="v12.9-control-backtest",
-            engine_version="12.9-MTF-H1-M15-TREND-M5-BTC-GOLD-MULTI-TP",
-            telegram_enabled=telegram.get_telegram_enabled(),
-            live_services_started=False,
-        )
+        return jsonify(status="ok", service="v12.9-control-backtest", engine_version="12.9-MTF-H1-M15-TREND-M5-BTC-GOLD-MULTI-TP", telegram_enabled=telegram.get_telegram_enabled(), live_services_started=False)
 
     @app.get("/api/telegram")
     def telegram_status():
@@ -66,19 +60,12 @@ def create_app(test_config: dict | None = None) -> Flask:
         payload = request.get_json(silent=True)
         if not isinstance(payload, dict) or not isinstance(payload.get("enabled"), bool):
             return jsonify(status="error", message="enabled must be boolean"), 400
-        enabled = telegram.set_telegram_enabled(payload["enabled"])
-        return jsonify(status="ok", enabled=enabled)
+        return jsonify(status="ok", enabled=telegram.set_telegram_enabled(payload["enabled"]))
 
     def _worker(run_id: str, symbol: str, start: datetime, end: datetime) -> None:
         try:
             from .backtest.engine import run_backtest
-            result = run_backtest(
-                symbol,
-                start,
-                end,
-                run_id=run_id,
-                api_key=os.getenv("LSE_API_KEY"),
-            )
+            result = run_backtest(symbol, start, end, run_id=run_id, api_key=os.getenv("LSE_API_KEY"))
             repository.save_backtest(result, datetime.now(UTC).isoformat())
         except Exception as exc:
             store.fail_run(run_id, f"{type(exc).__name__}: {exc}", datetime.now(UTC).isoformat())
@@ -94,14 +81,16 @@ def create_app(test_config: dict | None = None) -> Flask:
             end = _parse_dt(str(payload.get("end", "")))
         except ValueError as exc:
             return jsonify(status="error", message=str(exc)), 400
+        now = datetime.now(UTC)
+        if end > now:
+            return jsonify(status="error", message="end cannot be in the future"), 400
         if end <= start:
             return jsonify(status="error", message="end must be after start"), 400
         if end - start > timedelta(days=max_backtest_days()):
             return jsonify(status="error", message=f"date range cannot exceed {max_backtest_days()} days"), 400
         run_id = f"BT-{symbol}-{datetime.now(UTC).strftime('%Y%m%dT%H%M%SZ')}-{uuid.uuid4().hex[:8]}"
         store.create_run(run_id, symbol, start.isoformat(), end.isoformat(), datetime.now(UTC).isoformat())
-        thread = threading.Thread(target=_worker, args=(run_id, symbol, start, end), name=f"backtest-{run_id}", daemon=True)
-        thread.start()
+        threading.Thread(target=_worker, args=(run_id, symbol, start, end), name=f"backtest-{run_id}", daemon=True).start()
         return jsonify(status="started", run_id=run_id), 202
 
     @app.get("/api/backtest/<run_id>")
