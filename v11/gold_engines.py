@@ -1,100 +1,50 @@
 from __future__ import annotations
 
-from .strategies.gold import REGISTRY
+from .new_gold_engines import (
+    GOLD_NEW_ENGINE_NAMES,
+    GOLD_NEW_ENGINE_MIN_RR,
+    evaluate_new_gold_engines,
+)
 
-# GOLD uses only the dedicated G-series. Legacy E1-E8 engines are intentionally
-# not called from this module.
+# Approved GOLD architecture: only G1-G3 are active.
 GOLD_ENGINE_MAP = {
-    "G1": ("TREND_PULLBACK", REGISTRY["TREND_PULLBACK"]),
-    "G2": ("BREAKOUT_RETEST", REGISTRY["BREAKOUT_RETEST"]),
-    "G3": ("LIQUIDITY_SWEEP", REGISTRY["LIQUIDITY_SWEEP"]),
-    "G4": ("VWAP_MOMENTUM_PULLBACK", REGISTRY["VWAP_MOMENTUM_PULLBACK"]),
-    "G5": ("OPENING_RANGE_BREAKOUT", REGISTRY["OPENING_RANGE_BREAKOUT"]),
+    "G1": "LIQUIDITY_SWEEP_CHOCH",
+    "G2": "CONTINUATION_FVG_PULLBACK",
+    "G3": "SESSION_BREAKOUT_RETEST",
 }
-
-GOLD_ENGINE_NAMES = {k: v[0] for k, v in GOLD_ENGINE_MAP.items()}
-GOLD_ENGINE_PRIORITY = {"G1": 0, "G2": 1, "G3": 2, "G4": 3, "G5": 4}
-
-
-def _candidate_directions(regime):
-    bias = str(regime.get("h1_bias") or "NEUTRAL").upper()
-    m15 = regime.get("m15_context") or {}
-    m15_direction = str(m15.get("direction") or "NEUTRAL").upper()
-    direction = str(regime.get("direction") or "NEUTRAL").upper()
-    if bias in ("BUY", "SELL"):
-        return [bias]
-    if m15_direction in ("BUY", "SELL"):
-        return [m15_direction]
-    if direction in ("BUY", "SELL"):
-        return [direction]
-    return ["BUY", "SELL"]
+GOLD_ENGINE_NAMES = dict(GOLD_NEW_ENGINE_NAMES)
+GOLD_ENGINE_PRIORITY = {"G1": 0, "G2": 1, "G3": 2}
+GOLD_ENGINE_MIN_RR = dict(GOLD_NEW_ENGINE_MIN_RR)
+GOLD_STRATEGIES = tuple(GOLD_NEW_ENGINE_NAMES[g] for g in ("G1", "G2", "G3"))
 
 
-def _context(regime):
-    # G3 needs the full HTF gate: H1 bias + M15 context/POI.
-    return {
-        "h1_bias": regime.get("h1_bias") or "NEUTRAL",
+def evaluate_gold_engines(m5, m15, h1, regime=None, *, m1=None, high_impact_news=False,
+                          news_blocked=False, session_trade_taken=None):
+    """Run only the approved G1/G2/G3 engines.
+
+    H1 supplies context/POI; M15 supplies direction/bias only. No M15 regime
+    filter is applied here. M5 remains the execution timeframe.
+    """
+    regime = regime or {}
+    h1_bias = str(regime.get("h1_bias") or "NEUTRAL").upper()
+    m15_context = regime.get("m15_context") or {}
+    m15_direction = str(m15_context.get("direction") or regime.get("m15_direction") or "NEUTRAL").upper()
+    ctx = {
+        "h1_bias": h1_bias,
         "h1_poi": regime.get("h1_poi"),
         "poi": regime.get("poi"),
-        "m15": regime.get("m15_context") or {},
-        "opening_range_minutes": 30,
+        "m15": {"direction": m15_direction},
+        "m1": m1,
+        "high_impact_news": bool(high_impact_news),
+        "news_blocked": bool(news_blocked),
+        "session_trade_taken": session_trade_taken or {},
     }
-
-
-def _convert(gid, strategy, result, direction):
-    evidence = dict(result.evidence or {})
-    anchor = evidence.get("setup_anchor")
-    if anchor is None:
-        anchor = evidence.get("support") if direction == "BUY" else evidence.get("resistance")
-    return {
-        "status": result.status,
-        "engine": gid,
-        "strategy": f"{gid}_{strategy}",
-        "direction": direction,
-        "setup_anchor": anchor,
-        "evidence": evidence,
-        "quality": float(result.quality or 0.0),
-        "trigger_signature": f"{gid}|{strategy}|{direction}|{evidence.get('setup_anchor', anchor)}",
-        "entry_type_hint": "MARKET",
-        "rejection_reasons": list(result.reasons or ()),
-    }
-
-
-def evaluate_gold_engines(m5, m15, h1, regime):
-    candidates = []
-    trace = []
-    ctx = _context(regime)
-    for gid, (strategy, fn) in GOLD_ENGINE_MAP.items():
-        for direction in _candidate_directions(regime):
-            try:
-                result = fn(m5, direction, ctx)
-                converted = _convert(gid, strategy, result, direction)
-            except Exception as exc:
-                converted = {
-                    "status": "FAIL",
-                    "engine": gid,
-                    "strategy": f"{gid}_{strategy}",
-                    "direction": direction,
-                    "quality": 0.0,
-                    "rejection_reasons": [f"GOLD_ENGINE_ERROR:{type(exc).__name__}:{exc}"],
-                }
-            trace.append(converted)
-            if converted.get("status") == "PASS":
-                # Dedicated G-series is scored independently of the legacy E-series.
-                score = min(100.0, max(0.0, float(converted.get("quality", 0.0))))
-                if strategy in ("TREND_PULLBACK", "VWAP_MOMENTUM_PULLBACK") and regime.get("m15_regime") == "TREND":
-                    score = min(100.0, score + 5.0)
-                if strategy in ("BREAKOUT_RETEST", "OPENING_RANGE_BREAKOUT") and regime.get("m15_regime") in ("TRANSITION", "TREND"):
-                    score = min(100.0, score + 3.0)
-                converted["score_detail"] = {
-                    "score": round(score, 2),
-                    "qualified": score >= 70.0,
-                    "components": {"gold_engine_quality": float(converted.get("quality", 0.0))},
-                }
-                candidates.append(converted)
-    candidates.sort(key=lambda r: (
-        GOLD_ENGINE_PRIORITY.get(str(r.get("engine")).upper(), 99),
-        -float((r.get("score_detail") or {}).get("score", 0) or 0),
-        -float(r.get("quality", 0) or 0),
-    ))
+    candidates, trace = evaluate_new_gold_engines(m5, m15, h1, ctx)
+    for item in candidates:
+        item["engine"] = str(item.get("engine", "")).upper()
+        item["strategy"] = f"{item['engine']}_{GOLD_ENGINE_NAMES.get(item['engine'], item.get('strategy',''))}"
+        item["minimum_rr"] = GOLD_ENGINE_MIN_RR.get(item["engine"], 2.0)
+    for item in trace:
+        item["engine"] = str(item.get("engine", "")).upper()
+    candidates.sort(key=lambda x: (GOLD_ENGINE_PRIORITY.get(x.get("engine"), 99), -float(x.get("quality", 0) or 0)))
     return candidates, trace
