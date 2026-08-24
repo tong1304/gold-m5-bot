@@ -11,8 +11,28 @@ def _has_route(app,path):
 def _json(payload,status=200):
     return Response(json.dumps(payload,ensure_ascii=False,allow_nan=False,default=str),status=status,mimetype="application/json",headers={"Cache-Control":"no-store"})
 
+def _actual_replay_trades(result):
+    trades=[]
+    for report in (result.get("reports") or []):
+        symbol=report.get("symbol")
+        for trade in (report.get("trade_history") or []):
+            item=dict(trade)
+            item["symbol"]=symbol
+            trades.append(item)
+    trades.sort(key=lambda x:str(x.get("candle_time") or ""),reverse=True)
+    return trades
+
+def _rebuild_performance(result):
+    trades=_actual_replay_trades(result)
+    outcomes=[str(t.get("result") or "OPEN").upper() for t in trades]
+    wins=sum(x=="WIN" for x in outcomes);losses=sum(x=="LOSS" for x in outcomes);opens=sum(x=="OPEN" for x in outcomes);ambiguous=sum(x=="AMBIGUOUS" for x in outcomes)
+    decided=wins+losses
+    r=[float(t.get("r_multiple") or 0.0) for t in trades if str(t.get("result") or "").upper() in ("WIN","LOSS")]
+    net=round(sum(r),4);gross_profit=round(sum(x for x in r if x>0),4);gross_loss=round(abs(sum(x for x in r if x<0)),4)
+    return {"trades":len(trades),"decided":decided,"wins":wins,"losses":losses,"open":opens,"ambiguous":ambiguous,"no_trade":0,"net_r":net,"gross_profit_r":gross_profit,"gross_loss_r":gross_loss,"win_rate":round(100*wins/decided,2) if decided else 0.0,"loss_rate":round(100*losses/decided,2) if decided else 0.0,"expectancy_r":round(net/decided,4) if decided else 0.0,"profit_factor":round(gross_profit/gross_loss,4) if gross_loss else None}
+
 def _install_statistics_api_override(app):
-    """Fix the V11.2 API contract: _replay_state() returns one state dict."""
+    """Use one replay-state contract and calculate statistics from actual replay trades."""
     endpoint="statistics_api"
     if endpoint not in app.view_functions:return False
     try:
@@ -25,9 +45,19 @@ def _install_statistics_api_override(app):
                 if state.get("running"):
                     payload=mod._running_payload(state);payload["live_signal_count"]=len(live);payload["live_signals"]=live;return mod._json(payload)
                 return mod._json({"status":"no_replay","engine_version":mod.ENGINE_VERSION,"source":"LSE_HISTORICAL_OHLCV","message":"ยังไม่มีผล V11 Replay","live_signal_count":len(live),"live_signals":live,"live_orders_allowed":False})
-            payload=mod._replay_payload(result,state);payload["live_signal_count"]=len(live);payload["live_signals"]=live;payload["progress"]=mod._progress(state) if state.get("running") else None;return mod._json(payload)
+            payload=mod._replay_payload(result,state)
+            actual=_actual_replay_trades(result)
+            perf=_rebuild_performance(result)
+            old=payload.get("performance") or {}
+            perf["rows"]=old.get("rows",0)
+            perf["evaluated_rows"]=old.get("evaluated_rows",old.get("rows",0))
+            perf["locked_rows"]=old.get("locked_rows",0)
+            payload["performance"]={**old,**perf}
+            payload["trade_history"]=actual
+            payload["live_signal_count"]=len(live);payload["live_signals"]=live;payload["progress"]=mod._progress(state) if state.get("running") else None
+            return mod._json(payload)
         app.view_functions[endpoint]=statistics_api_fixed
-        logger.warning("[V11 STARTUP] Statistics API override installed")
+        logger.warning("[V11 STARTUP] Statistics API override installed: actual replay trades")
         return True
     except Exception:
         logger.exception("[V11 STARTUP] Failed to install Statistics API override")
@@ -60,6 +90,6 @@ def register(app):
         @app.route("/routes",strict_slashes=False)
         def route_status():
             routes=sorted({rule.rule for rule in app.url_map.iter_rules()})
-            return _json({"status":"ok","engine_version":"11.2-DYNAMIC-STRATEGIES","statistics":"/statistics" in routes,"statistics_api":"/api/statistics" in routes,"replay":"/replay" in routes,"routes":routes})
+            return _json({"status":"ok","engine_version":"11.2-DYNAMIC-STRATEGIES","statistics":"/statistics" in routes,"statistics_api":"/api/statistics" in routes,"replay":"/replay" in routes})
 
 __all__=["register"]
