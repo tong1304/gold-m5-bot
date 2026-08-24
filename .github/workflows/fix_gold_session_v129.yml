@@ -1,0 +1,135 @@
+name: Apply GOLD session fix V12.9
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  fix-session:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Patch scheduler GOLD session gate
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import re
+
+          path = Path('scheduler_v11.py')
+          text = path.read_text(encoding='utf-8')
+
+          if 'NEW_YORK = ZoneInfo("America/New_York")' not in text:
+              text = text.replace(
+                  'BANGKOK = ZoneInfo("Asia/Bangkok")\nUTC = timezone.utc',
+                  'BANGKOK = ZoneInfo("Asia/Bangkok")\nNEW_YORK = ZoneInfo("America/New_York")\nUTC = timezone.utc',
+                  1,
+              )
+
+          new_fn = '''def _asset_market_status(symbol, now_utc=None):
+              """Return whether an asset is actually open for signal scanning.
+
+              GOLD follows the CME/COMEX-style daily 17:00-18:00 New York
+              maintenance break and Friday close/Sunday reopen. Using
+              America/New_York makes the gate DST-safe, so the UTC window
+              automatically shifts between EDT and EST.
+              """
+              now_utc = now_utc or datetime.now(UTC)
+              if symbol == "BTC":
+                  return True, "OPEN_24_7"
+              if symbol != "GOLD":
+                  return False, "UNKNOWN_MARKET_SESSION"
+
+              ny = now_utc.astimezone(NEW_YORK)
+              wd = ny.weekday()  # Mon=0 ... Sun=6
+              t = ny.time()
+
+              # Saturday: closed all day.
+              if wd == 5:
+                  return False, "WEEKEND_CLOSED"
+
+              # Sunday: opens at 18:00 New York.
+              if wd == 6:
+                  if t.hour < 18:
+                      return False, "SUNDAY_CLOSED"
+                  return True, "OPEN"
+
+              # Friday: closes at 17:00 New York.
+              if wd == 4:
+                  if t.hour >= 17:
+                      return False, "FRIDAY_CLOSED"
+                  return True, "OPEN"
+
+              # Mon-Thu: daily maintenance break 17:00-18:00 New York.
+              if 17 <= t.hour < 18:
+                  return False, "DAILY_BREAK"
+
+              return True, "OPEN"
+          '''
+
+          pattern = r'def _asset_market_status\(symbol, now_utc=None\):\n.*?\n\ndef _is_stale_market_data_error'
+          replacement = new_fn + '\n\ndef _is_stale_market_data_error'
+          patched, count = re.subn(pattern, replacement, text, count=1, flags=re.S)
+          if count != 1:
+              raise SystemExit('Could not locate _asset_market_status in scheduler_v11.py')
+
+          path.write_text(patched, encoding='utf-8')
+          PY
+
+      - name: Update regression tests
+        run: |
+          cat > tests/test_market_session_gate.py <<'PY'
+          from datetime import datetime, timezone
+
+          import scheduler_v11
+
+          def test_gold_dst_daily_break_is_closed():
+              # 21:30 UTC = 17:30 New York in August (EDT), inside break.
+              opened, session = scheduler_v11._asset_market_status(
+                  'GOLD', datetime(2026, 8, 24, 21, 30, tzinfo=timezone.utc)
+              )
+              assert opened is False
+              assert session == 'DAILY_BREAK'
+
+          def test_gold_dst_open_session():
+              # 20:30 UTC = 16:30 New York in August (EDT), before break.
+              opened, session = scheduler_v11._asset_market_status(
+                  'GOLD', datetime(2026, 8, 24, 20, 30, tzinfo=timezone.utc)
+              )
+              assert opened is True
+              assert session == 'OPEN'
+
+          def test_gold_winter_break_is_dst_safe():
+              # 22:30 UTC = 17:30 New York in January (EST), inside break.
+              opened, session = scheduler_v11._asset_market_status(
+                  'GOLD', datetime(2026, 1, 12, 22, 30, tzinfo=timezone.utc)
+              )
+              assert opened is False
+              assert session == 'DAILY_BREAK'
+
+          def test_btc_is_open_24_7():
+              opened, session = scheduler_v11._asset_market_status(
+                  'BTC', datetime(2026, 8, 29, 12, 0, tzinfo=timezone.utc)
+              )
+              assert opened is True
+              assert session == 'OPEN_24_7'
+          PY
+
+      - name: Run regression tests
+        run: pytest -q tests/test_market_session_gate.py
+
+      - name: Commit patched files
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add scheduler_v11.py tests/test_market_session_gate.py
+          if git diff --cached --quiet; then
+            echo 'No changes to commit'
+          else
+            git commit -m 'fix: make GOLD session gate DST-aware [skip ci]'
+            git push
+          fi
