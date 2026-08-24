@@ -15,11 +15,39 @@ def _parse_result(lines):
         except Exception: pass
     return None
 
+def _trade_history(rows):
+    """Keep only actual BUY/SELL entries for the Statistics trade table."""
+    trades=[]
+    for row in rows or []:
+        if row.get("signal") not in ("BUY","SELL") or not row.get("valid"):
+            continue
+        levels=row.get("trade_levels") or {}
+        trades.append({
+            "candle_time":row.get("candle_time"),
+            "signal":row.get("signal"),
+            "strategy":row.get("strategy"),
+            "entry":levels.get("entry"),
+            "sl":levels.get("sl"),
+            "tp":levels.get("tp"),
+            "tp1":levels.get("tp1"),
+            "tp2":levels.get("tp2"),
+            "tp3":levels.get("tp3"),
+            "rr":levels.get("rr") if levels.get("rr") is not None else levels.get("risk_reward"),
+            "result":row.get("result"),
+            "r_multiple":row.get("r_multiple"),
+            "resolved_at":row.get("resolved_at"),
+        })
+    return trades
+
 def _compact_result(result):
-    """Keep the web/API state small; candle-by-candle rows are not needed by the UI."""
+    """Keep web state small while preserving actual trade entries for Statistics."""
     if not isinstance(result,dict): return result
     compact=copy.deepcopy(result)
-    compact["reports"]=[{k:v for k,v in report.items() if k!="rows"} for report in (compact.get("reports") or [])]
+    compact["reports"]=[]
+    for report in (result.get("reports") or []):
+        item={k:v for k,v in report.items() if k!="rows"}
+        item["trade_history"]=_trade_history(report.get("rows") or [])
+        compact["reports"].append(item)
     return compact
 
 def _public_state(state):
