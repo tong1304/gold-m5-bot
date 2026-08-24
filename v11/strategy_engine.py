@@ -25,6 +25,13 @@ def _volume_ratio(x,period=20):
 def _trend_filter_ok(context,direction):
     m15=context.get("m15_context",{}) or {}
     return bool(context.get("regime")=="TREND" and context.get("direction")==direction and (m15.get("adx14",context.get("adx14",0)) or 0)>20 and context.get("h1_bias")==direction and m15.get("trend_ema_alignment") in (None,"EMA20>EMA50","EMA20<EMA50"))
+def _candidate_directions(context):
+    direction=context.get("direction")
+    if direction in ("BUY","SELL"):
+        if context.get("regime")=="TRANSITION" and context.get("h1_bias")=="NEUTRAL":
+            return ["BUY","SELL"]
+        return [direction]
+    return ["BUY","SELL"]
 def _bullish_reversal(last,prev):
     engulf=last["bull"] and prev["bear"] and last["open"]<=prev["close"] and last["close"]>=prev["open"];pin=last["bull"] and last["lower_wick"]>=max(last["body"]*1.5,last["range"]*.45) and last["close_location"]>=.65;return engulf or pin
 def _bearish_reversal(last,prev):
@@ -99,11 +106,10 @@ def score_setup(result,regime,rr=None):
     score=min(100.0,score);return {"score":round(score,2),"qualified":score>=70,"components":components}
 
 def sort_setup_candidates(candidates):
-    """V12.1 deterministic hierarchy: E7 > E4 > trend engines > E3 > E6 > E8."""
     return sorted(candidates,key=lambda r:(ENGINE_PRIORITY.get(str(r.get("engine")).upper(),99),-float(r.get("score_detail",{}).get("score",0) or 0),-float(r.get("quality",0) or 0)))
 
 def evaluate_all_allowed(m5,context):
-    engines=context.get("allowed_engines",[]);directions=[context.get("direction")] if context.get("direction") in ("BUY","SELL") else ["BUY","SELL"];out=[]
+    engines=context.get("allowed_engines",[]);directions=_candidate_directions(context);out=[]
     for eid in engines:
         for direction in directions:
             result=evaluate_strategy(eid,m5,context,direction)
@@ -111,7 +117,7 @@ def evaluate_all_allowed(m5,context):
     return sort_setup_candidates(out)
 
 def evaluate_all_allowed_with_trace(m5,context):
-    engines=context.get("allowed_engines",[]);directions=[context.get("direction")] if context.get("direction") in ("BUY","SELL") else ["BUY","SELL"];trace=[];candidates=[]
+    engines=context.get("allowed_engines",[]);directions=_candidate_directions(context);trace=[];candidates=[]
     for eid in engines:
         for direction in directions:
             result=evaluate_strategy(eid,m5,context,direction);trace.append(result)
