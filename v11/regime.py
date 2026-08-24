@@ -3,10 +3,10 @@ import math
 import pandas as pd
 from .common import ema, atr14, structure
 
-# V12.1 M5-only: engines are strictly partitioned by market regime.
+# V12.1 MTF: H1 establishes big bias, M15 establishes regime, M5 triggers.
 TREND_ENGINES={"E1","E2","E5"}
 RANGE_ENGINES={"E6","E7","E8"}
-TRANSITION_ENGINES={"E3","E4"}
+TRANSITION_ENGINES={"E3","E4","E7"}
 
 def allowed_engines_for_regime(regime:str)->set[str]:
     regime=str(regime).upper()
@@ -54,32 +54,51 @@ def _vwap(frame):
 def _direction(frame):
     x=frame.tail(100).reset_index(drop=True)
     if len(x)<60:return "NEUTRAL"
-    e20,e50,e200=ema(x,20).iloc[-1],ema(x,50).iloc[-1],ema(x,200).iloc[-1];s=structure(x,min(80,len(x)));c=_finite(x.close.iloc[-1])
-    adx,di_plus,di_minus=_adx(x)
+    e20,e50,e200=ema(x,20).iloc[-1],ema(x,50).iloc[-1],ema(x,200).iloc[-1];s=structure(x,min(80,len(x)));c=_finite(x.close.iloc[-1]);adx,di_plus,di_minus=_adx(x)
     if c is None:return "NEUTRAL"
     if c>e20>e50>e200 and s["bias"]=="BUY" and (adx or 0)>25 and (di_plus or 0)>(di_minus or 0):return "BUY"
     if c<e20<e50<e200 and s["bias"]=="SELL" and (adx or 0)>25 and (di_minus or 0)>(di_plus or 0):return "SELL"
     return "NEUTRAL"
 
-def classify_regime(m5,m15=None):
-    x=m5.tail(100).reset_index(drop=True).copy()
-    if len(x)<60:return {"regime":"RANGE","allowed_engines":sorted(RANGE_ENGINES),"reason":"INSUFFICIENT_M5_CONTEXT","direction":"NEUTRAL"}
-    a=_atr(x);e20,e50,e200=ema(x,20),ema(x,50),ema(x,200);close=_finite(x.close.iloc[-1]);adx,di_plus,di_minus=_adx(x)
-    slope=(_finite(e20.iloc[-1])-_finite(e20.iloc[-6]))/max(a or 1e-12,1e-12);s=structure(x,min(80,len(x)));atr_now=a or 1e-12
-    vw=_vwap(x);vwap=_finite(vw.iloc[-1]) if len(vw) else None
-    # Trend: exact user filter. ADX is strictly >25, not >=25.
+def _mtf_trend_direction(h1):
+    if h1 is None or len(h1)<60:return "NEUTRAL"
+    return _direction(h1)
+
+def _classify_m15(m15):
+    x=m15.tail(100).reset_index(drop=True).copy()
+    if len(x)<60:return {"regime":"UNKNOWN","direction":"NEUTRAL","reason":"INSUFFICIENT_M15_CONTEXT"}
+    a=_atr(x);e20,e50,e200=ema(x,20),ema(x,50),ema(x,200);close=_finite(x.close.iloc[-1]);adx,di_plus,di_minus=_adx(x);s=structure(x,min(80,len(x)));atr_now=a or 1e-12
+    slope=(_finite(e20.iloc[-1])-_finite(e20.iloc[-6]))/atr_now
     trend_up=bool(close and close>e20.iloc[-1]>e50.iloc[-1]>e200.iloc[-1] and s["bias"]=="BUY" and (adx or 0)>25 and (di_plus or 0)>(di_minus or 0))
     trend_down=bool(close and close<e20.iloc[-1]<e50.iloc[-1]<e200.iloc[-1] and s["bias"]=="SELL" and (adx or 0)>25 and (di_minus or 0)>(di_plus or 0))
-    # Transition: Bollinger Band width is at its lowest point in the recent 50-bar context.
     bw=_bollinger_width(x,20,2.0);lowest50=bool(len(bw)>=50 and pd.notna(bw.iloc[-1]) and bw.iloc[-1]<=bw.tail(50).min()*1.02)
-    transition=bool(lowest50 and not (trend_up or trend_down))
-    # Range: ADX <20 plus a flat EMA20. If neither transition nor trend is present,
-    # use the range bucket only when the market is demonstrably low-trend.
     ema_flat=abs(_finite(e20.iloc[-1])-_finite(e20.iloc[-6]))<=0.20*atr_now
     range_regime=bool((adx or 0)<20 and ema_flat)
-    if trend_up or trend_down:regime,direction="TREND","BUY" if trend_up else "SELL"
-    elif transition:regime,direction="TRANSITION","BUY" if close and vwap and close>vwap else "SELL" if close and vwap and close<vwap else "NEUTRAL"
-    else:regime,direction="RANGE","NEUTRAL"
-    return {"regime":regime,"allowed_engines":sorted(allowed_engines_for_regime(regime)),"direction":direction,"m5_context_bars":min(100,len(x)),"adx14":adx,"di_plus":di_plus,"di_minus":di_minus,"ema20":_finite(e20.iloc[-1]),"ema50":_finite(e50.iloc[-1]),"ema200":_finite(e200.iloc[-1]),"ema20_slope_atr":_finite(slope),"ema20_flat":ema_flat,"atr14":a,"vwap":vwap,"bb_width":_finite(bw.iloc[-1]) if len(bw) else None,"bb_width_lowest50":lowest50,"range_filter":range_regime,"structure":s,"trend_up":trend_up,"trend_down":trend_down,"transition":transition}
+    if trend_up:regime,direction="TREND","BUY"
+    elif trend_down:regime,direction="TREND","SELL"
+    elif lowest50:regime,direction="TRANSITION","NEUTRAL"
+    elif range_regime:regime,direction="RANGE","NEUTRAL"
+    else:regime,direction="TRANSITION","NEUTRAL"
+    return {"regime":regime,"direction":direction,"adx14":adx,"di_plus":di_plus,"di_minus":di_minus,"ema20":_finite(e20.iloc[-1]),"ema50":_finite(e50.iloc[-1]),"ema200":_finite(e200.iloc[-1]),"ema20_slope_atr":_finite(slope),"ema20_flat":ema_flat,"atr14":a,"bb_width":_finite(bw.iloc[-1]) if len(bw) else None,"bb_width_lowest50":lowest50,"range_filter":range_regime,"structure":s,"trend_up":trend_up,"trend_down":trend_down}
 
-def build_regime_context(m5,m15=None):return classify_regime(m5,m15)
+def classify_regime(m5,m15=None,h1=None):
+    """V12.1 MTF: H1=big bias, M15=regime, M5=entry trigger. All contexts are closed-candle snapshots."""
+    x=m5.tail(100).reset_index(drop=True).copy()
+    h1_bias=_mtf_trend_direction(h1)
+    m15_info=_classify_m15(m15) if m15 is not None else {"regime":"UNKNOWN","direction":"NEUTRAL","reason":"M15_REQUIRED"}
+    if len(x)<60:
+        return {"regime":"UNKNOWN","allowed_engines":[],"direction":"NEUTRAL","h1_bias":h1_bias,"m15_regime":m15_info.get("regime"),"m15_context":m15_info,"reason":"INSUFFICIENT_M5_CONTEXT"}
+    # H1/M15 are filters; M5 does not override their regime classification.
+    regime=m15_info.get("regime","UNKNOWN")
+    direction=m15_info.get("direction","NEUTRAL")
+    if regime=="TREND":
+        if h1_bias in ("BUY","SELL") and direction!=h1_bias:
+            return {"regime":"CONFLICT","allowed_engines":[],"direction":"NEUTRAL","h1_bias":h1_bias,"m15_regime":regime,"m15_context":m15_info,"reason":"H1_M15_TREND_CONFLICT"}
+        if h1_bias=="NEUTRAL":
+            return {"regime":"CONFLICT","allowed_engines":[],"direction":"NEUTRAL","h1_bias":h1_bias,"m15_regime":regime,"m15_context":m15_info,"reason":"H1_BIAS_UNCONFIRMED"}
+    if regime=="TRANSITION" and direction=="NEUTRAL":
+        # M5 supplies directional bias for transition engines only after M15 confirms transition.
+        direction=_direction(x)
+    return {"regime":regime,"allowed_engines":sorted(allowed_engines_for_regime(regime)),"direction":direction,"h1_bias":h1_bias,"m15_regime":regime,"m15_context":m15_info,"m5_context_bars":min(100,len(x))}
+
+def build_regime_context(m5,m15=None,h1=None):return classify_regime(m5,m15,h1)
