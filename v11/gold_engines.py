@@ -31,8 +31,11 @@ def _candidate_directions(regime):
 
 
 def _context(regime):
-    # multi_strategy expects M15 context under the key `m15`.
+    # G3 needs the full HTF gate: H1 bias + M15 context/POI.
     return {
+        "h1_bias": regime.get("h1_bias") or "NEUTRAL",
+        "h1_poi": regime.get("h1_poi"),
+        "poi": regime.get("poi"),
         "m15": regime.get("m15_context") or {},
         "opening_range_minutes": 30,
     }
