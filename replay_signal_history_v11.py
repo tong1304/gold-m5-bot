@@ -33,7 +33,7 @@ def historical_window(start: str, end: str):
 def _historical_frame(symbol: str, timeframe: str, start: str, end: str):
     market = {"BTC": "BTC/USD", "GOLD": "XAU/USD"}[symbol]
     fetch_start, fetch_end = historical_window(start, end)
-    client = LSE(api_key=None)
+    client = LSE()
     raw = client.candles(
         market,
         timeframe,
@@ -61,6 +61,9 @@ def main():
     if end < start:
         raise ValueError("วันสิ้นสุดต้องไม่น้อยกว่าวันเริ่มต้น")
 
+    # A date-only end value represents the whole calendar day in the web UI.
+    replay_end = end + timedelta(days=1) if len(args.end.strip()) == 10 else end
+
     for symbol in symbols:
         try:
             # Fetch the actual requested historical window plus warm-up instead of
@@ -74,7 +77,7 @@ def main():
                 m15,
                 symbol,
                 start_time=start,
-                end_time=end + pd.Timedelta(days=1) if end == end.normalize() else end,
+                end_time=replay_end,
                 limit=None,
             )
             reports.append({
