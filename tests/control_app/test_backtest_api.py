@@ -28,6 +28,7 @@ def test_backtest_starts_without_telegram_call(tmp_path, monkeypatch):
             engine_version="12.9-MTF-H1-M15-TREND-M5-BTC-GOLD-MULTI-TP",
             statistics={"total_trades": 0},
             trades=[],
+            metadata={"live_orders_allowed": False, "telegram_alert_sent": False},
         )
 
     monkeypatch.setattr("control_app.backtest.engine.run_backtest", fake_run_backtest)
@@ -46,4 +47,5 @@ def test_backtest_starts_without_telegram_call(tmp_path, monkeypatch):
     stored = app.test_client().get(f"/api/backtest/{run_id}").get_json()
     assert stored["status"] == "completed"
     assert stored["result"]["metadata"]["live_orders_allowed"] is False
+    assert stored["result"]["metadata"]["telegram_alert_sent"] is False
     monkeypatch.setattr(app_module.threading, "Thread", original_thread)
