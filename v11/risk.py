@@ -1,7 +1,11 @@
 from __future__ import annotations
 import math
 from .common import num, atr14
-MIN_RISK_REWARD=2.0
+
+# V12.1: a trade is allowed when the selected structural TP provides
+# at least 1.50R. The TP remains structure-driven; 1.50R is only the
+# minimum admissible reward threshold, not a fixed TP distance.
+MIN_RISK_REWARD=1.5
 MIN_PIVOT_BARS=2
 MAX_STRUCTURE_BARS=100
 SL_BUFFER_ATR=.10
@@ -41,10 +45,19 @@ def calculate(m5,direction:str,strategy:str,evidence:dict|None=None,*,rr:float=M
         reward=(level-entry) if direction=="BUY" else (entry-level)
         if reward>0:candidates.append((level,reward/risk))
     if not candidates:return {"valid":False,"reason":"NO_OPPOSING_STRUCTURE","entry":entry,"sl":sl,"risk":risk,"strategy":strategy}
-    first_level,first_rr=candidates[0]
-    if first_rr<MIN_RISK_REWARD:return {"valid":False,"reason":"STRUCTURE_RR_BELOW_2","entry":entry,"sl":sl,"risk":risk,"first_tp":first_level,"first_tp_rr":round(first_rr,4),"target_rr":MIN_RISK_REWARD,"strategy":strategy}
+
+    # Select the nearest structural TP that satisfies the minimum RR.
+    # Do not force TP to exactly 1.50R: a 1.6R/2R/etc. structure is valid.
+    qualifying=[item for item in candidates if item[1] >= MIN_RISK_REWARD]
+    if not qualifying:
+        first_level,first_rr=candidates[0]
+        return {"valid":False,"reason":"STRUCTURE_RR_BELOW_1_5","entry":entry,"sl":sl,"risk":risk,"first_tp":first_level,"first_tp_rr":round(first_rr,4),"target_rr":MIN_RISK_REWARD,"strategy":strategy}
+
+    first_level,first_rr=qualifying[0]
     out=[{"price":first_level,"risk_reward":round(first_rr,4),"type":"PRIMARY"}];previous=first_level;safe_limit=a*SAFE_ZONE_ATR
-    for level,level_rr in candidates[1:]:
-        if abs(level-previous)>=safe_limit:out.append({"price":level,"risk_reward":round(level_rr,4),"type":"EXTENSION"});previous=level
+    for level,level_rr in candidates:
+        if level==first_level:continue
+        if abs(level-previous)>=safe_limit and level_rr>=MIN_RISK_REWARD:
+            out.append({"price":level,"risk_reward":round(level_rr,4),"type":"EXTENSION"});previous=level
         if len(out)>=MAX_TP_LEVELS:break
     tp=first_level;effective_rr=abs(tp-entry)/risk;result={"valid":True,"entry":entry,"sl":sl,"tp":tp,"risk":risk,"risk_reward":round(effective_rr,4),"effective_rr":round(effective_rr,4),"target_rr":MIN_RISK_REWARD,"structure_level":sl_level,"structure_type":"support" if direction=="BUY" else "resistance","sl_buffer":buffer,"safe_zone_buffer":safe_limit,"tp_levels":out,"tp_structure_levels":[v["price"] for v in out],"atr":a,"strategy":strategy};result["support" if direction=="BUY" else "resistance"]=sl_level;return result
