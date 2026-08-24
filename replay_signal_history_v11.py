@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 from datetime import timedelta
 
 import pandas as pd
@@ -12,8 +13,8 @@ from live_scanner_v11 import _normalize
 
 
 HISTORICAL_WARMUP = timedelta(days=2)
-# Keep each LSE request comfortably below common candle-result limits.
-# M5: 2 days ~= 576 bars; M15: 4 days ~= 384 bars.
+# LSE REST supports deep candle history; bounded chunks keep individual
+# requests predictable while still covering the requested replay period.
 HISTORICAL_CHUNK_BY_TIMEFRAME = {
     "5m": timedelta(days=2),
     "15m": timedelta(days=4),
@@ -37,14 +38,21 @@ def historical_window(start: str, end: str):
 
 
 def _historical_frame(symbol: str, timeframe: str, start: str, end: str):
-    """Fetch historical candles in small bounded chunks for reliable replay."""
+    """Fetch historical candles in bounded chunks for reliable replay."""
     market = {"BTC": "BTC/USD", "GOLD": "XAU/USD"}[symbol]
     chunk_size = HISTORICAL_CHUNK_BY_TIMEFRAME[timeframe]
     fetch_start, fetch_end = historical_window(start, end)
     if len(end.strip()) == 10:
         fetch_end = fetch_end + timedelta(days=1)
 
-    client = LSE()
+    api_key = os.getenv("LSE_API_KEY", "").strip()
+    if not api_key:
+        raise RuntimeError("LSE_API_KEY_MISSING: Replay requires the same LSE_API_KEY used by Live V11")
+
+    # IMPORTANT: Live V11 authenticates LSE explicitly. Replay must do the same;
+    # LSE() without the key was the reason the web replay could start but fail
+    # inside the background subprocess.
+    client = LSE(api_key=api_key)
     frames = []
     cursor = fetch_start
     while cursor < fetch_end:
