@@ -12,25 +12,35 @@ def _candle(x,i=-1):
     r=x.iloc[i]; o,h,l,c=map(float,(r.open,r.high,r.low,r.close)); rng=max(h-l,1e-12); return o,h,l,c,rng,(c-o)/rng
 def _swing_levels(x,lookback=20):
     z=x.iloc[:-2].tail(lookback); return num(z.low.min()),num(z.high.max())
+def _regime(ctx): return ctx.get("regime") or {}
 def _pass(name,direction,evidence,quality=70,freshness=0): return StrategyResult.pass_(name,direction,evidence,quality,freshness)
 def _fail(name,direction,reason): return StrategyResult.fail(name,direction,[reason])
 
 def trend_pullback(m5,direction,ctx):
     x=_x(m5,60)
     if len(x)<30:return _fail("TREND_PULLBACK",direction,"INSUFFICIENT_M5_CONTEXT")
-    td=(ctx.get("m15") or {}).get("direction","NEUTRAL"); e20=ema(x,20); e50=ema(x,50); c=num(x.close.iloc[-1]); a=_atr(x)
+    td=(ctx.get("m15") or {}).get("direction","NEUTRAL"); reg=_regime(ctx); e20=ema(x,20); e50=ema(x,50); c=num(x.close.iloc[-1]); a=_atr(x)
     if direction!=td:return _fail("TREND_PULLBACK",direction,"M15_DIRECTION_MISMATCH")
-    if direction=="BUY": trend=c>e20.iloc[-1]>e50.iloc[-1]; touched=x.low.tail(5).min()<=e20.tail(5).max()+.25*a; confirm=_candle(x)[5]>.20; support=num(x.low.tail(8).min())
-    else: trend=c<e20.iloc[-1]<e50.iloc[-1]; touched=x.high.tail(5).max()>=e20.tail(5).min()-.25*a; confirm=_candle(x)[5]<-.20; support=num(x.high.tail(8).max())
-    return _pass("TREND_PULLBACK",direction,{"support":support,"atr":a,"ema20":num(e20.iloc[-1]),"ema50":num(e50.iloc[-1])},82,0) if trend and touched and confirm else _fail("TREND_PULLBACK",direction,"PULLBACK_CONFIRMATION_NOT_FOUND")
+    trend_strength=reg.get("trend_strength")
+    if trend_strength is not None and trend_strength<0.35:return _fail("TREND_PULLBACK",direction,"TREND_STRENGTH_TOO_WEAK")
+    if direction=="BUY":
+        trend=c>e20.iloc[-1]>e50.iloc[-1]; touched=x.low.tail(5).min()<=e20.tail(5).max()+.25*a; confirm=_candle(x)[5]>.20; support=num(x.low.tail(8).min()); opposing=num(x.high.tail(20).max())
+        structure_room=(opposing-c)/a
+    else:
+        trend=c<e20.iloc[-1]<e50.iloc[-1]; touched=x.high.tail(5).max()>=e20.tail(5).min()-.25*a; confirm=_candle(x)[5]<-.20; support=num(x.high.tail(8).max()); opposing=num(x.low.tail(20).min())
+        structure_room=(c-opposing)/a
+    if structure_room<0.75:return _fail("TREND_PULLBACK",direction,"OPPOSING_STRUCTURE_TOO_CLOSE")
+    return _pass("TREND_PULLBACK",direction,{"support":support,"atr":a,"ema20":num(e20.iloc[-1]),"ema50":num(e50.iloc[-1]),"structure_room_atr":structure_room},82,0) if trend and touched and confirm else _fail("TREND_PULLBACK",direction,"PULLBACK_CONFIRMATION_NOT_FOUND")
 
 def liquidity_sweep(m5,direction,ctx):
     x=_x(m5,40)
     if len(x)<25:return _fail("LIQUIDITY_SWEEP",direction,"INSUFFICIENT_M5_CONTEXT")
-    a=_atr(x); o,h,l,c,rng,body=_candle(x); low,high=_swing_levels(x,20)
+    a=_atr(x); o,h,l,c,rng,body=_candle(x); low,high=_swing_levels(x,20); reg=_regime(ctx); td=(ctx.get("m15") or {}).get("direction","NEUTRAL")
+    trend_strength=reg.get("trend_strength")
+    if td!=direction and trend_strength is not None and trend_strength>=1.0:return _fail("LIQUIDITY_SWEEP",direction,"STRONG_COUNTERTREND_SWEEP_REJECTED")
     if direction=="BUY": ok=l<low and c>low and body>.20; support=l-.10*a
     else: ok=h>high and c<high and body<-.20; support=h+.10*a
-    return _pass("LIQUIDITY_SWEEP",direction,{"support":support,"sweep_level":low if direction=="BUY" else high,"atr":a},86,0) if ok else _fail("LIQUIDITY_SWEEP",direction,"NO_LIQUIDITY_SWEEP")
+    return _pass("LIQUIDITY_SWEEP",direction,{"support":support,"sweep_level":low if direction=="BUY" else high,"atr":a,"m15_direction":td},86,0) if ok else _fail("LIQUIDITY_SWEEP",direction,"NO_LIQUIDITY_SWEEP")
 
 def mss_pullback(m5,direction,ctx):
     x=_x(m5,45)
@@ -54,10 +64,14 @@ def opening_range_breakout(m5,direction,ctx):
     ts=pd.to_datetime(x["datetime"],errors="coerce",utc=True) if "datetime" in x else None; dayx=x
     if ts is not None and ts.notna().any(): dayx=x.loc[ts.dt.date==ts.iloc[-1].date()].reset_index(drop=True)
     if len(dayx)<8:return _fail("OPENING_RANGE_BREAKOUT",direction,"OPENING_RANGE_NOT_READY")
-    orb=dayx.iloc[:6]; rh=num(orb.high.max()); rl=num(orb.low.min()); c=num(dayx.close.iloc[-1]); a=_atr(x); o,h,l,cc,rng,body=_candle(x)
-    if direction=="BUY": ok=c>rh and body>.15; support=rh-.10*a
-    else: ok=c<rl and body<-.15; support=rl+.10*a
-    return _pass("OPENING_RANGE_BREAKOUT",direction,{"support":support,"opening_range_high":rh,"opening_range_low":rl,"atr":a},78,0) if ok else _fail("OPENING_RANGE_BREAKOUT",direction,"OPENING_RANGE_BREAK_NOT_CONFIRMED")
+    orb=dayx.iloc[:6]; rh=num(orb.high.max()); rl=num(orb.low.min()); c=num(dayx.close.iloc[-1]); a=_atr(x); o,h,l,cc,rng,body=_candle(x); reg=_regime(ctx)
+    orb_width=max(rh-rl,1e-12); compression=reg.get("compression_ratio"); range_ratio=reg.get("range_ratio")
+    if compression is not None and compression>0.90:return _fail("OPENING_RANGE_BREAKOUT",direction,"OPENING_RANGE_NOT_COMPRESSED")
+    if range_ratio is not None and range_ratio<0.60:return _fail("OPENING_RANGE_BREAKOUT",direction,"OPENING_RANGE_TOO_TIGHT")
+    body_ratio=abs(body)
+    if direction=="BUY": ok=c>rh and body>.15 and body_ratio>=.35 and (c-rh)<=1.00*a; support=rh-.10*a
+    else: ok=c<rl and body<-.15 and body_ratio>=.35 and (rl-c)<=1.00*a; support=rl+.10*a
+    return _pass("OPENING_RANGE_BREAKOUT",direction,{"support":support,"opening_range_high":rh,"opening_range_low":rl,"atr":a,"compression_ratio":compression},78,0) if ok else _fail("OPENING_RANGE_BREAKOUT",direction,"OPENING_RANGE_BREAK_NOT_CONFIRMED")
 
 def vwap_mean_reversion(m5,direction,ctx):
     x=_x(m5,80)
@@ -66,7 +80,9 @@ def vwap_mean_reversion(m5,direction,ctx):
     typical=(x.high+x.low+x.close)/3; vol=pd.to_numeric(x.get("volume",pd.Series(1.0,index=x.index)),errors="coerce").fillna(1.0).clip(lower=1e-9); ts=pd.to_datetime(x["datetime"],errors="coerce",utc=True) if "datetime" in x else None
     if ts is not None and ts.notna().any(): vwap=(typical*vol).groupby(ts.dt.date).cumsum()/vol.groupby(ts.dt.date).cumsum()
     else:vwap=(typical*vol).cumsum()/vol.cumsum()
-    vw=num(vwap.iloc[-1]); c=num(x.close.iloc[-1]); a=_atr(x); o,h,l,cc,rng,body=_candle(x); distance=abs(c-vw)/a
+    vw=num(vwap.iloc[-1]); c=num(x.close.iloc[-1]); a=_atr(x); o,h,l,cc,rng,body=_candle(x); distance=abs(c-vw)/a; reg=_regime(ctx)
+    trend_strength=reg.get("trend_strength"); body_ratio=abs(body)
+    if trend_strength is not None and trend_strength>=1.25 and body_ratio>=0.55:return _fail("VWAP_MEAN_REVERSION",direction,"STRONG_TREND_CONTINUATION")
     if direction=="BUY": ok=distance>=1.80 and c<vw-1.80*a and body>.10; support=l-.10*a
     else: ok=distance>=1.80 and c>vw+1.80*a and body<-.10; support=h+.10*a
     return _pass("VWAP_MEAN_REVERSION",direction,{"support":support,"vwap":vw,"target_price":vw,"atr":a,"distance_atr":distance},76,0) if ok else _fail("VWAP_MEAN_REVERSION",direction,"VWAP_REVERSION_NOT_CONFIRMED")
