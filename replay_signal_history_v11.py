@@ -12,6 +12,7 @@ from live_scanner_v11 import _normalize
 
 
 HISTORICAL_WARMUP = timedelta(days=2)
+HISTORICAL_CHUNK = timedelta(days=14)
 
 
 def _timestamp(value):
@@ -31,21 +32,36 @@ def historical_window(start: str, end: str):
 
 
 def _historical_frame(symbol: str, timeframe: str, start: str, end: str):
+    """Fetch historical candles in bounded chunks so long replays are reliable."""
     market = {"BTC": "BTC/USD", "GOLD": "XAU/USD"}[symbol]
     fetch_start, fetch_end = historical_window(start, end)
     if len(end.strip()) == 10:
         fetch_end = fetch_end + timedelta(days=1)
+
     client = LSE()
-    raw = client.candles(
-        market,
-        timeframe,
-        start=fetch_start.date().isoformat(),
-        end=fetch_end.date().isoformat(),
-    )
-    frame = _normalize(raw, symbol, timeframe)
-    if frame.empty:
+    frames = []
+    cursor = fetch_start
+    while cursor < fetch_end:
+        chunk_end = min(cursor + HISTORICAL_CHUNK, fetch_end)
+        raw = client.candles(
+            market,
+            timeframe,
+            start=cursor.date().isoformat(),
+            end=chunk_end.date().isoformat(),
+        )
+        frame = _normalize(raw, symbol, timeframe)
+        if not frame.empty:
+            frames.append(frame)
+        cursor = chunk_end
+
+    if not frames:
         raise RuntimeError(f"NO_HISTORICAL_CANDLES:{symbol}:{timeframe}")
-    return frame
+    return (
+        pd.concat(frames, ignore_index=True)
+        .sort_values("datetime")
+        .drop_duplicates("datetime", keep="last")
+        .reset_index(drop=True)
+    )
 
 
 def main():
@@ -68,10 +84,9 @@ def main():
 
     for symbol in symbols:
         try:
-            # Fetch the actual requested historical window plus warm-up instead of
-            # using the live scanner's recent-candle/staleness window. The old
-            # 5,000-point approach covered only ~17 days of M5 data and could not
-            # replay a full month such as 2026-08-01 through 2026-08-24.
+            # Fetch the requested historical window plus warm-up. The old 5,000
+            # point live-window approach could not cover a full month and could
+            # also return only recent candles instead of the selected dates.
             m5 = _historical_frame(symbol, "5m", args.start, args.end)
             m15 = _historical_frame(symbol, "15m", args.start, args.end)
             report = replay.replay_frames(
