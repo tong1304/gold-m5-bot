@@ -16,30 +16,18 @@ def _normalize(raw,symbol,timeframe="5m"):
     if isinstance(rows,dict):rows=rows.get("data") or rows.get("rows")
     if not isinstance(rows,(list,tuple)):
         raise RuntimeError(f"LSE_INVALID_RESPONSE:{symbol}:{timeframe}")
-    # LSE vault responses can contain day/session marker rows (for example
-    # {"day":"2026-08-22"}) on closed GOLD sessions. Those are metadata,
-    # not candles. Drop them before constructing the OHLC frame so a weekend
-    # marker cannot make the whole MTF request look malformed.
     candle_rows=[];metadata_rows=0
     for row in rows:
-        if not isinstance(row,dict):
-            continue
-        keys=set(row)
-        has_ohlc={"open","high","low","close"}.issubset(keys)
-        has_time=bool(keys.intersection({"datetime","timestamp","time","date"}))
-        if has_ohlc and has_time:
-            candle_rows.append(row)
-        else:
-            metadata_rows+=1
-    if not candle_rows:
-        raise RuntimeError(f"LSE_INVALID_RESPONSE:{symbol}:{timeframe}:no_candle_rows:metadata_rows={metadata_rows}")
+        if not isinstance(row,dict):continue
+        keys=set(row);has_ohlc={"open","high","low","close"}.issubset(keys);has_time=bool(keys.intersection({"datetime","timestamp","time","date"}))
+        if has_ohlc and has_time:candle_rows.append(row)
+        else:metadata_rows+=1
+    if not candle_rows:raise RuntimeError(f"LSE_INVALID_RESPONSE:{symbol}:{timeframe}:no_candle_rows:metadata_rows={metadata_rows}")
     frame=pd.DataFrame(candle_rows)
     for candidate in ("timestamp","time","date"):
-        if "datetime" not in frame.columns and candidate in frame.columns:
-            frame=frame.rename(columns={candidate:"datetime"})
+        if "datetime" not in frame.columns and candidate in frame.columns:frame=frame.rename(columns={candidate:"datetime"})
     missing=[c for c in ("datetime","open","high","low","close") if c not in frame.columns]
-    if missing:
-        raise RuntimeError(f"LSE_INVALID_RESPONSE:{symbol}:{timeframe}:missing={missing}")
+    if missing:raise RuntimeError(f"LSE_INVALID_RESPONSE:{symbol}:{timeframe}:missing={missing}")
     frame["datetime"]=pd.to_datetime(frame["datetime"],utc=True,errors="coerce")
     for c in ("open","high","low","close"):frame[c]=pd.to_numeric(frame[c],errors="coerce")
     frame=frame.dropna(subset=["datetime","open","high","low","close"]).sort_values("datetime").drop_duplicates("datetime",keep="last").reset_index(drop=True)
@@ -51,8 +39,7 @@ def _lse_frame(symbol,timeframe="5m",points=200):
     if timeframe not in ("5m","15m","1h"):raise ValueError(f"Unsupported V12 timeframe={timeframe}")
     market={"BTC":"BTC/USD","GOLD":"XAU/USD"}[symbol];minutes={"5m":5,"15m":15,"1h":60}[timeframe];now=datetime.now(timezone.utc);days=max(3,int(points*minutes/1440)+3);client=LSE(api_key=os.environ["LSE_API_KEY"]);raw=client.candles(market,timeframe,start=(now-timedelta(days=days)).date().isoformat(),end=(now+timedelta(days=1)).date().isoformat(),limit=points,order="desc");frame=_normalize(raw,symbol,timeframe)
     if frame.empty:raise RuntimeError(f"NO_CLOSED_CANDLES:{symbol}:{timeframe}")
-    age=(pd.Timestamp.now(tz="UTC")-frame.iloc[-1].datetime).total_seconds()/60
-    max_age={"5m":20,"15m":45,"1h":180}[timeframe]
+    age=(pd.Timestamp.now(tz="UTC")-frame.iloc[-1].datetime).total_seconds()/60;max_age={"5m":20,"15m":45,"1h":180}[timeframe]
     if age>max_age:raise RuntimeError(f"STALE_MARKET_DATA:{symbol}:{timeframe}:age={age:.1f}m")
     return frame
 
@@ -70,18 +57,31 @@ def _fmt(v):
     except (TypeError,ValueError):return "N/A"
 def _live_price(symbol):
     try:
-        import live_price;tick=live_price.get(symbol);return _fmt(tick.get("price")) if tick else "N/A"
+        import live_price;tick=live_price.get(symbol);return _fmt(tick.get("price")) if isinstance(tick,dict) and tick else "N/A"
     except Exception:return "N/A"
 def _telegram_text(symbol,setup):
     d=setup["signal"];l=setup["trade_levels"];side="🟢 BUY — ซื้อ" if d=="BUY" else "🔴 SELL — ขาย";regime=setup.get("regime") or {};regime_name=regime.get("regime") if isinstance(regime,dict) else regime
-    return f"🚨 <b>พบสัญญาณเข้าออเดอร์ V12.1 MTF</b>\n\n{side}\n\n📊 <b>สินทรัพย์:</b> {symbol}\n💵 <b>ราคาปัจจุบัน:</b> {_live_price(symbol)}\n⏱ <b>Filter:</b> H1 → M15 → M5\n🧭 <b>H1 Bias:</b> {setup.get('h1_bias','N/A')}\n🧠 <b>M15 Regime:</b> {setup.get('m15_regime',regime_name)}\n🎯 <b>Engine:</b> {setup.get('engine','NONE')} — {setup.get('strategy')}\n🔁 <b>Entry Type:</b> {setup.get('entry_type','INITIAL')}\n🆔 <b>Setup ID:</b> {setup.get('setup_id')}\n\n💰 <b>จุดเข้า:</b> {_fmt(l['entry'])}\n🛑 <b>SL:</b> {_fmt(l['sl'])}\n🎯 <b>TP:</b> {_fmt(l['tp'])}\n📐 <b>Risk/Reward:</b> {l['risk_reward']}R\n📊 <b>Setup Score:</b> {setup.get('setup_score',{}).get('score','N/A')}/100\n\n⚠️ ระบบแจ้งเตือนเท่านั้น ไม่มีการเปิดออเดอร์อัตโนมัติ"
+    score=setup.get("setup_score") or {};score_value=score.get("score") if isinstance(score,dict) else "N/A"
+    return f"🚨 <b>พบสัญญาณเข้าออเดอร์ V12.1 MTF</b>\n\n{side}\n\n📊 <b>สินทรัพย์:</b> {symbol}\n💵 <b>ราคาปัจจุบัน:</b> {_live_price(symbol)}\n⏱ <b>Filter:</b> H1 → M15 → M5\n🧭 <b>H1 Bias:</b> {setup.get('h1_bias','N/A')}\n🧠 <b>M15 Regime:</b> {setup.get('m15_regime',regime_name)}\n🎯 <b>Engine:</b> {setup.get('engine','NONE')} — {setup.get('strategy')}\n🔁 <b>Entry Type:</b> {setup.get('entry_type','INITIAL')}\n🆔 <b>Setup ID:</b> {setup.get('setup_id')}\n\n💰 <b>จุดเข้า:</b> {_fmt(l['entry'])}\n🛑 <b>SL:</b> {_fmt(l['sl'])}\n🎯 <b>TP:</b> {_fmt(l['tp'])}\n📐 <b>Risk/Reward:</b> {l['risk_reward']}R\n📊 <b>Setup Score:</b> {score_value}/100\n\n⚠️ ระบบแจ้งเตือนเท่านั้น ไม่มีการเปิดออเดอร์อัตโนมัติ"
 
 def _decision_summary(setup):
+    """Render decision trace defensively; engine traces may contain non-dict diagnostics."""
     trace=setup.get("decision_trace") or []
+    if not isinstance(trace,(list,tuple)):return f"trace=INVALID_TYPE:{type(trace).__name__}"
     if not trace:return "trace=NONE"
     parts=[]
     for r in trace:
-        status="PASS" if r.get("status")=="PASS" else "FAIL";reason=",".join(r.get("rejection_reasons") or []);score=(r.get("score_detail") or {}).get("score");suffix=f" score={score}" if score is not None else f" reason={reason or '-'}";parts.append(f"{r.get('engine')}:{r.get('direction')}:{status}{suffix}")
+        if not isinstance(r,dict):
+            parts.append(f"trace_item={str(r)[:200]}")
+            continue
+        status="PASS" if r.get("status")=="PASS" else "FAIL"
+        reasons=r.get("rejection_reasons") or []
+        if isinstance(reasons,(list,tuple)):reason=",".join(str(x) for x in reasons)
+        else:reason=str(reasons)
+        score_detail=r.get("score_detail") or {}
+        score=score_detail.get("score") if isinstance(score_detail,dict) else None
+        suffix=f" score={score}" if score is not None else f" reason={reason or '-'}"
+        parts.append(f"{r.get('engine','UNKNOWN')}:{r.get('direction','UNKNOWN')}:{status}{suffix}")
     return " | ".join(parts)
 
 def scan_once(symbol="BTC"):
