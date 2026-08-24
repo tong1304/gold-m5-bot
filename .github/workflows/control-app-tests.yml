@@ -1,0 +1,19 @@
+name: Control App Tests
+
+on:
+  push:
+    branches: [control-backtest-app]
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m pip install --upgrade pip
+      - run: pip install -r control_app/requirements.txt
+      - run: pytest -q tests/control_app
