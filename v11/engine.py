@@ -5,12 +5,13 @@ from .data_quality import validate_frame
 from .risk import calculate as calculate_risk, MIN_RISK_REWARD as _MIN_RISK_REWARD, min_rr_for_strategy
 from .regime import classify_regime
 from .strategy_engine import evaluate_all_allowed_with_trace, enrich_selected
+from .btc_engines import evaluate_btc_engines
 from .setup_state import SetupState, can_emit_entry
 from .decision_priority import choose_priority_setup, signal_reason
-ENGINE_VERSION="12.2-MTF-H1-HARD-GATE-M15-M5-REGIME-8-ENGINE-REENTRY"
+ENGINE_VERSION="12.3-MTF-H1-HARD-GATE-M15-M5-BTC-B1-B3"
 FORWARD_BARS=12
 MIN_RISK_REWARD=_MIN_RISK_REWARD;RISK_REWARD=MIN_RISK_REWARD
-BTC_STRATEGIES=("E1_TREND","E2_TREND_PULLBACK","E3_BREAKOUT","E4_BREAKOUT_RETEST","E5_MOMENTUM","E6_MEAN_REVERSION","E7_LIQUIDITY_REVERSAL","E8_RANGE");GOLD_STRATEGIES=BTC_STRATEGIES
+BTC_STRATEGIES=("E1_TREND","E2_TREND_PULLBACK","E3_BREAKOUT","E4_BREAKOUT_RETEST","E5_MOMENTUM","E6_MEAN_REVERSION","E7_LIQUIDITY_REVERSAL","E8_RANGE","B1_RANGE_SWEEP_DISPLACEMENT","B2_HTF_ZONE_M5_FVG_RETEST","B3_VOLATILITY_EXPANSION_BREAKOUT_RETEST");GOLD_STRATEGIES=BTC_STRATEGIES
 
 
 def detect_m5_trend(m5):
@@ -55,15 +56,19 @@ def analyze(m5,m15=None,symbol=None,index=None,setup_state=None,h1=None):
         return _finalize({**base,"valid":False,"signal":"NO_TRADE","strategy":"NONE","regime":None,"allowed_engines":[],"rejection_reasons":q5+q15+q1,"trade_levels":{"valid":False},"data_quality":{"m5":q5,"m15":q15,"h1":q1}})
     regime=classify_regime(m5,m15,h1)
     base.update({"regime":regime,"m5_trend":detect_m5_trend(m5),"h1_bias":regime.get("h1_bias"),"h1_gate":regime.get("h1_gate"),"m15_regime":regime.get("m15_regime"),"allowed_engines":regime.get("allowed_engines",[])})
-    if regime.get("regime")=="CONFLICT":
-        return _finalize({**base,"valid":False,"signal":"NO_TRADE","strategy":"NONE","setup_candidates":[],"selected_setup":None,"rejection_reasons":[regime.get("reason","MTF_FILTER_CONFLICT")],"trade_levels":{"valid":False},"decision_trace":[]})
-    candidates,trace=evaluate_all_allowed_with_trace(m5,regime)
+    candidates=[];trace=[]
+    if str(symbol or "").upper() in ("BTC","BTC/USD","BTC/USDT"):
+        btc_candidates,btc_trace=evaluate_btc_engines(m5,m15,h1)
+        candidates.extend(btc_candidates);trace.extend(btc_trace)
+        base["allowed_engines"]=["B1","B2","B3"]+list(dict.fromkeys(base.get("allowed_engines",[])))
+    if regime.get("regime")=="CONFLICT" and not candidates:
+        return _finalize({**base,"valid":False,"signal":"NO_TRADE","strategy":"NONE","setup_candidates":[],"selected_setup":None,"rejection_reasons":[regime.get("reason","MTF_FILTER_CONFLICT")],"trade_levels":{"valid":False},"decision_trace":trace})
+    legacy_candidates,legacy_trace=evaluate_all_allowed_with_trace(m5,regime)
+    candidates.extend(legacy_candidates);trace.extend(legacy_trace)
     base["decision_trace"]=trace
     if not candidates:
         return _finalize({**base,"valid":False,"signal":"NO_TRADE","strategy":"NONE","setup_candidates":[],"selected_setup":None,"rejection_reasons":["NO_ALLOWED_ENGINE_SETUP"],"trade_levels":{"valid":False}})
 
-    # Explicit V12.2 priority gate: E7 > E4 > E1 > E2 > E5 > E3 > E6 > E8.
-    # Strategy quality never allows a lower-priority engine to jump the queue.
     selected_candidate=choose_priority_setup(candidates)
     selected=enrich_selected(selected_candidate,symbol,regime["regime"],str(m5.iloc[-1].get("datetime","")))
     score=selected.get("score_detail",{})
@@ -73,6 +78,8 @@ def analyze(m5,m15=None,symbol=None,index=None,setup_state=None,h1=None):
     state=setup_state if isinstance(setup_state,SetupState) else SetupState()
     max_reentries=int(os.getenv("MAX_REENTRIES_PER_SETUP","2"))
     emit,entry_type=can_emit_entry(state,selected["setup_id"],selected["trigger_id"],max_reentries=max_reentries)
+    if selected.get("entry_type_hint") in ("BUY_LIMIT","SELL_LIMIT"):
+        entry_type=selected["entry_type_hint"]
     if not emit:
         return _finalize({**base,"valid":False,"signal":"NO_TRADE","entry_type":entry_type,"rejection_reasons":[entry_type],"trade_levels":{"valid":False}})
     strategy=selected["strategy"]
