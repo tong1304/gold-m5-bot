@@ -14,12 +14,32 @@ SUPPORTED_SYMBOLS=("BTC","GOLD");_SCAN_LOCK=threading.Lock()
 def _normalize(raw,symbol,timeframe="5m"):
     rows=raw.get("data") if isinstance(raw,dict) else raw
     if isinstance(rows,dict):rows=rows.get("data") or rows.get("rows")
-    if not isinstance(rows,(list,tuple)):raise RuntimeError(f"LSE_INVALID_RESPONSE:{symbol}:{timeframe}")
-    frame=pd.DataFrame(rows)
+    if not isinstance(rows,(list,tuple)):
+        raise RuntimeError(f"LSE_INVALID_RESPONSE:{symbol}:{timeframe}")
+    # LSE vault responses can contain day/session marker rows (for example
+    # {"day":"2026-08-22"}) on closed GOLD sessions. Those are metadata,
+    # not candles. Drop them before constructing the OHLC frame so a weekend
+    # marker cannot make the whole MTF request look malformed.
+    candle_rows=[];metadata_rows=0
+    for row in rows:
+        if not isinstance(row,dict):
+            continue
+        keys=set(row)
+        has_ohlc={"open","high","low","close"}.issubset(keys)
+        has_time=bool(keys.intersection({"datetime","timestamp","time","date"}))
+        if has_ohlc and has_time:
+            candle_rows.append(row)
+        else:
+            metadata_rows+=1
+    if not candle_rows:
+        raise RuntimeError(f"LSE_INVALID_RESPONSE:{symbol}:{timeframe}:no_candle_rows:metadata_rows={metadata_rows}")
+    frame=pd.DataFrame(candle_rows)
     for candidate in ("timestamp","time","date"):
-        if "datetime" not in frame.columns and candidate in frame.columns:frame=frame.rename(columns={candidate:"datetime"})
+        if "datetime" not in frame.columns and candidate in frame.columns:
+            frame=frame.rename(columns={candidate:"datetime"})
     missing=[c for c in ("datetime","open","high","low","close") if c not in frame.columns]
-    if missing:raise RuntimeError(f"LSE_INVALID_RESPONSE:{symbol}:{timeframe}:missing={missing}")
+    if missing:
+        raise RuntimeError(f"LSE_INVALID_RESPONSE:{symbol}:{timeframe}:missing={missing}")
     frame["datetime"]=pd.to_datetime(frame["datetime"],utc=True,errors="coerce")
     for c in ("open","high","low","close"):frame[c]=pd.to_numeric(frame[c],errors="coerce")
     frame=frame.dropna(subset=["datetime","open","high","low","close"]).sort_values("datetime").drop_duplicates("datetime",keep="last").reset_index(drop=True)
