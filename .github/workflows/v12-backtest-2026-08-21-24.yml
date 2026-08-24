@@ -5,6 +5,8 @@ on:
     paths:
       - 'scripts/run_v12_backtest.py'
       - 'v11/replay_m5.py'
+      - 'replay_web.py'
+      - 'statistics_page.py'
       - '.github/workflows/v12-backtest-2026-08-21-24.yml'
   workflow_dispatch:
 
