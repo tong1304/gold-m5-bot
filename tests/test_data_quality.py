@@ -1,5 +1,3 @@
-from datetime import timezone
-
 import pandas as pd
 
 from v11.data_quality import validate_frame
