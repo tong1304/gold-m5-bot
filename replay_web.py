@@ -24,8 +24,7 @@ def _fetch_history(symbol,timeframe,start,end,progress=None):
         try:
             raw=client.candles(market,timeframe,start=api_start,end=api_end,limit=1000,order="asc");rows=raw.get("data") if isinstance(raw,dict) else raw
             if isinstance(rows,dict):rows=rows.get("data") or rows.get("rows")
-            if not isinstance(rows,(list,tuple)):
-                raise ValueError("response is not a row list")
+            if not isinstance(rows,(list,tuple)):raise ValueError("response is not a row list")
             frame=pd.DataFrame(rows)
             for candidate in ("timestamp","time","date"):
                 if "datetime" not in frame.columns and candidate in frame.columns:frame=frame.rename(columns={candidate:"datetime"})
@@ -44,7 +43,7 @@ def _fetch_history(symbol,timeframe,start,end,progress=None):
     frame=pd.concat(frames,ignore_index=True).sort_values("datetime").drop_duplicates("datetime",keep="last").reset_index(drop=True)
     target=frame[(frame["datetime"]>=start)&(frame["datetime"]<end)].copy()
     if timeframe=="5m" and target.empty:raise RuntimeError(f"NO_TARGET_HISTORICAL_M5:{symbol}:{start.isoformat()}:{end.isoformat()}")
-    return frame,{"timeframe":timeframe,"historical_rows":len(frame),"target_rows":len(target),"warmup_bars":warmup_bars,"api_start":days[0],"api_end":days[-1],"calendar_days_requested":int((last-day if False else pd.Timestamp(last_day)-pd.Timestamp(first_day)).days)+1,"calendar_days_fetched":len(days),"skipped_days":skipped_days,"skipped_day_count":len(skipped_days)}
+    return frame,{"timeframe":timeframe,"historical_rows":len(frame),"target_rows":len(target),"warmup_bars":warmup_bars,"api_start":days[0],"api_end":days[-1],"calendar_days_requested":int((pd.Timestamp(last_day)-pd.Timestamp(first_day)).days)+1,"calendar_days_fetched":len(days),"skipped_days":skipped_days,"skipped_day_count":len(skipped_days)}
 def _worker(symbols,start,end,start_label,end_label):
     try:
         from v11.replay_m5 import replay_frames
