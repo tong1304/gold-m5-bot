@@ -1,17 +1,16 @@
-STRATEGY_CATALOG = {
-    "BTC": {
-        "TREND_PULLBACK": {"lookback_m5": 60, "conditions": "EMA20/EMA50 alignment; EMA20 pullback within 12 M5 candles"},
-        "BREAKOUT_RETEST": {"lookback_m5": 60, "conditions": "20-bar breakout; directional breakout candle; retest of breakout level"},
-        "RANGE_BREAKOUT": {"lookback_m5": 31, "conditions": "20-bar range break; directional candle; body ratio >= 0.30"},
-        "MOMENTUM": {"lookback_m5": 25, "conditions": "5-bar momentum move exceeds ATR14; directional candle; body ratio >= 0.45"},
-        "VOLATILITY_BREAKOUT": {"lookback_m5": 50, "conditions": "ATR14 >= 1.25x median ATR30; 20-bar breakout; directional candle"},
+STRATEGY_CATALOG={
+    "BTC":{
+        "TREND_PULLBACK":{"lookback_m5":"dynamic<=100","conditions":"M15 HH/HL or LH/LL trend; EMA20/50 direction filter; pullback into structural/EMA safe zone; confirmed candle break; structural SL; nearest opposing structure must allow >=2R"},
+        "BREAKOUT_RETEST":{"lookback_m5":"dynamic<=100","conditions":"Repeated structural S/R level; close-confirmed breakout; retest of level; confirmed candle; structural SL; nearest opposing structure must allow >=2R"},
+        "LIQUIDITY_SWEEP":{"lookback_m5":"dynamic<=100","conditions":"Latest confirmed swing liquidity; sweep beyond level and close back inside; next closed candle confirms reclaim; structural SL; opposing liquidity/structure must allow >=2R"},
+        "VWAP_MOMENTUM_PULLBACK":{"lookback_m5":"dynamic<=100","conditions":"Session VWAP slope; momentum expansion; pullback to VWAP; confirmed candle continuation; structural SL; opposing structure must allow >=2R"},
+        "OPENING_RANGE_BREAKOUT":{"lookback_m5":"dynamic<=100; range defined by time window","conditions":"Opening range from configurable time window; volatility-sized range; close-confirmed breakout/retest; structural SL; opposing structure must allow >=2R"},
     },
-    "GOLD": {
-        "TREND_PULLBACK": {"lookback_m5": 60, "conditions": "EMA20/EMA50 alignment; EMA20 pullback within 12 M5 candles"},
-        "BREAKOUT_RETEST": {"lookback_m5": 60, "conditions": "20-bar breakout; directional breakout candle; retest of breakout level"},
-        "EMA_PULLBACK": {"lookback_m5": 30, "conditions": "Previous M5 candle touches EMA20; current candle confirms close beyond EMA20"},
-        "LIQUIDITY_SWEEP": {"lookback_m5": 35, "conditions": "Sweep prior 12-bar high/low; rejection close back inside range"},
-        "SR_REVERSAL": {"lookback_m5": 45, "conditions": "20-bar support/resistance rejection; wick >= 1.2x body"},
-        "VOLATILITY_BREAKOUT": {"lookback_m5": 50, "conditions": "ATR14 >= 1.25x median ATR30; 20-bar breakout; directional candle; body ratio >= 0.30"},
+    "GOLD":{
+        "TREND_PULLBACK":{"lookback_m5":"dynamic<=100","conditions":"M15 HH/HL or LH/LL trend; EMA20/50 direction filter; pullback into structural/EMA safe zone; confirmed candle break; structural SL; nearest opposing structure must allow >=2R"},
+        "BREAKOUT_RETEST":{"lookback_m5":"dynamic<=100","conditions":"Repeated structural S/R level; close-confirmed breakout; retest of level; confirmed candle; structural SL; nearest opposing structure must allow >=2R"},
+        "LIQUIDITY_SWEEP":{"lookback_m5":"dynamic<=100","conditions":"Latest confirmed swing liquidity; sweep beyond level and close back inside; next closed candle confirms reclaim; structural SL; opposing liquidity/structure must allow >=2R"},
+        "VWAP_MOMENTUM_PULLBACK":{"lookback_m5":"dynamic<=100","conditions":"Session VWAP slope; momentum expansion; pullback to VWAP; confirmed candle continuation; structural SL; opposing structure must allow >=2R"},
+        "OPENING_RANGE_BREAKOUT":{"lookback_m5":"dynamic<=100; range defined by time window","conditions":"Opening range from configurable time window; volatility-sized range; close-confirmed breakout/retest; structural SL; opposing structure must allow >=2R"},
     },
 }
