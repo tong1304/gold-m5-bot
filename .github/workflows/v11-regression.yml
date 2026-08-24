@@ -24,7 +24,7 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
       - name: V11 hardening tests
-        run: pytest -q tests/test_v11_hardening.py tests/test_v11_contracts.py tests/test_multi_strategy.py
+        run: pytest -q tests/test_v11_hardening.py tests/test_v11_import_isolation.py tests/test_v11_contracts.py tests/test_multi_strategy.py
       - name: Block legacy imports in V11 engine
         run: |
           ! grep -E '(^|[[:space:]])(import|from) (engine_v9|engine_v9_2|engine_v10|engine_v5|validate_v5|replay_signal_history_v10)' v11/engine.py
