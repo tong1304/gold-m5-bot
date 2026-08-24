@@ -25,14 +25,13 @@ def analyze(m5,m15,symbol,index=None,setup_state=None):
     regime=classify_regime(m5,m15);base.update({"regime":regime,"m15_trend":detect_m15_trend(m15),"allowed_engines":regime.get("allowed_engines",[])})
     candidates=evaluate_all_allowed(m5,regime)
     if not candidates:return {**base,"valid":False,"signal":"NO_TRADE","strategy":"NONE","setup_candidates":[],"selected_setup":None,"rejection_reasons":["NO_ALLOWED_ENGINE_SETUP"],"trade_levels":{"valid":False}}
-    selected=enrich_selected(candidates[0],symbol,regime["regime"],str(m5.iloc[-1].get("datetime","")))
-    score=selected.get("score_detail",{});base.update({"setup_candidates":candidates,"selected_setup":selected,"strategy":selected["strategy"],"engine":selected["engine"],"setup_id":selected["setup_id"],"trigger_id":selected["trigger_id"],"setup_score":score})
+    selected=enrich_selected(candidates[0],symbol,regime["regime"],str(m5.iloc[-1].get("datetime","")));score=selected.get("score_detail",{})
+    base.update({"setup_candidates":candidates,"selected_setup":selected,"strategy":selected["strategy"],"engine":selected["engine"],"setup_id":selected["setup_id"],"trigger_id":selected["trigger_id"],"setup_score":score})
     if not score.get("qualified"):return {**base,"valid":False,"signal":"NO_TRADE","entry_type":None,"rejection_reasons":["SETUP_SCORE_BELOW_THRESHOLD"],"trade_levels":{"valid":False}}
     state=setup_state if isinstance(setup_state,SetupState) else SetupState();max_reentries=int(os.getenv("MAX_REENTRIES_PER_SETUP","2"));emit,entry_type=can_emit_entry(state,selected["setup_id"],selected["trigger_id"],max_reentries=max_reentries)
     if not emit:return {**base,"valid":False,"signal":"NO_TRADE","entry_type":entry_type,"rejection_reasons":[entry_type],"trade_levels":{"valid":False}}
     levels=calculate_risk(m5,selected["direction"],selected["strategy"],selected.get("evidence"),rr=MIN_RISK_REWARD)
     if not levels.get("valid") or float(levels.get("risk_reward",levels.get("effective_rr",0)) or 0)<MIN_RISK_REWARD:return {**base,"valid":False,"signal":"NO_TRADE","entry_type":entry_type,"rejection_reasons":[levels.get("reason","INVALID_RISK_OR_RR")],"trade_levels":levels}
-    state.record(selected["setup_id"],selected["trigger_id"])
     return {**base,"valid":True,"signal":selected["direction"],"direction":selected["direction"],"strategy":selected["strategy"],"engine":selected["engine"],"entry_type":entry_type,"setup_id":selected["setup_id"],"trigger_id":selected["trigger_id"],"trade_levels":levels,"risk_engine":{"method":"STRUCTURE+ATR","risk_reward":levels.get("risk_reward")},"rr_target":MIN_RISK_REWARD,"rejection_reasons":[],"data_quality":{"m5":[],"m15":[]},"setup_state":{"reentries_used":state.reentry_count(selected["setup_id"]),"max_reentries":max_reentries},"live_orders_allowed":False}
 
 analyze_structure_setup=analyze
