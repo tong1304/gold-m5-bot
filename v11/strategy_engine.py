@@ -62,10 +62,11 @@ def evaluate_strategy(engine_id,m5,context,direction):
 
 def score_setup(result,regime,rr=None):
     if result.get("status")!="PASS":return {"score":0.0,"qualified":False,"components":{}}
-    ev=result.get("evidence") or {};score=55.0;components={"setup_and_trigger":55.0}
+    ev=result.get("evidence") or {};score=55.0;components={"setup_and_trigger":55.0};engine=result.get("engine")
     if ev.get("volume_ratio",0)>=1.2:score+=10;components["volume"]=10
     if ev.get("atr_expansion",0)>=1.05:score+=10;components["volatility"]=10
-    if (result.get("engine") in ("E1","E2") and regime=="TREND") or (result.get("engine") in ("E6","E8") and regime=="RANGE") or (result.get("engine") in ("E3","E4","E7") and regime=="TRANSITION"):score+=15;components["regime_fit"]=15
+    regime_fit=(regime=="TREND" and engine in ("E1","E2","E3","E4","E5")) or (regime=="RANGE" and engine in ("E6","E7","E8")) or (regime=="TRANSITION" and engine in ("E3","E4","E7"))
+    if regime_fit:score+=15;components["regime_fit"]=15
     if rr is not None and rr>=2:score+=10;components["rr"]=10
     score=min(100.0,score);return {"score":round(score,2),"qualified":score>=70,"components":components}
 
