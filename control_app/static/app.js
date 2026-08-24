@@ -5,7 +5,7 @@ function esc(value) {
 }
 
 async function api(url, options = {}) {
-  const response = await fetch(url, {headers: {'Content-Type': 'application/json'}, ...options});
+  const response = await fetch(url, {headers: {'Content-Type': 'application/json', 'Cache-Control': 'no-cache'}, cache: 'no-store', ...options});
   const data = await response.json();
   if (!response.ok) throw new Error(data.message || data.error || `HTTP ${response.status}`);
   return data;
@@ -20,7 +20,7 @@ function setTelegram(enabled) {
 async function loadHealth() {
   const data = await api('/api/health');
   $('health').textContent = data.live_services_started ? 'LIVE SERVICES ACTIVE' : 'CONTROL APP READY';
-  setTelegram(data.telegram_enabled);
+  setTelegram(Boolean(data.telegram_enabled));
 }
 
 $('telegramToggle').addEventListener('change', async (event) => {
@@ -34,18 +34,47 @@ $('telegramToggle').addEventListener('change', async (event) => {
   }
 });
 
-function renderMetrics(stats) {
+function num(value, fallback = 0) {
+  const n = Number(value);
+  return Number.isFinite(n) ? n : fallback;
+}
+
+function normalizeStats(raw) {
+  const stats = raw && typeof raw === 'object' ? raw : {};
+  return {
+    total_trades: num(stats.total_trades),
+    wins: num(stats.wins),
+    losses: num(stats.losses),
+    be: num(stats.be),
+    win_rate: num(stats.win_rate),
+    net_r: num(stats.net_r),
+    average_r: num(stats.average_r),
+    profit_factor: stats.profit_factor == null ? null : num(stats.profit_factor),
+    max_drawdown_r: num(stats.max_drawdown_r),
+    strategy_breakdown: stats.strategy_breakdown || {},
+    side_breakdown: stats.side_breakdown || {},
+  };
+}
+
+function renderMetrics(rawStats) {
+  const stats = normalizeStats(rawStats);
   const cards = [
-    ['Total Trades', stats.total_trades], ['Wins', stats.wins], ['Losses', stats.losses],
-    ['BE', stats.be], ['Win Rate', `${stats.win_rate}%`], ['Net Result', `${stats.net_r} R`],
-    ['Average R', stats.average_r], ['Profit Factor', stats.profit_factor ?? '—'], ['Max Drawdown', `${stats.max_drawdown_r} R`]
+    ['Total Trades', stats.total_trades],
+    ['Wins', stats.wins],
+    ['Losses', stats.losses],
+    ['BE', stats.be],
+    ['Win Rate', `${stats.win_rate}%`],
+    ['Net Result', `${stats.net_r} R`],
+    ['Average R', stats.average_r],
+    ['Profit Factor', stats.profit_factor == null ? '—' : stats.profit_factor],
+    ['Max Drawdown', `${stats.max_drawdown_r} R`]
   ];
   $('metrics').innerHTML = cards.map(([name, value]) => `<div class="metric"><span>${esc(name)}</span><strong>${esc(value)}</strong></div>`).join('');
 }
 
 function renderBreakdown(target, data) {
   const entries = Object.entries(data || {});
-  target.innerHTML = entries.length ? `<table class="compact"><thead><tr><th>Name</th><th>Trades</th><th>Win%</th><th>Net R</th></tr></thead><tbody>${entries.map(([name, v]) => `<tr><td>${esc(name)}</td><td>${v.trades}</td><td>${v.win_rate}%</td><td>${v.net_r}</td></tr>`).join('')}</tbody></table>` : '<p class="muted">ยังไม่มี trade</p>';
+  target.innerHTML = entries.length ? `<table class="compact"><thead><tr><th>Name</th><th>Trades</th><th>Win%</th><th>Net R</th></tr></thead><tbody>${entries.map(([name, v]) => `<tr><td>${esc(name)}</td><td>${num(v.trades)}</td><td>${num(v.win_rate)}%</td><td>${num(v.net_r)}</td></tr>`).join('')}</tbody></table>` : '<p class="muted">ยังไม่มี trade</p>';
 }
 
 function renderTrades(trades) {
@@ -53,14 +82,15 @@ function renderTrades(trades) {
 }
 
 function renderResult(run) {
-  const result = run.result || {};
-  const stats = result.statistics || {};
+  const result = run.result && typeof run.result === 'object' ? run.result : {};
+  const stats = normalizeStats(result.statistics || result.performance || run.statistics || run.summary);
+  const engineVersion = result.engine_version || run.engine_version || 'V12.9';
   $('statistics').classList.remove('hidden');
-  $('runMeta').textContent = `${run.symbol} · ${run.start_time} → ${run.end_time} · ${run.engine_version}`;
+  $('runMeta').textContent = `${run.symbol || result.symbol || ''} · ${run.start_time || result.start_time || ''} → ${run.end_time || result.end_time || ''} · ${engineVersion}`;
   renderMetrics(stats);
   renderBreakdown($('strategies'), stats.strategy_breakdown);
   renderBreakdown($('sides'), stats.side_breakdown);
-  renderTrades(result.trades);
+  renderTrades(result.trades || run.trades || []);
 }
 
 async function pollRun(runId) {
@@ -78,7 +108,11 @@ $('backtestForm').addEventListener('submit', async (event) => {
   $('runButton').disabled = true;
   $('backtestMessage').textContent = 'กำลังเริ่ม Backtest…';
   try {
-    const data = await api('/api/backtest', {method: 'POST', body: JSON.stringify({symbol: $('symbol').value, start: $('start').value, end: $('end').value})});
+    const start = $('start').value;
+    const end = $('end').value;
+    if (!start || !end) throw new Error('กรุณาเลือกวันที่เริ่มต้นและสิ้นสุด');
+    if (end < start) throw new Error('วันที่สิ้นสุดต้องไม่ก่อนวันที่เริ่มต้น');
+    const data = await api('/api/backtest', {method: 'POST', body: JSON.stringify({symbol: $('symbol').value, start, end})});
     await pollRun(data.run_id);
   } catch (error) {
     $('backtestMessage').textContent = `เกิดข้อผิดพลาด: ${error.message}`;
