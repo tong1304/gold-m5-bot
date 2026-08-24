@@ -48,14 +48,21 @@ def _fmt(v):
     try:return f"{float(v):,.2f}"
     except (TypeError,ValueError):return "N/A"
 
-def _live_price(symbol):
-    try:
-        import live_price;tick=live_price.get(symbol);return _fmt(tick.get("price")) if tick else "N/A"
-    except Exception:return "N/A"
-
 def _telegram_text(symbol,setup):
     d=setup["signal"];l=setup["trade_levels"];side="🟢 BUY — ซื้อ" if d=="BUY" else "🔴 SELL — ขาย";engine_id=setup.get("engine","NONE");entry_type=setup.get("entry_type","INITIAL")
     return (f"🚨 <b>พบสัญญาณเข้าออเดอร์ V12</b>\n\n{side}\n\n📊 <b>สินทรัพย์:</b> {symbol}\n💵 <b>ราคาปัจจุบัน:</b> {_live_price(symbol)}\n⏱ <b>กรอบเวลาเข้า:</b> M5\n🧠 <b>Regime:</b> {setup.get('regime',{}).get('regime')}\n🎯 <b>Engine:</b> {engine_id} — {setup.get('strategy')}\n🔁 <b>Entry Type:</b> {entry_type}\n🆔 <b>Setup ID:</b> {setup.get('setup_id')}\n\n💰 <b>จุดเข้า:</b> {_fmt(l['entry'])}\n🛑 <b>SL:</b> {_fmt(l['sl'])}\n🎯 <b>TP:</b> {_fmt(l['tp'])}\n📐 <b>Risk/Reward:</b> {l['risk_reward']}R\n📊 <b>Setup Score:</b> {setup.get('setup_score',{}).get('score','N/A')}/100\n\n⚠️ ระบบแจ้งเตือนเท่านั้น ไม่มีการเปิดออเดอร์อัตโนมัติ")
+
+def _decision_summary(setup):
+    trace=setup.get("decision_trace") or []
+    if not trace:return "trace=NONE"
+    parts=[]
+    for r in trace:
+        status="PASS" if r.get("status")=="PASS" else "FAIL"
+        reason=",".join(r.get("rejection_reasons") or [])
+        score=(r.get("score_detail") or {}).get("score")
+        suffix=f" score={score}" if score is not None else f" reason={reason or '-'}"
+        parts.append(f"{r.get('engine')}:{r.get('direction')}:{status}{suffix}")
+    return " | ".join(parts)
 
 def scan_once(symbol="BTC"):
     symbol=(symbol or "BTC").strip().upper()
@@ -65,13 +72,15 @@ def scan_once(symbol="BTC"):
         resolved=history.resolve_open_for_symbol(symbol,m5.to_dict("records"))
         history_rows=history.list_signals(days=3650,symbol=symbol,limit=1000);state=state_from_history(history_rows)
         setup=engine.analyze(m5,frames["15m"],symbol,len(m5)-1,setup_state=state);setup.update({"candle_time":ts,"closed_candle":ts,"symbol":symbol,"engine_version":engine.ENGINE_VERSION,"live_orders_allowed":False})
+        print(f"[V12 TRACE] {symbol} regime={setup.get('regime',{}).get('regime')} allowed={','.join(setup.get('allowed_engines') or [])} final={setup.get('signal')} reason={','.join(setup.get('rejection_reasons') or [])}")
+        print(f"[V12 TRACE] {symbol} {_decision_summary(setup)}",flush=True)
         active=history.active_for_symbol(symbol);signal=setup.get("signal");levels=setup.get("trade_levels") or {};valid=signal in ("BUY","SELL") and _levels_ready(levels,signal)
         setup["valid"]=valid;signal_id=f"V12-{symbol}-{ts.replace(':','').replace('-','').replace(' ','-')}-{signal if valid else 'NO_TRADE'}-{setup.get('trigger_id','NONE')}";setup["signal_id"]=signal_id
         if not valid:
             recorded=history.record_no_trade({**setup,"signal":"NO_TRADE","result":"NO_TRADE","created_at":datetime.now(timezone.utc).isoformat()});return {"status":"no_trade","engine_version":engine.ENGINE_VERSION,"symbol":symbol,"signal":"NO_TRADE","recorded":recorded,"resolved_this_scan":resolved,**setup}
         same_setup_active=any((json_load(r.get("payload_json"),"setup_id") or r.get("setup_key"))==setup.get("setup_id") for r in active)
         if active and not same_setup_active:
-            return {"status":"active_signal_locked","reason":"DIFFERENT_SETUP_ALREADY_ACTIVE","engine_version":engine.ENGINE_VERSION,"symbol":symbol,"active_signals":[{"signal_id":r["signal_id"],"direction":r["direction"],"strategy":json_load(r.get("payload_json"),"strategy"),"setup_id":json_load(r.get("payload_json"),"setup_id"),"entry":r["entry"],"sl":r["sl"],"tp":r["tp"]} for r in active],"resolved_this_scan":resolved,"setup":setup,"live_orders_allowed":False}
+            return {"status":"active_signal_locked","reason":"DIFFERENT_SETUP_ALREADY_ACTIVE","engine_version":engine.ENGINE_VERSION,"symbol":symbol,"active_signals":[{"signal_id":r["signal_id"],"direction":r["direction"],"strategy":json_load(r.get("payload_json"),"strategy"),"setup_id":json_load(r.get("payload_json"),"setup_id),"entry":r["entry"],"sl":r["sl"],"tp":r["tp"]} for r in active],"resolved_this_scan":resolved,"setup":setup,"live_orders_allowed":False}
         payload={**setup,"signal_id":signal_id,"setup_key":setup.get("setup_id"),"replay":False,"created_at":datetime.now(timezone.utc).isoformat()};recorded=history.record_signal(payload)
         if not recorded:return {"status":"duplicate_suppressed","reason":"HISTORY_INSERT_REJECTED","engine_version":engine.ENGINE_VERSION,"signal":signal,"signal_id":signal_id}
         telegram=send_telegram(_telegram_text(symbol,setup));return {"status":"signal_sent" if telegram.get("success") else "signal_recorded_telegram_failed","engine_version":engine.ENGINE_VERSION,"symbol":symbol,"signal":signal,"strategy":setup.get("strategy"),"engine":setup.get("engine"),"entry_type":setup.get("entry_type"),"setup_id":setup.get("setup_id"),"trigger_id":setup.get("trigger_id"),"signal_id":signal_id,"recorded":True,"telegram":telegram,"telegram_alert_sent":bool(telegram.get("success")),"setup":setup,"live_orders_allowed":False}
@@ -79,3 +88,8 @@ def scan_once(symbol="BTC"):
 def json_load(payload,key):
     try:return json.loads(payload or "{}").get(key)
     except Exception:return None
+
+def _live_price(symbol):
+    try:
+        import live_price;tick=live_price.get(symbol);return _fmt(tick.get("price")) if tick else "N/A"
+    except Exception:return "N/A"
