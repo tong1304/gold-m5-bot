@@ -1,7 +1,15 @@
 from __future__ import annotations
+import hashlib
 import pandas as pd
 from .common import num, ema, atr14, structure, candle_metrics
 ENGINE_NAMES={"E1":"TREND","E2":"TREND_PULLBACK","E3":"BREAKOUT","E4":"BREAKOUT_RETEST","E5":"MOMENTUM","E6":"MEAN_REVERSION","E7":"LIQUIDITY_REVERSAL","E8":"RANGE"}
+def _stable_id(prefix,*parts):
+    raw="|".join("" if p is None else str(p).strip() for p in parts)
+    return f"{prefix}-{hashlib.sha1(raw.encode('utf-8')).hexdigest()[:16]}"
+def build_setup_id(symbol,regime,engine_id,direction,anchor):
+    return _stable_id("SETUP",symbol,regime,engine_id,direction,round(float(anchor),8) if anchor is not None else "NA")
+def build_trigger_id(engine_id,direction,candle_time,trigger_signature):
+    return _stable_id("TRIGGER",engine_id,direction,candle_time,trigger_signature)
 def _atr(x):
     a=atr14(x).dropna();return num(a.iloc[-1]) if len(a) else num((x.high-x.low).tail(14).mean(),1e-12)
 def _pivots(x):
