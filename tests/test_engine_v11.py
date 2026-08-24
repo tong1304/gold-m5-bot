@@ -23,4 +23,4 @@ def test_engine_keeps_structure_risk_contract():
     result = engine.analyze(candles(140, drift=0.12), candles(120, drift=0.20), "BTC", index=None)
     assert "trade_levels" in result
     if result["trade_levels"].get("valid"):
-        assert result["trade_levels"]["rr"] >= engine.MIN_RISK_REWARD
+        assert result["trade_levels"]["risk_reward"] >= engine.MIN_RISK_REWARD
