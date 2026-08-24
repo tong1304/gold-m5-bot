@@ -26,12 +26,12 @@ _STARTED_AT = None
 _STATE_SINCE = None
 _LOOP_STATE = "stopped"
 _RESTART_COUNT = 0
+_HISTORICAL_READY = {}
+_LAST_HEARTBEAT = 0.0
 
-# A websocket can stay inside connect() without raising an exception.  That
-# previously made the worker look alive while no connection/tick ever arrived.
-# Force a reconnect when the connection state does not advance in time.
 CONNECT_TIMEOUT_SECONDS = max(10.0, float(os.getenv("LIVE_PRICE_CONNECT_TIMEOUT_SECONDS", "30")))
 AUTH_TICK_TIMEOUT_SECONDS = max(15.0, float(os.getenv("LIVE_PRICE_AUTH_TICK_TIMEOUT_SECONDS", "45")))
+HEARTBEAT_SECONDS = max(10.0, float(os.getenv("LIVE_PRICE_HEARTBEAT_SECONDS", "30")))
 
 
 def _api_key():
@@ -95,7 +95,7 @@ def _on_connected(*_args):
     with _LOCK:
         _CONNECTED = True
         _set_state("connected_waiting_for_authentication")
-    logger.info("[LIVE PRICE] CONNECTED")
+    logger.warning("[LIVE PRICE] CONNECTED")
 
 
 def _on_authenticated(*_args):
@@ -104,7 +104,7 @@ def _on_authenticated(*_args):
         _AUTHENTICATED = True
         _CONNECTED = True
         _set_state("authenticated_waiting_for_tick")
-    logger.info("[LIVE PRICE] AUTHENTICATED; subscriptions=%s", ", ".join(SYMBOLS))
+    logger.warning("[LIVE PRICE] AUTHENTICATED; subscriptions=%s", ", ".join(SYMBOLS))
 
 
 def _on_disconnected(*_args):
@@ -124,8 +124,44 @@ def _on_error(error):
     logger.error("[LIVE PRICE] ERROR: %s", error)
 
 
+def _probe_historical_data():
+    """One-shot startup probe for the same LSE REST feed used by V11 scans."""
+    global _HISTORICAL_READY
+    key = _api_key()
+    if not key:
+        logger.error("[LIVE PRICE] Startup REST probe skipped: LSE_API_KEY is not configured")
+        return {symbol: False for symbol in SYMBOLS}
+    results = {}
+    client = None
+    try:
+        client = LSE(api_key=key)
+        end = datetime.now(timezone.utc).date().isoformat()
+        start = (datetime.now(timezone.utc).date()).isoformat()
+        for symbol in SYMBOLS:
+            try:
+                rows = client.candles(symbol, "5m", start=start, end=end, limit=3, order="desc")
+                ok = bool(rows and isinstance(rows, (list, tuple)))
+                results[symbol] = ok
+                logger.warning("[LIVE PRICE] REST probe %s=%s rows=%s", symbol, "READY" if ok else "EMPTY", len(rows) if isinstance(rows, (list, tuple)) else 0)
+            except Exception as exc:
+                results[symbol] = False
+                logger.error("[LIVE PRICE] REST probe %s FAILED: %s", symbol, exc)
+    except Exception as exc:
+        logger.exception("[LIVE PRICE] REST probe client creation failed")
+        results = {symbol: False for symbol in SYMBOLS}
+    finally:
+        try:
+            if client is not None:
+                client.disconnect()
+        except Exception:
+            pass
+    with _LOCK:
+        _HISTORICAL_READY = dict(results)
+    return results
+
+
 def _stream_loop():
-    global _CLIENT, _LAST_ERROR, _CONNECTED, _AUTHENTICATED
+    global _CLIENT, _LAST_ERROR, _CONNECTED, _AUTHENTICATED, _LAST_HEARTBEAT
     with _LOCK:
         _set_state("starting")
     logger.warning("[LIVE PRICE] Worker thread entered")
@@ -155,9 +191,10 @@ def _stream_loop():
                 _CONNECTED = False
                 _AUTHENTICATED = False
                 _set_state("connecting")
+                _LAST_HEARTBEAT = time.monotonic()
             logger.warning("[LIVE PRICE] Connecting LSE WebSocket: %s", ", ".join(SYMBOLS))
-            # lse-data 0.14 supports connect(symbols=[...]) and emits
-            # connected/authenticated/tick events on this same client.
+            # lse-data 0.14 callback API: connect(symbols=[...]) blocks while
+            # the websocket is active and emits connected/authenticated/tick.
             client.connect(symbols=list(SYMBOLS))
             if _RUNNING:
                 with _LOCK:
@@ -206,10 +243,11 @@ def _watchdog_loop():
             alive = bool(_THREAD and _THREAD.is_alive())
             state_age = _state_age()
             last_age = _age_seconds(_LAST_TICK_AT) if _LAST_TICK_AT else None
+            now = time.monotonic()
+            if alive and now - _LAST_HEARTBEAT >= HEARTBEAT_SECONDS:
+                _LAST_HEARTBEAT = now
+                logger.warning("[LIVE PRICE] Heartbeat state=%s connected=%s authenticated=%s ticks=%s state_age=%.1fs last_tick_age=%s", _LOOP_STATE, _CONNECTED, _AUTHENTICATED, _TICKS_RECEIVED, state_age or 0.0, "none" if last_age is None else f"{last_age:.1f}s")
 
-            # The critical fix: connect() can block while the thread remains
-            # alive.  If no connected/authenticated/tick progress occurs within
-            # the timeout, forcibly disconnect and recreate the worker.
             if not alive:
                 restart = True
                 reason = "worker_not_alive"
@@ -315,6 +353,7 @@ def status():
         started_at = _STARTED_AT
         loop_state = _LOOP_STATE
         restart_count = _RESTART_COUNT
+        historical_ready = dict(_HISTORICAL_READY)
     return {
         "running": running,
         "connected": connected,
@@ -336,6 +375,7 @@ def status():
         "auth_tick_timeout_seconds": AUTH_TICK_TIMEOUT_SECONDS,
         "restart_count": restart_count,
         "started_at": started_at,
+        "historical_data_ready": historical_ready,
     }
 
 
@@ -349,3 +389,8 @@ def get(symbol):
     if value:
         return _decorate(value)
     return None
+
+
+def startup_probe():
+    """Run once at application startup and return REST readiness per symbol."""
+    return _probe_historical_data()
