@@ -13,7 +13,7 @@ def _json_safe(value):
     except Exception:pass
     try:return _json_safe(value.tolist())
     except Exception:return str(value)
-def _json_response(payload,status=200):return Response(json.dumps(_json_safe(payload),ensure_ascii=False,allow_nan=False),status=status,mimetype="application/json")
+def _json_response(payload,status=200):return Response(json.dumps(_json_safe(payload),ensure_ascii=False,allow_nan=False),status=status,mimetype="application/json",headers={"Cache-Control":"no-store"})
 def _acquire_scheduler_lock():
     try:
         fd=os.open(SCHEDULER_LOCK_FILE,os.O_CREAT|os.O_EXCL|os.O_WRONLY);os.write(fd,str(os.getpid()).encode());os.close(fd);return True
@@ -54,6 +54,13 @@ def _start_runtime_services():
 def ensure_runtime_services():
     try:_start_runtime_services()
     except Exception:logger.exception("[V11 STARTUP] ensure_runtime_services failed")
+@app.route("/health")
+def health_check():
+    # Deliberately shallow: Render health checks should not trigger LSE/API/DB work.
+    return _json_response({"status":"ok","service":"gold-m5-bot","engine_version":v11_engine.ENGINE_VERSION})
+@app.route("/ping")
+def ping():
+    return Response("pong",mimetype="text/plain",headers={"Cache-Control":"no-store"})
 @app.route("/")
 def health():
     try:import live_price;live=live_price.status()
