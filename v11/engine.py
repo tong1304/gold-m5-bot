@@ -1,15 +1,16 @@
 from __future__ import annotations
 import pandas as pd
-from .common import num, atr14, ema, structure
-from .contracts import StrategyResult
+from .common import num, ema, structure
+from .data_quality import validate_frame
+from .risk import calculate as calculate_risk, MIN_RISK_REWARD as V11_MIN_RR
 from .strategies.btc import REGISTRY as BTC_REGISTRY
 from .strategies.gold import REGISTRY as GOLD_REGISTRY
-from engine_v9_standalone import send_telegram
+from .selection import select
 
-ENGINE_VERSION="11.0-M5-M15-STRATEGY-SPLIT"
+ENGINE_VERSION="11.1-HARDENED"
 FORWARD_BARS=12
-MIN_RISK_REWARD=2.0
-RISK_REWARD=2.0
+MIN_RISK_REWARD=V11_MIN_RR
+RISK_REWARD=V11_MIN_RR
 BTC_STRATEGIES=tuple(BTC_REGISTRY)
 GOLD_STRATEGIES=tuple(GOLD_REGISTRY)
 
@@ -29,50 +30,37 @@ def detect_m5_direction(m5):
     if c<e9<e21:return "SELL"
     return "NEUTRAL"
 
-def _risk_levels(m5,direction,strategy,evidence):
-    x=m5.tail(30).reset_index(drop=True); entry=num(x.close.iloc[-1]); a=num(atr14(x).iloc[-1])
-    if entry<=0 or a<=0:return {"valid":False,"reason":"ATR_UNAVAILABLE"}
-    s=structure(x,25); raw=evidence.get("support") if direction=="BUY" else evidence.get("resistance")
-    if raw is None:raw=s["support"] if direction=="BUY" else s["resistance"]
-    if direction=="BUY":sl=min(num(raw)-a*.10,entry-a*.80); risk=entry-sl; tp=entry+2*risk
-    else:sl=max(num(raw)+a*.10,entry+a*.80); risk=sl-entry; tp=entry-2*risk
-    if risk<=0 or tp<=0:return {"valid":False,"reason":"INVALID_RISK"}
-    rr=abs(tp-entry)/risk
-    return {"valid":rr>=2.0,"entry":entry,"sl":sl,"tp":tp,"risk":risk,"risk_reward":round(rr,4),"effective_rr":round(rr,4),"target_rr":2.0,"strategy":strategy}
+def _freshness(m5,direction):
+    x=m5.reset_index(drop=True)
+    for i in range(min(5,len(x))):
+        row=x.iloc[-1-i]; o,h,l,c=map(float,(row.open,row.high,row.low,row.close)); rng=max(h-l,1e-12)
+        if direction=="BUY" and c>o and (c-l)/rng>=.65:return i
+        if direction=="SELL" and c<o and (h-c)/rng>=.65:return i
+    return 5
 
-def _candidate_directions(m5,strategy):
-    """Return both directional hypotheses so each strategy owns its setup decision.
-
-    The previous implementation used one generic M5 direction as a gate. That
-    caused a valid strategy setup to become NOT_APPLICABLE whenever the generic
-    structure/EMA detector was neutral or pointed the other way. V11 is
-    strategy-split, so every registered strategy must be allowed to inspect
-    BUY and SELL independently; the strategy itself decides which side passes.
-    We still evaluate the generic M5 direction first for efficiency, then the
-    opposite side if needed.
-    """
-    d=detect_m5_direction(m5)
-    if d=="BUY": return ["BUY","SELL"]
-    if d=="SELL": return ["SELL","BUY"]
-    return ["BUY","SELL"]
+def _enrich(result,m5,direction):
+    d=result.as_dict()
+    if result.status=="PASS":
+        ev=dict(result.evidence or {}); freshness=int(result.freshness_bars or ev.get("freshness_bars",_freshness(m5,direction))); quality=float(result.quality or ev.get("quality",55.0)); d.update({"freshness_bars":freshness,"quality":quality})
+    return d
 
 def analyze(m5,m15,symbol,index=None):
     if index is not None:m5=m5.iloc[:index+1].reset_index(drop=True)
-    if len(m5)<60 or len(m15)<60:return {"engine_version":ENGINE_VERSION,"valid":False,"signal":"NO_TRADE","strategy":"NONE","rejection_reasons":["INSUFFICIENT_CONTEXT"],"trade_levels":{"valid":False}}
-    registry=get_strategy_registry(symbol); m15_trend=detect_m15_trend(m15); m5_direction=detect_m5_direction(m5); candidates=[]; passes=[]
+    m5=m5.reset_index(drop=True); m15=m15.reset_index(drop=True); q5=validate_frame(m5,minimum=60,timeframe_minutes=5); q15=validate_frame(m15,minimum=60,timeframe_minutes=15)
+    if q5 or q15:return {"engine_version":ENGINE_VERSION,"symbol":symbol,"valid":False,"signal":"NO_TRADE","strategy":"NONE","rejection_reasons":q5+q15,"trade_levels":{"valid":False},"data_quality":{"m5":q5,"m15":q15},"live_orders_allowed":False}
+    registry=get_strategy_registry(symbol); m15_trend=detect_m15_trend(m15); m5_direction=detect_m5_direction(m5); candidates=[]; passes=[]; directions=[m5_direction,"SELL" if m5_direction=="BUY" else "BUY"] if m5_direction in ("BUY","SELL") else ["BUY","SELL"]
     for name,fn in registry.items():
-        dirs=_candidate_directions(m5,name)
         best=None
-        for direction in dirs:
-            r=fn(m5,direction,{"m15":m15_trend}); best=r
-            if r.status=="PASS":break
-        candidates.append(best.as_dict())
-        if best.status=="PASS":passes.append(best)
-    aligned=[r for r in passes if r.direction==m15_trend["direction"] and m15_trend["direction"] in ("BUY","SELL")]
-    if not aligned:
+        for direction in directions:
+            result=fn(m5,direction,{"m15":m15_trend}); best=result
+            if result.status=="PASS":break
+        enriched=_enrich(best,m5,best.direction); candidates.append(enriched)
+        if best.status=="PASS":passes.append(enriched)
+    selected=select(candidates,m15_trend["direction"])
+    if not selected:
         reasons=["NO_M5_STRATEGY_SETUP"] if not passes else ["M15_TREND_NEUTRAL" if m15_trend["direction"]=="NEUTRAL" else "M5_M15_DIRECTION_MISMATCH"]
-        return {"engine_version":ENGINE_VERSION,"symbol":symbol,"valid":False,"signal":"NO_TRADE","strategy":"NONE","m5_direction":m5_direction,"m15_trend":m15_trend,"strategy_candidates":candidates,"strategy_passes":[p.as_dict() for p in passes],"rejection_reasons":reasons,"trade_levels":{"valid":False,"reason":reasons[0]}}
-    selected=aligned[0]; levels=_risk_levels(m5,selected.direction,selected.strategy,selected.evidence); valid=bool(levels.get("valid")); reasons=[] if valid else [levels.get("reason","INVALID_RISK_LEVELS")]
-    return {"engine_version":ENGINE_VERSION,"symbol":symbol,"valid":valid,"signal":selected.direction if valid else "NO_TRADE","strategy":selected.strategy,"m5_direction":selected.direction,"m15_trend":m15_trend,"strategy_candidates":candidates,"strategy_passes":[p.as_dict() for p in passes],"selected_strategy":selected.as_dict(),"rejection_reasons":reasons,"trade_levels":levels,"analysis_window":{"m5_setup_bars":50,"m15_context_bars":100}}
+        return {"engine_version":ENGINE_VERSION,"symbol":symbol,"valid":False,"signal":"NO_TRADE","strategy":"NONE","m5_direction":m5_direction,"m15_trend":m15_trend,"strategy_candidates":candidates,"strategy_passes":passes,"rejection_reasons":reasons,"trade_levels":{"valid":False,"reason":reasons[0]},"data_quality":{"m5":[],"m15":[]},"live_orders_allowed":False}
+    levels=calculate_risk(m5,selected["direction"],selected["strategy"],selected.get("evidence"),rr=MIN_RISK_REWARD); valid=bool(levels.get("valid")); reasons=[] if valid else [levels.get("reason","INVALID_RISK_LEVELS")]
+    return {"engine_version":ENGINE_VERSION,"symbol":symbol,"valid":valid,"signal":selected["direction"] if valid else "NO_TRADE","strategy":selected["strategy"],"m5_direction":m5_direction,"m15_trend":m15_trend,"strategy_candidates":candidates,"strategy_passes":passes,"selected_strategy":selected,"rejection_reasons":reasons,"trade_levels":levels,"analysis_window":{"m5_setup_bars":50,"m15_context_bars":100},"data_quality":{"m5":[],"m15":[]},"live_orders_allowed":False}
 
 analyze_structure_setup=analyze

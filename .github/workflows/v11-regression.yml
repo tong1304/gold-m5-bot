@@ -1,0 +1,35 @@
+name: V11 Hardening Regression
+
+on:
+  push:
+    branches: [main, v11-hardening]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: v11-regression-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+      - name: Python syntax check
+        run: python -m compileall -q v11 app.py live_scanner_v11.py scheduler_v11.py replay_signal_history_v11.py
+      - name: V11 hardening tests
+        run: pytest -q tests/test_v11_hardening.py tests/test_v11_import_isolation.py tests/test_v11_contracts.py tests/test_multi_strategy.py
+      - name: Block legacy imports in V11 engine
+        run: |
+          ! grep -E '(^|[[:space:]])(import|from) (engine_v9|engine_v9_2|engine_v10|engine_v5|validate_v5|replay_signal_history_v10)' v11/engine.py
+      - name: Verify live orders remain disabled
+        run: |
+          grep -R "live_orders_allowed.*False" v11 app.py live_scanner_v11.py scheduler_v11.py >/dev/null
