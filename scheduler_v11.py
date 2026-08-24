@@ -16,6 +16,7 @@ ENGINE_VERSION = v12_engine.ENGINE_VERSION
 TIMEFRAME_MODE = "MTF:H1→M15→M5"
 TIMEFRAMES = ("H1", "M15", "M5")
 BANGKOK = ZoneInfo("Asia/Bangkok")
+NEW_YORK = ZoneInfo("America/New_York")
 UTC = timezone.utc
 DISPLAY_SYMBOLS = ("BTC", "GOLD")
 _RUNNING = False
@@ -61,20 +62,33 @@ def _symbols():
 
 
 def _asset_market_status(symbol, now_utc=None):
+    """Return whether an asset is currently open for signal scanning.
+
+    GOLD session rules are evaluated in America/New_York so DST is handled
+    automatically. COMEX/spot-gold style session used by the provider is:
+      - Sunday 18:00 NY -> Friday 17:00 NY
+      - Daily maintenance break 17:00 -> 18:00 NY, Monday-Thursday
+    BTC remains open 24/7.
+    """
     now_utc = now_utc or datetime.now(UTC)
     if symbol == "BTC":
         return True, "OPEN_24_7"
-    wd = now_utc.weekday()
-    t = now_utc.time()
     if symbol != "GOLD":
         return False, "UNKNOWN_MARKET_SESSION"
+
+    ny = now_utc.astimezone(NEW_YORK)
+    wd = ny.weekday()  # Mon=0 ... Sun=6
+    minutes = ny.hour * 60 + ny.minute
+
     if wd == 5:
         return False, "WEEKEND_CLOSED"
     if wd == 6:
-        return (t.hour >= 23, "OPEN" if t.hour >= 23 else "SUNDAY_CLOSED")
+        opened = minutes >= 18 * 60
+        return opened, "OPEN" if opened else "SUNDAY_CLOSED"
     if wd == 4:
-        return (t.hour < 22, "OPEN" if t.hour < 22 else "FRIDAY_CLOSED")
-    if 22 <= t.hour < 23:
+        opened = minutes < 17 * 60
+        return opened, "OPEN" if opened else "FRIDAY_CLOSED"
+    if 17 * 60 <= minutes < 18 * 60:
         return False, "DAILY_BREAK"
     return True, "OPEN"
 
@@ -256,7 +270,11 @@ def run_scan_cycle():
         try:
             opened, session = _asset_market_status(symbol, now_utc)
             if not opened:
-                results.append({"status": "market_closed", "symbol": symbol, "session": session, "live_orders_allowed": False})
+                logger.warning(
+                    "[V12 SESSION] %s scan skipped: market closed session=%s now_bangkok=%s",
+                    symbol, session, now_bkk.strftime('%Y-%m-%d %H:%M:%S'),
+                )
+                results.append({"status": "market_closed", "symbol": symbol, "session": session, "live_orders_allowed": False, "engine_version": ENGINE_VERSION})
                 continue
             frame = live_scanner_v11._lse_frame(symbol, "5m", max(100, int(os.getenv("LIVE_SIGNAL_HISTORY", "200"))))
             if frame.empty:
