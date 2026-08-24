@@ -2,8 +2,9 @@ from __future__ import annotations
 import math
 import pandas as pd
 from .common import ema, atr14, structure
+from .h1_gate import allows_trend_direction, gate_reason
 
-# V12.1 MTF: H1 establishes big bias, M15 establishes regime, M5 triggers.
+# V12.2 MTF: H1 is a hard direction gate for Trend; M15 establishes regime; M5 triggers.
 TREND_ENGINES={"E1","E2","E5"}
 RANGE_ENGINES={"E6","E7","E8"}
 TRANSITION_ENGINES={"E3","E4","E7"}
@@ -85,7 +86,7 @@ def _classify_m15(m15):
     return {"regime":regime,"direction":direction,"adx14":adx,"di_plus":di_plus,"di_minus":di_minus,"ema20":_finite(e20.iloc[-1]),"ema50":_finite(e50.iloc[-1]),"ema200":_finite(e200.iloc[-1]),"ema20_slope_atr":_finite(slope),"ema20_flat":ema_flat,"atr14":a,"bb_width":_finite(bw.iloc[-1]) if len(bw) else None,"bb_width_lowest50":lowest50,"range_filter":range_regime,"structure":s,"trend_up":trend_up,"trend_down":trend_down,"trend_threshold_adx":TREND_ADX_THRESHOLD,"trend_ema_alignment":f"{TREND_EMA_FAST}>{TREND_EMA_SLOW}"}
 
 def classify_regime(m5,m15=None,h1=None):
-    """V12.1 MTF: H1=big bias, M15=entry regime, M5=entry trigger. All contexts are closed-candle snapshots."""
+    """V12.2 MTF: H1 hard-gates Trend direction, M15 chooses regime, M5 triggers entry."""
     x=m5.tail(100).reset_index(drop=True).copy()
     h1_bias=_mtf_trend_direction(h1)
     m15_info=_classify_m15(m15) if m15 is not None else {"regime":"UNKNOWN","direction":"NEUTRAL","reason":"M15_REQUIRED"}
@@ -93,13 +94,13 @@ def classify_regime(m5,m15=None,h1=None):
         return {"regime":"UNKNOWN","allowed_engines":[],"direction":"NEUTRAL","h1_bias":h1_bias,"m15_regime":m15_info.get("regime"),"m15_context":m15_info,"reason":"INSUFFICIENT_M5_CONTEXT"}
     regime=m15_info.get("regime","UNKNOWN")
     direction=m15_info.get("direction","NEUTRAL")
+    h1_gate={"bias":h1_bias,"mode":"HARD_GATE_TREND","directional_constraint":h1_bias if h1_bias in ("BUY","SELL") else None}
     if regime=="TREND":
-        if h1_bias in ("BUY","SELL") and direction!=h1_bias:
-            return {"regime":"CONFLICT","allowed_engines":[],"direction":"NEUTRAL","h1_bias":h1_bias,"m15_regime":regime,"m15_context":m15_info,"reason":"H1_M15_TREND_CONFLICT"}
-        if h1_bias=="NEUTRAL":
-            return {"regime":"CONFLICT","allowed_engines":[],"direction":"NEUTRAL","h1_bias":h1_bias,"m15_regime":regime,"m15_context":m15_info,"reason":"H1_BIAS_UNCONFIRMED"}
+        if h1_bias in ("BUY","SELL") and not allows_trend_direction(h1_bias,direction):
+            return {"regime":"CONFLICT","allowed_engines":[],"direction":"NEUTRAL","h1_bias":h1_bias,"h1_gate":h1_gate,"m15_regime":regime,"m15_context":m15_info,"reason":gate_reason(h1_bias,direction)}
+        # H1 NEUTRAL is intentionally not a conflict. M15/M5 are allowed to decide.
     if regime=="TRANSITION" and direction=="NEUTRAL":
         direction=_direction(x)
-    return {"regime":regime,"allowed_engines":sorted(allowed_engines_for_regime(regime)),"direction":direction,"h1_bias":h1_bias,"m15_regime":regime,"m15_context":m15_info,"m5_context_bars":min(100,len(x))}
+    return {"regime":regime,"allowed_engines":sorted(allowed_engines_for_regime(regime)),"direction":direction,"h1_bias":h1_bias,"h1_gate":h1_gate,"m15_regime":regime,"m15_context":m15_info,"m5_context_bars":min(100,len(x))}
 
 def build_regime_context(m5,m15=None,h1=None):return classify_regime(m5,m15,h1)
