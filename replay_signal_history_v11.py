@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import argparse
 import json
-from datetime import datetime, timedelta, timezone
+from datetime import timedelta
 
 import pandas as pd
 from lse import LSE
@@ -22,7 +22,7 @@ def _timestamp(value):
 
 
 def historical_window(start: str, end: str):
-    """Return the LSE fetch window: warm-up before start and exclusive end."""
+    """Return the LSE fetch window: warm-up before start and the supplied end."""
     start_ts = _timestamp(start)
     end_ts = _timestamp(end)
     if end_ts < start_ts:
@@ -33,6 +33,8 @@ def historical_window(start: str, end: str):
 def _historical_frame(symbol: str, timeframe: str, start: str, end: str):
     market = {"BTC": "BTC/USD", "GOLD": "XAU/USD"}[symbol]
     fetch_start, fetch_end = historical_window(start, end)
+    if len(end.strip()) == 10:
+        fetch_end = fetch_end + timedelta(days=1)
     client = LSE()
     raw = client.candles(
         market,
