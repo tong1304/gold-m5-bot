@@ -32,7 +32,6 @@ def _timestamp(value):
 
 
 def historical_window(start: str, end: str):
-    """Return the LSE fetch window: warm-up before start and the supplied end."""
     start_ts = _timestamp(start)
     end_ts = _timestamp(end)
     if end_ts < start_ts:
@@ -41,17 +40,14 @@ def historical_window(start: str, end: str):
 
 
 def _historical_frame(symbol: str, timeframe: str, start: str, end: str):
-    """Fetch historical candles in bounded chunks for reliable replay."""
     market = {"BTC": "BTC/USD", "GOLD": "XAU/USD"}[symbol]
     chunk_size = HISTORICAL_CHUNK_BY_TIMEFRAME[timeframe]
     fetch_start, fetch_end = historical_window(start, end)
     if len(end.strip()) == 10:
         fetch_end = fetch_end + timedelta(days=1)
-
     api_key = os.getenv("LSE_API_KEY", "").strip()
     if not api_key:
         raise RuntimeError("LSE_API_KEY_MISSING: Replay requires the same LSE_API_KEY used by Live V11")
-
     client = LSE(api_key=api_key)
     frames = []
     cursor = fetch_start
@@ -61,26 +57,15 @@ def _historical_frame(symbol: str, timeframe: str, start: str, end: str):
         chunk_no += 1
         chunk_end = min(cursor + chunk_size, fetch_end)
         _progress("fetching", symbol=symbol, timeframe=timeframe, chunk=chunk_no, total_chunks=int(total_chunks), start=cursor.isoformat(), end=chunk_end.isoformat())
-        raw = client.candles(
-            market,
-            timeframe,
-            start=cursor.date().isoformat(),
-            end=chunk_end.date().isoformat(),
-        )
+        raw = client.candles(market, timeframe, start=cursor.date().isoformat(), end=chunk_end.date().isoformat())
         frame = _normalize(raw, symbol, timeframe)
         if not frame.empty:
             frames.append(frame)
         _progress("fetched", symbol=symbol, timeframe=timeframe, chunk=chunk_no, rows=int(len(frame)))
         cursor = chunk_end
-
     if not frames:
         raise RuntimeError(f"NO_HISTORICAL_CANDLES:{symbol}:{timeframe}")
-    result = (
-        pd.concat(frames, ignore_index=True)
-        .sort_values("datetime")
-        .drop_duplicates("datetime", keep="last")
-        .reset_index(drop=True)
-    )
+    result = pd.concat(frames, ignore_index=True).sort_values("datetime").drop_duplicates("datetime", keep="last").reset_index(drop=True)
     _progress("history_ready", symbol=symbol, timeframe=timeframe, rows=int(len(result)))
     return result
 
@@ -92,14 +77,12 @@ def main():
     p.add_argument("--symbol", choices=["BTC", "GOLD", "ALL"], default="ALL")
     p.add_argument("--dry-run", action="store_true")
     args = p.parse_args()
-
     symbols = [args.symbol] if args.symbol != "ALL" else ["BTC", "GOLD"]
     reports = []
     start = _timestamp(args.start)
     end = _timestamp(args.end)
     if end < start:
         raise ValueError("วันสิ้นสุดต้องไม่น้อยกว่าวันเริ่มต้น")
-
     replay_end = end + timedelta(days=1) if len(args.end.strip()) == 10 else end
     _progress("started", symbols=symbols, start=args.start, end=args.end)
 
@@ -110,52 +93,19 @@ def main():
             m15 = _historical_frame(symbol, "15m", args.start, args.end)
             _progress("engine_started", symbol=symbol, m5_rows=int(len(m5)), m15_rows=int(len(m15)))
             report = replay.replay_frames(
-                m5,
-                m15,
-                symbol,
-                start_time=start,
-                end_time=replay_end,
-                limit=None,
+                m5, m15, symbol, start_time=start, end_time=replay_end, limit=None,
+                progress_callback=_progress,
             )
-            reports.append({
-                **report,
-                "start": args.start,
-                "end": args.end,
-                "dry_run": bool(args.dry_run),
-            })
+            reports.append({**report, "start": args.start, "end": args.end, "dry_run": bool(args.dry_run)})
             performance = report.get("performance") or {}
-            _progress(
-                "symbol_completed",
-                symbol=symbol,
-                candles=int(len(m5)),
-                trades=int(performance.get("trades", 0)),
-                wins=int(performance.get("wins", 0)),
-                losses=int(performance.get("losses", 0)),
-                open=int(performance.get("open", 0)),
-                net_r=performance.get("net_r", 0),
-            )
+            _progress("symbol_completed", symbol=symbol, candles=int(len(m5)), trades=int(performance.get("trades", 0)), wins=int(performance.get("wins", 0)), losses=int(performance.get("losses", 0)), open=int(performance.get("open", 0)), net_r=performance.get("net_r", 0))
         except Exception as exc:
-            reports.append({
-                "status": "failed",
-                "symbol": symbol,
-                "engine_version": "11.1-HARDENED",
-                "error": f"{type(exc).__name__}: {exc}",
-                "start": args.start,
-                "end": args.end,
-                "dry_run": bool(args.dry_run),
-            })
+            reports.append({"status":"failed","symbol":symbol,"engine_version":"11.1-HARDENED","error":f"{type(exc).__name__}: {exc}","start":args.start,"end":args.end,"dry_run":bool(args.dry_run)})
             _progress("symbol_failed", symbol=symbol, error=f"{type(exc).__name__}: {exc}")
 
     failed = [r for r in reports if r.get("status") == "failed"]
     status = "failed" if failed and len(failed) == len(reports) else ("partial" if failed else ("dry-run" if args.dry_run else "completed"))
-    result = {
-        "status": status,
-        "engine_version": "11.1-HARDENED",
-        "source": "LSE_HISTORICAL_OHLCV",
-        "symbols": symbols,
-        "reports": reports,
-        "live_orders_allowed": False,
-    }
+    result = {"status":status,"engine_version":"11.1-HARDENED","source":"LSE_HISTORICAL_OHLCV","symbols":symbols,"reports":reports,"live_orders_allowed":False}
     _progress("completed", status=status)
     return result
 
