@@ -41,6 +41,21 @@ def _finalize(payload):
     return payload
 
 
+def _btc_trade_levels(selected):
+    evidence=selected.get("evidence",{}) or {}
+    entry=float(evidence.get("entry_price",0) or 0)
+    sl=float(evidence.get("sl_price",0) or 0)
+    tp=float(evidence.get("tp_price",0) or 0)
+    rr=float(evidence.get("risk_reward",0) or 0)
+    if entry<=0 or sl<=0 or tp<=0 or rr<=0:
+        return {"valid":False,"reason":"BTC_ENGINE_LEVELS_UNAVAILABLE"}
+    risk=abs(entry-sl)
+    direction=str(selected.get("direction",""))
+    if risk<=0 or (direction=="BUY" and not (sl<entry<tp)) or (direction=="SELL" and not (tp<entry<sl)):
+        return {"valid":False,"reason":"BTC_ENGINE_INVALID_LEVELS","entry":entry,"sl":sl,"tp":tp}
+    return {"valid":True,"entry":entry,"sl":sl,"tp":tp,"tp1":tp,"tp2":None,"tp3":None,"risk":risk,"risk_reward":rr,"effective_rr":rr,"target_rr":rr,"minimum_rr":rr,"strategy":selected.get("strategy"),"structure_type":"BTC_ENGINE","structure_level":sl,"sl_buffer":0.0,"tp_levels":[{"price":tp,"risk_reward":rr,"type":"TP1","allocation_pct":100}],"tp_count":1,"tp_allocations":[100],"tp_structure_levels":[tp],"tp_selection":"BTC_ENGINE_EXACT_SPEC_LEVELS"}
+
+
 def analyze(m5,m15=None,symbol=None,index=None,setup_state=None,h1=None):
     if index is not None:m5=m5.iloc[:index+1].reset_index(drop=True)
     m5=m5.reset_index(drop=True)
@@ -56,7 +71,7 @@ def analyze(m5,m15=None,symbol=None,index=None,setup_state=None,h1=None):
         return _finalize({**base,"valid":False,"signal":"NO_TRADE","strategy":"NONE","regime":None,"allowed_engines":[],"rejection_reasons":q5+q15+q1,"trade_levels":{"valid":False},"data_quality":{"m5":q5,"m15":q15,"h1":q1}})
     regime=classify_regime(m5,m15,h1)
     base.update({"regime":regime,"m5_trend":detect_m5_trend(m5),"h1_bias":regime.get("h1_bias"),"h1_gate":regime.get("h1_gate"),"m15_regime":regime.get("m15_regime"),"allowed_engines":regime.get("allowed_engines",[])})
-    candidates=[];trace=[]
+    candidates=[];trace=[];btc_candidates=[]
     if str(symbol or "").upper() in ("BTC","BTC/USD","BTC/USDT"):
         btc_candidates,btc_trace=evaluate_btc_engines(m5,m15,h1)
         candidates.extend(btc_candidates);trace.extend(btc_trace)
@@ -69,7 +84,8 @@ def analyze(m5,m15=None,symbol=None,index=None,setup_state=None,h1=None):
     if not candidates:
         return _finalize({**base,"valid":False,"signal":"NO_TRADE","strategy":"NONE","setup_candidates":[],"selected_setup":None,"rejection_reasons":["NO_ALLOWED_ENGINE_SETUP"],"trade_levels":{"valid":False}})
 
-    selected_candidate=choose_priority_setup(candidates)
+    # BTC B1-B3 have their own explicit specification and outrank legacy E1-E8.
+    selected_candidate=(btc_candidates[0] if btc_candidates else choose_priority_setup(legacy_candidates))
     selected=enrich_selected(selected_candidate,symbol,regime["regime"],str(m5.iloc[-1].get("datetime","")))
     score=selected.get("score_detail",{})
     base.update({"setup_candidates":candidates,"selected_setup":selected,"strategy":selected["strategy"],"engine":selected["engine"],"setup_id":selected["setup_id"],"trigger_id":selected["trigger_id"],"setup_score":score})
@@ -84,10 +100,10 @@ def analyze(m5,m15=None,symbol=None,index=None,setup_state=None,h1=None):
         return _finalize({**base,"valid":False,"signal":"NO_TRADE","entry_type":entry_type,"rejection_reasons":[entry_type],"trade_levels":{"valid":False}})
     strategy=selected["strategy"]
     target_rr=min_rr_for_strategy(strategy)
-    levels=calculate_risk(m5,selected["direction"],strategy,selected.get("evidence"),rr=target_rr)
+    levels=_btc_trade_levels(selected) if selected.get("engine") in ("B1","B2","B3") else calculate_risk(m5,selected["direction"],strategy,selected.get("evidence"),rr=target_rr)
     actual_rr=float(levels.get("risk_reward",levels.get("effective_rr",0)) or 0)
     if not levels.get("valid") or actual_rr<target_rr:
         return _finalize({**base,"valid":False,"signal":"NO_TRADE","entry_type":entry_type,"rejection_reasons":[levels.get("reason","INVALID_RISK_OR_RR")],"trade_levels":levels,"rr_target":target_rr})
-    return _finalize({**base,"valid":True,"signal":selected["direction"],"direction":selected["direction"],"strategy":strategy,"engine":selected["engine"],"entry_type":entry_type,"setup_id":selected["setup_id"],"trigger_id":selected["trigger_id"],"trade_levels":levels,"risk_engine":{"method":"STRUCTURE+ATR","risk_reward":levels.get("risk_reward"),"minimum_rr":target_rr},"rr_target":target_rr,"rejection_reasons":[],"data_quality":{"m5":[],"m15":[],"h1":[]},"setup_state":{"reentries_used":state.reentry_count(selected["setup_id"]),"max_reentries":max_reentries},"live_orders_allowed":False})
+    return _finalize({**base,"valid":True,"signal":selected["direction"],"direction":selected["direction"],"strategy":strategy,"engine":selected["engine"],"entry_type":entry_type,"setup_id":selected["setup_id"],"trigger_id":selected["trigger_id"],"trade_levels":levels,"risk_engine":{"method":"BTC_ENGINE_SPEC_LEVELS" if selected.get("engine") in ("B1","B2","B3") else "STRUCTURE+ATR","risk_reward":levels.get("risk_reward"),"minimum_rr":target_rr},"rr_target":target_rr,"rejection_reasons":[],"data_quality":{"m5":[],"m15":[],"h1":[]},"setup_state":{"reentries_used":state.reentry_count(selected["setup_id"]),"max_reentries":max_reentries},"live_orders_allowed":False})
 
 analyze_structure_setup=analyze
