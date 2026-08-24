@@ -42,7 +42,7 @@ def test_risk_uses_latest_structural_support_below_entry():
 
 def test_risk_uses_latest_structural_resistance_above_entry():
     df=frame(80)
-    df.loc[70:74,"high"]=[189,188,187,188,189]
+    df.loc[70:74,"high"]=[185,188,187,188,185]
     df.loc[75:79,"high"]=[181,180,179,180,181]
     df.loc[79,"close"]=180.0
     result=calculate(df,"SELL","TEST")
