@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="th">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>V12.9 Control & Backtest</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='app.css') }}">
+</head>
+<body>
+  <main class="container">
+    <header>
+      <div>
+        <p class="eyebrow">V12.9 MTF · H1 → M15 → M5</p>
+        <h1>Trading Control & Backtest</h1>
+        <p class="muted">แอปแยกสำหรับควบคุมการแจ้งเตือน Telegram และทดสอบสถิติย้อนหลัง</p>
+      </div>
+      <div id="health" class="status-pill">กำลังตรวจสอบระบบ…</div>
+    </header>
+
+    <section class="card control-card">
+      <div>
+        <h2>Telegram Notifications</h2>
+        <p class="muted">ปุ่มนี้ควบคุมเฉพาะการแจ้งเตือน Telegram ไม่ได้หยุดระบบ Live V12.9</p>
+      </div>
+      <label class="switch">
+        <input id="telegramToggle" type="checkbox">
+        <span class="slider"></span>
+      </label>
+      <strong id="telegramLabel">กำลังโหลด…</strong>
+    </section>
+
+    <section class="card">
+      <div class="section-head">
+        <div><h2>Historical Backtest</h2><p class="muted">ใช้แท่งที่ปิดแล้ว · ไม่มี Live Order · ไม่มี Telegram</p></div>
+      </div>
+      <form id="backtestForm" class="form-grid">
+        <label>สินทรัพย์<select id="symbol"><option value="BTC">BTC</option><option value="GOLD">GOLD</option></select></label>
+        <label>เริ่มต้น<input id="start" type="date" required></label>
+        <label>สิ้นสุด<input id="end" type="date" required></label>
+        <button type="submit" id="runButton">▶ Run Backtest</button>
+      </form>
+      <p id="backtestMessage" class="message"></p>
+    </section>
+
+    <section id="statistics" class="hidden">
+      <div class="section-head"><div><h2>Statistics</h2><p id="runMeta" class="muted"></p></div></div>
+      <div id="metrics" class="metrics"></div>
+      <div class="two-col">
+        <div class="card"><h3>Strategy Breakdown</h3><div id="strategies"></div></div>
+        <div class="card"><h3>BUY / SELL Breakdown</h3><div id="sides"></div></div>
+      </div>
+      <div class="card"><h3>Trade History</h3><div class="table-wrap"><table><thead><tr><th>เวลา</th><th>Side</th><th>Strategy</th><th>Entry</th><th>SL</th><th>TP</th><th>Result</th><th>R</th></tr></thead><tbody id="trades"></tbody></table></div></div>
+    </section>
+
+    <section class="card">
+      <div class="section-head"><h2>Recent Backtests</h2><button id="refreshRuns" class="secondary">Refresh</button></div>
+      <div id="runs"></div>
+    </section>
+  </main>
+  <script src="{{ url_for('static', filename='app.js') }}"></script>
+</body>
+</html>
