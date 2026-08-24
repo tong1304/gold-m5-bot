@@ -7,6 +7,13 @@ REPLAY_M5_CONTEXT_BARS=100
 def _timestamp(value):
     if value is None or value=="":return None
     ts=pd.Timestamp(value);return ts.tz_localize("UTC") if ts.tzinfo is None else ts.tz_convert("UTC")
+def normalize_replay_window(start_time,end_time):
+    """Normalize an inclusive date window to UTC [start, end-exclusive)."""
+    start=_timestamp(start_time);end=_timestamp(end_time)
+    if start is None or end is None:raise ValueError("start_time and end_time are required")
+    if len(str(end_time))<=10:end=end+pd.Timedelta(days=1)
+    if end<=start:raise ValueError("end_time must be after start_time")
+    return start,end
 def _bounded_context(frame,end_position,max_bars):
     end_position=max(0,min(int(end_position),len(frame)));return frame.iloc[max(0,end_position-max_bars):end_position].reset_index(drop=True)
 def _resolve_trade(trade,candle):
@@ -35,7 +42,10 @@ def summarize_rows(rows):
         d=s["wins"]+s["losses"];s["net_r"]=round(s["net_r"],4);s["win_rate"]=_pct(s["wins"],d);s["expectancy_r"]=round(s["net_r"]/d,4) if d else 0.0
     return {"rows":len(rows),"trades":decided+open_+amb,"decided":decided,"wins":wins,"losses":losses,"open":open_,"ambiguous":amb,"no_trade":no_trade,"win_rate":_pct(wins,decided),"loss_rate":_pct(losses,decided),"net_r":round(net,4),"gross_profit_r":round(gross_profit,4),"gross_loss_r":round(gross_loss,4),"profit_factor":round(gross_profit/gross_loss,4) if gross_loss else None,"expectancy_r":round(net/decided,4) if decided else 0.0,"max_drawdown_r":_max_drawdown(rs),"strategies":strategies}
 def replay_frames(m5,m15=None,symbol=None,*,limit=None,start_time=None,end_time=None,progress_callback:Callable[...,None]|None=None):
-    m5=m5.sort_values("datetime").reset_index(drop=True);start_ts,end_ts=_timestamp(start_time),_timestamp(end_time);indices=list(range(60,len(m5)))
+    m5=m5.sort_values("datetime").reset_index(drop=True);start_ts,end_ts=None,None
+    if start_time is not None or end_time is not None:
+        start_ts,end_ts=normalize_replay_window(start_time,end_time)
+    indices=list(range(60,len(m5)))
     if start_ts is not None:indices=[i for i in indices if pd.Timestamp(m5.iloc[i].datetime)>=start_ts]
     if end_ts is not None:indices=[i for i in indices if pd.Timestamp(m5.iloc[i].datetime)<end_ts]
     if limit:indices=indices[-int(limit):]
