@@ -34,7 +34,7 @@ def smc_fixture():
     open_[52] = 98.7
     close[52] = 98.6
     high[52] = 99.0
-    low[52] = 97.4
+    low[52] = 97.45
 
     # Bullish CHoCH + momentum. Low is above candle 51 high -> bullish FVG.
     open_[53] = 98.7
