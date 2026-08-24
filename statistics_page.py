@@ -1,6 +1,7 @@
 """V12.1 Statistics UI: M5-only."""
 from __future__ import annotations
 import json
+from pathlib import Path
 from flask import Response
 from v11.engine import ENGINE_VERSION
 
@@ -19,8 +20,14 @@ def _live():
 def _replay():
     try:
         import replay_web
-        with replay_web._LOCK:return dict(replay_web._STATE)
-    except Exception:return {"running":False,"result":None}
+        with replay_web._LOCK:
+            if replay_web._STATE.get("result") is not None:return dict(replay_web._STATE)
+    except Exception:pass
+    path=Path("backtest_results.json")
+    if path.exists():
+        try:return {"running":False,"status":"completed","result":json.loads(path.read_text(encoding="utf-8")),"error":None}
+        except Exception:pass
+    return {"running":False,"result":None}
 def _payload():
     live=_live();state=_replay();result=state.get("result");base={"engine_version":ENGINE_VERSION,"engine_name":"REGIME-8-ENGINE-REENTRY","source_contract":"V12.1","timeframe_mode":"M5-only","timeframes":["M5"],"live_signals":live,"live_signal_count":len(live),"live_orders_allowed":False}
     if state.get("running"):return {**base,"status":"running","running":True,"source":"LSE_HISTORICAL_M5_OHLCV","message":"V12 M5-only Historical Replay กำลังประมวลผล","backtest_window":state.get("request")}
@@ -36,7 +43,7 @@ def _payload():
     for s in strategies.values():
         decided=s["wins"]+s["losses"];s["net_r"]=round(s["net_r"],4);s["win_rate"]=round(100*s["wins"]/decided,2) if decided else 0.0;s["expectancy_r"]=round(s["net_r"]/decided,4) if decided else 0.0
     reports=[{"symbol":r.get("symbol"),"candles_evaluated":r.get("candles_evaluated"),"signals":r.get("signals"),"wins":r.get("wins"),"losses":r.get("losses"),"net_r":r.get("net_r"),"performance":r.get("performance")} for r in result.get("reports") or []]
-    return {**base,"status":"ok","running":False,"source":"LSE_HISTORICAL_M5_OHLCV","backtest_window":{"start":result.get("start"),"end":result.get("end"),"symbols":result.get("symbols")},"performance":{"trades":len(trades),"decided":d,"wins":w,"losses":l,"win_rate":round(100*w/d,2) if d else 0.0,"net_r":net,"expectancy_r":round(net/d,4) if d else 0.0},"symbol_reports":reports,"strategies":strategies,"replay_trades":sorted(trades,key=lambda x:str(x.get("candle_time") or ""),reverse=True)}
+    return {**base,"status":"ok","running":False,"source":result.get("source","LSE_HISTORICAL_M5_OHLCV"),"lookahead_safe":result.get("lookahead_safe",True),"backtest_window":{"start":result.get("start"),"end":result.get("end"),"symbols":result.get("symbols")},"performance":{"trades":len(trades),"decided":d,"wins":w,"losses":l,"win_rate":round(100*w/d,2) if d else 0.0,"net_r":net,"expectancy_r":round(net/d,4) if d else 0.0},"symbol_reports":reports,"strategies":strategies,"replay_trades":sorted(trades,key=lambda x:str(x.get("candle_time") or ""),reverse=True)}
 def register(app):
     @app.route("/statistics",strict_slashes=False)
     def statistics_page():return Response(PAGE,mimetype="text/html",headers={"Cache-Control":"no-store"})
