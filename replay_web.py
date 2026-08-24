@@ -22,6 +22,8 @@ def _trade_history(rows):
         if row.get("signal") not in ("BUY","SELL") or not row.get("valid"):
             continue
         levels=row.get("trade_levels") or {}
+        targets=levels.get("tp_levels") or []
+        prices=[t.get("price") for t in targets if isinstance(t,dict)]
         trades.append({
             "candle_time":row.get("candle_time"),
             "signal":row.get("signal"),
@@ -29,10 +31,10 @@ def _trade_history(rows):
             "entry":levels.get("entry"),
             "sl":levels.get("sl"),
             "tp":levels.get("tp"),
-            "tp1":levels.get("tp1"),
-            "tp2":levels.get("tp2"),
-            "tp3":levels.get("tp3"),
-            "rr":levels.get("rr") if levels.get("rr") is not None else levels.get("risk_reward"),
+            "tp1":prices[0] if len(prices)>0 else levels.get("tp"),
+            "tp2":prices[1] if len(prices)>1 else None,
+            "tp3":prices[2] if len(prices)>2 else None,
+            "rr":levels.get("effective_rr", levels.get("risk_reward")),
             "result":row.get("result"),
             "r_multiple":row.get("r_multiple"),
             "resolved_at":row.get("resolved_at"),
