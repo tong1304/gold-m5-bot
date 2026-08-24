@@ -10,6 +10,7 @@ SUPPORTED_SYMBOLS=("BTC/USDT","XAU/USDT")
 SERVICE_LOCK=threading.RLock(); _SERVICES_STARTED=False
 SCHEDULER_LOCK_FILE=os.getenv("V11_SCHEDULER_LOCK_FILE","/tmp/gold-m5-v11-scheduler.lock")
 
+
 def _json_safe(value):
     if value is None or isinstance(value,(str,bool,int)): return value
     if isinstance(value,float): return value if math.isfinite(value) else None
@@ -20,7 +21,9 @@ def _json_safe(value):
     try:return _json_safe(value.tolist())
     except Exception:return str(value)
 
+
 def _json_response(payload,status=200): return Response(json.dumps(_json_safe(payload),ensure_ascii=False,allow_nan=False),status=status,mimetype="application/json")
+
 
 def _acquire_scheduler_lock():
     try:
@@ -34,6 +37,16 @@ def _acquire_scheduler_lock():
             try: os.unlink(SCHEDULER_LOCK_FILE)
             except OSError: return False
             return _acquire_scheduler_lock()
+
+
+def _startup_probe_worker():
+    try:
+        import live_price
+        result=live_price.startup_probe()
+        logger.warning("[V11 STARTUP] LSE_REST_PROBE BTC=%s GOLD=%s", "READY" if result.get("BTC/USD") else "FAILED", "READY" if result.get("XAU/USD") else "FAILED")
+    except Exception:
+        logger.exception("[V11 STARTUP] LSE REST readiness probe failed")
+
 
 def _start_runtime_services():
     global _SERVICES_STARTED
@@ -54,6 +67,7 @@ def _start_runtime_services():
             scheduler_status=scheduler.status()
             logger.warning("[V11 STARTUP] ENGINE=%s SCHEDULER=%s LIVE_PRICE=%s PROVIDER=LSE",v11_engine.ENGINE_VERSION,"RUNNING" if scheduler_status.get("running") else "NOT_RUNNING","RUNNING" if live_status.get("running") else "NOT_RUNNING")
             logger.warning("[V11 STARTUP] scheduler_started=%s live_started=%s live_state=%s api_key=%s",scheduler_started,live_started,live_status.get("loop_state"),live_status.get("api_key_configured"))
+            threading.Thread(target=_startup_probe_worker,name="v11-lse-startup-probe",daemon=True).start()
             try:
                 from startup_notify import send_startup_notification
                 send_startup_notification(symbol="BTC + GOLD / LSE",engine_version=v11_engine.ENGINE_VERSION)
@@ -66,10 +80,12 @@ def _start_runtime_services():
             logger.exception("[V11 STARTUP] Runtime service startup failed")
             raise
 
+
 @app.before_request
 def ensure_runtime_services():
     try: _start_runtime_services()
     except Exception: logger.exception("[V11 STARTUP] ensure_runtime_services failed")
+
 
 @app.route("/")
 def health():
@@ -79,10 +95,12 @@ def health():
     except Exception as exc: scheduler={"running":False,"error":str(exc)}
     return _json_response({"status":"ok","service":"gold-m5-bot","engine_version":v11_engine.ENGINE_VERSION,"exchange":"LSE","symbols":["BTC/USD","XAU/USD"],"timeframe":"M5 trigger + M15 trend","analysis_windows":{"M15_context_bars":100,"M5_setup_bars":50},"live_price":live,"scheduler":scheduler,"live_orders_allowed":False})
 
+
 @app.route("/live-price")
 def live_price_status():
     try: import live_price; payload=live_price.status(); payload["status"]="ok"; return _json_response(payload)
     except Exception as exc:return _json_response({"status":"live_price_error","provider":"LSE","error_type":type(exc).__name__,"message":str(exc),"live_orders_allowed":False},502)
+
 
 @app.route("/live-price/<symbol>")
 def live_price_symbol(symbol):
@@ -92,9 +110,11 @@ def live_price_symbol(symbol):
         return _json_response({"status":"ok","provider":"LSE","latest":value})
     except Exception as exc:return _json_response({"status":"live_price_error","provider":"LSE","error_type":type(exc).__name__,"message":str(exc),"live_orders_allowed":False},502)
 
+
 @app.route("/symbols")
 def symbols():
     return _json_response({"status":"ok","engine_version":v11_engine.ENGINE_VERSION,"exchange":"LSE","symbols":["BTC/USD","XAU/USD"],"mt5_symbols":{"BTC":os.getenv("MT5_BTC_SYMBOL","BTCUSD"),"GOLD":os.getenv("MT5_GOLD_SYMBOL","XAUUSD")},"timeframe":"M5 trigger + M15 trend","market_data":"LSE historical + LSE WebSocket live price","live_orders_allowed":False})
+
 
 @app.route("/signal")
 def live_signal():
@@ -104,6 +124,7 @@ def live_signal():
         import live_scanner_v11
         return _json_response(live_scanner_v11.scan_once(mapped))
     except Exception as exc:return _json_response({"status":"signal_error","engine_version":v11_engine.ENGINE_VERSION,"exchange":"LSE","symbol":symbol,"error_type":type(exc).__name__,"message":str(exc),"telegram_alert_sent":False,"live_orders_allowed":False},502)
+
 
 @app.route("/validation")
 def validation():
@@ -118,14 +139,17 @@ def validation():
         return _json_response(report)
     except Exception as exc:return _json_response({"status":"validation_error","engine_version":v11_engine.ENGINE_VERSION,"exchange":"LSE","symbol":symbol,"bars":bars,"error_type":type(exc).__name__,"message":str(exc),"live_orders_allowed":False},502)
 
+
 @app.route("/validation-v92")
 def validation_v92():
     return _json_response({"status":"deprecated","message":"Legacy V9.2 validation is intentionally isolated from V11. Use /validation.","engine_version":v11_engine.ENGINE_VERSION,"live_orders_allowed":False},410)
+
 
 @app.route("/scheduler/status")
 def scheduler_status():
     try: import scheduler_v11 as scheduler; return _json_response({"status":"ok",**scheduler.status()})
     except Exception as exc:return _json_response({"status":"scheduler_error","error_type":type(exc).__name__,"message":str(exc),"live_orders_allowed":False},502)
+
 
 try:
     import statistics_page; statistics_page.register(app)
