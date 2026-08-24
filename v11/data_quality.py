@@ -1,28 +1,44 @@
 from __future__ import annotations
+
 import math
+from datetime import time
+from zoneinfo import ZoneInfo
+
 import pandas as pd
 
 REQUIRED = ("datetime", "open", "high", "low", "close")
+_NEW_YORK = ZoneInfo("America/New_York")
+_GOLD_SESSION_CLOSE = time(17, 0)
+_GOLD_SESSION_OPEN = time(18, 0)
 
 
 def _gold_market_closed(timestamp: pd.Timestamp) -> bool:
-    """Return whether GOLD is normally closed at a candle-open timestamp (UTC)."""
+    """Return whether GOLD is normally closed at a candle-open timestamp.
+
+    GOLD follows the New York session clock: the normal daily maintenance
+    break is 17:00-18:00 America/New_York, with the UTC equivalent changing
+    automatically between daylight-saving and standard time. The weekly
+    closure is from Friday 17:00 NY through Sunday 18:00 NY.
+    """
     timestamp = pd.Timestamp(timestamp)
     if timestamp.tzinfo is None:
         timestamp = timestamp.tz_localize("UTC")
-    timestamp = timestamp.tz_convert("UTC")
-    wd = timestamp.weekday()
-    minute = timestamp.hour * 60 + timestamp.minute
+    local = timestamp.tz_convert(_NEW_YORK)
+    wd = local.weekday()
+    current = local.time()
+
     if wd == 5:  # Saturday
         return True
-    if wd == 6:  # Sunday; opens at 23:00 UTC
-        return minute < 23 * 60
-    if wd == 4:  # Friday; closes at 22:00 UTC
-        return minute >= 22 * 60
-    return 22 * 60 <= minute < 23 * 60
+    if wd == 6:  # Sunday; opens at 18:00 NY
+        return current < _GOLD_SESSION_OPEN
+    if wd == 4:  # Friday; closes at 17:00 NY
+        return current >= _GOLD_SESSION_CLOSE
+    return _GOLD_SESSION_CLOSE <= current < _GOLD_SESSION_OPEN
 
 
-def _gap_is_expected_session_gap(start: pd.Timestamp, end: pd.Timestamp, timeframe_minutes: int) -> bool:
+def _gap_is_expected_session_gap(
+    start: pd.Timestamp, end: pd.Timestamp, timeframe_minutes: int
+) -> bool:
     """Allow only gaps whose missing candle slots are entirely inside GOLD closure windows."""
     if timeframe_minutes <= 0 or end <= start:
         return False
@@ -52,13 +68,18 @@ def validate_frame(
         reasons.append("MISSING_COLUMNS:" + ",".join(missing))
         return reasons
     dt = pd.to_datetime(frame["datetime"], utc=True, errors="coerce")
-    if dt.isna().any(): reasons.append("INVALID_DATETIME")
-    if dt.duplicated().any(): reasons.append("DUPLICATE_DATETIME")
-    if not dt.is_monotonic_increasing: reasons.append("DATETIME_NOT_SORTED")
+    if dt.isna().any():
+        reasons.append("INVALID_DATETIME")
+    if dt.duplicated().any():
+        reasons.append("DUPLICATE_DATETIME")
+    if not dt.is_monotonic_increasing:
+        reasons.append("DATETIME_NOT_SORTED")
     for col in REQUIRED[1:]:
         values = pd.to_numeric(frame[col], errors="coerce")
-        if values.isna().any(): reasons.append(f"INVALID_{col.upper()}")
-        elif not values.map(math.isfinite).all(): reasons.append(f"NONFINITE_{col.upper()}")
+        if values.isna().any():
+            reasons.append(f"INVALID_{col.upper()}")
+        elif not values.map(math.isfinite).all():
+            reasons.append(f"NONFINITE_{col.upper()}")
     try:
         high = pd.to_numeric(frame.high, errors="coerce")
         low = pd.to_numeric(frame.low, errors="coerce")
@@ -70,14 +91,18 @@ def validate_frame(
         reasons.append("OHLC_VALIDATION_ERROR")
     if timeframe_minutes and len(dt) > 1:
         delta = dt.diff().dropna().dt.total_seconds() / 60.0
-        if (delta <= 0).any(): reasons.append("NONPOSITIVE_INTERVAL")
+        if (delta <= 0).any():
+            reasons.append("NONPOSITIVE_INTERVAL")
         gap_found = False
         for index, gap in delta.items():
             if gap <= timeframe_minutes * 3:
                 continue
             start = dt.iloc[index - 1]
             end = dt.iloc[index]
-            if str(market or "").upper() == "GOLD" and _gap_is_expected_session_gap(start, end, timeframe_minutes):
+            if (
+                str(market or "").upper() == "GOLD"
+                and _gap_is_expected_session_gap(start, end, timeframe_minutes)
+            ):
                 continue
             gap_found = True
             break
@@ -87,10 +112,12 @@ def validate_frame(
 
 
 def require_closed(frame: pd.DataFrame, *, timeframe_minutes: int, now=None) -> pd.DataFrame:
-    if not isinstance(frame, pd.DataFrame) or frame.empty: return frame
+    if not isinstance(frame, pd.DataFrame) or frame.empty:
+        return frame
     dt = pd.to_datetime(frame["datetime"], utc=True, errors="coerce")
     current = pd.Timestamp.now(tz="UTC") if now is None else pd.Timestamp(now)
-    if current.tzinfo is None: current = current.tz_localize("UTC")
+    if current.tzinfo is None:
+        current = current.tz_localize("UTC")
     cutoff = current.floor(f"{timeframe_minutes}min")
     out = frame.loc[dt < cutoff].copy()
     out["datetime"] = pd.to_datetime(out["datetime"], utc=True, errors="coerce")
