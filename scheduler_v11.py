@@ -9,7 +9,7 @@ import live_scanner_v11
 logger=logging.getLogger("signal_scheduler")
 ENGINE_VERSION="11.1-HARDENED"
 BANGKOK=ZoneInfo("Asia/Bangkok"); UTC=timezone.utc; DISPLAY_SYMBOLS=("BTC","GOLD")
-_RUNNING=False; _THREAD=None; _LAST_CLOSED_CANDLE={}; _LAST_TEST_SLOT=None
+_RUNNING=False; _THREAD=None; _LAST_CLOSED_CANDLE={}; _LAST_TEST_SLOT=None; _STARTED_AT=None; _LAST_CYCLE_AT=None; _LAST_RESULTS=[]; _CYCLE_COUNT=0
 
 def _interval_seconds():
     try:return max(300,int(os.getenv("SIGNAL_SCAN_INTERVAL_SECONDS","300")))
@@ -34,29 +34,35 @@ def _notify_error(exc,context):
     except Exception:return None
 
 def run_scan_cycle():
-    global _LAST_TEST_SLOT
-    now_utc=datetime.now(UTC); now_bkk=now_utc.astimezone(BANGKOK); results=[]
+    global _LAST_TEST_SLOT,_LAST_CYCLE_AT,_LAST_RESULTS,_CYCLE_COUNT
+    now_utc=datetime.now(UTC); now_bkk=now_utc.astimezone(BANGKOK); results=[]; _CYCLE_COUNT+=1; _LAST_CYCLE_AT=now_utc.isoformat()
+    logger.warning("[V11 SCHEDULER] Scan cycle #%s started at %s Bangkok symbols=%s",_CYCLE_COUNT,now_bkk.strftime('%Y-%m-%d %H:%M:%S'),_symbols())
     for symbol in _symbols():
         try:
             opened,session=_asset_market_status(symbol,now_utc)
+            logger.info("[V11 SCHEDULER] %s market=%s session=%s",symbol,opened,session)
             if not opened:
                 results.append({"status":"market_closed","symbol":symbol,"session":session,"live_orders_allowed":False}); continue
             frame=live_scanner_v11._lse_frame(symbol,"5m",max(100,int(os.getenv("LIVE_SIGNAL_HISTORY","200"))))
             if frame.empty:raise RuntimeError("NO_CLOSED_CANDLES")
             closed_key=str(frame.iloc[-1].datetime)
+            logger.info("[V11 SCHEDULER] %s latest_closed_m5=%s rows=%s",symbol,closed_key,len(frame))
             if _LAST_CLOSED_CANDLE.get(symbol)==closed_key:
                 results.append({"status":"waiting_new_candle","symbol":symbol,"closed_candle":closed_key,"engine_version":ENGINE_VERSION}); continue
             result=live_scanner_v11.scan_once(symbol); _LAST_CLOSED_CANDLE[symbol]=closed_key
             result.update({"trigger":"NEW_CLOSED_M5_CANDLE","candle_consumed":True,"market_session":session,"engine_version":ENGINE_VERSION})
+            logger.warning("[V11 SCHEDULER] %s result status=%s strategy=%s side=%s",symbol,result.get("status"),result.get("strategy"),result.get("side"))
             results.append(result)
         except Exception as exc:
-            logger.exception("[%s] V11 scan failed",symbol); _notify_error(exc,f"การสแกน {symbol}"); results.append({"status":"scan_error","symbol":symbol,"error_type":type(exc).__name__,"message":str(exc),"live_orders_allowed":False})
+            logger.exception("[V11 SCHEDULER] %s scan failed",symbol); _notify_error(exc,f"การสแกน {symbol}"); results.append({"status":"scan_error","symbol":symbol,"error_type":type(exc).__name__,"message":str(exc),"live_orders_allowed":False})
     if now_bkk.minute%15==0:
         slot=now_bkk.strftime("%Y-%m-%d %H:%M")
         if slot!=_LAST_TEST_SLOT:
             _LAST_TEST_SLOT=slot
             try: send_telegram(f"🧪 <b>V11 System Monitor</b>\n\n🕐 {now_bkk.strftime('%d/%m/%Y %H:%M')} (กรุงเทพฯ)\n✅ Scheduler: Active\n✅ LSE: Connected through scanner\n⚠️ Monitor only — ไม่ใช่สัญญาณ BUY/SELL")
             except Exception: pass
+    _LAST_RESULTS=results
+    logger.warning("[V11 SCHEDULER] Scan cycle #%s finished results=%s",_CYCLE_COUNT,len(results))
     return results
 
 def _seconds_to_next_boundary():
@@ -64,21 +70,23 @@ def _seconds_to_next_boundary():
 
 def _loop():
     global _RUNNING
+    logger.warning("[V11 SCHEDULER] Thread entered; waiting for next closed M5 boundary")
     while _RUNNING:
-        wait=_seconds_to_next_boundary(); time.sleep(wait)
+        wait=_seconds_to_next_boundary(); logger.info("[V11 SCHEDULER] Next scan in %.1fs",wait); time.sleep(wait)
         if _RUNNING:
             try: run_scan_cycle()
-            except Exception as exc: logger.exception("V11 cycle failed"); _notify_error(exc,"V11 scheduler cycle")
+            except Exception as exc: logger.exception("[V11 SCHEDULER] cycle failed"); _notify_error(exc,"V11 scheduler cycle")
+    logger.warning("[V11 SCHEDULER] Thread exited")
 
 def start():
-    global _RUNNING,_THREAD
+    global _RUNNING,_THREAD,_STARTED_AT
     if _RUNNING and _THREAD and _THREAD.is_alive():return False
-    _RUNNING=True; _THREAD=threading.Thread(target=_loop,name="v11-m5-scheduler",daemon=True); _THREAD.start(); return True
+    _RUNNING=True; _STARTED_AT=datetime.now(UTC).isoformat(); _THREAD=threading.Thread(target=_loop,name="v11-m5-scheduler",daemon=True); _THREAD.start(); logger.warning("[V11 SCHEDULER] STARTED engine=%s interval=%ss symbols=%s timezone=Asia/Bangkok",ENGINE_VERSION,_interval_seconds(),_symbols()); return True
 
 def stop():
-    global _RUNNING; _RUNNING=False
+    global _RUNNING; _RUNNING=False; logger.warning("[V11 SCHEDULER] STOP requested")
 
 def status():
     try:import live_price; live=live_price.status()
     except Exception as exc:live={"running":False,"error":str(exc)}
-    return {"running":bool(_RUNNING and _THREAD and _THREAD.is_alive()),"interval_seconds":_interval_seconds(),"symbols":_symbols(),"test_slots":"00,15,30,45","timezone":"Asia/Bangkok","provider":"LSE","engine_version":ENGINE_VERSION,"scanner":"live_scanner_v11","multi_strategy":True,"timeframes":["5m","15m"],"live_price":live,"live_orders_allowed":False}
+    return {"running":bool(_RUNNING and _THREAD and _THREAD.is_alive()),"interval_seconds":_interval_seconds(),"symbols":_symbols(),"test_slots":"00,15,30,45","timezone":"Asia/Bangkok","provider":"LSE","engine_version":ENGINE_VERSION,"scanner":"live_scanner_v11","multi_strategy":True,"timeframes":["5m","15m"],"started_at":_STARTED_AT,"last_cycle_at":_LAST_CYCLE_AT,"cycle_count":_CYCLE_COUNT,"last_results":_LAST_RESULTS,"live_price":live,"live_orders_allowed":False}
