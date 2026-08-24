@@ -10,7 +10,9 @@ from .setup_state import SetupState, can_emit_entry
 from .decision_priority import signal_reason
 from .engine_gold import analyze as analyze_gold
 
-ENGINE_VERSION="12.8-MTF-H1-M15-TREND-M5-BTC-GOLD-MULTI-TP"
+# V12.9: H1 + M15 directional confirmation, M15 REGIME is diagnostic only,
+# M5 remains the execution/trigger timeframe. Large RR trades use staged TPs.
+ENGINE_VERSION="12.9-MTF-H1-M15-TREND-M5-BTC-GOLD-MULTI-TP"
 MIN_RISK_REWARD=_MIN_RISK_REWARD
 BTC_STRATEGIES=("B1_RANGE_SWEEP_DISPLACEMENT","B2_HTF_OB_M5_FVG_RETEST","B3_VOLATILITY_EXPANSION_BREAKOUT_RETEST")
 GOLD_STRATEGIES=("G1_LIQUIDITY_SWEEP_CHOCH","G2_CONTINUATION_FVG_PULLBACK","G3_SESSION_BREAKOUT_RETEST")
@@ -90,9 +92,11 @@ def analyze(m5,m15=None,symbol=None,index=None,setup_state=None,h1=None):
     base.update({"regime":regime,"m5_trend":detect_m5_trend(m5),"h1_bias":regime.get("h1_bias"),"h1_gate":regime.get("h1_gate"),"m15_regime":regime.get("m15_regime"),"m15_trend":regime.get("m15_trend"),"m15_role":"TREND_ONLY","m15_regime_filter_enabled":False,"allowed_engines":list(BTC_STRATEGIES)})
     hb,mb=regime.get("h1_bias"),regime.get("m15_trend")
 
-    # H1 and M15 are both directional filters. M15 REGIME is diagnostic only.
-    # A neutral M15 trend is therefore a legitimate NO_TRADE; TRANSITION itself
-    # is never the rejection reason.
+    # V12.9 hierarchy:
+    # H1 = mandatory directional bias; M15 = mandatory TREND confirmation only;
+    # M15 RANGE/TRANSITION classification is metadata and never gates entries;
+    # M5 = setup/trigger execution. This prevents M15 regime from suppressing
+    # valid setups while retaining the H1 + M15 directional safety filter.
     if hb not in ("BUY","SELL"):
         return _finalize({**base,"valid":False,"signal":"NO_TRADE","strategy":"NONE","rejection_reasons":["H1_TREND_NOT_CONFIRMED"],"trade_levels":{"valid":False},"decision_trace":[]})
     if mb not in ("BUY","SELL"):
