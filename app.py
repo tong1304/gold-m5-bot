@@ -40,10 +40,20 @@ def _acquire_scheduler_lock():
 
 
 def _startup_probe_worker():
+    """Probe the exact validated LSE candle path used by V11, not a separate date query."""
     try:
-        import live_price
-        result=live_price.startup_probe()
-        logger.warning("[V11 STARTUP] LSE_REST_PROBE BTC=%s GOLD=%s", "READY" if result.get("BTC/USD") else "FAILED", "READY" if result.get("XAU/USD") else "FAILED")
+        import live_scanner_v11
+        results={}
+        for symbol in ("BTC","GOLD"):
+            try:
+                frame=live_scanner_v11._lse_frame(symbol,"5m",points=3)
+                ok=frame is not None and not frame.empty
+                results[symbol]=ok
+                logger.warning("[V11 STARTUP] LSE_REST_PROBE %s=%s rows=%s",symbol,"READY" if ok else "EMPTY",len(frame) if frame is not None else 0)
+            except Exception as exc:
+                results[symbol]=False
+                logger.error("[V11 STARTUP] LSE_REST_PROBE %s=FAILED error=%s",symbol,exc)
+        logger.warning("[V11 STARTUP] LSE_REST_PROBE BTC=%s GOLD=%s", "READY" if results.get("BTC") else "FAILED", "READY" if results.get("GOLD") else "FAILED")
     except Exception:
         logger.exception("[V11 STARTUP] LSE REST readiness probe failed")
 
