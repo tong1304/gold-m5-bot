@@ -25,7 +25,7 @@ def _normalize(raw, symbol, timeframe):
     for c in ("open","high","low","close"): frame[c]=pd.to_numeric(frame[c],errors="coerce")
     frame=frame.dropna(subset=["datetime","open","high","low","close"]).sort_values("datetime").drop_duplicates("datetime",keep="last").reset_index(drop=True)
     frame=require_closed(frame,timeframe_minutes={"5m":5,"15m":15}[timeframe])
-    errors=validate_frame(frame,minimum=60,timeframe_minutes={"5m":5,"15m":15}[timeframe])
+    errors=validate_frame(frame,minimum=60,timeframe_minutes={"5m":5,"15m":15}[timeframe],market=symbol)
     if errors: raise RuntimeError(f"LSE_DATA_QUALITY:{symbol}:{timeframe}:{errors}")
     return frame
 
