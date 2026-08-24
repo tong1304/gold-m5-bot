@@ -61,17 +61,40 @@ def _timestamp(value):
     ts=pd.Timestamp(value); return ts.tz_localize("UTC") if ts.tzinfo is None else ts.tz_convert("UTC")
 
 
+def _m15_context_end_positions(m5: pd.DataFrame, m15: pd.DataFrame) -> list[int]:
+    """Return M15 slice ends for each M5 candle using binary search.
+
+    This is exactly equivalent to the old ``m15[m15.datetime <= ts-15m]``
+    rule, but avoids scanning the complete M15 frame for every replay candle.
+    ``side='right'`` keeps a candle exactly on the cutoff, matching ``<=``.
+    """
+    m15_times = pd.DatetimeIndex(m15["datetime"])
+    return [
+        int(m15_times.searchsorted(ts - timedelta(minutes=15), side="right"))
+        for ts in m5["datetime"]
+    ]
+
+
 def replay_frames(m5: pd.DataFrame, m15: pd.DataFrame, symbol: str, *, limit: int|None=None, start_time=None, end_time=None):
-    """Replay the exact V11 decision path with historical warm-up and no lookahead."""
+    """Replay the exact V11 decision path with historical warm-up and no lookahead.
+
+    Performance-critical path:
+    - sort/reset each source frame once;
+    - compute M15 context boundaries once with binary search instead of a full
+      boolean scan on every M5 candle;
+    - pass the full M5 frame plus ``index`` to ``engine.analyze`` so the engine
+      performs its required single historical slice instead of slicing twice.
+    """
     m5=m5.sort_values("datetime").reset_index(drop=True); m15=m15.sort_values("datetime").reset_index(drop=True)
     start_ts,end_ts=_timestamp(start_time),_timestamp(end_time); indices=list(range(60,len(m5)))
     if start_ts is not None: indices=[i for i in indices if pd.Timestamp(m5.iloc[i].datetime)>=start_ts]
     if end_ts is not None: indices=[i for i in indices if pd.Timestamp(m5.iloc[i].datetime)<end_ts]
     if limit: indices=indices[-limit:]
+    context_ends=_m15_context_end_positions(m5,m15)
     rows=[]
     for i in indices:
-        ts=m5.iloc[i].datetime; context=m15[m15.datetime<=ts-timedelta(minutes=15)].reset_index(drop=True)
-        setup=engine.analyze(m5.iloc[:i+1].reset_index(drop=True),context,symbol,i); outcome=resolve_outcome(setup,m5.iloc[i+1:i+1+engine.FORWARD_BARS])
+        ts=m5.iloc[i].datetime; context=m15.iloc[:context_ends[i]]
+        setup=engine.analyze(m5,m15=context,symbol=symbol,index=i); outcome=resolve_outcome(setup,m5.iloc[i+1:i+1+engine.FORWARD_BARS])
         rows.append({"candle_time":str(ts),"signal":setup.get("signal","NO_TRADE"),"strategy":setup.get("strategy","NONE"),"valid":bool(setup.get("valid")),"trade_levels":setup.get("trade_levels"),"result":outcome["result"],"r_multiple":outcome["r_multiple"],"resolved_at":outcome.get("resolved_at"),"engine_version":engine.ENGINE_VERSION})
     summary=summarize_rows(rows)
     return {"status":"completed","engine_version":engine.ENGINE_VERSION,"symbol":symbol,"candles_evaluated":len(rows),"signals":sum(r["valid"] for r in rows),"wins":summary["wins"],"losses":summary["losses"],"ambiguous":summary["ambiguous"],"open":summary["open"],"net_r":summary["net_r"],"performance":summary,"rows":rows,"live_orders_allowed":False,"m15_policy":"CLOSED_AT_M5_CLOSE_MINUS_15M","lookahead_safe":True,"warmup_bars":60}
