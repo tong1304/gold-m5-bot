@@ -29,6 +29,33 @@ def test_risk_is_at_least_two_r():
     df=frame(); result=calculate(df,"BUY","TEST",{"support":175})
     assert result["valid"] and result["risk_reward"]>=2.0 and result["sl"]<result["entry"]<result["tp"]
 
+def test_risk_uses_latest_structural_support_below_entry():
+    df=frame(80)
+    df.loc[70:74,"low"]=[169,168,167,168,169]
+    df.loc[75:79,"low"]=[179,180,181,180,179]
+    df.loc[79,"close"]=180.0
+    result=calculate(df,"BUY","TEST")
+    assert result["valid"]
+    assert result["support"] == 167.0
+    assert result["sl"] < 167.0
+    assert result["tp"] == result["entry"] + 2.0 * result["risk"]
+
+def test_risk_uses_latest_structural_resistance_above_entry():
+    df=frame(80)
+    df.loc[70:74,"high"]=[189,188,187,188,189]
+    df.loc[75:79,"high"]=[181,180,179,180,181]
+    df.loc[79,"close"]=180.0
+    result=calculate(df,"SELL","TEST")
+    assert result["valid"]
+    assert result["resistance"] == 187.0
+    assert result["sl"] > 187.0
+    assert result["tp"] == result["entry"] - 2.0 * result["risk"]
+
+def test_risk_does_not_override_two_r_with_target_price():
+    df=frame(); result=calculate(df,"BUY","TEST",{"target_price":9999})
+    assert result["valid"]
+    assert result["tp"] == result["entry"] + 2.0 * result["risk"]
+
 def test_history_dedup_is_atomic():
     with tempfile.TemporaryDirectory() as d:
         h=SignalHistory(os.path.join(d,"signals.db")); payload={"signal_id":"X","symbol":"BTC","signal":"BUY","closed_candle":"2026-08-24T00:00:00+00:00","created_at":"2026-08-24T00:05:00+00:00","trade_levels":{"entry":100,"sl":99,"tp":102}}
