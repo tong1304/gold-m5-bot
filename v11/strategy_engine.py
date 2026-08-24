@@ -3,6 +3,7 @@ import hashlib
 import pandas as pd
 import numpy as np
 from .common import num, ema, atr14, structure, candle_metrics
+from .h1_gate import allows_trend_direction, gate_reason
 
 ENGINE_NAMES={"E1":"IMPULSE_PULLBACK","E2":"TREND_PULLBACK","E3":"RANGE_BREAK_EXPANSION","E4":"BREAK_RETEST_CONTINUATION","E5":"MOMENTUM_EXPANSION","E6":"EXTREME_REJECTION_MEAN_RETURN","E7":"SWEEP_REJECTION_REVERSAL","E8":"RANGE_REJECTION"}
 ENGINE_PRIORITY={"E7":0,"E4":1,"E1":2,"E2":3,"E5":4,"E3":5,"E6":6,"E8":7}
@@ -24,9 +25,10 @@ def _volume_ratio(x,period=20):
     v=pd.to_numeric(x.get("volume",pd.Series(1.0,index=x.index)),errors="coerce").fillna(1.0);return num(v.iloc[-1]/max(num(v.tail(period).mean(),1e-12),1e-12))
 def _trend_filter_ok(context,direction):
     m15=context.get("m15_context",{}) or {}
-    return bool(context.get("regime")=="TREND" and context.get("direction")==direction and (m15.get("adx14",context.get("adx14",0)) or 0)>20 and context.get("h1_bias")==direction and m15.get("trend_ema_alignment") in (None,"EMA20>EMA50","EMA20<EMA50"))
+    h1_bias=context.get("h1_bias","NEUTRAL")
+    return bool(context.get("regime")=="TREND" and context.get("direction")==direction and (m15.get("adx14",context.get("adx14",0)) or 0)>20 and allows_trend_direction(h1_bias,direction) and m15.get("trend_ema_alignment") in (None,"EMA20>EMA50","EMA20<EMA50"))
 def _candidate_directions(context):
-    """MTF direction gate: H1 bias constrains transition setups; neutral H1 lets M5 choose side."""
+    """MTF direction gate: H1 constrains Trend/transition direction; neutral H1 lets M15/M5 choose."""
     regime=context.get("regime")
     h1_bias=context.get("h1_bias")
     if regime=="TRANSITION":
@@ -60,10 +62,10 @@ def evaluate_strategy(engine_id,m5,context,direction):
     if len(x)<30:return _fail(eid,direction,["INSUFFICIENT_M5_CONTEXT"])
     a=_atr(x);last=_with_location(candle_metrics(x.iloc[-1]));prev=_with_location(candle_metrics(x.iloc[-2]));s=structure(x,min(80,len(x)));reg=context.get("regime","RANGE");highs,lows=_pivots(x)
     if eid=="E1":
-        if not _trend_filter_ok(context,direction):return _fail(eid,direction,["MTF_TREND_FILTER_FAILED"])
+        if not _trend_filter_ok(context,direction):return _fail(eid,direction,[gate_reason(context.get("h1_bias"),direction) if context.get("regime")=="TREND" and not allows_trend_direction(context.get("h1_bias"),direction) else "MTF_TREND_FILTER_FAILED"])
         e9=ema(x,9).iloc[-1];e20=ema(x,20).iloc[-1];recent_high=num(x.high.iloc[-8:-2].max());pullback_touch=(last["low"]<=e9+.15*a or last["low"]<=e20+.15*a) if direction=="BUY" else (last["high"]>=e9-.15*a or last["high"]>=e20-.15*a);pull_vol=num(pd.to_numeric(x.volume,errors="coerce").iloc[-2]/max(pd.to_numeric(x.volume,errors="coerce").iloc[-6:-2].mean(),1e-12)) if "volume" in x else 1.0;reversal=_bullish_reversal(last,prev) if direction=="BUY" else _bearish_reversal(last,prev);context_ok=(direction=="BUY" and recent_high>=num(x.high.iloc[-1])) or (direction=="SELL" and recent_high<=num(x.high.iloc[-1]));ok=pullback_touch and reversal and pull_vol<1.0 and s["bias"]==direction and context_ok;return _result(eid,direction,e20,{"ema9":num(e9),"ema20":num(e20),"pullback_volume_ratio":pull_vol,"structure":s},90,"E1|pullback-reversal|%s|%s"%(direction,last["close"])) if ok else _fail(eid,direction,["IMPULSE_PULLBACK_CONTINUATION_FAILED"])
     if eid=="E2":
-        if not _trend_filter_ok(context,direction):return _fail(eid,direction,["MTF_TREND_FILTER_FAILED"])
+        if not _trend_filter_ok(context,direction):return _fail(eid,direction,[gate_reason(context.get("h1_bias"),direction) if context.get("regime")=="TREND" and not allows_trend_direction(context.get("h1_bias"),direction) else "MTF_TREND_FILTER_FAILED"])
         e50=ema(x,50).iloc[-1];rsi=num(_rsi(x).iloc[-1],50);fib_ok=False;fib50=fib618=fib786=None
         if direction=="BUY" and highs and lows:
             hi_i,hi=highs[-1];prior_lows=[p for p in lows if p[0]<hi_i]
@@ -82,7 +84,7 @@ def evaluate_strategy(engine_id,m5,context,direction):
         if context.get("h1_bias") in ("BUY","SELL") and context.get("h1_bias")!=direction:return _fail(eid,direction,["H1_DIRECTION_FILTER_FAILED"])
         rh,rl=_range_levels(x,20);level=rh if direction=="BUY" else rl;prior=x.iloc[-8:-1];broken=bool((prior.close>level).any()) if direction=="BUY" else bool((prior.close<level).any());touched=last["low"]<=level+.20*a and last["close"]>=level if direction=="BUY" else last["high"]>=level-.20*a and last["close"]<=level;rejection=_bullish_reversal(last,prev) if direction=="BUY" else _bearish_reversal(last,prev);ok=broken and touched and rejection;return _result(eid,direction,level,{"retest_level":level,"broken":broken,"retest_touched":touched,"atr":a},88,"E4|break-retest|%s|%s"%(direction,last["close"])) if ok else _fail(eid,direction,["BREAK_RETEST_CONTINUATION_FAILED"])
     if eid=="E5":
-        if not _trend_filter_ok(context,direction):return _fail(eid,direction,["MTF_TREND_FILTER_FAILED"])
+        if not _trend_filter_ok(context,direction):return _fail(eid,direction,[gate_reason(context.get("h1_bias"),direction) if context.get("regime")=="TREND" and not allows_trend_direction(context.get("h1_bias"),direction) else "MTF_TREND_FILTER_FAILED"])
         body_atr=last["body"]/max(a,1e-12);vr=_volume_ratio(x);marubozu=last["body_ratio"]>=.80 and max(last["upper_wick"],last["lower_wick"])<=.15*last["range"];ok=_e5_momentum_ok(body_atr=body_atr,volume_ratio=vr,marubozu=marubozu) and ((direction=="BUY" and last["bull"]) or (direction=="SELL" and last["bear"]));return _result(eid,direction,last["high"] if direction=="BUY" else last["low"],{"body_atr":body_atr,"volume_ratio":vr,"marubozu":marubozu},84,"E5|momentum-expansion|%s|%s"%(direction,last["close"])) if ok else _fail(eid,direction,["MOMENTUM_EXPANSION_FAILED"])
     if eid=="E6":
         if reg!="RANGE" or (context.get("m15_context",{}).get("adx14",context.get("adx14",99)) or 99)>=20:return _fail(eid,direction,["RANGE_FILTER_FAILED"])
