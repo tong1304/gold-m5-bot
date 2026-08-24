@@ -7,11 +7,10 @@ from v11.strategies.gold.g3_smc import evaluate
 
 def smc_fixture():
     n = 60
-    idx = np.arange(n)
-    close = np.full(n, 100.0)
-    open_ = np.full(n, 100.0)
-    high = np.full(n, 100.4)
-    low = np.full(n, 99.6)
+    close = np.full(n, 99.5)
+    open_ = np.full(n, 99.5)
+    high = np.full(n, 99.8)
+    low = np.full(n, 99.2)
 
     # Two nearby swing lows create an EQL liquidity pool around 98.0.
     for i, value in ((42, 98.0), (46, 98.05)):
@@ -26,10 +25,10 @@ def smc_fixture():
     low[50] = 99.5
 
     # Bearish order-block candle immediately before displacement.
-    open_[51] = 99.8
-    close[51] = 99.1
-    high[51] = 99.9
-    low[51] = 98.9
+    open_[51] = 98.8
+    close[51] = 98.1
+    high[51] = 98.3
+    low[51] = 97.9
 
     # Liquidity sweep: pierces EQL, rejects and closes back above it.
     open_[52] = 98.7
@@ -38,16 +37,16 @@ def smc_fixture():
     low[52] = 97.4
 
     # Bullish CHoCH + momentum. Low is above candle 51 high -> bullish FVG.
-    open_[53] = 99.0
-    close[53] = 101.4
-    high[53] = 101.6
-    low[53] = 100.4
+    open_[53] = 98.7
+    close[53] = 101.0
+    high[53] = 101.2
+    low[53] = 98.7
 
     # Keep the latest closed candle after the CHoCH so the engine can find the setup.
-    open_[54] = 101.2
-    close[54] = 101.5
-    high[54] = 101.8
-    low[54] = 101.0
+    open_[54] = 100.8
+    close[54] = 101.0
+    high[54] = 101.2
+    low[54] = 100.6
 
     return pd.DataFrame({
         "open": open_, "high": high, "low": low, "close": close,
@@ -73,7 +72,7 @@ class GoldG3SMCTests(unittest.TestCase):
 
     def test_no_fvg_is_a_hard_rejection(self):
         frame = smc_fixture()
-        frame.loc[53, "low"] = 99.7
+        frame.loc[53, "low"] = 98.1
         result = evaluate(frame, "BUY", {
             "h1_bias": "BUY",
             "m15": {"direction": "BUY"},
