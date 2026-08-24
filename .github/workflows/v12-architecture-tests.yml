@@ -7,6 +7,7 @@ on:
       - 'v11/**'
       - 'tests/test_strategy_architecture.py'
       - 'tests/test_replay_m5_window.py'
+      - 'tests/test_v12_regime_priority.py'
       - '.github/workflows/v12-architecture-tests.yml'
 
 jobs:
@@ -21,5 +22,5 @@ jobs:
         run: pip install -r requirements.txt
       - name: Compile V12 modules
         run: python -m py_compile v11/engine.py v11/regime.py v11/strategy_engine.py v11/setup_state.py v11/replay.py v11/replay_m5.py live_scanner_v11.py
-      - name: Run architecture tests
-        run: pytest -q tests/test_strategy_architecture.py tests/test_replay_m5_window.py
+      - name: Run architecture and V12 regression tests
+        run: pytest -q tests/test_strategy_architecture.py tests/test_replay_m5_window.py tests/test_v12_regime_priority.py
