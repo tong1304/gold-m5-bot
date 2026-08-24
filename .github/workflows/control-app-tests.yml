@@ -3,6 +3,8 @@ name: Control App Tests
 on:
   push:
     branches: [control-backtest-app]
+  pull_request:
+    branches: [main]
   workflow_dispatch:
 
 jobs:
