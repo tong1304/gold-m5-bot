@@ -4,7 +4,8 @@ import pandas as pd
 from .common import ema, atr14, structure
 from .h1_gate import allows_trend_direction, gate_reason
 
-# V12.2 MTF: H1 is a hard direction gate for Trend; M15 establishes regime; M5 triggers.
+# V12.7 MTF: H1 supplies HTF direction; M15 supplies TREND ONLY; M5 triggers.
+# M15 RANGE/TRANSITION is diagnostic metadata and must never block the new engines.
 TREND_ENGINES={"E1","E2","E5"}
 RANGE_ENGINES={"E6","E7","E8"}
 TRANSITION_ENGINES={"E3","E4","E7"}
@@ -70,37 +71,36 @@ def _mtf_trend_direction(h1):
 
 def _classify_m15(m15):
     x=m15.tail(100).reset_index(drop=True).copy()
-    if len(x)<60:return {"regime":"UNKNOWN","direction":"NEUTRAL","reason":"INSUFFICIENT_M15_CONTEXT","trend_threshold_adx":TREND_ADX_THRESHOLD,"trend_ema_alignment":f"{TREND_EMA_FAST}>{TREND_EMA_SLOW}"}
+    if len(x)<60:return {"regime":"UNKNOWN","direction":"NEUTRAL","trend_direction":"NEUTRAL","reason":"INSUFFICIENT_M15_CONTEXT","trend_threshold_adx":TREND_ADX_THRESHOLD,"trend_ema_alignment":f"{TREND_EMA_FAST}>{TREND_EMA_SLOW}"}
     a=_atr(x);e20,e50,e200=ema(x,20),ema(x,50),ema(x,200);close=_finite(x.close.iloc[-1]);adx,di_plus,di_minus=_adx(x);s=structure(x,min(80,len(x)));atr_now=a or 1e-12
     slope=(_finite(e20.iloc[-1])-_finite(e20.iloc[-6]))/atr_now
     trend_up=bool(close and close>e20.iloc[-1]>e50.iloc[-1] and s["bias"]=="BUY" and (adx or 0)>TREND_ADX_THRESHOLD and (di_plus or 0)>(di_minus or 0))
     trend_down=bool(close and close<e20.iloc[-1]<e50.iloc[-1] and s["bias"]=="SELL" and (adx or 0)>TREND_ADX_THRESHOLD and (di_minus or 0)>(di_plus or 0))
+    trend_direction="BUY" if trend_up else "SELL" if trend_down else "NEUTRAL"
     bw=_bollinger_width(x,20,2.0);lowest50=bool(len(bw)>=50 and pd.notna(bw.iloc[-1]) and bw.iloc[-1]<=bw.tail(50).min()*1.02)
     ema_flat=abs(_finite(e20.iloc[-1])-_finite(e20.iloc[-6]))<=0.20*atr_now
     range_regime=bool((adx or 0)<20 and ema_flat)
-    if trend_up:regime,direction="TREND","BUY"
-    elif trend_down:regime,direction="TREND","SELL"
-    elif lowest50:regime,direction="TRANSITION","NEUTRAL"
-    elif range_regime:regime,direction="RANGE","NEUTRAL"
-    else:regime,direction="TRANSITION","NEUTRAL"
-    return {"regime":regime,"direction":direction,"adx14":adx,"di_plus":di_plus,"di_minus":di_minus,"ema20":_finite(e20.iloc[-1]),"ema50":_finite(e50.iloc[-1]),"ema200":_finite(e200.iloc[-1]),"ema20_slope_atr":_finite(slope),"ema20_flat":ema_flat,"atr14":a,"bb_width":_finite(bw.iloc[-1]) if len(bw) else None,"bb_width_lowest50":lowest50,"range_filter":range_regime,"structure":s,"trend_up":trend_up,"trend_down":trend_down,"trend_threshold_adx":TREND_ADX_THRESHOLD,"trend_ema_alignment":f"{TREND_EMA_FAST}>{TREND_EMA_SLOW}"}
+    if trend_up:regime="TREND"
+    elif trend_down:regime="TREND"
+    elif lowest50:regime="TRANSITION"
+    elif range_regime:regime="RANGE"
+    else:regime="TRANSITION"
+    return {"regime":regime,"direction":trend_direction,"trend_direction":trend_direction,"adx14":adx,"di_plus":di_plus,"di_minus":di_minus,"ema20":_finite(e20.iloc[-1]),"ema50":_finite(e50.iloc[-1]),"ema200":_finite(e200.iloc[-1]),"ema20_slope_atr":_finite(slope),"ema20_flat":ema_flat,"atr14":a,"bb_width":_finite(bw.iloc[-1]) if len(bw) else None,"bb_width_lowest50":lowest50,"range_filter":range_regime,"structure":s,"trend_up":trend_up,"trend_down":trend_down,"trend_threshold_adx":TREND_ADX_THRESHOLD,"trend_ema_alignment":f"{TREND_EMA_FAST}>{TREND_EMA_SLOW}"}
 
 def classify_regime(m5,m15=None,h1=None):
-    """V12.2 MTF: H1 hard-gates Trend direction, M15 chooses regime, M5 triggers entry."""
+    """V12.7 MTF: H1 direction + M15 trend confirmation + M5 trigger. M15 regime is diagnostic only."""
     x=m5.tail(100).reset_index(drop=True).copy()
     h1_bias=_mtf_trend_direction(h1)
-    m15_info=_classify_m15(m15) if m15 is not None else {"regime":"UNKNOWN","direction":"NEUTRAL","reason":"M15_REQUIRED"}
+    m15_info=_classify_m15(m15) if m15 is not None else {"regime":"UNKNOWN","direction":"NEUTRAL","trend_direction":"NEUTRAL","reason":"M15_REQUIRED"}
     if len(x)<60:
-        return {"regime":"UNKNOWN","allowed_engines":[],"direction":"NEUTRAL","h1_bias":h1_bias,"m15_regime":m15_info.get("regime"),"m15_context":m15_info,"reason":"INSUFFICIENT_M5_CONTEXT"}
+        return {"regime":"UNKNOWN","allowed_engines":[],"direction":"NEUTRAL","h1_bias":h1_bias,"m15_regime":m15_info.get("regime"),"m15_trend":m15_info.get("trend_direction"),"m15_context":m15_info,"reason":"INSUFFICIENT_M5_CONTEXT"}
     regime=m15_info.get("regime","UNKNOWN")
-    direction=m15_info.get("direction","NEUTRAL")
+    direction=m15_info.get("trend_direction","NEUTRAL")
     h1_gate={"bias":h1_bias,"mode":"HARD_GATE_TREND","directional_constraint":h1_bias if h1_bias in ("BUY","SELL") else None}
-    if regime=="TREND":
-        if h1_bias in ("BUY","SELL") and not allows_trend_direction(h1_bias,direction):
-            return {"regime":"CONFLICT","allowed_engines":[],"direction":"NEUTRAL","h1_bias":h1_bias,"h1_gate":h1_gate,"m15_regime":regime,"m15_context":m15_info,"reason":gate_reason(h1_bias,direction)}
-        # H1 NEUTRAL is intentionally not a conflict. M15/M5 are allowed to decide.
-    if regime=="TRANSITION" and direction=="NEUTRAL":
-        direction=_direction(x)
-    return {"regime":regime,"allowed_engines":sorted(allowed_engines_for_regime(regime)),"direction":direction,"h1_bias":h1_bias,"h1_gate":h1_gate,"m15_regime":regime,"m15_context":m15_info,"m5_context_bars":min(100,len(x))}
+    # IMPORTANT: M15 regime NEVER gates the new G1/G2/G3 engines.
+    # H1 directional conflict is retained; M15 contributes trend direction only.
+    if h1_bias in ("BUY","SELL") and direction in ("BUY","SELL") and h1_bias != direction:
+        return {"regime":"CONFLICT","allowed_engines":[],"direction":"NEUTRAL","h1_bias":h1_bias,"h1_gate":h1_gate,"m15_regime":regime,"m15_trend":direction,"m15_context":m15_info,"reason":"H1_M15_TREND_CONFLICT"}
+    return {"regime":regime,"allowed_engines":[],"direction":direction,"h1_bias":h1_bias,"h1_gate":h1_gate,"m15_regime":regime,"m15_trend":direction,"m15_context":m15_info,"m5_context_bars":min(100,len(x)),"m15_regime_filter_enabled":False,"m15_role":"TREND_ONLY"}
 
 def build_regime_context(m5,m15=None,h1=None):return classify_regime(m5,m15,h1)
