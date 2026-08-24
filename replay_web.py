@@ -12,8 +12,13 @@ def _persist(result):
 def _historical_m5(symbol,start,end):
     from lse import LSE
     from v11.replay_m5 import REPLAY_M5_CONTEXT_BARS
-    market={"BTC":"BTC/USD","GOLD":"XAU/USD"}[symbol];warmup=start-timedelta(minutes=5*REPLAY_M5_CONTEXT_BARS);client=LSE(api_key=os.environ["LSE_API_KEY"])
-    raw=client.candles(market,"5m",start=warmup.isoformat(),end=end.isoformat(),limit=5000,order="asc");rows=raw.get("data") if isinstance(raw,dict) else raw
+    market={"BTC":"BTC/USD","GOLD":"XAU/USD"}[symbol]
+    warmup=start-timedelta(minutes=5*REPLAY_M5_CONTEXT_BARS)
+    client=LSE(api_key=os.environ["LSE_API_KEY"])
+    # LSE candles API accepts calendar dates only (YYYY-MM-DD), not ISO timestamps.
+    # Fetch one warm-up calendar day before the target and the normalized exclusive end date.
+    api_start=warmup.date().isoformat();api_end=end.date().isoformat()
+    raw=client.candles(market,"5m",start=api_start,end=api_end,limit=5000,order="asc");rows=raw.get("data") if isinstance(raw,dict) else raw
     if isinstance(rows,dict):rows=rows.get("data") or rows.get("rows")
     if not isinstance(rows,(list,tuple)):raise RuntimeError(f"LSE_INVALID_RESPONSE:{symbol}:5m")
     frame=pd.DataFrame(rows)
@@ -28,7 +33,7 @@ def _historical_m5(symbol,start,end):
     target=frame[(frame["datetime"]>=start)&(frame["datetime"]<end)].copy()
     if target.empty:raise RuntimeError(f"NO_TARGET_HISTORICAL_M5:{symbol}:{start.isoformat()}:{end.isoformat()}")
     gaps=target["datetime"].diff().dropna()/pd.Timedelta(minutes=5);gap_count=int((gaps>1).sum())
-    return frame,{"source":"LSE_HISTORICAL_M5_OHLCV","historical_rows":len(frame),"target_m5_rows":len(target),"first_target_candle":str(target.iloc[0].datetime),"last_target_candle":str(target.iloc[-1].datetime),"five_minute_gap_count":gap_count,"warmup_bars":REPLAY_M5_CONTEXT_BARS}
+    return frame,{"source":"LSE_HISTORICAL_M5_OHLCV","historical_rows":len(frame),"target_m5_rows":len(target),"first_target_candle":str(target.iloc[0].datetime),"last_target_candle":str(target.iloc[-1].datetime),"five_minute_gap_count":gap_count,"warmup_bars":REPLAY_M5_CONTEXT_BARS,"api_start":api_start,"api_end":api_end}
 def _worker(symbols,start,end,start_label,end_label):
     try:
         from v11.replay_m5 import replay_frames
