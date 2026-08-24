@@ -1,7 +1,6 @@
 from __future__ import annotations
 import pandas as pd
 from .common import num, ema, atr14, structure, candle_metrics
-from .setup_state import build_setup_id, build_trigger_id
 ENGINE_NAMES={"E1":"TREND","E2":"TREND_PULLBACK","E3":"BREAKOUT","E4":"BREAKOUT_RETEST","E5":"MOMENTUM","E6":"MEAN_REVERSION","E7":"LIQUIDITY_REVERSAL","E8":"RANGE"}
 def _atr(x):
     a=atr14(x).dropna();return num(a.iloc[-1]) if len(a) else num((x.high-x.low).tail(14).mean(),1e-12)
@@ -20,7 +19,7 @@ def _volume_ratio(x):
     v=pd.to_numeric(x.get("volume",pd.Series(1.0,index=x.index)),errors="coerce").fillna(1);return num(v.iloc[-1]/max(num(v.tail(20).mean(),1e-12),1e-12))
 def _confirm(x,direction):
     last=candle_metrics(x.iloc[-1]);prev=candle_metrics(x.iloc[-2]);return (last["bull"] and last["body_ratio"]>=.55 and last["close"]>prev["high"]) if direction=="BUY" else (last["bear"] and last["body_ratio"]>=.55 and last["close"]<prev["low"])
-def _result(eid,direction,anchor,evidence,score,trigger_sig):return {"status":"PASS","engine":eid,"strategy":ENGINE_NAMES[eid],"direction":direction,"setup_anchor":anchor,"evidence":evidence,"quality":float(max(0,min(100,score))),"trigger_signature":trigger_sig}
+def _result(eid,direction,anchor,evidence,score,trigger_sig):return {"status":"PASS","engine":eid,"strategy":ENGINE_NAMES[eid],"direction":direction,"setup_anchor":anchor,"evidence":evidence,"quality":float(max(0,min(100,score))),"trigger_signature":trigger_sig,"rejection_reasons":[]}
 def _fail(eid,direction,reasons):return {"status":"FAIL","engine":eid,"strategy":ENGINE_NAMES[eid],"direction":direction,"rejection_reasons":reasons,"quality":0.0}
 def evaluate_strategy(engine_id,m5,context,direction):
     eid=str(engine_id).upper();direction=str(direction).upper();x=m5.tail(100).reset_index(drop=True).copy()
@@ -77,6 +76,17 @@ def evaluate_all_allowed(m5,context):
             result=evaluate_strategy(eid,m5,context,direction)
             if result.get("status")=="PASS":result["score_detail"]=score_setup(result,context.get("regime","RANGE"));out.append(result)
     out.sort(key=lambda r:(r.get("score_detail",{}).get("score",0),r.get("quality",0)),reverse=True);return out
+
+def evaluate_all_allowed_with_trace(m5,context):
+    engines=context.get("allowed_engines",[]);directions=[context.get("direction")] if context.get("direction") in ("BUY","SELL") else ["BUY","SELL"];trace=[];candidates=[]
+    for eid in engines:
+        for direction in directions:
+            result=evaluate_strategy(eid,m5,context,direction)
+            trace.append(result)
+            if result.get("status")=="PASS":
+                result["score_detail"]=score_setup(result,context.get("regime","RANGE"));candidates.append(result)
+    candidates.sort(key=lambda r:(r.get("score_detail",{}).get("score",0),r.get("quality",0)),reverse=True)
+    return candidates,trace
 
 def enrich_selected(result,symbol,regime,candle_time):
     anchor=result.get("setup_anchor");setup_id=build_setup_id(symbol,regime,result["engine"],result["direction"],anchor);trigger=build_trigger_id(result["engine"],result["direction"],candle_time,result.get("trigger_signature",""));return {**result,"setup_id":setup_id,"trigger_id":trigger,"regime":regime,"symbol":symbol}
