@@ -14,6 +14,56 @@ REPLAY_VERSION=ENGINE_VERSION
 def _json(v,status=200):return Response(json.dumps(v,ensure_ascii=False,default=str),status=status,mimetype="application/json",headers={"Cache-Control":"no-store"})
 def _persist(result):
     tmp=RESULT_PATH.with_suffix(".tmp");tmp.write_text(json.dumps(result,ensure_ascii=False,default=str,allow_nan=False),encoding="utf-8");tmp.replace(RESULT_PATH)
+
+def _extract_rows(raw):
+    """Normalize LSE candle responses without treating session/day metadata as candles."""
+    if isinstance(raw,(list,tuple)):
+        return list(raw)
+    if not isinstance(raw,dict):
+        return None
+    # Common LSE response envelopes.
+    for key in ("data","rows","candles","results"):
+        value=raw.get(key)
+        if isinstance(value,(list,tuple)):
+            return list(value)
+        if isinstance(value,dict):
+            nested=_extract_rows(value)
+            if nested is not None:
+                return nested
+    # A single candle row may itself be returned as an object.
+    if {"open","high","low","close"}.issubset(raw.keys()) and any(k in raw for k in ("datetime","timestamp","time","date")):
+        return [raw]
+    return None
+
+def _normalize_candle_rows(raw,symbol,timeframe,day):
+    rows=_extract_rows(raw)
+    if rows is None:
+        raise ValueError(f"LSE_INVALID_RESPONSE:{symbol}:{timeframe}:day={day}:response_not_rows")
+    candle_rows=[];metadata_rows=0
+    for row in rows:
+        if not isinstance(row,dict):
+            continue
+        has_ohlc={"open","high","low","close"}.issubset(row.keys())
+        has_time=any(k in row for k in ("datetime","timestamp","time","date"))
+        if has_ohlc and has_time:candle_rows.append(row)
+        else:metadata_rows+=1
+    if not candle_rows:
+        raise ValueError(f"LSE_INVALID_RESPONSE:{symbol}:{timeframe}:day={day}:no_candle_rows:metadata_rows={metadata_rows}")
+    frame=pd.DataFrame(candle_rows)
+    for candidate in ("timestamp","time","date"):
+        if "datetime" not in frame.columns and candidate in frame.columns:
+            frame=frame.rename(columns={candidate:"datetime"})
+    required=("datetime","open","high","low","close")
+    missing=[c for c in required if c not in frame.columns]
+    if missing:
+        raise ValueError(f"LSE_INVALID_RESPONSE:{symbol}:{timeframe}:day={day}:missing={missing}")
+    frame["datetime"]=pd.to_datetime(frame["datetime"],utc=True,errors="coerce")
+    for c in required[1:]:frame[c]=pd.to_numeric(frame[c],errors="coerce")
+    frame=frame.dropna(subset=list(required)).sort_values("datetime").drop_duplicates("datetime",keep="last").reset_index(drop=True)
+    if frame.empty:
+        raise ValueError(f"LSE_INVALID_RESPONSE:{symbol}:{timeframe}:day={day}:empty_normalized_frame")
+    return frame
+
 def _fetch_history(symbol,timeframe,start,end,progress=None):
     from lse import LSE
     from v11.replay_m5 import REPLAY_M5_CONTEXT_BARS,REPLAY_M15_CONTEXT_BARS,REPLAY_H1_CONTEXT_BARS
@@ -22,18 +72,8 @@ def _fetch_history(symbol,timeframe,start,end,progress=None):
         api_start=day.date().isoformat();api_end=(day+pd.Timedelta(days=1)).date().isoformat()
         if progress:progress("data_fetch",symbol=symbol,timeframe=timeframe,day=api_start,completed=len(days)+len(skipped_days),total=int((last-day).days)+1)
         try:
-            raw=client.candles(market,timeframe,start=api_start,end=api_end,limit=1000,order="asc");rows=raw.get("data") if isinstance(raw,dict) else raw
-            if isinstance(rows,dict):rows=rows.get("data") or rows.get("rows")
-            if not isinstance(rows,(list,tuple)):raise ValueError("response is not a row list")
-            frame=pd.DataFrame(rows)
-            for candidate in ("timestamp","time","date"):
-                if "datetime" not in frame.columns and candidate in frame.columns:frame=frame.rename(columns={candidate:"datetime"})
-            required=("datetime","open","high","low","close");missing=[c for c in required if c not in frame.columns]
-            if missing:raise ValueError(f"missing={missing}")
-            frame["datetime"]=pd.to_datetime(frame["datetime"],utc=True,errors="coerce")
-            for c in required[1:]:frame[c]=pd.to_numeric(frame[c],errors="coerce")
-            frame=frame.dropna(subset=list(required)).sort_values("datetime").drop_duplicates("datetime",keep="last").reset_index(drop=True)
-            if frame.empty:raise ValueError("empty normalized frame")
+            raw=client.candles(market,timeframe,start=api_start,end=api_end,limit=1000,order="asc")
+            frame=_normalize_candle_rows(raw,symbol,timeframe,api_start)
             frames.append(frame);days.append(api_start)
         except Exception as exc:
             skipped_days.append({"day":api_start,"reason":str(exc)})
@@ -44,6 +84,7 @@ def _fetch_history(symbol,timeframe,start,end,progress=None):
     target=frame[(frame["datetime"]>=start)&(frame["datetime"]<end)].copy()
     if timeframe=="5m" and target.empty:raise RuntimeError(f"NO_TARGET_HISTORICAL_M5:{symbol}:{start.isoformat()}:{end.isoformat()}")
     return frame,{"timeframe":timeframe,"historical_rows":len(frame),"target_rows":len(target),"warmup_bars":warmup_bars,"api_start":days[0],"api_end":days[-1],"calendar_days_requested":int((pd.Timestamp(last_day)-pd.Timestamp(first_day)).days)+1,"calendar_days_fetched":len(days),"skipped_days":skipped_days,"skipped_day_count":len(skipped_days)}
+
 def _worker(symbols,start,end,start_label,end_label):
     try:
         from v11.replay_m5 import replay_frames
@@ -55,11 +96,13 @@ def _worker(symbols,start,end,start_label,end_label):
         with _LOCK:_STATE.update({"running":False,"status":"completed","result":result,"error":None,"output":["Replay completed"]})
     except Exception as exc:
         with _LOCK:_STATE.update({"running":False,"status":"failed","error":f"{type(exc).__name__}: {exc}","output":["Replay failed"]})
+
 def _set_progress(event,**kw):
     with _LOCK:_STATE["progress"]={"event":event,**kw}
 def _parse_request():
     from v11.replay_m5 import normalize_replay_window
     start=request.args.get("start") or "2026-08-21";end=request.args.get("end") or "2026-08-24";return normalize_replay_window(start,end),start,end
+
 def register(app):
     @app.route("/replay",strict_slashes=False)
     def replay_page():return Response(PAGE,mimetype="text/html",headers={"Cache-Control":"no-store"})
