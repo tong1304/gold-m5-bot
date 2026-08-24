@@ -40,16 +40,17 @@ def _acquire_scheduler_lock():
 
 
 def _startup_probe_worker():
-    """Probe the exact validated LSE candle path used by V11, not a separate date query."""
+    """Probe the exact validated LSE candle path used by V11 for both required timeframes."""
     try:
         import live_scanner_v11
         results={}
         for symbol in ("BTC","GOLD"):
             try:
-                frame=live_scanner_v11._lse_frame(symbol,"5m",points=3)
-                ok=frame is not None and not frame.empty
+                frames=live_scanner_v11._load_frames(symbol)
+                m5=frames["5m"]; m15=frames["15m"]
+                ok=(m5 is not None and not m5.empty and m15 is not None and not m15.empty)
                 results[symbol]=ok
-                logger.warning("[V11 STARTUP] LSE_REST_PROBE %s=%s rows=%s",symbol,"READY" if ok else "EMPTY",len(frame) if frame is not None else 0)
+                logger.warning("[V11 STARTUP] LSE_REST_PROBE %s=%s M5=%s M15=%s",symbol,"READY" if ok else "FAILED",len(m5) if m5 is not None else 0,len(m15) if m15 is not None else 0)
             except Exception as exc:
                 results[symbol]=False
                 logger.error("[V11 STARTUP] LSE_REST_PROBE %s=FAILED error=%s",symbol,exc)
