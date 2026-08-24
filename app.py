@@ -1,9 +1,11 @@
 from __future__ import annotations
 import json,math,os,threading,logging
+from datetime import datetime,timezone
 from flask import Flask,Response,request
+from zoneinfo import ZoneInfo
 from v11 import engine as v12_engine
 from v11.validation import validate as validate_v12
-app=Flask(__name__);logger=logging.getLogger("v12_app");SUPPORTED_SYMBOLS=("BTC/USDT","XAU/USDT");SERVICE_LOCK=threading.RLock();_SERVICES_STARTED=False;SCHEDULER_LOCK_FILE=os.getenv("V12_SCHEDULER_LOCK_FILE","/tmp/gold-m5-v12-scheduler.lock")
+app=Flask(__name__);logger=logging.getLogger("v12_app");SUPPORTED_SYMBOLS=("BTC/USDT","XAU/USDT");SERVICE_LOCK=threading.RLock();_SERVICES_STARTED=False;SCHEDULER_LOCK_FILE=os.getenv("V12_SCHEDULER_LOCK_FILE","/tmp/gold-m5-v12-scheduler.lock");UTC=timezone.utc;NEW_YORK=ZoneInfo("America/New_York")
 def _json_safe(value):
     if value is None or isinstance(value,(str,bool,int)):return value
     if isinstance(value,float):return value if math.isfinite(value) else None
@@ -25,14 +27,25 @@ def _acquire_scheduler_lock():
             try:os.unlink(SCHEDULER_LOCK_FILE)
             except OSError:return False
             return _acquire_scheduler_lock()
+def _gold_market_open(now_utc=None):
+    now_utc=now_utc or datetime.now(UTC);ny=now_utc.astimezone(NEW_YORK);wd=ny.weekday();minutes=ny.hour*60+ny.minute
+    if wd==5:return False,"WEEKEND_CLOSED"
+    if wd==6:return (minutes>=1080,"OPEN" if minutes>=1080 else "SUNDAY_CLOSED")
+    if wd==4:return (minutes<1020,"OPEN" if minutes<1020 else "FRIDAY_CLOSED")
+    if 1020<=minutes<1080:return False,"DAILY_BREAK"
+    return True,"OPEN"
 def _startup_probe_worker():
     try:
-        import live_scanner_v11;results={}
+        import live_scanner_v11;results={};now_utc=datetime.now(UTC)
         for symbol in ("BTC","GOLD"):
             try:
+                if symbol=="GOLD":
+                    opened,session=_gold_market_open(now_utc)
+                    if not opened:
+                        results[symbol]=False;logger.warning("[V12 STARTUP] LSE_REST_PROBE %s=SKIPPED session=%s reason=MARKET_CLOSED MODE=MTF",symbol,session);continue
                 frames=live_scanner_v11._load_frames(symbol);ok=all(frames.get(k) is not None and not frames[k].empty for k in ("1h","15m","5m"));results[symbol]=ok;logger.warning("[V12 STARTUP] LSE_REST_PROBE %s=%s H1=%s M15=%s M5=%s MODE=MTF",symbol,"READY" if ok else "FAILED",len(frames.get("1h",[])),len(frames.get("15m",[])),len(frames.get("5m",[])))
             except Exception as exc:results[symbol]=False;logger.error("[V12 STARTUP] LSE_REST_PROBE %s=FAILED error=%s",symbol,exc)
-        logger.warning("[V12 STARTUP] LSE_REST_PROBE BTC=%s GOLD=%s MODE=MTF:H1>M15>M5","READY" if results.get("BTC") else "FAILED","READY" if results.get("GOLD") else "FAILED")
+        logger.warning("[V12 STARTUP] LSE_REST_PROBE BTC=%s GOLD=%s MODE=MTF:H1>M15>M5","READY" if results.get("BTC") else "FAILED","READY" if results.get("GOLD") else "SKIPPED/CLOSED")
     except Exception:logger.exception("[V12 STARTUP] LSE REST readiness probe failed")
 def _start_runtime_services():
     global _SERVICES_STARTED
@@ -82,6 +95,9 @@ def symbols():return _json_response({"status":"ok","engine_version":v12_engine.E
 def live_signal():
     symbol=(request.args.get("symbol") or "BTC/USDT").strip().upper();mapped="BTC" if symbol=="BTC/USDT" else "GOLD" if symbol=="XAU/USDT" else None
     if not mapped:return _json_response({"status":"error","message":f"Unsupported symbol: {symbol}","supported_symbols":list(SUPPORTED_SYMBOLS),"live_orders_allowed":False},400)
+    if mapped=="GOLD":
+        opened,session=_gold_market_open()
+        if not opened:return _json_response({"status":"market_closed","symbol":symbol,"market_session":session,"message":"GOLD market is closed; no signal scan performed","live_orders_allowed":False},200)
     try:
         import live_scanner_v11;return _json_response(live_scanner_v11.scan_once(mapped))
     except Exception as exc:return _json_response({"status":"signal_error","engine_version":v12_engine.ENGINE_VERSION,"exchange":"LSE","symbol":symbol,"error_type":type(exc).__name__,"message":str(exc),"telegram_alert_sent":False,"live_orders_allowed":False},502)
