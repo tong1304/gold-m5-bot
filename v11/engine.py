@@ -7,7 +7,7 @@ from .regime import classify_regime
 from .strategy_engine import evaluate_all_allowed_with_trace, enrich_selected
 from .setup_state import SetupState, can_emit_entry
 from .decision_priority import choose_priority_setup, signal_reason
-ENGINE_VERSION="12.1-MTF-H1-M15-M5-REGIME-8-ENGINE-REENTRY"
+ENGINE_VERSION="12.2-MTF-H1-HARD-GATE-M15-M5-REGIME-8-ENGINE-REENTRY"
 FORWARD_BARS=12
 MIN_RISK_REWARD=_MIN_RISK_REWARD;RISK_REWARD=MIN_RISK_REWARD
 BTC_STRATEGIES=("E1_TREND","E2_TREND_PULLBACK","E3_BREAKOUT","E4_BREAKOUT_RETEST","E5_MOMENTUM","E6_MEAN_REVERSION","E7_LIQUIDITY_REVERSAL","E8_RANGE");GOLD_STRATEGIES=BTC_STRATEGIES
@@ -54,7 +54,7 @@ def analyze(m5,m15=None,symbol=None,index=None,setup_state=None,h1=None):
     if q5 or q15 or q1:
         return _finalize({**base,"valid":False,"signal":"NO_TRADE","strategy":"NONE","regime":None,"allowed_engines":[],"rejection_reasons":q5+q15+q1,"trade_levels":{"valid":False},"data_quality":{"m5":q5,"m15":q15,"h1":q1}})
     regime=classify_regime(m5,m15,h1)
-    base.update({"regime":regime,"m5_trend":detect_m5_trend(m5),"h1_bias":regime.get("h1_bias"),"m15_regime":regime.get("m15_regime"),"allowed_engines":regime.get("allowed_engines",[])})
+    base.update({"regime":regime,"m5_trend":detect_m5_trend(m5),"h1_bias":regime.get("h1_bias"),"h1_gate":regime.get("h1_gate"),"m15_regime":regime.get("m15_regime"),"allowed_engines":regime.get("allowed_engines",[])})
     if regime.get("regime")=="CONFLICT":
         return _finalize({**base,"valid":False,"signal":"NO_TRADE","strategy":"NONE","setup_candidates":[],"selected_setup":None,"rejection_reasons":[regime.get("reason","MTF_FILTER_CONFLICT")],"trade_levels":{"valid":False},"decision_trace":[]})
     candidates,trace=evaluate_all_allowed_with_trace(m5,regime)
@@ -62,7 +62,7 @@ def analyze(m5,m15=None,symbol=None,index=None,setup_state=None,h1=None):
     if not candidates:
         return _finalize({**base,"valid":False,"signal":"NO_TRADE","strategy":"NONE","setup_candidates":[],"selected_setup":None,"rejection_reasons":["NO_ALLOWED_ENGINE_SETUP"],"trade_levels":{"valid":False}})
 
-    # Explicit V12.1 priority gate: E7 > E4 > E1 > E2 > E5 > E3 > E6 > E8.
+    # Explicit V12.2 priority gate: E7 > E4 > E1 > E2 > E5 > E3 > E6 > E8.
     # Strategy quality never allows a lower-priority engine to jump the queue.
     selected_candidate=choose_priority_setup(candidates)
     selected=enrich_selected(selected_candidate,symbol,regime["regime"],str(m5.iloc[-1].get("datetime","")))
