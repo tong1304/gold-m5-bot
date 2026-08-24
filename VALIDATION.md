@@ -1,39 +1,64 @@
-# v5 Real-Data Validation
+# V12 Validation
 
-`validate_v5.py` is a **paper-validation-only** runner. It never places orders.
+The production signal path is now fixed to the approved architecture:
 
-## Run
-
-```bash
-export TWELVE_DATA_API_KEY=YOUR_KEY
-python validate_v5.py --symbol XAU/USD --bars 1000
+```text
+MARKET DATA
+    ↓
+REGIME ENGINE
+    ↓
+TREND / RANGE / TRANSITION
+    ↓
+E1-E5 / E6-E8 / E3-E4-E7
+    ↓
+SETUP SCORER
+    ↓
+ENTRY TRIGGER
+    ↓
+SETUP ID / STATE
+    ↓
+INITIAL / RE-ENTRY
+    ↓
+RISK ENGINE
+    ↓
+RR / TARGET
+    ↓
+FINAL SIGNAL
 ```
 
-Windows PowerShell:
+## Regime routing
 
-```powershell
-$env:TWELVE_DATA_API_KEY="YOUR_KEY"
-python validate_v5.py --symbol XAU/USD --bars 1000
-```
+- TREND: E1, E2, E3, E4, E5
+- RANGE: E6, E7, E8
+- TRANSITION: E3, E4, E7
 
-The report includes:
+Regime is a hard gate. A strategy outside its approved regime is never selected by `v11.engine.analyze`.
 
-- WIN / LOSS / BREAKEVEN / TIMEOUT counts
-- net expectancy in R with TIMEOUT included
-- resolved-trade win rate separately labelled
-- profit factor and maximum drawdown in R
-- MFE / MAE
-- BUY vs SELL breakdown
-- number of possible walk-forward windows
-- execution assumptions (spread, slippage, conservative STOP_FIRST policy)
+## Entry and risk gates
 
-## Recommended validation sequence
+1. Closed M5/M15 data must pass data-quality validation.
+2. Regime must be classified.
+3. Only allowed engines are evaluated.
+4. Setup must pass its own structural conditions.
+5. Setup score must meet the configured threshold (70/100 by default).
+6. A new M5 trigger is required.
+7. Setup ID and trigger ID are checked for duplicate/re-entry control.
+8. Risk is calculated from structure + ATR.
+9. Minimum risk/reward remains 2R.
+10. Otherwise the result is `NO_TRADE`.
 
-1. `--bars 1000`
-2. `--bars 2000`
-3. `--bars 4000`
-4. Compare BUY and SELL independently.
-5. Compare expectancy after increasing spread/slippage assumptions.
-6. Reject the strategy if the edge disappears under realistic costs or in out-of-sample periods.
+## Re-entry
 
-A positive backtest does **not** authorize live trading. Broker-specific bid/ask, spread, slippage, order-fill behavior and data-feed differences must be validated first.
+A second order for the same setup is allowed only when the setup ID remains compatible and a **new trigger ID** exists. The same setup + same trigger is suppressed. `MAX_REENTRIES_PER_SETUP` defaults to 2 and is configurable.
+
+Live scanning allows a same-setup re-entry even when a prior order from that setup remains open. A different setup remains subject to the existing active-signal lock.
+
+Replay applies the same setup-state and active-signal policy so replay and live share the same decision architecture.
+
+## Performance validation
+
+Win rate is not hard-coded. It must be measured from replay/backtest results with the same data, costs, and resolution policy. Optimize expectancy, drawdown, profit factor, and out-of-sample stability rather than win rate alone.
+
+## Safety
+
+`live_orders_allowed` remains `false`; this repository continues to produce alerts/signals rather than place broker orders automatically.
