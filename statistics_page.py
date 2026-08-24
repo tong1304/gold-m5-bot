@@ -1,69 +1,42 @@
-"""V11 statistics and historical replay route registration."""
+"""V11 statistics/replay route registration with a JSON-safe fallback."""
+from __future__ import annotations
 import json
 import logging
 from flask import Response, request
-import statistics_page_v11 as _statistics
 logger=logging.getLogger(__name__)
 
+def _has_route(app,path):
+    return any(rule.rule==path for rule in app.url_map.iter_rules())
 
-def _has_route(app,path): return any(rule.rule==path for rule in app.url_map.iter_rules())
-
+def _json(payload,status=200):
+    return Response(json.dumps(payload,ensure_ascii=False,allow_nan=False,default=str),status=status,mimetype="application/json",headers={"Cache-Control":"no-store"})
 
 def register(app):
-    if not _has_route(app,"/statistics"):
-        _statistics.register(app); logger.info("V11 backtest statistics route registered: /statistics")
+    try:
+        import statistics_page_v11 as _statistics
+        _statistics.register(app)
+        logger.warning("[V11 STARTUP] Statistics V11.2 routes registered")
+    except Exception as exc:
+        logger.exception("[V11 STARTUP] Statistics V11.2 import/register failed: %s",exc)
+        if not _has_route(app,"/statistics"):
+            @app.route("/statistics",strict_slashes=False)
+            def statistics_fallback_page():
+                return Response("""<!doctype html><html lang='th'><meta charset='utf-8'><title>V11.2 Statistics</title><body style='font-family:system-ui;background:#0b1220;color:#eee;padding:30px'><h1>📊 V11.2 Statistics</h1><p>Statistics module กำลังโหลดไม่สำเร็จ</p><pre id='e'></pre><p><a href='/replay' style='color:#70a7ff'>⏪ Replay</a></p><script>fetch('/api/statistics').then(r=>r.json()).then(x=>document.getElementById('e').textContent=JSON.stringify(x,null,2)).catch(e=>document.getElementById('e').textContent=String(e))</script></body></html>""",mimetype="text/html")
+        if not _has_route(app,"/api/statistics"):
+            @app.route("/api/statistics",strict_slashes=False)
+            def statistics_api_fallback():
+                return _json({"status":"statistics_route_error","engine_version":"11.2-DYNAMIC-STRATEGIES","message":"Statistics module failed to load","error_type":type(exc).__name__,"error":str(exc),"live_orders_allowed":False},500)
     if not _has_route(app,"/replay"):
         try:
-            import replay_web; replay_web.register(app); logger.info("V11 historical replay route registered: /replay")
-        except Exception: logger.exception("Failed to register V11 historical replay route")
-
-    # During a replay the API used to return status=running, while the
-    # statistics page intentionally hid the normal cards in that state.
-    # Convert the live progress snapshot into the same statistics payload
-    # shape so the existing page can render useful data immediately.
-    @app.after_request
-    def _statistics_live_progress(response):
-        if request.path != "/api/statistics" or response.mimetype != "application/json":
-            return response
-        try:
-            payload=json.loads(response.get_data(as_text=True))
-            if payload.get("status") != "running":
-                return response
-            p=payload.get("progress") or {}
-            wins=int(p.get("wins") or 0); losses=int(p.get("losses") or 0); decided=wins+losses
-            trades=int(p.get("trades") or 0); open_count=int(p.get("open") or 0); ambiguous=int(p.get("ambiguous") or 0)
-            payload["status"]="ok"
-            payload["phase"]="running"
-            payload["performance"]={
-                "rows":int(p.get("completed") or 0),
-                "trades":trades,
-                "decided":decided,
-                "wins":wins,
-                "losses":losses,
-                "open":open_count,
-                "ambiguous":ambiguous,
-                "no_trade":max(0,int(p.get("completed") or 0)-trades),
-                "win_rate":round(100*wins/decided,2) if decided else 0.0,
-                "loss_rate":round(100*losses/decided,2) if decided else 0.0,
-                "net_r":float(p.get("net_r") or 0.0),
-                "gross_profit_r":0.0,
-                "gross_loss_r":0.0,
-                "profit_factor":None,
-                "expectancy_r":round(float(p.get("net_r") or 0.0)/decided,4) if decided else 0.0,
-            }
-            payload["trade_history"]=[]
-            payload["strategies"]={}
-            payload["reports"]=[]
-            response.set_data(json.dumps(payload,ensure_ascii=False,allow_nan=False))
-            response.headers["Cache-Control"]="no-store"
-        except Exception:
-            logger.exception("Failed to transform live statistics progress")
-        return response
-
+            import replay_web
+            replay_web.register(app)
+            logger.warning("[V11 STARTUP] Replay route registered: /replay")
+        except Exception as exc:
+            logger.exception("[V11 STARTUP] Replay route registration failed: %s",exc)
     if not _has_route(app,"/routes"):
         @app.route("/routes",strict_slashes=False)
         def route_status():
             routes=sorted({rule.rule for rule in app.url_map.iter_rules()})
-            return Response(json.dumps({"status":"ok","engine_version":"11.1-HARDENED","statistics":"/statistics" in routes,"replay":"/replay" in routes,"routes":routes},ensure_ascii=False),mimetype="application/json")
+            return _json({"status":"ok","engine_version":"11.2-DYNAMIC-STRATEGIES","statistics":"/statistics" in routes,"statistics_api":"/api/statistics" in routes,"replay":"/replay" in routes,"routes":routes})
 
 __all__=["register"]
