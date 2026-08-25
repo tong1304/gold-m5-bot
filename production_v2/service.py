@@ -48,20 +48,22 @@ class LiveService:
         self._last_status_at = time.monotonic()
 
     def _trace_result(self, alias: str, result) -> None:
+        state = result.risk.get("engine_state")
+        blocked_by = result.risk.get("blocked_by")
+        # Score is retained only as an internal diagnostic field for backwards
+        # compatibility. It is deliberately excluded from the decision trace:
+        # PASS/WAIT/FAIL is determined by gates and thesis validity, not points.
         print(
             f"[PRODUCTION V2] {alias} PIPELINE decision={result.decision} "
-            f"state={result.risk.get('engine_state')} "
-            f"blocked_by={result.risk.get('blocked_by')} "
+            f"state={state} blocked_by={blocked_by} "
             f"wait_bars={result.risk.get('wait_bars')} "
-            f"gate={result.gate_passed} score={result.score:.2f} "
-            f"engines={len(result.engines)}",
+            f"gate={result.gate_passed} engines={len(result.engines)}",
             flush=True,
         )
         for engine in result.engines:
             print(
                 f"[PRODUCTION V2] {alias} {engine.engine_id} "
-                f"gate={engine.gate_passed} score={engine.score:.2f} "
-                f"reasons={list(engine.reason_codes)}",
+                f"gate={engine.gate_passed} reasons={list(engine.reason_codes)}",
                 flush=True,
             )
 
@@ -70,23 +72,34 @@ class LiveService:
             for alias in self.data.symbols():
                 try:
                     raw = self.data.candles(alias)
-                    print(
-                        f"[PRODUCTION V2] {alias} LSE M5 received "
-                        f"bars={len(raw.get('bars') or [])} "
-                        f"candle={raw.get('candle_close_timestamp')}",
-                        flush=True,
-                    )
                     payload = normalize_market_data(raw)
                     if payload["bars"]:
                         self._last_prices[alias] = payload["bars"][-1]["close"]
                         store.update_price(alias, self._last_prices[alias])
+
                     candle = payload.get("candle_close_timestamp") or ""
                     if not candle:
                         self._runtime_errors[alias] = "ไม่พบ candle timestamp"
                         continue
+
+                    # LSE may return the same closed candle on multiple polling
+                    # cycles. A duplicate candle is data refresh only: never
+                    # rerun E1..E9, never advance WAIT, and never overwrite the
+                    # current professional WAIT state.
                     if self._last_candle.get(alias) == candle:
+                        print(
+                            f"[PRODUCTION V2] {alias} DUPLICATE_CANDLE "
+                            f"candle={candle} action=SKIP_EVALUATION",
+                            flush=True,
+                        )
                         continue
+
                     self._last_candle[alias] = candle
+                    print(
+                        f"[PRODUCTION V2] {alias} LSE M5 new closed candle "
+                        f"bars={len(raw.get('bars') or [])} candle={candle}",
+                        flush=True,
+                    )
 
                     wait_state = self._wait_state.get(alias)
                     wait_bars = int(wait_state.get("wait_bars", 0)) if wait_state else 0
@@ -104,6 +117,7 @@ class LiveService:
                         self._wait_state[alias] = {
                             "waiting_engine": blocked_by,
                             "engines": result.engines,
+                            # Informational counter only. It NEVER expires WAIT.
                             "wait_bars": wait_bars + 1,
                         }
                     else:
