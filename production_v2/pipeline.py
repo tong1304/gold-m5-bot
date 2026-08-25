@@ -11,15 +11,13 @@ from .engines import run_e9_decision, run_engine
 # across any number of closed M5 candles while its structure is intact.
 WAIT_MAX_BARS = None
 
-# These are conditions a discretionary professional would normally abandon
-# immediately rather than "wait" for. Scores never override these decisions.
+# Immediate FAIL is reserved for conditions that invalidate the thesis or make
+# the trade objectively unacceptable. Missing evidence is NOT a failure:
+# professional traders wait for confirmation when the underlying thesis is
+# still structurally valid.
 HARD_FAIL_REASONS = {
     "E1_MARKET_STATE_TRANSITION",
-    "E3_STRUCTURE_NOT_CONFIRMED",
-    "E4_LIQUIDITY_EVIDENCE_INSUFFICIENT",
     "E5_LOCATION_DISADVANTAGED",
-    "E6_SETUP_NOT_MATURE",
-    "E6_SETUP_NOT_DIRECTIONAL",
     "E7_CONFIRMATION_INVALIDATED",
     "E8_RISK_PLAN_INVALID",
     "E8_RISK_GATE_NOT_READY",
