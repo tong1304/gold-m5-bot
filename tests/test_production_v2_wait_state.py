@@ -1,6 +1,7 @@
 from production_v2.pipeline import resolve_engine_state, WAIT_MAX_BARS
 
 
+# Professional decision model: PASS / WAIT / FAIL; score never overrides state.
 def test_unclear_evidence_waits_instead_of_passing_or_failing():
     state = resolve_engine_state(False, ("E7_CONFIRMATION_INSUFFICIENT",))
     assert state == "WAIT"
