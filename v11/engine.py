@@ -6,6 +6,7 @@ from .data_quality import validate_frame
 from .risk import MIN_RISK_REWARD as _MIN_RISK_REWARD
 from .regime import classify_regime
 from .asset_strategies import evaluate_asset_strategies
+from .btc_strategy_dispatch import evaluate_btc_strategies
 from .setup_state import SetupState, can_emit_entry
 from .decision_priority import signal_reason
 
@@ -64,7 +65,7 @@ def analyze(m5,m15=None,symbol=None,index=None,setup_state=None,h1=None):
     base={"engine_version":ENGINE_VERSION,"symbol":symbol,"live_orders_allowed":False,"analysis_window":{"m5_context_bars":100,"m15_context_bars":100,"h1_context_bars":100,"timeframe_mode":"MTF:H1→M15→M5","alignment":"H1/M15 closed before M5 trigger"}}
     if q5 or q15 or q1:return _finalize({**base,"valid":False,"signal":"NO_TRADE","strategy":"NONE","allowed_engines":list(BTC_STRATEGIES),"rejection_reasons":q5+q15+q1,"trade_levels":{"valid":False},"data_quality":{"m5":q5,"m15":q15,"h1":q1}})
     regime=classify_regime(m5,m15,h1);current_regime=regime.get("m5_regime") or regime.get("regime","TRANSITION");base.update({"regime":regime,"m5_regime":current_regime,"h1_bias":regime.get("h1_bias"),"m15_regime":regime.get("m15_regime"),"m15_trend":regime.get("m15_trend"),"m15_role":"CONTEXT_ONLY","allowed_engines":list(BTC_STRATEGIES)})
-    candidates,trace=evaluate_asset_strategies("BTC",m5,regime);base["decision_trace"]=trace
+    candidates,trace=evaluate_btc_strategies(m5,regime);base["decision_trace"]=trace
     if not candidates:return _finalize({**base,"valid":False,"signal":"NO_TRADE","strategy":"NONE","setup_candidates":[],"selected_setup":None,"rejection_reasons":["NO_BTC_STRATEGY_PASSED_CORE_GATE_SCORE_FILTER"],"trade_levels":{"valid":False}})
     selected=candidates[0];sid,tid=_setup_ids(selected,symbol,str(m5.iloc[-1].get("datetime","")),current_regime);selected={**selected,"setup_id":sid,"trigger_id":tid,"symbol":symbol};score=selected.get("score_detail",{});base.update({"setup_candidates":candidates,"selected_setup":selected,"strategy":selected["strategy"],"engine":selected["engine"],"setup_id":sid,"trigger_id":tid,"setup_score":score})
     if not score.get("qualified"):return _finalize({**base,"valid":False,"signal":"NO_TRADE","entry_type":None,"rejection_reasons":["SETUP_SCORE_BELOW_THRESHOLD"],"trade_levels":{"valid":False}})
