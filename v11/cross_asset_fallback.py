@@ -15,6 +15,17 @@ def _normal_asset(asset: str) -> str:
     return asset
 
 
+def native_strategy_ids(asset: str, regime: str) -> list[str]:
+    """Return strategies belonging to the target asset that support this M5 regime."""
+    target = _normal_asset(asset)
+    regime = str(regime or "").upper()
+    return [
+        engine
+        for engine, profile in ASSET_STRATEGY_REGIMES.items()
+        if profile.get("asset") == target and regime in profile.get("regimes", set())
+    ]
+
+
 def cross_asset_strategy_ids(target_asset: str, regime: str) -> list[str]:
     """Return compatible strategies from the other asset for the same M5 regime."""
     target = _normal_asset(target_asset)
