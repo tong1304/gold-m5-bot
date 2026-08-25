@@ -16,30 +16,43 @@ class AssetStrategyArchitectureTests(unittest.TestCase):
         result = score_setup("G1", {"trend_strength": 15, "pullback_quality": 25})
         self.assertEqual(result["score"], 40)
         self.assertFalse(result["qualified"])
-        self.assertEqual(result["failed_gate"], [])
+        self.assertGreater(len(result["failed_gate"]), 0)
 
     def test_score_threshold_is_not_all_or_nothing(self):
-        result = score_setup("G1", {
-            "trend_strength": 15,
-            "ema_alignment": 15,
-            "pullback_quality": 25,
-            "structure_quality": 10,
-        })
+        result = score_setup(
+            "G1",
+            {
+                "trend_strength": 15,
+                "ema_alignment": 15,
+                "pullback_quality": 25,
+                "structure_quality": 10,
+            },
+            core_gate={
+                "trend_direction": True,
+                "pullback": True,
+                "structure_intact": True,
+                "entry_trigger": True,
+            },
+        )
         self.assertEqual(result["score"], 65)
         self.assertTrue(result["qualified"])
 
     def test_filter_can_reject_even_when_setup_score_passes(self):
-        result = score_setup("B3", {
-            "breakout_strength": 20,
-            "volatility_expansion": 20,
-            "momentum": 15,
-            "candle_quality": 10,
-            "location": 10,
-            "distance_from_breakout": 10,
-            "trend_alignment": 10,
-            "volume_activity": 5,
-            "filters": {"overextended": True},
-        })
+        result = score_setup(
+            "B1",
+            {
+                "breakout_strength": 20,
+                "volatility_expansion": 20,
+                "momentum": 15,
+                "candle_quality": 10,
+                "location": 10,
+                "distance_from_breakout": 10,
+                "trend_alignment": 10,
+                "volume_activity": 5,
+                "filters": {"overextended": True},
+            },
+            core_gate={"compression": True, "breakout": True, "breakout_close": True},
+        )
         self.assertEqual(result["score"], 100)
         self.assertFalse(result["qualified"])
         self.assertIn("OVEREXTENDED", result["filter_rejections"])
@@ -47,10 +60,10 @@ class AssetStrategyArchitectureTests(unittest.TestCase):
     def test_regime_selects_asset_specific_strategies(self):
         self.assertTrue(strategy_allowed_by_regime("GOLD", "G1", "TREND"))
         self.assertTrue(strategy_allowed_by_regime("GOLD", "G2", "TREND"))
-        self.assertTrue(strategy_allowed_by_regime("GOLD", "G3", "BREAKOUT"))
-        self.assertTrue(strategy_allowed_by_regime("BTC", "B1", "RANGE"))
+        self.assertTrue(strategy_allowed_by_regime("GOLD", "G3", "BREAKOUT_RETEST"))
+        self.assertTrue(strategy_allowed_by_regime("BTC", "B1", "EXPANSION"))
         self.assertTrue(strategy_allowed_by_regime("BTC", "B2", "BREAKOUT_RETEST"))
-        self.assertTrue(strategy_allowed_by_regime("BTC", "B3", "EXPANSION"))
+        self.assertTrue(strategy_allowed_by_regime("BTC", "B3", "RANGE"))
         self.assertFalse(strategy_allowed_by_regime("BTC", "B1", "TREND"))
         self.assertFalse(strategy_allowed_by_regime("GOLD", "G1", "RANGE"))
 
