@@ -10,6 +10,7 @@ on:
       - 'tests/test_v12_regime_priority.py'
       - 'tests/test_h1_bias_gate.py'
       - 'tests/test_gold_g3_smc.py'
+      - 'tests/test_btc_strategy_dispatch.py'
       - '.github/workflows/v12-architecture-tests.yml'
 
 jobs:
@@ -23,6 +24,6 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
       - name: Compile V12 modules
-        run: python -m py_compile v11/engine.py v11/regime.py v11/strategy_engine.py v11/setup_state.py v11/replay.py v11/replay_m5.py live_scanner_v11.py
+        run: python -m py_compile v11/engine.py v11/regime.py v11/strategy_engine.py v11/btc_strategy_dispatch.py v11/setup_state.py v11/replay.py v11/replay_m5.py live_scanner_v11.py
       - name: Run architecture and V12 regression tests
-        run: pytest -q tests/test_strategy_architecture.py tests/test_replay_m5_window.py tests/test_v12_regime_priority.py tests/test_h1_bias_gate.py tests/test_gold_g3_smc.py
+        run: pytest -q tests/test_strategy_architecture.py tests/test_btc_strategy_dispatch.py tests/test_replay_m5_window.py tests/test_v12_regime_priority.py tests/test_h1_bias_gate.py tests/test_gold_g3_smc.py
