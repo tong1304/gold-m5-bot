@@ -6,6 +6,7 @@ from flask import Flask, jsonify, request
 
 from .market_data import normalize_market_data
 from .pipeline import ProductionPipeline
+from .statistics import build_statistics, store
 
 app = Flask(__name__)
 pipeline = ProductionPipeline()
@@ -38,11 +39,19 @@ def health():
     })
 
 
+@app.get("/api/statistics")
+@app.get("/statistics")
+def statistics():
+    return jsonify(build_statistics())
+
+
 @app.post("/signal")
 def signal():
     try:
         market_data = normalize_market_data(request.get_json(silent=True) or {})
         result = pipeline.run(market_data)
+        price = market_data["bars"][-1]["close"] if market_data["bars"] else None
+        store.record(result, price)
         return jsonify(result.as_dict())
     except ValueError as exc:
         return jsonify({"error": str(exc), "system": "9-ENGINE", "legacy_runtime": False}), 400
