@@ -1,9 +1,9 @@
 name: production-v2-tests
 on:
   push:
-    branches: [production-v2, feature/professional-wait-state]
+    branches: [production-v2]
   pull_request:
-    branches: [main, production-v2]
+    branches: [main]
 
 env:
   PRODUCTION_V2_DISABLE_LIVE: "1"
