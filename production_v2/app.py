@@ -17,6 +17,9 @@ app.config["PRODUCTION_V2_LIVE_REQUIRED"] = True
 
 def start_production_runtime() -> None:
     """Start the production-v2 live M5 runtime exactly once at import time."""
+    if os.getenv("PRODUCTION_V2_DISABLE_LIVE") == "1":
+        logger.info("[PRODUCTION V2] Live runtime disabled by test configuration")
+        return
     key = os.getenv("LSE_API_KEY")
     if not key:
         logger.error("[PRODUCTION V2] LSE_API_KEY is missing; live M5 runtime cannot start")
