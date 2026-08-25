@@ -6,7 +6,8 @@ import pandas as pd
 
 from .data_quality import validate_frame
 from .regime import classify_regime
-from .asset_strategies import evaluate_asset_strategies, native_strategy_ids
+from .asset_strategies import evaluate_asset_strategies
+from .asset_strategy_registry import native_strategy_ids
 from .setup_state import SetupState, can_emit_entry
 from .decision_priority import signal_reason
 
