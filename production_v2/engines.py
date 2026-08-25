@@ -31,16 +31,22 @@ SUB_ENGINE_CODES = {
 }
 
 SUFFIX = {
-    '1A':'a_data_quality','1B':'b_volatility_state','1C':'c_trend_state','1D':'d_range_state','1E':'e_compression','1F':'f_expansion','1G':'g_transition',
-    '2A':'a_trend_regime','2B':'b_range_regime','2C':'c_mean_reversion_behavior','2D':'d_breakout_regime','2E':'e_regime_phase','2F':'f_regime_transition',
-    '3A':'a_swing_detection','3B':'b_structure_classification','3C':'c_break_of_structure','3D':'d_structural_failure','3E':'e_structure_strength','3F':'f_internal_external_structure',
-    '4A':'a_liquidity_zone_detection','4B':'b_sweep_detection','4C':'c_reaction_rejection','4D':'d_acceptance','4E':'e_reclaim_failed_break','4F':'f_liquidity_strength_quality',
-    '5A':'a_equilibrium_value','5B':'b_structural_location','5C':'c_liquidity_location','5D':'d_extension','5E':'e_available_space','5F':'f_location_quality',
-    '6A':'a_setup_context','6B':'b_setup_archetype','6C':'c_setup_formation_state_machine','6D':'d_setup_invalidation','6E':'e_setup_quality','6F':'f_setup_maturity',
-    '7A':'a_trigger_detection','7B':'b_trigger_quality','7C':'c_follow_through','7D':'d_failure_invalidation','7E':'e_execution_conditions','7F':'f_confirmation_quality',
-    '8A':'a_invalidation_model','8B':'b_stop_placement','8C':'c_target_liquidity_objective','8D':'d_r_multiple','8E':'e_position_size','8F':'f_exposure_limits','8G':'g_risk_gate',
-    '9A':'a_data_gate','9B':'b_context_gate','9C':'c_setup_gate','9D':'d_confirmation_gate','9E':'e_risk_gate','9F':'f_execution_gate','9G':'g_final_decision','9H':'h_decision_logging',
+    "1A":"a_data_quality","1B":"b_volatility_state","1C":"c_trend_state","1D":"d_range_state","1E":"e_compression","1F":"f_expansion","1G":"g_transition",
+    "2A":"a_trend_regime","2B":"b_range_regime","2C":"c_mean_reversion_behavior","2D":"d_breakout_regime","2E":"e_regime_phase","2F":"f_regime_transition",
+    "3A":"a_swing_detection","3B":"b_structure_classification","3C":"c_break_of_structure","3D":"d_structural_failure","3E":"e_structure_strength","3F":"f_internal_external_structure",
+    "4A":"a_liquidity_zone_detection","4B":"b_sweep_detection","4C":"c_reaction_rejection","4D":"d_acceptance","4E":"e_reclaim_failed_break","4F":"f_liquidity_strength_quality",
+    "5A":"a_equilibrium_value","5B":"b_structural_location","5C":"c_liquidity_location","5D":"d_extension","5E":"e_available_space","5F":"f_location_quality",
+    "6A":"a_setup_context","6B":"b_setup_archetype","6C":"c_setup_formation_state_machine","6D":"d_setup_invalidation","6E":"e_setup_quality","6F":"f_setup_maturity",
+    "7A":"a_trigger_detection","7B":"b_trigger_quality","7C":"c_follow_through","7D":"d_failure_invalidation","7E":"e_execution_conditions","7F":"f_confirmation_quality",
+    "8A":"a_invalidation_model","8B":"b_stop_placement","8C":"c_target_liquidity_objective","8D":"d_r_multiple","8E":"e_position_size","8F":"f_exposure_limits","8G":"g_risk_gate",
+    "9A":"a_data_gate","9B":"b_context_gate","9C":"c_setup_gate","9D":"d_confirmation_gate","9E":"e_risk_gate","9F":"f_execution_gate","9G":"g_final_decision","9H":"h_decision_logging",
 }
+
+ENGINE_WEIGHTS = {
+    "E1": 0.12, "E2": 0.10, "E3": 0.16, "E4": 0.10, "E5": 0.14,
+    "E6": 0.12, "E7": 0.16, "E8": 0.10,
+}
+SHORT_TERM_EDGE_THRESHOLD = 78.0
 
 
 def _module(code: str):
@@ -51,15 +57,21 @@ def _state(output: dict[str, Any], code: str, key: str = "state") -> Any:
     return output.get(code, {}).get(key)
 
 
+def _direction(output: dict[str, Any], code: str) -> str:
+    return str(output.get(code, {}).get("direction", "NEUTRAL")).upper()
+
+
 def _professional_gate(engine_id: str, output: dict[str, Any], context: dict[str, Any]) -> tuple[bool, tuple[str, ...]]:
-    """Professional parent gates: missing evidence is not automatically failure."""
+    """Hard safety gates for a short-term M5 decision."""
     if engine_id == "E1":
-        if _state(output, "1A", "data_quality") not in {None, "VALID"}:
-            return False, ("E1_DATA_INVALID",)
-        if _state(output, "1A") == "UNAVAILABLE":
+        if _state(output, "1A", "data_quality") not in {None, "VALID"} or _state(output, "1A") == "UNAVAILABLE":
             return False, ("E1_DATA_INVALID",)
         if _state(output, "1G") == "TRANSITION":
             return False, ("E1_MARKET_STATE_TRANSITION",)
+        if _direction(output, "1C") == "NEUTRAL":
+            return False, ("E1_DIRECTION_UNCLEAR",)
+        if _state(output, "1G") != "DOMINANT":
+            return False, ("E1_DIRECTION_NOT_DOMINANT",)
         return True, ()
 
     if engine_id == "E2":
@@ -75,9 +87,14 @@ def _professional_gate(engine_id: str, output: dict[str, Any], context: dict[str
         if _state(output, "3D") in {"STRUCTURAL_FAILURE", "INVALIDATED", "FAILURE_CONFIRMED"}:
             return False, ("E3_STRUCTURE_INVALIDATED",)
         structure = _state(output, "3B")
-        if structure in {"BULLISH", "BEARISH", "NEUTRAL", "RANGE"}:
-            return True, ()
-        return False, ("E3_STRUCTURE_UNRESOLVED",)
+        if structure not in {"BULLISH", "BEARISH"}:
+            return False, ("E3_STRUCTURE_UNRESOLVED",)
+        e1_direction = _direction(context.get("E1_result", {}), "1C")
+        if e1_direction != "NEUTRAL" and _direction(output, "3B") not in {"NEUTRAL", e1_direction}:
+            return False, ("E3_DIRECTION_CONFLICT",)
+        if _state(output, "3F") != "INTERNAL_EXTERNAL_ALIGNED":
+            return False, ("E3_STRUCTURE_NOT_ALIGNED",)
+        return True, ()
 
     if engine_id == "E4":
         if _state(output, "4F") not in {"QUALITY_MEASURABLE", "LIQUIDITY_QUALITY_MEASURABLE"}:
@@ -91,15 +108,25 @@ def _professional_gate(engine_id: str, output: dict[str, Any], context: dict[str
             return False, ("E5_SPACE_INSUFFICIENT",)
         if _state(output, "5F") != "LOCATION_QUALITY_MEASURABLE":
             return False, ("E5_LOCATION_UNCONFIRMED",)
+        direction = _direction(context.get("E1_result", {}), "1C")
+        pos = output.get("5F", {}).get("position_in_range") or output.get("5B", {}).get("position_in_range")
+        if pos is not None:
+            pos = float(pos)
+            if direction == "UP" and pos > 0.75:
+                return False, ("E5_CHASING_PRICE",)
+            if direction == "DOWN" and pos < 0.25:
+                return False, ("E5_CHASING_PRICE",)
         return True, ()
 
     if engine_id == "E6":
         if _state(output, "6D") in {"INVALIDATED", "SETUP_INVALIDATED"}:
             return False, ("E6_SETUP_INVALIDATED",)
         archetype = _state(output, "6B")
-        if archetype in {"DIRECTIONAL_SETUP", "RANGE_REJECTION_SETUP", "BREAKOUT_SETUP", "MEAN_REVERSION_SETUP", "LIQUIDITY_REVERSAL_SETUP"}:
-            return True, ()
-        return False, ("E6_SETUP_NOT_FORMED",)
+        if archetype not in {"DIRECTIONAL_SETUP", "RANGE_REJECTION_SETUP", "BREAKOUT_SETUP", "MEAN_REVERSION_SETUP", "LIQUIDITY_REVERSAL_SETUP"}:
+            return False, ("E6_SETUP_NOT_FORMED",)
+        if _state(output, "6F") != "MATURE":
+            return False, ("E6_SETUP_NOT_MATURE",)
+        return True, ()
 
     if engine_id == "E7":
         if _state(output, "7D") in {"FAILURE", "CONFIRMATION_FAILED", "INVALIDATED"}:
@@ -111,23 +138,37 @@ def _professional_gate(engine_id: str, output: dict[str, Any], context: dict[str
     if engine_id == "E8":
         plan = output.get("trade_plan", {})
         if not plan.get("valid"):
-            return False, ("E8_RISK_PLAN_INVALID",)
+            return False, (plan.get("reason", "E8_RISK_PLAN_INVALID"),)
         if _state(output, "8G") != "RISK_GATE_READY":
             return False, ("E8_RISK_GATE_NOT_READY",)
-        minimum_rr = float((context.get("risk_policy") or {}).get("min_rr", 1.3))
+        policy = context.get("risk_policy") or {}
+        minimum_rr = float(policy.get("min_rr", 1.5))
+        max_stop_atr = float(policy.get("max_stop_atr", 3.0))
         if float(plan.get("rr_tp2", 0)) < minimum_rr:
             return False, ("E8_RR_BELOW_MINIMUM",)
+        if float(plan.get("risk_atr", 999.0)) > max_stop_atr:
+            return False, ("E8_STOP_TOO_WIDE",)
         return True, ()
 
     return True, ()
 
 
 def _trade_plan(context: dict[str, Any], direction: str) -> dict[str, Any]:
+    """Build an M5 plan from structural invalidation, then reject poor geometry."""
     bars = context.get("bars") or []
     if len(bars) < 15 or direction not in {"UP", "DOWN"}:
         return {"valid": False, "reason": "INSUFFICIENT_RISK_DATA"}
 
-    recent = bars[-15:]
+    policy = context.get("risk_policy") or {}
+    stop_atr = float(policy.get("stop_atr", 1.5))
+    min_stop_atr = float(policy.get("min_stop_atr", 0.75))
+    max_stop_atr = float(policy.get("max_stop_atr", 3.0))
+    min_rr = float(policy.get("min_rr", 1.5))
+    target_rr = max(min_rr, float(policy.get("target_rr", 2.0)))
+    buffer_atr = float(policy.get("structure_buffer_atr", 0.20))
+    lookback = int(policy.get("short_term_structure_lookback", 8))
+
+    recent = bars[-max(lookback, 15):]
     entry = float(recent[-1]["close"])
     true_ranges = []
     previous_close = None
@@ -139,28 +180,66 @@ def _trade_plan(context: dict[str, Any], direction: str) -> dict[str, Any]:
     if atr <= 0:
         return {"valid": False, "reason": "INVALID_ATR"}
 
-    policy = context.get("risk_policy") or {}
-    stop_atr = float(policy.get("stop_atr", 1.5))
-    min_rr = float(policy.get("min_rr", 1.3))
-    target_rr = max(min_rr, float(policy.get("target_rr", 2.0)))
-    buffer_atr = float(policy.get("structure_buffer_atr", 0.25))
-    buffer = max(atr * buffer_atr, entry * 0.0002)
-    risk_distance = atr * stop_atr
-
+    buffer = max(atr * buffer_atr, entry * 0.0001)
+    volatility_distance = atr * stop_atr
     if direction == "UP":
-        structural_stop = min(float(b["low"]) for b in recent) - buffer
-        stop = min(entry - risk_distance, structural_stop)
+        structural_stop = min(float(b["low"]) for b in recent[-lookback:]) - buffer
+        risk = entry - structural_stop
+        if risk <= 0:
+            return {"valid": False, "reason": "INVALID_LONG_STOP"}
+        if risk / atr > max_stop_atr:
+            return {"valid": False, "reason": "STOP_TOO_WIDE_FOR_SHORT_TERM"}
+        stop = structural_stop if risk / atr >= min_stop_atr else entry - max(volatility_distance, atr * min_stop_atr)
         risk = entry - stop
-        tp1 = entry + risk
-        tp2 = entry + target_rr * risk
+        tp1, tp2 = entry + risk, entry + target_rr * risk
     else:
-        structural_stop = max(float(b["high"]) for b in recent) + buffer
-        stop = max(entry + risk_distance, structural_stop)
+        structural_stop = max(float(b["high"]) for b in recent[-lookback:]) + buffer
+        risk = structural_stop - entry
+        if risk <= 0:
+            return {"valid": False, "reason": "INVALID_SHORT_STOP"}
+        if risk / atr > max_stop_atr:
+            return {"valid": False, "reason": "STOP_TOO_WIDE_FOR_SHORT_TERM"}
+        stop = structural_stop if risk / atr >= min_stop_atr else entry + max(volatility_distance, atr * min_stop_atr)
         risk = stop - entry
-        tp1 = entry - risk
-        tp2 = entry - target_rr * risk
+        tp1, tp2 = entry - risk, entry - target_rr * risk
 
-    return {"valid": risk > 0 and tp2 > 0, "direction": "BUY" if direction == "UP" else "SELL", "entry": round(entry, 8), "stop_loss": round(stop, 8), "take_profit_1": round(tp1, 8), "take_profit_2": round(tp2, 8), "risk_distance": round(risk, 8), "atr": round(atr, 8), "rr_tp1": 1.0, "rr_tp2": round(target_rr, 3), "min_rr": round(min_rr, 3)}
+    risk_atr = risk / atr
+    if risk_atr > max_stop_atr:
+        return {"valid": False, "reason": "STOP_TOO_WIDE_FOR_SHORT_TERM"}
+
+    return {
+        "valid": risk > 0 and tp2 > 0,
+        "direction": "BUY" if direction == "UP" else "SELL",
+        "entry": round(entry, 8), "stop_loss": round(stop, 8),
+        "take_profit_1": round(tp1, 8), "take_profit_2": round(tp2, 8),
+        "risk_distance": round(risk, 8), "atr": round(atr, 8),
+        "risk_atr": round(risk_atr, 3), "rr_tp1": 1.0,
+        "rr_tp2": round(abs(tp2 - entry) / risk, 3), "min_rr": round(min_rr, 3),
+        "stop_model": "STRUCTURAL_INVALIDATION", "target_model": "R_MULTIPLE", "short_term": True,
+    }
+
+
+def _edge_score(upstream: list[EngineResult], plan: dict[str, Any]) -> tuple[float, list[str]]:
+    scores = {e.engine_id: float(e.score) for e in upstream if e.engine_id in ENGINE_WEIGHTS}
+    weighted = sum(scores.get(k, 0.0) * w for k, w in ENGINE_WEIGHTS.items())
+    if not plan.get("valid"):
+        return 0.0, ["EDGE_NO_VALID_TRADE_PLAN"]
+
+    directions = []
+    for engine_id, code in (("E1", "1C"), ("E3", "3B"), ("E6", "6B"), ("E7", "7B")):
+        result = next((e for e in upstream if e.engine_id == engine_id), None)
+        if result:
+            direction = result.output.get(code, {}).get("direction", "NEUTRAL")
+            if direction != "NEUTRAL":
+                directions.append(direction)
+    if directions and len(set(directions)) > 1:
+        return min(weighted, 59.0), ["EDGE_DIRECTION_CONFLICT"]
+    reasons = []
+    if float(plan.get("risk_atr", 999)) > 3.0:
+        reasons.append("EDGE_RISK_TOO_WIDE")
+    if float(plan.get("rr_tp2", 0)) < 1.5:
+        reasons.append("EDGE_RR_TOO_LOW")
+    return round(max(0.0, min(100.0, weighted)), 2), reasons
 
 
 def run_engine(engine_id: str, context: dict[str, Any]) -> EngineResult:
@@ -174,7 +253,11 @@ def run_engine(engine_id: str, context: dict[str, Any]) -> EngineResult:
         plan = _trade_plan(context, direction)
         output["trade_plan"] = plan
         if not plan.get("valid"):
-            return EngineResult(engine_id, ENGINE_NAMES[engine_id], False, score, output, (plan.get("reason", "RISK_PLAN_INVALID"),))
+            reasons = (plan.get("reason", "RISK_PLAN_INVALID"),)
+            output["professional_gate"] = "FAIL"
+            output["professional_reason_codes"] = list(reasons)
+            output["evidence_quality"] = round(score, 2)
+            return EngineResult(engine_id, ENGINE_NAMES[engine_id], False, score, output, reasons)
 
     gate_passed, reasons = _professional_gate(engine_id, output, context)
     output["professional_gate"] = "PASS" if gate_passed else "FAIL"
@@ -193,8 +276,13 @@ def run_e9_decision(context: dict[str, Any], upstream: list[EngineResult]) -> En
     e8 = next(e for e in upstream if e.engine_id == "E8")
     trend = e1.output.get("1C", {}).get("direction", "NEUTRAL")
     plan = e8.output.get("trade_plan", {})
+    edge_score, edge_reasons = _edge_score(upstream, plan)
     decision = plan.get("direction", "NO_TRADE") if plan.get("valid") else "NO_TRADE"
-    final_gate = sub.gate_passed and decision in {"BUY", "SELL"}
-    output = {"decision": decision if final_gate else "NO_TRADE", "decision_authority": "E9", "pipeline": "E1>E2>E3>E4>E5>E6>E7>E8>E9", "trade_plan": plan, "upstream_direction": trend, "gate_passed": final_gate}
-    reasons = tuple(sub.reason_codes) if final_gate else tuple(sub.reason_codes) + ("FINAL_EXECUTION_GATE_FAILED",)
-    return EngineResult("E9", ENGINE_NAMES["E9"], final_gate, sub.score, output, reasons)
+    execution_checks = {"direction": trend, "edge_score": edge_score, "edge_threshold": SHORT_TERM_EDGE_THRESHOLD, "rr": plan.get("rr_tp2"), "risk_atr": plan.get("risk_atr"), "short_term": True}
+    final_reasons = list(edge_reasons)
+    if edge_score < SHORT_TERM_EDGE_THRESHOLD:
+        final_reasons.append("E9_EDGE_BELOW_THRESHOLD")
+    final_gate = sub.gate_passed and decision in {"BUY", "SELL"} and edge_score >= SHORT_TERM_EDGE_THRESHOLD and not edge_reasons
+    output = {"decision": decision if final_gate else "NO_TRADE", "decision_authority": "E9", "pipeline": "E1>E2>E3>E4>E5>E6>E7>E8>E9", "trade_plan": plan, "upstream_direction": trend, "edge_score": edge_score, "edge_threshold": SHORT_TERM_EDGE_THRESHOLD, "execution_checks": execution_checks, "gate_passed": final_gate}
+    reasons = tuple(final_reasons) if not final_gate else ()
+    return EngineResult("E9", ENGINE_NAMES["E9"], final_gate, edge_score, output, reasons)
