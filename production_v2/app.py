@@ -10,6 +10,10 @@ from .pipeline import ProductionPipeline
 app = Flask(__name__)
 pipeline = ProductionPipeline()
 
+if os.getenv("LSE_API_KEY"):
+    from .service import start_live_service
+    start_live_service()
+
 
 @app.get("/")
 def index():
