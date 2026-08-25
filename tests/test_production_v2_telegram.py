@@ -18,9 +18,9 @@ def decision(decision="BUY", gate=True):
     ), {"risk_gate": gate, "trade_plan": plan})
 
 
-def test_telegram_uses_only_nine_engine_architecture():
+def test_telegram_uses_nine_engine_decision_authority():
     text = format_decision(decision())
-    assert "E1 → E2 → E3 → E4 → E5 → E6 → E7 → E8 → E9" in text
+    assert "🧠 เหตุผลจาก 9 Engines" in text
     assert "E9" in text
     for forbidden in ("V11", "V12", "12.11", "CROSS-ASSET-FALLBACK", "H1 → M15 → M5", "B1-B3", "G1-G3"):
         assert forbidden not in text
