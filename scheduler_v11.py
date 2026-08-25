@@ -33,14 +33,9 @@ STRATEGIES = [
     "B1_RANGE_SWEEP_DISPLACEMENT",
     "B2_HTF_ZONE_M5_FVG_RETEST",
     "B3_VOLATILITY_EXPANSION_BREAKOUT_RETEST",
-    "E1_TREND",
-    "E2_TREND_PULLBACK",
-    "E3_BREAKOUT",
-    "E4_BREAKOUT_RETEST",
-    "E5_MOMENTUM",
-    "E6_MEAN_REVERSION",
-    "E7_LIQUIDITY_REVERSAL",
-    "E8_RANGE",
+    "G1_LIQUIDITY_SWEEP_CHOCH",
+    "G2_HTF_ZONE_M5_FVG_RETEST",
+    "G3_VOLATILITY_EXPANSION_BREAKOUT_RETEST",
 ]
 
 
@@ -121,10 +116,10 @@ def _live_price_line(symbol):
     try:
         import live_price
         tick = live_price.get(symbol)
-        label = "₿ BTC" if symbol == "BTC" else "🟠 GOLD"
+        label = "🪙 BTC" if symbol == "BTC" else "🟠 GOLD"
         return f"{label}: <b>{_fmt_price(tick.get('price')) if tick else 'N/A'}</b>"
     except Exception:
-        return f"{'₿ BTC' if symbol == 'BTC' else '🟠 GOLD'}: <b>N/A</b>"
+        return f"{'🪙 BTC' if symbol == 'BTC' else '🟠 GOLD'}: <b>N/A</b>"
 
 
 def _send_15m_system_monitor(now_bkk=None):
@@ -145,7 +140,7 @@ def _send_15m_system_monitor(now_bkk=None):
             f"🟢 <b>สถานะระบบ {ENGINE_VERSION}</b>\n\n"
             f"🕐 {now_bkk.strftime('%d/%m/%Y %H:%M:%S')} (ประเทศไทย)\n"
             f"⚙️ Engine: <b>{ENGINE_VERSION}</b>\n"
-            "🧠 Architecture: <b>H1 → M15 → M5 + REGIME + BTC B1-B3 + GOLD E1-E8 + RE-ENTRY</b>\n"
+            "🧠 Architecture: <b>H1 → M15 → M5 + REGIME + BTC B1-B3 + GOLD G1-G3 + RE-ENTRY + MULTI-TP</b>\n"
             "⏱ Scheduler: <b>ทำงานอยู่</b>\n"
             f"📡 LSE: <b>{connected}</b>\n"
             f"🔐 Authentication: <b>{authenticated}</b>\n"
