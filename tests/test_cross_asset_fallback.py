@@ -1,4 +1,4 @@
-from v11.cross_asset_fallback import native_strategy_ids
+from v11.asset_strategy_registry import native_strategy_ids
 
 
 def test_gold_native_strategies_never_include_btc_engines():
