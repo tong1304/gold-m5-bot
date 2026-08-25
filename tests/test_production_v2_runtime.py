@@ -47,3 +47,17 @@ def test_health_contract():
     assert body["version"] == "production-v2"
     assert body["legacy_runtime"] is False
     assert body["decision_authority"] == "E9"
+
+
+def test_statistics_endpoints_are_production_v2_only():
+    from production_v2.app import app
+    client = app.test_client()
+    for path in ("/api/statistics", "/statistics"):
+        response = client.get(path)
+        assert response.status_code == 200
+        body = response.get_json()
+        assert body["system"] == "9-ENGINE"
+        assert body["version"] == "production-v2"
+        assert body["decision_authority"] == "E9"
+        assert body["legacy_runtime"] is False
+        assert body["engines"] == ["E1", "E2", "E3", "E4", "E5", "E6", "E7", "E8", "E9"]
