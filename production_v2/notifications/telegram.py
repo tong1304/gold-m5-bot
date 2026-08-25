@@ -17,17 +17,50 @@ def _validate(text: str) -> str:
     return text
 
 
+def _fmt_value(value: Any) -> str:
+    if isinstance(value, float):
+        return f"{value:.6f}".rstrip('0').rstrip('.')
+    if isinstance(value, dict):
+        return ", ".join(f"{k}={_fmt_value(v)}" for k, v in value.items())
+    if isinstance(value, bool):
+        return "ใช่" if value else "ไม่"
+    return str(value)
+
+
+def _flatten_evidence(prefix: str, value: Any, lines: list[str]) -> None:
+    if isinstance(value, dict):
+        for key, item in value.items():
+            label = key.replace('_', ' ')
+            if isinstance(item, dict):
+                lines.append(f"• {prefix}{label}:")
+                _flatten_evidence(prefix + "  ", item, lines)
+            else:
+                lines.append(f"• {prefix}{label}: {_fmt_value(item)}")
+    elif value is not None:
+        lines.append(f"• {prefix}{_fmt_value(value)}")
+
+
 def _engine_detail(engine: Any) -> list[str]:
-    """Extract actual engine evidence without inventing reasons."""
-    reasons = getattr(engine, "reasons", None) or getattr(engine, "reason_codes", None) or []
-    if isinstance(reasons, str):
-        reasons = [reasons]
-    gates = getattr(engine, "gates", None) or []
-    if isinstance(gates, str):
-        gates = [gates]
-    lines = [f"• {reason}" for reason in reasons]
-    lines.extend(f"• Gate: {gate}" for gate in gates)
-    return lines or ["• ผ่านตามผลประเมินของ Engine"]
+    """Render evidence produced by the actual E1-E9/Sub-Engine pipeline."""
+    output = getattr(engine, "output", None) or {}
+    reason_codes = list(getattr(engine, "reason_codes", None) or [])
+    lines: list[str] = []
+
+    # Each Engine output is keyed by its real Sub-Engine ID (1A ... 9H).
+    sub_items = [(k, v) for k, v in output.items() if len(str(k)) == 2 and str(k)[0].isdigit()]
+    for sub_id, sub_output in sub_items:
+        lines.append(f"  ▸ {sub_id}")
+        _flatten_evidence("    ", sub_output, lines)
+
+    # Preserve risk trade plan separately; it is execution information, not a Sub-Engine.
+    if "trade_plan" in output:
+        lines.append("  ▸ แผน Risk")
+        _flatten_evidence("    ", output["trade_plan"], lines)
+
+    if reason_codes:
+        lines.append("  ▸ Reason Code")
+        lines.extend(f"    • {code}" for code in reason_codes)
+    return lines or ["  • ไม่มี Evidence ที่ส่งออกจาก Engine"]
 
 
 def format_decision(result: DecisionResult) -> str:
@@ -43,17 +76,12 @@ def format_decision(result: DecisionResult) -> str:
     lines = [
         f"{'🟢 BUY' if result.decision == 'BUY' else '🔴 SELL'} — {direction}", "",
         f"📊 สินทรัพย์: {result.symbol}", f"⏱ Timeframe: {result.timeframe}", "",
-        "━━━━━━━━━━━━━━━━━━", "🧠 เหตุผลจาก 9 Engines", "━━━━━━━━━━━━━━━━━━",
+        "━━━━━━━━━━━━━━━━━━", "🧠 เหตุผลจริงจาก 9 Engines / Sub-Engines", "━━━━━━━━━━━━━━━━━━",
     ]
 
-    engines = getattr(result, "engines", None) or getattr(result, "engine_results", None) or []
-    if isinstance(engines, dict):
-        engines = list(engines.values())
-    for i, engine in enumerate(engines, 1):
-        engine_id = getattr(engine, "engine_id", None) or f"E{i}"
-        name = getattr(engine, "name", None) or f"Engine {i}"
-        passed = getattr(engine, "passed", True)
-        lines.extend(["", f"{engine_id} — {name}", f"{'✅' if passed else '❌'} {'ผ่าน' if passed else 'ไม่ผ่าน'}"])
+    engines = result.engines
+    for engine in engines:
+        lines.extend(["", f"{engine.engine_id} — {engine.name}", f"{'✅' if engine.gate_passed else '❌'} {'ผ่าน' if engine.gate_passed else 'ไม่ผ่าน'}"])
         lines.extend(_engine_detail(engine))
 
     lines.extend([
@@ -97,7 +125,7 @@ def send(text: str) -> bool:
     token, chat_id = os.getenv("TELEGRAM_BOT_TOKEN"), os.getenv("TELEGRAM_CHAT_ID")
     if not token or not chat_id:
         return False
-    response = requests.post(f"https://api.telegram.org/bot{token}/sendMessage", json={"chat_id": chat_id, "text": text}, timeout=15)
+    response = requests.post(f"https://api.telegram.org/bot{token}/sendMessage", json={"chat_id":chat_id,"text":text}, timeout=15)
     response.raise_for_status()
     return True
 
