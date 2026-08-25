@@ -4,9 +4,18 @@ from production_v2.notifications.telegram import format_critical, format_decisio
 
 
 def decision(decision="BUY", gate=True):
+    plan = {
+        "valid": gate,
+        "direction": decision,
+        "entry": 100.0,
+        "stop_loss": 99.0,
+        "take_profit_1": 101.0,
+        "take_profit_2": 102.0,
+        "rr_tp2": 2.0,
+    }
     return DecisionResult("GOLD", "M5", decision, gate, 82.0, (
-        EngineResult("E9", "Execution Decision Engine", gate, 82.0, {"decision": decision}),
-    ), {"risk_gate": gate})
+        EngineResult("E9", "Execution Decision Engine", gate, 82.0, {"decision": decision, "trade_plan": plan}),
+    ), {"risk_gate": gate, "trade_plan": plan})
 
 
 def test_telegram_uses_only_nine_engine_architecture():
