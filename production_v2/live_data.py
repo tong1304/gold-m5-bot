@@ -1,47 +1,12 @@
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass
 from datetime import datetime, time, timezone
 from typing import Any
 
 from lse import LSE
 
-
 DEFAULT_SYMBOLS = {"GOLD": "XAU/USD", "BTC": "BTC/USD"}
-
-
-@dataclass(frozen=True)
-class MarketSession:
-    """Provider-safe session policy used BEFORE any market-data fetch.
-
-    GOLD is treated as a 24/5 instrument with a configurable daily maintenance
-    break. BTC is 24/7. All times are UTC so the policy is deterministic on
-    Render and does not depend on the host's local timezone.
-    """
-
-    always_open: bool = False
-    weekdays_only: bool = True
-    open_time: time = time(0, 0)
-    close_time: time = time(23, 59, 59)
-    break_start: time | None = None
-    break_end: time | None = None
-
-    def is_open(self, now: datetime) -> bool:
-        if self.always_open:
-            return True
-        now = now.astimezone(timezone.utc)
-        if self.weekdays_only and now.weekday() >= 5:
-            return False
-
-        current = now.time()
-        if self.break_start is not None and self.break_end is not None:
-            if self.break_start <= current < self.break_end:
-                return False
-
-        # Normal same-day session. The defaults are intentionally explicit;
-        # provider-specific hours can be overridden with environment variables.
-        return self.open_time <= current <= self.close_time
 
 
 class LiveMarketData:
@@ -64,31 +29,30 @@ class LiveMarketData:
         except (AttributeError, ValueError):
             return default
 
-    def session(self, alias: str) -> MarketSession:
+    def market_is_open(self, alias: str, now: datetime | None = None) -> bool:
         alias = alias.upper()
         if alias == "BTC":
-            return MarketSession(always_open=True, weekdays_only=False)
+            return True
 
-        # XAU/USD is normally available 24/5 but has a daily provider/market
-        # maintenance window. Keep it configurable because exact session hours
-        # are provider-dependent rather than a property of the strategy.
-        return MarketSession(
-            always_open=False,
-            weekdays_only=True,
-            open_time=self._utc_time(os.getenv("GOLD_SESSION_OPEN_UTC", "00:00"), time(0, 0)),
-            close_time=self._utc_time(os.getenv("GOLD_SESSION_CLOSE_UTC", "23:59"), time(23, 59)),
-            break_start=self._utc_time(os.getenv("GOLD_DAILY_BREAK_START_UTC", "21:00"), time(21, 0)),
-            break_end=self._utc_time(os.getenv("GOLD_DAILY_BREAK_END_UTC", "22:00"), time(22, 0)),
-        )
+        now = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
+        if now.weekday() >= 5:
+            return False
 
-    def market_is_open(self, alias: str, now: datetime | None = None) -> bool:
-        return self.session(alias).is_open(now or datetime.now(timezone.utc))
+        start = self._utc_time(os.getenv("GOLD_DAILY_BREAK_START_UTC", "21:00"), time(21, 0))
+        end = self._utc_time(os.getenv("GOLD_DAILY_BREAK_END_UTC", "22:00"), time(22, 0))
+        current = now.time()
+
+        if start <= current < end:
+            return False
+        if now.weekday() == 4 and current >= start:
+            return False
+        return True
 
     def candles(self, alias: str, limit: int = 200) -> dict[str, Any]:
-        """Fetch M5 candles only after the market-session gate passes."""
+        symbol = self.symbols()[alias]
         if not self.market_is_open(alias):
             return {
-                "symbol": self.symbols()[alias],
+                "symbol": symbol,
                 "timeframe": "M5",
                 "bars": [],
                 "candle_close_timestamp": None,
@@ -96,7 +60,6 @@ class LiveMarketData:
                 "market_state": "MARKET_CLOSED",
             }
 
-        symbol = self.symbols()[alias]
         response = self.client.candles(symbol, "5m", limit=limit, order="desc")
         rows = response.get("data", response) if isinstance(response, dict) else response
         bars = []
