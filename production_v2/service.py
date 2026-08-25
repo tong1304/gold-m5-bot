@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime, timezone
 import os
 import threading
 import time
@@ -17,6 +18,10 @@ class LiveService:
         self.data = LiveMarketData()
         self.interval = int(os.getenv("SIGNAL_INTERVAL_SECONDS", "60"))
         self.status_interval_seconds = int(os.getenv("STATUS_INTERVAL_SECONDS", "900"))
+        # A professional decision engine must never make a fresh decision from
+        # stale market data. Ten minutes covers normal polling/network jitter
+        # while still protecting the M5 runtime from an old candle.
+        self.max_candle_age_seconds = int(os.getenv("MAX_CANDLE_AGE_SECONDS", "600"))
         self._started = False
         self._last_candle: dict[str, str] = {}
         self._wait_state: dict[str, dict] = {}
@@ -46,6 +51,16 @@ class LiveService:
         }
         send(format_status(status))
         self._last_status_at = time.monotonic()
+
+    @staticmethod
+    def _candle_age_seconds(candle: str) -> float | None:
+        try:
+            timestamp = datetime.fromisoformat(candle.replace("Z", "+00:00"))
+            if timestamp.tzinfo is None:
+                timestamp = timestamp.replace(tzinfo=timezone.utc)
+            return max(0.0, (datetime.now(timezone.utc) - timestamp).total_seconds())
+        except (TypeError, ValueError):
+            return None
 
     def _trace_result(self, alias: str, result) -> None:
         state = result.risk.get("engine_state")
@@ -82,6 +97,21 @@ class LiveService:
                         self._runtime_errors[alias] = "ไม่พบ candle timestamp"
                         continue
 
+                    age = self._candle_age_seconds(candle)
+                    if age is not None and age > self.max_candle_age_seconds:
+                        # Do not mark stale data as the last processed candle.
+                        # Once the provider catches up, the real closed candle
+                        # must still enter the decision pipeline.
+                        print(
+                            f"[PRODUCTION V2] {alias} STALE_CANDLE "
+                            f"candle={candle} age_seconds={int(age)} "
+                            f"max_age_seconds={self.max_candle_age_seconds} "
+                            f"action=SKIP_EVALUATION",
+                            flush=True,
+                        )
+                        self._runtime_errors[alias] = f"stale candle: {candle}"
+                        continue
+
                     # LSE may return the same closed candle on multiple polling
                     # cycles. A duplicate candle is data refresh only: never
                     # rerun E1..E9, never advance WAIT, and never overwrite the
@@ -103,6 +133,15 @@ class LiveService:
 
                     wait_state = self._wait_state.get(alias)
                     wait_bars = int(wait_state.get("wait_bars", 0)) if wait_state else 0
+                    if wait_state:
+                        print(
+                            f"[PRODUCTION V2] {alias} WAIT_RESUME "
+                            f"waiting_engine={wait_state.get('waiting_engine')} "
+                            f"wait_bars={wait_bars} "
+                            f"policy=REUSE_UPSTREAM_UNLESS_STRUCTURE_CHANGED",
+                            flush=True,
+                        )
+
                     result = self.pipeline.run(
                         payload,
                         wait_bars=wait_bars,
