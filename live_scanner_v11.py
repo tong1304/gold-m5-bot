@@ -38,7 +38,7 @@ def _normalize(raw,symbol,timeframe="5m"):
 def _lse_frame(symbol,timeframe="5m",points=200):
     if timeframe not in ("5m","15m","1h"):raise ValueError(f"Unsupported V12 timeframe={timeframe}")
     market={"BTC":"BTC/USD","GOLD":"XAU/USD"}[symbol];minutes={"5m":5,"15m":15,"1h":60}[timeframe];now=datetime.now(timezone.utc);days=max(3,int(points*minutes/1440)+3);client=LSE(api_key=os.environ["LSE_API_KEY"]);raw=client.candles(market,timeframe,start=(now-timedelta(days=days)).date().isoformat(),end=(now+timedelta(days=1)).date().isoformat(),limit=points,order="desc");frame=_normalize(raw,symbol,timeframe)
-    if frame.empty:raise RuntimeError(f"NO_CLOSED_CANDLES:{symbol}:{timeframe}")
+    if frame.empty:raise RuntimeError(f"NO_CLOSED_CANDLES:{symbol}")
     age=(pd.Timestamp.now(tz="UTC")-frame.iloc[-1].datetime).total_seconds()/60;max_age={"5m":20,"15m":45,"1h":180}[timeframe]
     if age>max_age:raise RuntimeError(f"STALE_MARKET_DATA:{symbol}:{timeframe}:age={age:.1f}m")
     return frame
@@ -62,7 +62,8 @@ def _live_price(symbol):
 def _telegram_text(symbol,setup):
     d=setup["signal"];l=setup["trade_levels"];side="🟢 BUY — ซื้อ" if d=="BUY" else "🔴 SELL — ขาย";regime=setup.get("regime") or {};regime_name=regime.get("regime") if isinstance(regime,dict) else regime
     score=setup.get("setup_score") or {};score_value=score.get("score") if isinstance(score,dict) else "N/A"
-    return f"🚨 <b>พบสัญญาณเข้าออเดอร์ V12.1 MTF</b>\n\n{side}\n\n📊 <b>สินทรัพย์:</b> {symbol}\n💵 <b>ราคาปัจจุบัน:</b> {_live_price(symbol)}\n⏱ <b>Filter:</b> H1 → M15 → M5\n🧭 <b>H1 Bias:</b> {setup.get('h1_bias','N/A')}\n🧠 <b>M15 Regime:</b> {setup.get('m15_regime',regime_name)}\n🎯 <b>Engine:</b> {setup.get('engine','NONE')} — {setup.get('strategy')}\n🔁 <b>Entry Type:</b> {setup.get('entry_type','INITIAL')}\n🆔 <b>Setup ID:</b> {setup.get('setup_id')}\n\n💰 <b>จุดเข้า:</b> {_fmt(l['entry'])}\n🛑 <b>SL:</b> {_fmt(l['sl'])}\n🎯 <b>TP:</b> {_fmt(l['tp'])}\n📐 <b>Risk/Reward:</b> {l['risk_reward']}R\n📊 <b>Setup Score:</b> {score_value}/100\n\n⚠️ ระบบแจ้งเตือนเท่านั้น ไม่มีการเปิดออเดอร์อัตโนมัติ"
+    asset_icon="🪙" if symbol=="BTC" else "🟠"
+    return f"🚨 <b>พบสัญญาณเข้าออเดอร์ V12.9 MTF</b>\n\n{side}\n\n📊 <b>สินทรัพย์:</b> {asset_icon} {symbol}\n💵 <b>ราคาปัจจุบัน:</b> {_live_price(symbol)}\n⏱ <b>Filter:</b> H1 → M15 → M5\n🧭 <b>H1 Bias:</b> {setup.get('h1_bias','N/A')}\n🧠 <b>M15 Regime:</b> {setup.get('m15_regime',regime_name)}\n🎯 <b>Engine:</b> {setup.get('engine','NONE')} — {setup.get('strategy')}\n🔁 <b>Entry Type:</b> {setup.get('entry_type','INITIAL')}\n🆔 <b>Setup ID:</b> {setup.get('setup_id')}\n\n💰 <b>จุดเข้า:</b> {_fmt(l['entry'])}\n🛑 <b>SL:</b> {_fmt(l['sl'])}\n🎯 <b>TP:</b> {_fmt(l['tp'])}\n📐 <b>Risk/Reward:</b> {l['risk_reward']}R\n📊 <b>Setup Score:</b> {score_value}/100\n\n⚠️ ระบบแจ้งเตือนเท่านั้น ไม่มีการเปิดออเดอร์อัตโนมัติ"
 
 def _decision_summary(setup):
     """Render decision trace defensively; engine traces may contain non-dict diagnostics."""
