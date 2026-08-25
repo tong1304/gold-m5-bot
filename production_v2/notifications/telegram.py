@@ -13,9 +13,6 @@ FORBIDDEN_LEGACY_TERMS = (
 )
 
 
-TECHNICAL_TERMS = ("BUY", "SELL", "BTC", "GOLD", "M5", "E1", "E2", "E3", "E4", "E5", "E6", "E7", "E8", "E9", "LSE", "API", "RSI", "ATR", "EMA", "VWAP", "RR", "Telegram")
-
-
 def _validate(text: str) -> str:
     assert not any(term in text for term in FORBIDDEN_LEGACY_TERMS)
     return text
@@ -24,21 +21,38 @@ def _validate(text: str) -> str:
 def format_decision(result: DecisionResult) -> str:
     if result.decision not in {"BUY", "SELL"} or not result.gate_passed:
         raise ValueError("Only actionable E9 BUY/SELL decisions can be notified")
-    direction = "شراء" if result.decision == "BUY" else "ขาย"
+
+    plan = result.trade_plan
+    required = ("entry", "stop_loss", "take_profit_1", "take_profit_2", "rr_tp2")
+    if not plan.get("valid") or any(k not in plan for k in required):
+        raise ValueError("Actionable E9 decision requires a complete E8 trade plan")
+
+    direction = "ซื้อ" if result.decision == "BUY" else "ขาย"
     risk_gate = "ผ่าน" if result.risk.get("risk_gate") else "ไม่ผ่าน"
-    text = (
-        f"{'🟢 BUY' if result.decision == 'BUY' else '🔴 SELL'} — {direction}\n\n"
-        f"📊 สินทรัพย์: {result.symbol}\n"
-        f"⏱ Timeframe: {result.timeframe}\n"
-        f"🎯 คำตัดสิน: {result.decision}\n"
-        f"📈 คะแนน: {result.score:.1f}\n\n"
-        "🧠 เส้นทางการตัดสินใจ\n"
-        "E1 → E2 → E3 → E4 → E5 → E6 → E7 → E8 → E9\n\n"
-        "👑 ผู้ตัดสินใจ: E9\n"
-        f"🛡️ Risk Gate: {risk_gate}\n"
-        f"📌 เหตุผล: {', '.join(result.reason_codes) if result.reason_codes else 'ไม่มี'}"
-    )
-    return _validate(text)
+    lines = [
+        f"{'🟢 BUY' if result.decision == 'BUY' else '🔴 SELL'} — {direction}",
+        "",
+        f"📊 สินทรัพย์: {result.symbol}",
+        f"⏱ Timeframe: {result.timeframe}",
+        "",
+        f"🎯 คำตัดสิน: {result.decision}",
+        f"📈 Decision Score: {result.score:.1f}",
+        "",
+        f"💵 จุดเข้า: {plan['entry']}",
+        f"🛑 Stop Loss: {plan['stop_loss']}",
+        f"🎯 Take Profit 1: {plan['take_profit_1']}",
+        f"🎯 Take Profit 2: {plan['take_profit_2']}",
+        f"📐 RR: 1:{plan['rr_tp2']:.1f}",
+        "",
+        "🧠 เส้นทางการตัดสินใจ",
+        "E1 → E2 → E3 → E4 → E5 → E6 → E7 → E8 → E9",
+        "",
+        "👑 ผู้ตัดสินใจ: E9",
+        f"🛡️ Risk Gate: {risk_gate}",
+    ]
+    if result.reason_codes:
+        lines.extend(["📌 เหตุผล:", *[f"• {code}" for code in result.reason_codes]])
+    return _validate("\n".join(lines))
 
 
 def format_startup(symbols: list[str]) -> str:
