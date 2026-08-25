@@ -12,6 +12,64 @@ FORBIDDEN_LEGACY_TERMS = (
 )
 TELEGRAM_MAX_TEXT = 4096
 
+ENGINE_THAI_NAMES = {
+    "E1": "สภาวะตลาด",
+    "E2": "ระบอบตลาด",
+    "E3": "โครงสร้างตลาด",
+    "E4": "สภาพคล่อง",
+    "E5": "ตำแหน่งราคา",
+    "E6": "รูปแบบการเข้าเทรด",
+    "E7": "การยืนยัน",
+    "E8": "ความเสี่ยง",
+    "E9": "การตัดสินใจส่งคำสั่ง",
+}
+
+TECH_LABELS = {
+    "state": "สถานะ",
+    "direction": "ทิศทาง",
+    "trend_change": "การเปลี่ยนแปลงของ Trend",
+    "volatility": "Volatility",
+    "regime": "Regime",
+    "higher_high": "Higher High",
+    "lower_low": "Lower Low",
+    "position_in_range": "ตำแหน่งในกรอบ",
+    "body_ratio": "สัดส่วนแท่งเทียน",
+    "rr": "RR",
+    "risk_distance": "ระยะความเสี่ยง",
+    "authority": "ผู้ตัดสินใจ",
+}
+
+STATE_TH = {
+    "VALID": "ถูกต้อง",
+    "UP": "ขาขึ้น",
+    "DOWN": "ขาลง",
+    "NEUTRAL": "เป็นกลาง",
+    "BULLISH": "ขาขึ้น",
+    "BEARISH": "ขาลง",
+    "TREND_UP": "แนวโน้มขาขึ้น",
+    "TREND_DOWN": "แนวโน้มขาลง",
+    "TREND": "แนวโน้ม",
+    "RANGE": "กรอบราคา",
+    "COMPRESSION": "การบีบตัว",
+    "EXPANSION": "การขยายตัว",
+    "TRANSITION": "ช่วงเปลี่ยนผ่าน",
+    "BOS_CONFIRMED": "BOS ยืนยัน",
+    "NO_BOS": "ยังไม่พบ BOS",
+    "REJECTION": "เกิดการปฏิเสธราคา",
+    "NO_REJECTION": "ไม่พบการปฏิเสธราคา",
+    "ACCEPTANCE": "ยอมรับราคา",
+    "SPACE_AVAILABLE": "มีพื้นที่ราคา",
+    "LIMITED_SPACE": "พื้นที่ราคาจำกัด",
+    "EXTENDED": "ราคาอยู่ในภาวะยืดตัว",
+    "NOT_EXTENDED": "ราคาไม่ยืดตัวเกินไป",
+    "CONFIRMATION_PASS": "การยืนยันผ่าน",
+    "CONFIRMATION_WEAK": "การยืนยันยังอ่อน",
+    "TRIGGER_OBSERVED": "พบ Trigger",
+    "NO_STRONG_TRIGGER": "ยังไม่พบ Trigger ที่แข็งแรง",
+    "FOLLOW_THROUGH_OBSERVED": "มี Follow-through",
+    "NO_FOLLOW_THROUGH": "ยังไม่มี Follow-through",
+}
+
 
 def _validate(text: str) -> str:
     assert not any(term in text for term in FORBIDDEN_LEGACY_TERMS)
@@ -20,42 +78,70 @@ def _validate(text: str) -> str:
 
 def _fmt_value(value: Any) -> str:
     if isinstance(value, float):
-        return f"{value:.6f}".rstrip('0').rstrip('.')
-    if isinstance(value, dict):
-        return ", ".join(f"{k}={_fmt_value(v)}" for k, v in value.items())
+        return f"{value:.6f}".rstrip("0").rstrip(".")
     if isinstance(value, bool):
         return "ใช่" if value else "ไม่"
+    if isinstance(value, dict):
+        return ", ".join(f"{k}={_fmt_value(v)}" for k, v in value.items())
+    if isinstance(value, str):
+        return STATE_TH.get(value, value)
     return str(value)
 
 
-def _flatten_evidence(prefix: str, value: Any, lines: list[str]) -> None:
-    if isinstance(value, dict):
-        for key, item in value.items():
-            label = key.replace('_', ' ')
-            if isinstance(item, dict):
-                lines.append(f"• {prefix}{label}:")
-                _flatten_evidence(prefix + "  ", item, lines)
-            else:
-                lines.append(f"• {prefix}{label}: {_fmt_value(item)}")
-    elif value is not None:
-        lines.append(f"• {prefix}{_fmt_value(value)}")
+def _label(key: str) -> str:
+    return TECH_LABELS.get(key, key.replace("_", " "))
 
 
-def _engine_detail(engine: Any) -> list[str]:
+def _collect_values(value: Any, result: dict[str, Any]) -> None:
+    if not isinstance(value, dict):
+        return
+    for key, item in value.items():
+        if key in {"trade_plan", "reason_codes", "trace", "output"}:
+            continue
+        if isinstance(item, dict):
+            _collect_values(item, result)
+        elif key in {"state", "direction", "regime", "volatility", "trend_change", "higher_high", "lower_low", "position_in_range", "body_ratio", "rr", "risk_distance", "authority"}:
+            result[key] = item
+
+
+def _engine_summary(engine: Any) -> list[str]:
+    engine_id = str(getattr(engine, "engine_id", ""))
     output = getattr(engine, "output", None) or {}
-    reason_codes = list(getattr(engine, "reason_codes", None) or [])
+    summary: dict[str, Any] = {}
+    _collect_values(output, summary)
+
     lines: list[str] = []
-    sub_items = [(k, v) for k, v in output.items() if len(str(k)) == 2 and str(k)[0].isdigit()]
-    for sub_id, sub_output in sub_items:
-        lines.append(f"  ▸ {sub_id}")
-        _flatten_evidence("    ", sub_output, lines)
-    if "trade_plan" in output:
-        lines.append("  ▸ แผน Risk")
-        _flatten_evidence("    ", output["trade_plan"], lines)
-    if reason_codes:
-        lines.append("  ▸ Reason Code")
-        lines.extend(f"    • {code}" for code in reason_codes)
-    return lines or ["  • ไม่มี Evidence ที่ส่งออกจาก Engine"]
+    # Keep only the most useful evidence at Engine level; Sub-Engine IDs are intentionally hidden.
+    preferred = {
+        "E1": ["state", "direction", "volatility"],
+        "E2": ["regime", "direction", "state"],
+        "E3": ["state", "direction", "higher_high", "lower_low"],
+        "E4": ["state"],
+        "E5": ["state", "position_in_range"],
+        "E6": ["state", "direction", "body_ratio"],
+        "E7": ["state", "direction", "body_ratio"],
+        "E8": ["state", "rr", "risk_distance"],
+        "E9": ["state", "direction", "authority"],
+    }.get(engine_id, ["state", "direction"])
+
+    used = set()
+    for key in preferred:
+        if key in summary and key not in used:
+            lines.append(f"• {_label(key)}: {_fmt_value(summary[key])}")
+            used.add(key)
+
+    if engine_id == "E8":
+        plan = output.get("trade_plan") or {}
+        if plan.get("valid"):
+            lines.append("• Risk Plan: ผ่าน")
+            lines.append(f"• RR: 1:{float(plan.get('rr_tp2', 0)):.1f}")
+            lines.append(f"• Stop Loss Distance: {_fmt_value(plan.get('risk_distance'))}")
+    if engine_id == "E9":
+        decision = output.get("decision")
+        if decision:
+            lines.append(f"• Execution Decision: {'อนุมัติ' if decision in {'BUY', 'SELL'} else 'ไม่อนุมัติ'}")
+
+    return lines or ["• ผลประเมิน: ผ่าน"]
 
 
 def format_decision(result: DecisionResult) -> str:
@@ -65,24 +151,42 @@ def format_decision(result: DecisionResult) -> str:
     required = ("entry", "stop_loss", "take_profit_1", "take_profit_2", "rr_tp2")
     if not plan.get("valid") or any(k not in plan for k in required):
         raise ValueError("Actionable E9 decision requires a complete E8 trade plan")
+
     direction = "ซื้อ" if result.decision == "BUY" else "ขาย"
     lines = [
-        f"{'🟢 BUY' if result.decision == 'BUY' else '🔴 SELL'} — {direction}", "",
-        f"📊 สินทรัพย์: {result.symbol}", f"⏱ Timeframe: {result.timeframe}", "",
-        "━━━━━━━━━━━━━━━━━━", "🧠 เหตุผลจริงจาก 9 Engines / Sub-Engines", "━━━━━━━━━━━━━━━━━━",
+        f"{'🟢 BUY' if result.decision == 'BUY' else '🔴 SELL'} — {direction}",
+        "",
+        f"📊 สินทรัพย์: {result.symbol}",
+        f"⏱ Timeframe: {result.timeframe}",
+        "",
+        "━━━━━━━━━━━━━━━━━━",
+        "🧠 เหตุผลจาก 9 Engines",
+        "━━━━━━━━━━━━━━━━━━",
     ]
+
     for engine in result.engines:
-        lines.extend(["", f"{engine.engine_id} — {engine.name}", f"{'✅' if engine.gate_passed else '❌'} {'ผ่าน' if engine.gate_passed else 'ไม่ผ่าน'}"])
-        lines.extend(_engine_detail(engine))
+        engine_id = getattr(engine, "engine_id", "")
+        name = ENGINE_THAI_NAMES.get(engine_id, getattr(engine, "name", engine_id))
+        passed = bool(getattr(engine, "gate_passed", False))
+        lines.extend(["", f"{engine_id} — {name}", f"{'✅' if passed else '❌'} {'ผ่าน' if passed else 'ไม่ผ่าน'}"])
+        lines.extend(_engine_summary(engine))
+
     lines.extend([
-        "", "━━━━━━━━━━━━━━━━━━", "👑 E9 — Execution Decision", "🟢 อนุมัติคำสั่ง",
-        "", "━━━━━━━━━━━━━━━━━━", "🎯 แผนการเทรด", "━━━━━━━━━━━━━━━━━━",
-        f"📍 จุดเข้า: {plan['entry']}", f"🛑 Stop Loss: {plan['stop_loss']}",
-        f"🎯 Take Profit 1: {plan['take_profit_1']}", f"🎯 Take Profit 2: {plan['take_profit_2']}",
-        f"📐 RR: 1:{plan['rr_tp2']:.1f}", f"📈 Decision Score: {result.score:.1f}",
+        "",
+        "━━━━━━━━━━━━━━━━━━",
+        "👑 E9 — การตัดสินใจส่งคำสั่ง",
+        "🟢 อนุมัติคำสั่ง",
+        "",
+        "━━━━━━━━━━━━━━━━━━",
+        "🎯 แผนการเทรด",
+        "━━━━━━━━━━━━━━━━━━",
+        f"📍 จุดเข้า: {plan['entry']}",
+        f"🛑 Stop Loss: {plan['stop_loss']}",
+        f"🎯 Take Profit 1: {plan['take_profit_1']}",
+        f"🎯 Take Profit 2: {plan['take_profit_2']}",
+        f"📐 RR: 1:{plan['rr_tp2']:.1f}",
+        f"📈 Decision Score: {result.score:.1f}",
     ])
-    if result.reason_codes:
-        lines.extend(["", "📌 เหตุผลเพิ่มเติม:", *[f"• {code}" for code in result.reason_codes]])
     return _validate("\n".join(lines))
 
 
@@ -120,18 +224,18 @@ def _chunk_text(text: str, limit: int = TELEGRAM_MAX_TEXT) -> list[str]:
     for line in text.splitlines(keepends=True):
         if len(line) > limit:
             if current:
-                chunks.append(''.join(current).rstrip())
+                chunks.append("".join(current).rstrip())
                 current, size = [], 0
             for i in range(0, len(line), limit):
                 chunks.append(line[i:i + limit].rstrip())
             continue
         if current and size + len(line) > limit:
-            chunks.append(''.join(current).rstrip())
+            chunks.append("".join(current).rstrip())
             current, size = [], 0
         current.append(line)
         size += len(line)
     if current:
-        chunks.append(''.join(current).rstrip())
+        chunks.append("".join(current).rstrip())
     return chunks
 
 
