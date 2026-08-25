@@ -1,4 +1,4 @@
-from v11.asset_strategies import cross_asset_strategy_ids
+from v11.cross_asset_fallback import cross_asset_strategy_ids
 
 
 def test_gold_falls_back_to_btc_strategies_for_shared_regime():
