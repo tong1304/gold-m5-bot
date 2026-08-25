@@ -27,8 +27,6 @@ SUFFIX = {
 
 
 def module_name(code):
-    # SUB_ENGINE_NAMES contain the full identifier (e.g. 1A_DATA_QUALITY),
-    # while SUFFIX is keyed by the two-character engine code (e.g. 1A).
     key = code[:2]
     return f"trading_system.engines.e{key[0]}.{SUFFIX[key]}"
 
@@ -39,10 +37,12 @@ def test_all_58_sub_engines_exist_and_expose_contract():
         mod = importlib.import_module(module_name(code))
         engine = mod.SubEngine()
         result = engine.run({'symbol': 'TEST', 'timeframe': 'M5', 'bars': [{'open': 1, 'high': 2, 'low': 0.5, 'close': 1.5}]})
-        assert result.sub_engine_id == code
+        # Engine IDs are canonical two-character IDs (1A..9H), while
+        # SUB_ENGINE_NAMES are human-readable names used to resolve modules.
+        assert result.sub_engine_id == code[:2]
         assert result.gate_passed is True
         assert 0 <= result.score <= 100
-        assert result.trace['sub_engine_id'] == code
+        assert result.trace['sub_engine_id'] == code[:2]
 
 
 def test_invalid_input_fails_closed():
