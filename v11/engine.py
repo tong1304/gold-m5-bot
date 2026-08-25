@@ -6,11 +6,11 @@ from .data_quality import validate_frame
 from .risk import MIN_RISK_REWARD as _MIN_RISK_REWARD
 from .regime import classify_regime
 from .btc_strategy_dispatch import evaluate_btc_strategies
-from .cross_asset_fallback import evaluate_cross_asset_fallback, native_strategy_ids
+from .cross_asset_fallback import native_strategy_ids
 from .setup_state import SetupState, can_emit_entry
 from .decision_priority import signal_reason
 
-ENGINE_VERSION="12.11-CROSS-ASSET-FALLBACK"
+ENGINE_VERSION="12.12-ASSET-ISOLATED"
 MIN_RISK_REWARD=_MIN_RISK_REWARD
 BTC_STRATEGIES=("B1","B2","B3")
 GOLD_STRATEGIES=("G1","G2","G3")
@@ -66,24 +66,19 @@ def analyze(m5,m15=None,symbol=None,index=None,setup_state=None,h1=None):
     q1=validate_frame(h1,minimum=60,timeframe_minutes=60,market=symbol) if h1 is not None else ["H1_CONTEXT_REQUIRED"]
     base={"engine_version":ENGINE_VERSION,"symbol":symbol,"live_orders_allowed":False,"analysis_window":{"m5_context_bars":100,"m15_context_bars":100,"h1_context_bars":100,"timeframe_mode":"MTF:H1→M15→M5","alignment":"H1/M15 closed before M5 trigger"}}
     if q5 or q15 or q1:return _finalize({**base,"valid":False,"signal":"NO_TRADE","strategy":"NONE","allowed_engines":list(BTC_STRATEGIES),"rejection_reasons":q5+q15+q1,"trade_levels":{"valid":False},"data_quality":{"m5":q5,"m15":q15,"h1":q1}})
-    regime=classify_regime(m5,m15,h1);current_regime=regime.get("m5_regime") or regime.get("regime","TRANSITION");native_ids=native_strategy_ids("BTC",current_regime);base.update({"regime":regime,"m5_regime":current_regime,"h1_bias":regime.get("h1_bias"),"m15_regime":regime.get("m15_regime"),"m15_trend":regime.get("m15_trend"),"m15_role":"CONTEXT_ONLY","allowed_engines":list(BTC_STRATEGIES),"native_regime_strategies":native_ids,"strategy_selection_order":["NATIVE","CROSS_ASSET"]})
-    candidates,trace=evaluate_btc_strategies(m5,regime);strategy_mode="NATIVE";source_asset="BTC"
-    if not native_ids:
-        candidates,fallback_trace=evaluate_cross_asset_fallback("BTC",m5,regime);trace=trace+fallback_trace;strategy_mode="CROSS_ASSET";source_asset="GOLD";base["cross_asset_fallback"]={"attempted":True,"source_asset":"GOLD","used":bool(candidates),"regime":current_regime,"compatible":True}
-    else:
-        base["cross_asset_fallback"]={"attempted":False,"source_asset":"GOLD","used":False,"reason":"NATIVE_STRATEGY_SUPPORTS_REGIME","regime":current_regime}
+    regime=classify_regime(m5,m15,h1);current_regime=regime.get("m5_regime") or regime.get("regime","TRANSITION");native_ids=native_strategy_ids("BTC",current_regime);base.update({"regime":regime,"m5_regime":current_regime,"h1_bias":regime.get("h1_bias"),"m15_regime":regime.get("m15_regime"),"m15_trend":regime.get("m15_trend"),"m15_role":"CONTEXT_ONLY","allowed_engines":list(BTC_STRATEGIES),"native_regime_strategies":native_ids,"strategy_selection_order":["NATIVE"]})
+    candidates,trace=evaluate_btc_strategies(m5,regime);strategy_mode="NATIVE" if candidates else "NONE";source_asset="BTC"
     base["strategy_mode"]=strategy_mode
     base["source_asset"]=source_asset
     base["decision_trace"]=trace
     if not candidates:
-        reason="NO_BTC_STRATEGY_PASSED_CORE_GATE_SCORE_FILTER" if native_ids else "NO_NATIVE_OR_CROSS_ASSET_STRATEGY_PASSED_CORE_GATE_SCORE_FILTER"
-        return _finalize({**base,"valid":False,"signal":"NO_TRADE","strategy":"NONE","setup_candidates":[],"selected_setup":None,"rejection_reasons":[reason],"trade_levels":{"valid":False}})
-    selected=candidates[0];sid,tid=_setup_ids(selected,symbol,str(m5.iloc[-1].get("datetime","")),current_regime);selected={**selected,"setup_id":sid,"trigger_id":tid,"symbol":symbol,"strategy_mode":selected.get("strategy_mode",strategy_mode),"source_asset":selected.get("source_asset",source_asset)};score=selected.get("score_detail",{});base.update({"setup_candidates":candidates,"selected_setup":selected,"strategy":selected["strategy"],"engine":selected["engine"],"setup_id":sid,"trigger_id":tid,"setup_score":score,"strategy_mode":selected["strategy_mode"],"source_asset":selected.get("source_asset",source_asset)})
+        return _finalize({**base,"valid":False,"signal":"NO_TRADE","strategy":"NONE","setup_candidates":[],"selected_setup":None,"rejection_reasons":["NO_BTC_NATIVE_STRATEGY_PASSED_CORE_GATE_SCORE_FILTER"],"trade_levels":{"valid":False}})
+    selected=candidates[0];sid,tid=_setup_ids(selected,symbol,str(m5.iloc[-1].get("datetime","")),current_regime);selected={**selected,"setup_id":sid,"trigger_id":tid,"symbol":symbol,"strategy_mode":"NATIVE","source_asset":"BTC"};score=selected.get("score_detail",{});base.update({"setup_candidates":candidates,"selected_setup":selected,"strategy":selected["strategy"],"engine":selected["engine"],"setup_id":sid,"trigger_id":tid,"setup_score":score,"strategy_mode":"NATIVE","source_asset":"BTC"})
     if not score.get("qualified"):return _finalize({**base,"valid":False,"signal":"NO_TRADE","entry_type":None,"rejection_reasons":["SETUP_SCORE_BELOW_THRESHOLD"],"trade_levels":{"valid":False}})
     state=setup_state if isinstance(setup_state,SetupState) else SetupState();emit,entry_type=can_emit_entry(state,sid,tid,max_reentries=int(os.getenv("MAX_REENTRIES_PER_SETUP","2")))
     if not emit:return _finalize({**base,"valid":False,"signal":"NO_TRADE","entry_type":entry_type,"rejection_reasons":[entry_type],"trade_levels":{"valid":False}})
     levels=_btc_trade_levels(selected)
     if not levels.get("valid"):return _finalize({**base,"valid":False,"signal":"NO_TRADE","entry_type":entry_type,"rejection_reasons":[levels.get("reason","INVALID_RISK_OR_RR")],"trade_levels":levels,"rr_target":levels.get("target_rr")})
-    return _finalize({**base,"valid":True,"signal":selected["direction"],"direction":selected["direction"],"strategy":selected["strategy"],"engine":selected["engine"],"entry_type":entry_type,"setup_id":sid,"trigger_id":tid,"trade_levels":levels,"risk_engine":{"method":"PRIMARY_TARGET_WITH_RR_STAGING","risk_reward":levels["risk_reward"],"minimum_rr":levels["minimum_rr"],"after_tp1":"MOVE_SL_TO_BREAK_EVEN","strategy_mode":selected["strategy_mode"]},"rr_target":levels["minimum_rr"],"rejection_reasons":[],"data_quality":{"m5":[],"m15":[],"h1":[]},"live_orders_allowed":False})
+    return _finalize({**base,"valid":True,"signal":selected["direction"],"direction":selected["direction"],"strategy":selected["strategy"],"engine":selected["engine"],"entry_type":entry_type,"setup_id":sid,"trigger_id":tid,"trade_levels":levels,"risk_engine":{"method":"PRIMARY_TARGET_WITH_RR_STAGING","risk_reward":levels["risk_reward"],"minimum_rr":levels["minimum_rr"],"after_tp1":"MOVE_SL_TO_BREAK_EVEN","strategy_mode":"NATIVE"},"rr_target":levels["minimum_rr"],"rejection_reasons":[],"data_quality":{"m5":[],"m15":[],"h1":[]},"live_orders_allowed":False})
 
 analyze_structure_setup=analyze
