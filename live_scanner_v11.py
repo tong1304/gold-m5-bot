@@ -70,20 +70,22 @@ def _telegram_text(symbol,setup):
     return f"🚨 <b>พบสัญญาณเข้าออเดอร์ V12.11 MTF</b>\n\n{side}\n\n📊 <b>สินทรัพย์:</b> {asset_icon} {symbol}\n💵 <b>ราคาปัจจุบัน:</b> {_live_price(symbol)}\n⏱ <b>Filter:</b> H1 → M15 → M5\n🧭 <b>H1 Bias:</b> {setup.get('h1_bias','N/A')}\n🧠 <b>M5 Regime:</b> {regime_name}\n{origin}\n{compat}\n🎯 <b>Engine:</b> {setup.get('engine','NONE')} — {setup.get('strategy')}\n🔁 <b>Entry Type:</b> {setup.get('entry_type','INITIAL')}\n🆔 <b>Setup ID:</b> {setup.get('setup_id')}\n\n💰 <b>จุดเข้า:</b> {_fmt(l['entry'])}\n🛑 <b>SL:</b> {_fmt(l['sl'])}\n🎯 <b>TP:</b> {_fmt(l['tp'])}\n📐 <b>Risk/Reward:</b> {l['risk_reward']}R\n📊 <b>Setup Score:</b> {score_value}/100\n\n⚠️ ระบบแจ้งเตือนเท่านั้น ไม่มีการเปิดออเดอร์อัตโนมัติ"
 
 def _decision_summary(setup):
-    """Render native/cross-asset trace without UNKNOWN for fallback metadata."""
     trace=setup.get("decision_trace") or []
     if not isinstance(trace,(list,tuple)):return f"trace=INVALID_TYPE:{type(trace).__name__}"
     if not trace:return "trace=NONE"
     parts=[]
-    mode=str(setup.get("strategy_mode") or "NATIVE").upper();target=str(setup.get("symbol") or "UNKNOWN").upper();source=str(setup.get("source_asset") or target).upper();regime=setup.get("m5_regime") or setup.get("regime") or "UNKNOWN";regime=regime.get("regime") if isinstance(regime,dict) else regime
+    target=str(setup.get("symbol") or "UNKNOWN").upper();default_source=str(setup.get("source_asset") or target).upper();regime=setup.get("m5_regime") or setup.get("regime") or "UNKNOWN";regime=regime.get("regime") if isinstance(regime,dict) else regime
     for r in trace:
         if not isinstance(r,dict):
             text=str(r)
-            if "CROSS_ASSET_FALLBACK" in text:parts.append(f"CROSS_ASSET:{source}->{target}:regime={regime}:ATTEMPTED")
+            if "CROSS_ASSET_FALLBACK" in text:parts.append(f"CROSS_ASSET:{default_source}->{target}:regime={regime}:ATTEMPTED")
             else:parts.append(f"trace_item={text[:200]}")
             continue
-        if r.get("reason")=="CROSS_ASSET_FALLBACK" or r.get("strategy_mode")=="CROSS_ASSET" or r.get("source_asset"):
-            src=str(r.get("source_asset") or source).upper();strat=r.get("strategy") or r.get("engine") or "UNKNOWN";status="PASS" if r.get("status")=="PASS" else "FAIL";direction=r.get("direction") or "-";parts.append(f"CROSS_ASSET:{src}->{target}:{strat}:{direction}:{status}");continue
+        if r.get("status")=="CROSS_ASSET_FALLBACK":
+            src=str(r.get("source_asset") or default_source).upper();compatible=','.join(r.get("compatible_engines") or []) or "NONE";parts.append(f"CROSS_ASSET:{src}->{target}:regime={r.get('regime',regime)}:COMPATIBLE={compatible}");continue
+        if r.get("strategy_mode")=="CROSS_ASSET" or r.get("source_asset"):
+            src=str(r.get("source_asset") or default_source).upper();strat=r.get("strategy") or r.get("engine") or "UNKNOWN";status="PASS" if r.get("status")=="PASS" else "FAIL";direction=r.get("direction") or "-";parts.append(f"CROSS_ASSET:{src}->{target}:{strat}:{direction}:{status}");continue
+        if r.get("reason")=="CROSS_ASSET_FALLBACK":parts.append(f"CROSS_ASSET:{default_source}->{target}:regime={regime}:ATTEMPTED");continue
         status="PASS" if r.get("status")=="PASS" else "FAIL";reasons=r.get("rejection_reasons") or [];reason=",".join(str(x) for x in reasons) if isinstance(reasons,(list,tuple)) else str(reasons);score_detail=r.get("score_detail") or {};score=score_detail.get("score") if isinstance(score_detail,dict) else None;suffix=f" score={score}" if score is not None else f" reason={reason or '-'}";parts.append(f"{r.get('engine','UNKNOWN')}:{r.get('direction','UNKNOWN')}:{status}{suffix}")
     return " | ".join(parts)
 
@@ -91,7 +93,7 @@ def scan_once(symbol="BTC"):
     symbol=(symbol or "BTC").strip().upper()
     if symbol not in SUPPORTED_SYMBOLS:raise ValueError(f"Unsupported symbol: {symbol}")
     with _SCAN_LOCK:
-        frames=_load_frames(symbol);m5,m15,h1=frames["5m"],frames["15m"],frames["1h"];ts=str(m5.iloc[-1].datetime);resolved=history.resolve_open_for_symbol(symbol,m5.to_dict("records"));history_rows=history.list_signals(days=3650,symbol=symbol,limit=1000);state=state_from_history(history_rows);setup=engine.analyze(m5,m15=m15,h1=h1,symbol=symbol,setup_state=state);setup.update({"candle_time":ts,"closed_candle":ts,"symbol":symbol,"engine_version":engine.ENGINE_VERSION,"live_orders_allowed":False});regime=setup.get("regime") or {};regime_name=regime.get("regime") if isinstance(regime,dict) else regime;print(f"[V12 TRACE] {symbol} mode=MTF:H1>M15>M5 h1={setup.get('h1_bias')} m15={setup.get('m15_regime')} regime={regime_name} allowed={','.join(setup.get('allowed_engines') or [])} strategy_mode={setup.get('strategy_mode','NATIVE')} source_asset={setup.get('source_asset',symbol)} final={setup.get('signal')} reason={','.join(setup.get('rejection_reasons') or [])}");print(f"[V12 TRACE] {symbol} {_decision_summary(setup)}",flush=True);active=history.active_for_symbol(symbol);signal=setup.get("signal");levels=setup.get("trade_levels") or {};valid=signal in ("BUY","SELL") and _levels_ready(levels,signal,setup.get("strategy"));setup["valid"]=valid;signal_id=f"V12-{symbol}-{ts.replace(':','').replace('-','').replace(' ','-')}-{signal if valid else 'NO_TRADE'}-{setup.get('trigger_id','NONE')}";setup["signal_id"]=signal_id
+        frames=_load_frames(symbol);m5,m15,h1=frames["5m"],frames["15m"],frames["1h"];ts=str(m5.iloc[-1].datetime);resolved=history.resolve_open_for_symbol(symbol,m5.to_dict("records"));history_rows=history.list_signals(days=3650,symbol=symbol,limit=1000);state=state_from_history(history_rows);setup=engine.analyze(m5,m15=m15,h1=h1,symbol=symbol,setup_state=state);setup.update({"candle_time":ts,"closed_candle":ts,"symbol":symbol,"engine_version":engine.ENGINE_VERSION,"live_orders_allowed":False});regime=setup.get("regime") or {};regime_name=regime.get("regime") if isinstance(regime,dict) else regime;mode=str(setup.get("strategy_mode") or "NATIVE").upper();source=str(setup.get("source_asset") or symbol).upper();print(f"[V12 TRACE] {symbol} mode=MTF:H1>M15>M5 h1={setup.get('h1_bias')} m15={setup.get('m15_regime')} regime={regime_name} allowed={','.join(setup.get('allowed_engines') or [])} strategy_mode={mode} source_asset={source} final={setup.get('signal')} reason={','.join(setup.get('rejection_reasons') or [])}");print(f"[V12 TRACE] {symbol} {_decision_summary(setup)}",flush=True);active=history.active_for_symbol(symbol);signal=setup.get("signal");levels=setup.get("trade_levels") or {};valid=signal in ("BUY","SELL") and _levels_ready(levels,signal,setup.get("strategy"));setup["valid"]=valid;signal_id=f"V12-{symbol}-{ts.replace(':','').replace('-','').replace(' ','-')}-{signal if valid else 'NO_TRADE'}-{setup.get('trigger_id','NONE')}";setup["signal_id"]=signal_id
         if not valid:
             recorded=history.record_no_trade({**setup,"signal":"NO_TRADE","result":"NO_TRADE","created_at":datetime.now(timezone.utc).isoformat()});return {"status":"no_trade","engine_version":engine.ENGINE_VERSION,"symbol":symbol,"signal":"NO_TRADE","recorded":recorded,"resolved_this_scan":resolved,**setup}
         same_setup_active=any((json_load(r.get("payload_json"),"setup_id") or r.get("setup_key"))==setup.get("setup_id") for r in active)
