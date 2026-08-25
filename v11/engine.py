@@ -6,7 +6,7 @@ from .data_quality import validate_frame
 from .risk import MIN_RISK_REWARD as _MIN_RISK_REWARD
 from .regime import classify_regime
 from .btc_strategy_dispatch import evaluate_btc_strategies
-from .cross_asset_fallback import native_strategy_ids
+from .asset_strategy_registry import native_strategy_ids
 from .setup_state import SetupState, can_emit_entry
 from .decision_priority import signal_reason
 
