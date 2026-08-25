@@ -17,11 +17,11 @@ class LiveService:
         self.data = LiveMarketData()
         self.interval = int(os.getenv("SIGNAL_INTERVAL_SECONDS", "60"))
         self.status_interval_seconds = int(os.getenv("STATUS_INTERVAL_SECONDS", "900"))
-        self.critical_interval_seconds = int(os.getenv("CRITICAL_INTERVAL_SECONDS", "900"))
         self._started = False
         self._last_candle: dict[str, str] = {}
         self._last_status_at = 0.0
-        self._last_critical_at = 0.0
+        self._runtime_errors: dict[str, str] = {}
+        self._last_prices: dict[str, float] = {}
 
     def start(self) -> None:
         if self._started:
@@ -31,46 +31,74 @@ class LiveService:
         self._last_status_at = time.monotonic()
         threading.Thread(target=self._loop, name="production-v2-scheduler", daemon=True).start()
 
-    def _send_status(self, prices: dict[str, float]) -> None:
+    def _send_status(self) -> None:
+        symbols = self.data.symbols()
         status = {
-            "symbols": {name: "เชื่อมต่อแล้ว" for name in self.data.symbols()},
-            "prices": prices,
+            "symbols": {
+                name: ("เชื่อมต่อแล้ว" if name not in self._runtime_errors else "มีปัญหา")
+                for name in symbols
+            },
+            "prices": dict(self._last_prices),
             "timeframe": "M5",
+            "runtime_errors": dict(self._runtime_errors),
+            "architecture": "E1 -> E2 -> E3 -> E4 -> E5 -> E6 -> E7 -> E8 -> E9",
         }
         send(format_status(status))
         self._last_status_at = time.monotonic()
 
-    def _send_critical(self, message: str, component: str) -> None:
-        now = time.monotonic()
-        if now - self._last_critical_at < self.critical_interval_seconds:
-            return
-        send(format_critical(message, component))
-        self._last_critical_at = now
+    def _trace_result(self, alias: str, result) -> None:
+        print(
+            f"[PRODUCTION V2] {alias} PIPELINE decision={result.decision} "
+            f"gate={result.gate_passed} score={result.score:.2f} "
+            f"engines={len(result.engines)}",
+            flush=True,
+        )
+        for engine in result.engines:
+            print(
+                f"[PRODUCTION V2] {alias} {engine.engine_id} "
+                f"gate={engine.gate_passed} score={engine.score:.2f} "
+                f"reasons={list(engine.reason_codes)}",
+                flush=True,
+            )
 
     def _loop(self) -> None:
-        prices: dict[str, float] = {}
         while True:
             for alias in self.data.symbols():
                 try:
-                    payload = normalize_market_data(self.data.candles(alias))
+                    raw = self.data.candles(alias)
+                    print(
+                        f"[PRODUCTION V2] {alias} LSE M5 received "
+                        f"bars={len(raw.get('bars') or [])} "
+                        f"candle={raw.get('candle_close_timestamp')}",
+                        flush=True,
+                    )
+                    payload = normalize_market_data(raw)
                     if payload["bars"]:
-                        prices[alias] = payload["bars"][-1]["close"]
-                        store.update_price(alias, prices[alias])
+                        self._last_prices[alias] = payload["bars"][-1]["close"]
+                        store.update_price(alias, self._last_prices[alias])
                     candle = payload.get("candle_close_timestamp") or ""
-                    if candle and self._last_candle.get(alias) == candle:
+                    if not candle:
+                        self._runtime_errors[alias] = "ไม่พบ candle timestamp"
+                        continue
+                    if self._last_candle.get(alias) == candle:
                         continue
                     self._last_candle[alias] = candle
                     result = self.pipeline.run(payload)
-                    store.record(result, prices.get(alias))
+                    self._runtime_errors.pop(alias, None)
+                    store.record(result, self._last_prices.get(alias))
+                    self._trace_result(alias, result)
                     if result.decision in {"BUY", "SELL"} and result.gate_passed:
                         send_decision(result)
                 except Exception as exc:
-                    self._send_critical(str(exc), alias)
+                    self._runtime_errors[alias] = str(exc)
+                    print(f"[PRODUCTION V2] {alias} ERROR {exc}", flush=True)
+
             if time.monotonic() - self._last_status_at >= self.status_interval_seconds:
                 try:
-                    self._send_status(prices)
+                    _ = format_critical
+                    self._send_status()
                 except Exception as exc:
-                    self._send_critical(str(exc), "Telegram")
+                    print(f"[PRODUCTION V2] Telegram status error: {exc}", flush=True)
             time.sleep(self.interval)
 
 
