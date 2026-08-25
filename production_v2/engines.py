@@ -47,80 +47,75 @@ def _module(code: str):
     return importlib.import_module(f"trading_system.engines.e{code[0]}.{SUFFIX[code]}")
 
 
+def _state(output: dict[str, Any], code: str, key: str = "state") -> Any:
+    return output.get(code, {}).get(key)
+
+
 def _professional_gate(engine_id: str, output: dict[str, Any], context: dict[str, Any]) -> tuple[bool, tuple[str, ...]]:
-    """Hard decision conditions for the nine professional decision layers.
-
-    Scores describe quality; these gates decide whether the evidence is sufficient
-    to continue. No score is allowed to override a failed professional gate.
-    """
-    def state(code: str, key: str = "state") -> Any:
-        return output.get(code, {}).get(key)
-
-    direction = state("1C", "direction")
+    """Professional parent gates: missing evidence is not automatically failure."""
     if engine_id == "E1":
-        if direction not in {"UP", "DOWN"}:
-            return False, ("E1_MARKET_STATE_UNCLEAR",)
-        if state("1G") == "TRANSITION":
+        if _state(output, "1A", "data_quality") not in {None, "VALID"}:
+            return False, ("E1_DATA_INVALID",)
+        if _state(output, "1A") == "UNAVAILABLE":
+            return False, ("E1_DATA_INVALID",)
+        if _state(output, "1G") == "TRANSITION":
             return False, ("E1_MARKET_STATE_TRANSITION",)
         return True, ()
 
     if engine_id == "E2":
-        if direction not in {"UP", "DOWN"}:
-            return False, ("E2_DIRECTION_UNCLEAR",)
-        if state("2F") == "TRANSITION":
+        if _state(output, "2F", "regime") == "TRANSITION":
             return False, ("E2_REGIME_TRANSITION",)
-        regime_states = [state(code, "regime") for code in ("2A", "2B", "2C", "2D", "2E", "2F")]
-        if not any(s in {"TREND", "RANGE", "MEAN_REVERSION", "BREAKOUT", "EXPANSION_PHASE", "BALANCED_PHASE", "STABLE"} for s in regime_states):
+        regimes = {_state(output, code, "regime") for code in ("2A", "2B", "2C", "2D", "2E", "2F")}
+        known = {"TREND", "RANGE", "MEAN_REVERSION", "BREAKOUT", "EXPANSION_PHASE", "BALANCED_PHASE", "STABLE"}
+        if not regimes.intersection(known):
             return False, ("E2_REGIME_UNCLEAR",)
         return True, ()
 
     if engine_id == "E3":
-        structure = state("3B")
-        bos = state("3C")
-        aligned = state("3F") == "INTERNAL_EXTERNAL_ALIGNED"
-        if structure not in {"BULLISH", "BEARISH"} or bos != "BOS_CONFIRMED" or not aligned:
-            return False, ("E3_STRUCTURE_NOT_CONFIRMED",)
-        return True, ()
+        if _state(output, "3D") in {"STRUCTURAL_FAILURE", "INVALIDATED", "FAILURE_CONFIRMED"}:
+            return False, ("E3_STRUCTURE_INVALIDATED",)
+        structure = _state(output, "3B")
+        if structure in {"BULLISH", "BEARISH", "NEUTRAL", "RANGE"}:
+            return True, ()
+        return False, ("E3_STRUCTURE_UNRESOLVED",)
 
     if engine_id == "E4":
-        quality = state("4F") == "QUALITY_MEASURABLE"
-        sweep = state("4B") in {"SWEEP_HIGH", "SWEEP_LOW"}
-        rejection = state("4C") == "REJECTION"
-        acceptance = state("4D") == "ACCEPTANCE"
-        if not quality or not (sweep and rejection or acceptance):
-            return False, ("E4_LIQUIDITY_EVIDENCE_INSUFFICIENT",)
+        if _state(output, "4F") not in {"QUALITY_MEASURABLE", "LIQUIDITY_QUALITY_MEASURABLE"}:
+            return False, ("E4_LIQUIDITY_CONTEXT_UNRESOLVED",)
         return True, ()
 
     if engine_id == "E5":
-        if state("5D") == "EXTENDED" or state("5E") != "SPACE_AVAILABLE":
+        if _state(output, "5D") == "EXTENDED":
             return False, ("E5_LOCATION_DISADVANTAGED",)
-        if state("5F") != "LOCATION_QUALITY_MEASURABLE":
+        if _state(output, "5E") == "LIMITED_SPACE":
+            return False, ("E5_SPACE_INSUFFICIENT",)
+        if _state(output, "5F") != "LOCATION_QUALITY_MEASURABLE":
             return False, ("E5_LOCATION_UNCONFIRMED",)
         return True, ()
 
     if engine_id == "E6":
-        if state("6D") != "NOT_INVALIDATED" or state("6F") not in {"MATURE"}:
-            return False, ("E6_SETUP_NOT_MATURE",)
-        if state("6B") != "DIRECTIONAL_SETUP":
-            return False, ("E6_SETUP_NOT_DIRECTIONAL",)
-        return True, ()
+        if _state(output, "6D") in {"INVALIDATED", "SETUP_INVALIDATED"}:
+            return False, ("E6_SETUP_INVALIDATED",)
+        archetype = _state(output, "6B")
+        if archetype in {"DIRECTIONAL_SETUP", "RANGE_REJECTION_SETUP", "BREAKOUT_SETUP", "MEAN_REVERSION_SETUP", "LIQUIDITY_REVERSAL_SETUP"}:
+            return True, ()
+        return False, ("E6_SETUP_NOT_FORMED",)
 
     if engine_id == "E7":
-        if state("7F") != "CONFIRMATION_PASS":
-            return False, ("E7_CONFIRMATION_INSUFFICIENT",)
-        if state("7A") != "TRIGGER_OBSERVED" or state("7B") != "QUALITY_PASS":
-            return False, ("E7_TRIGGER_NOT_CONFIRMED",)
-        if state("7D") != "NO_FAILURE":
+        if _state(output, "7D") in {"FAILURE", "CONFIRMATION_FAILED", "INVALIDATED"}:
             return False, ("E7_CONFIRMATION_INVALIDATED",)
-        return True, ()
+        if _state(output, "7A") == "TRIGGER_OBSERVED" and _state(output, "7B") == "QUALITY_PASS" and _state(output, "7F") == "CONFIRMATION_PASS":
+            return True, ()
+        return False, ("E7_CONFIRMATION_INSUFFICIENT",)
 
     if engine_id == "E8":
         plan = output.get("trade_plan", {})
         if not plan.get("valid"):
             return False, ("E8_RISK_PLAN_INVALID",)
-        if state("8G") != "RISK_GATE_READY":
+        if _state(output, "8G") != "RISK_GATE_READY":
             return False, ("E8_RISK_GATE_NOT_READY",)
-        if float(plan.get("rr_tp2", 0)) < 2.0:
+        minimum_rr = float((context.get("risk_policy") or {}).get("min_rr", 1.3))
+        if float(plan.get("rr_tp2", 0)) < minimum_rr:
             return False, ("E8_RR_BELOW_MINIMUM",)
         return True, ()
 
@@ -138,58 +133,45 @@ def _trade_plan(context: dict[str, Any], direction: str) -> dict[str, Any]:
     previous_close = None
     for bar in recent:
         high, low, close = float(bar["high"]), float(bar["low"]), float(bar["close"])
-        tr = high - low if previous_close is None else max(high - low, abs(high - previous_close), abs(low - previous_close))
-        true_ranges.append(tr)
+        true_ranges.append(high - low if previous_close is None else max(high - low, abs(high - previous_close), abs(low - previous_close)))
         previous_close = close
     atr = sum(true_ranges) / len(true_ranges)
     if atr <= 0:
         return {"valid": False, "reason": "INVALID_ATR"}
 
-    buffer = max(atr * 0.25, entry * 0.0002)
-    risk_distance = atr * 1.5
+    policy = context.get("risk_policy") or {}
+    stop_atr = float(policy.get("stop_atr", 1.5))
+    min_rr = float(policy.get("min_rr", 1.3))
+    target_rr = max(min_rr, float(policy.get("target_rr", 2.0)))
+    buffer_atr = float(policy.get("structure_buffer_atr", 0.25))
+    buffer = max(atr * buffer_atr, entry * 0.0002)
+    risk_distance = atr * stop_atr
+
     if direction == "UP":
         structural_stop = min(float(b["low"]) for b in recent) - buffer
         stop = min(entry - risk_distance, structural_stop)
         risk = entry - stop
         tp1 = entry + risk
-        tp2 = entry + 2.0 * risk
+        tp2 = entry + target_rr * risk
     else:
         structural_stop = max(float(b["high"]) for b in recent) + buffer
         stop = max(entry + risk_distance, structural_stop)
         risk = stop - entry
         tp1 = entry - risk
-        tp2 = entry - 2.0 * risk
+        tp2 = entry - target_rr * risk
 
-    return {
-        "valid": risk > 0 and tp2 > 0,
-        "direction": "BUY" if direction == "UP" else "SELL",
-        "entry": round(entry, 8),
-        "stop_loss": round(stop, 8),
-        "take_profit_1": round(tp1, 8),
-        "take_profit_2": round(tp2, 8),
-        "risk_distance": round(risk, 8),
-        "atr": round(atr, 8),
-        "rr_tp1": 1.0,
-        "rr_tp2": 2.0,
-    }
+    return {"valid": risk > 0 and tp2 > 0, "direction": "BUY" if direction == "UP" else "SELL", "entry": round(entry, 8), "stop_loss": round(stop, 8), "take_profit_1": round(tp1, 8), "take_profit_2": round(tp2, 8), "risk_distance": round(risk, 8), "atr": round(atr, 8), "rr_tp1": 1.0, "rr_tp2": round(target_rr, 3), "min_rr": round(min_rr, 3)}
 
 
 def run_engine(engine_id: str, context: dict[str, Any]) -> EngineResult:
-    results = []
-    for code in SUB_ENGINE_CODES[engine_id]:
-        result = _module(code).SubEngine().run(context)
-        results.append(result)
-        if not result.gate_passed:
-            return EngineResult(engine_id, ENGINE_NAMES[engine_id], False, result.score,
-                                {"sub_engine": code, "output": result.output, "trace": result.trace},
-                                tuple(result.trace.get("reason_codes", [])))
-
-    score = mean(r.score for r in results)
+    results = [_module(code).SubEngine().run(context) for code in SUB_ENGINE_CODES[engine_id]]
+    score = mean(r.score for r in results) if results else 0.0
     output = {r.sub_engine_id: r.output for r in results}
+    output["sub_engine_failures"] = [{"id": r.sub_engine_id, "reason_codes": r.trace.get("reason_codes", [])} for r in results if not r.gate_passed]
 
     if engine_id == "E8":
-        trend = context.get("E1_result", {}).get("1C", {}).get("direction", "NEUTRAL")
-        plan = _trade_plan(context, trend)
+        direction = context.get("E1_result", {}).get("1C", {}).get("direction", "NEUTRAL")
+        plan = _trade_plan(context, direction)
         output["trade_plan"] = plan
         if not plan.get("valid"):
             return EngineResult(engine_id, ENGINE_NAMES[engine_id], False, score, output, (plan.get("reason", "RISK_PLAN_INVALID"),))
@@ -197,15 +179,15 @@ def run_engine(engine_id: str, context: dict[str, Any]) -> EngineResult:
     gate_passed, reasons = _professional_gate(engine_id, output, context)
     output["professional_gate"] = "PASS" if gate_passed else "FAIL"
     output["professional_reason_codes"] = list(reasons)
+    output["evidence_quality"] = round(score, 2)
     return EngineResult(engine_id, ENGINE_NAMES[engine_id], gate_passed, score, output, reasons)
 
 
 def run_e9_decision(context: dict[str, Any], upstream: list[EngineResult]) -> EngineResult:
     sub = run_engine("E9", context)
-    if not all(e.gate_passed for e in upstream):
-        return EngineResult("E9", ENGINE_NAMES["E9"], False, sub.score,
-                            {"decision": "NO_TRADE", "blocked_by": [e.engine_id for e in upstream if not e.gate_passed]},
-                            ("UPSTREAM_GATE_FAILED",))
+    failed = [e.engine_id for e in upstream if not e.gate_passed]
+    if failed:
+        return EngineResult("E9", ENGINE_NAMES["E9"], False, sub.score, {"decision": "NO_TRADE", "blocked_by": failed, "decision_authority": "E9"}, ("UPSTREAM_GATE_FAILED",))
 
     e1 = next(e for e in upstream if e.engine_id == "E1")
     e8 = next(e for e in upstream if e.engine_id == "E8")
@@ -213,13 +195,6 @@ def run_e9_decision(context: dict[str, Any], upstream: list[EngineResult]) -> En
     plan = e8.output.get("trade_plan", {})
     decision = plan.get("direction", "NO_TRADE") if plan.get("valid") else "NO_TRADE"
     final_gate = sub.gate_passed and decision in {"BUY", "SELL"}
-    output = {
-        "decision": decision if final_gate else "NO_TRADE",
-        "decision_authority": "E9",
-        "pipeline": "E1>E2>E3>E4>E5>E6>E7>E8>E9",
-        "trade_plan": plan,
-        "upstream_direction": trend,
-        "gate_passed": final_gate,
-    }
-    return EngineResult("E9", ENGINE_NAMES["E9"], final_gate, sub.score,
-                        output, tuple(sub.reason_codes) if final_gate else tuple(sub.reason_codes) + ("FINAL_EXECUTION_GATE_FAILED",))
+    output = {"decision": decision if final_gate else "NO_TRADE", "decision_authority": "E9", "pipeline": "E1>E2>E3>E4>E5>E6>E7>E8>E9", "trade_plan": plan, "upstream_direction": trend, "gate_passed": final_gate}
+    reasons = tuple(sub.reason_codes) if final_gate else tuple(sub.reason_codes) + ("FINAL_EXECUTION_GATE_FAILED",)
+    return EngineResult("E9", ENGINE_NAMES["E9"], final_gate, sub.score, output, reasons)
