@@ -22,6 +22,15 @@ def start_production_runtime() -> None:
     if _runtime_started:
         return
 
+    # CI/test runs explicitly disable the live thread. The HTTP application
+    # remains healthy so the pipeline and API contracts can be tested without
+    # requiring a production LSE credential.
+    if os.getenv("PRODUCTION_V2_DISABLE_LIVE", "").strip() == "1":
+        logger.info("[PRODUCTION V2] Live runtime disabled by PRODUCTION_V2_DISABLE_LIVE")
+        print("[PRODUCTION V2] Live runtime disabled by test environment", flush=True)
+        _runtime_started = True
+        return
+
     key = os.getenv("LSE_API_KEY", "").strip()
     if not key:
         logger.error("[PRODUCTION V2] LSE_API_KEY is missing; live M5 runtime cannot start")
