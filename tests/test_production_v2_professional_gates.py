@@ -4,13 +4,15 @@ from production_v2.engines import run_engine
 def _bars(direction="DOWN", body_ratio=0.70, count=30):
     bars = []
     price = 100.0
-    for i in range(count):
+    for _ in range(count):
         if direction == "DOWN":
             close = price - 0.8
-        else:
+        elif direction == "UP":
             close = price + 0.8
+        else:
+            close = price
         body = abs(close - price)
-        span = body / body_ratio if body_ratio else 3.0
+        span = max(body / body_ratio, 0.1) if body_ratio else 3.0
         high = max(price, close) + (span - body) / 2
         low = min(price, close) - (span - body) / 2
         bars.append({"open": price, "high": high, "low": low, "close": close})
@@ -31,6 +33,6 @@ def test_e6_developing_setup_is_not_trade_ready():
 
 
 def test_e3_requires_directional_structure_evidence():
-    result = run_engine("E3", {"symbol": "BTC/USD", "timeframe": "M5", "bars": _bars(direction="DOWN")})
+    result = run_engine("E3", {"symbol": "BTC/USD", "timeframe": "M5", "bars": _bars(direction="FLAT")})
     assert result.gate_passed is False
     assert "E3_STRUCTURE_NOT_CONFIRMED" in result.reason_codes
