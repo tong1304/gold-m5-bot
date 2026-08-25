@@ -15,10 +15,11 @@ class SubEngineResult:
 
 
 class SubEngine:
-    """Shared analytical contract for all production-v2 sub-engines.
+    """Shared analytical contract for production-v2 sub-engines.
 
     Sub-engines describe evidence. They do not decide BUY/SELL. Parent engines
     decide whether evidence is required, optional, waiting, or invalidating.
+    Calculations are intentionally short-term/M5 aware and remain asset-neutral.
     """
 
     def __init__(self, sub_engine_id: str | None = None):
@@ -83,18 +84,31 @@ class SubEngine:
             reasons = ['volatility state calculated']
             score = 75
         elif sid == '1C':
-            ev.update({'direction': direction, 'trend_change': round(closes[-1] - closes[-6], 8) if len(closes) >= 6 else 0})
+            change = closes[-1] - closes[-6] if len(closes) >= 6 else 0
+            ev.update({'direction': direction, 'trend_change': round(change, 8), 'trend_strength_atr': round(abs(change) / atr, 3) if atr else 0})
             reasons = [f'trend state: {direction}']
             score = 85 if direction != 'NEUTRAL' else 55
         elif sid == '1D':
             ev['range'] = {'high': max(highs), 'low': min(lows), 'width': rng}
             reasons = ['range state calculated']
             score = 75
-        elif sid in {'1E', '1F', '1G'}:
-            label = 'COMPRESSION' if sid == '1E' and ratio < .45 else 'EXPANSION' if sid == '1F' and ratio > .65 else 'TRANSITION' if sid == '1G' and .45 <= ratio <= .65 else 'NOT_DOMINANT'
+        elif sid == '1E':
+            label = 'COMPRESSION' if ratio < .45 else 'NOT_DOMINANT'
             ev.update({'state': label, 'range_ratio': round(ratio, 4)})
             reasons = [f'volatility state: {label}']
-            score = 80 if label != 'NOT_DOMINANT' else 60
+            score = 80 if label == 'COMPRESSION' else 60
+        elif sid == '1F':
+            label = 'EXPANSION' if ratio > .65 else 'NOT_DOMINANT'
+            ev.update({'state': label, 'range_ratio': round(ratio, 4)})
+            reasons = [f'volatility state: {label}']
+            score = 80 if label == 'EXPANSION' else 60
+        elif sid == '1G':
+            change = abs(closes[-1] - closes[-6]) if len(closes) >= 6 else 0
+            strength = change / atr if atr else 0.0
+            label = 'DOMINANT' if direction != 'NEUTRAL' and ratio >= .55 and strength >= .50 else 'TRANSITION' if .45 <= ratio < .55 else 'NOT_DOMINANT'
+            ev.update({'state': label, 'range_ratio': round(ratio, 4), 'trend_strength_atr': round(strength, 3), 'direction': direction})
+            reasons = [f'market dominance: {label}']
+            score = 90 if label == 'DOMINANT' else 65 if label == 'TRANSITION' else 55
         elif sid in {'2A', '2B', '2C', '2D', '2E', '2F'}:
             labels = {
                 '2A': 'TREND' if direction != 'NEUTRAL' and ratio >= .25 else 'NOT_TREND',
@@ -140,7 +154,7 @@ class SubEngine:
             label = labels[sid]
             ev.update({'state': label, 'zone_high': rh, 'zone_low': rl, 'sweep_high': shi, 'sweep_low': slo})
             reasons = [f'liquidity evidence: {label}']
-            score = 80 if label != 'NO_SWEEP' else 65
+            score = 85 if label in {'SWEEP_HIGH', 'SWEEP_LOW', 'REJECTION', 'RECLAIM_CONTEXT'} else 72
         elif sid in {'5A', '5B', '5C', '5D', '5E', '5F'}:
             rh, rl = max(highs), min(lows)
             pos = (closes[-1] - rl) / (rh - rl) if rh != rl else .5
@@ -155,7 +169,7 @@ class SubEngine:
             label = labels[sid]
             ev.update({'state': label, 'position_in_range': round(pos, 4), 'mean_close': mean(closes), 'range_high': rh, 'range_low': rl})
             reasons = [f'location evidence: {label}']
-            score = 80
+            score = 90 if .20 <= pos <= .80 and label not in {'EXTENDED', 'LIMITED_SPACE'} else 75
         elif sid in {'6A', '6B', '6C', '6D', '6E', '6F'}:
             regime = data.get('E2_result', {}).get('2B', {}).get('regime') or data.get('E2_result', {}).get('2C', {}).get('regime')
             if direction != 'NEUTRAL':
@@ -177,7 +191,7 @@ class SubEngine:
             label = labels[sid]
             ev.update({'state': label, 'direction': direction, 'body_ratio': round(body_ratio, 4), 'archetype': archetype})
             reasons = [f'setup evidence: {label}']
-            score = 82 if label != 'CONTEXT_NEUTRAL' else 60
+            score = 86 if label == 'MATURE' else 68
         elif sid in {'7A', '7B', '7C', '7D', '7E', '7F'}:
             labels = {
                 '7A': 'TRIGGER_OBSERVED' if body_ratio >= .5 else 'NO_STRONG_TRIGGER',
@@ -190,7 +204,7 @@ class SubEngine:
             label = labels[sid]
             ev.update({'state': label, 'direction': direction, 'body_ratio': round(body_ratio, 4)})
             reasons = [f'confirmation evidence: {label}']
-            score = 84 if label in {'TRIGGER_OBSERVED', 'QUALITY_PASS', 'CONFIRMATION_PASS'} else 65
+            score = 88 if label in {'TRIGGER_OBSERVED', 'QUALITY_PASS', 'CONFIRMATION_PASS'} else 65
         elif sid in {'8A', '8B', '8C', '8D', '8E', '8F', '8G'}:
             labels = {'8A': 'INVALIDATION_CALCULABLE', '8B': 'STOP_DISTANCE_CALCULABLE', '8C': 'TARGET_OBJECTIVE_CALCULABLE', '8D': 'RR_CONFIGURABLE', '8E': 'POSITION_SIZE_REQUIRES_ACCOUNT_RISK', '8F': 'EXPOSURE_LIMITS_REQUIRE_RUNTIME_CONFIG', '8G': 'RISK_GATE_READY'}
             label = labels[sid]
@@ -214,7 +228,7 @@ class SubEngine:
             'symbol': data.get('symbol'),
             'timeframe': data.get('timeframe'),
             'candle_close_timestamp': data.get('candle_close_timestamp'),
-            'spec_version': 'production-v2.0.0',
+            'spec_version': 'production-v2.1.0-professional-m5',
             'input_references': {'bar_count': len(self._bars(data))},
             'output': output,
             'gate': 'PASS' if gate else 'FAIL',
