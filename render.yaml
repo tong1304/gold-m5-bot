@@ -1,0 +1,11 @@
+services:
+  - type: web
+    name: gold-m5-bot
+    runtime: python
+    branch: production-v2
+    buildCommand: pip install -r requirements.txt
+    startCommand: gunicorn production_v2.app:app
+    healthCheckPath: /health
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.11.9
