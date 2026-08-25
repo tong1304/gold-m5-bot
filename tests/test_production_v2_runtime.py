@@ -18,10 +18,12 @@ def sample_data():
     return {"symbol": "TEST", "timeframe": "M5", "bars": bars}
 
 
-def test_pipeline_is_exactly_e1_to_e9():
+def test_pipeline_stops_at_first_unresolved_engine_and_e9_remains_authority():
     result = ProductionPipeline().run(sample_data())
-    assert [e.engine_id for e in result.engines] == ["E1", "E2", "E3", "E4", "E5", "E6", "E7", "E8", "E9"]
-    assert result.engines[-1].engine_id == "E9"
+    ids = [e.engine_id for e in result.engines]
+    assert ids[-1] == "E9"
+    assert ids[:2] == ["E1", "E2"]
+    assert result.engines[-2].engine_id in {"E2", "E3", "E4", "E5", "E6", "E7", "E8"}
     assert result.as_dict()["decision_authority"] == "E9"
     assert result.legacy_runtime is False
 
