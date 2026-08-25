@@ -12,10 +12,10 @@ def test_invalidated_evidence_is_a_hard_fail():
     assert state == "FAIL"
 
 
-def test_wait_state_expires_after_three_closed_m5_candles():
-    assert WAIT_MAX_BARS == 3
-    state = resolve_engine_state(False, ("E2_DIRECTION_UNCLEAR",), wait_bars=3)
-    assert state == "FAIL"
+def test_wait_state_does_not_expire_by_bar_count():
+    assert WAIT_MAX_BARS is None
+    state = resolve_engine_state(False, ("E2_DIRECTION_UNCLEAR",), wait_bars=20)
+    assert state == "WAIT"
 
 
 def test_pass_remains_pass_regardless_of_score():
