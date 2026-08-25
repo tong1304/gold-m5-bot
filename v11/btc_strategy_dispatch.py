@@ -2,32 +2,67 @@ from __future__ import annotations
 
 """BTC B1/B2/B3 dispatcher.
 
-The BTC asset family must always produce an explicit evaluation trace for
-B1/B2/B3.  Regime is passed into each strategy as context, while the
-strategy's own Core Gate, Score and Risk Filter decide qualification.
-This prevents an absent/legacy registry path from turning a real evaluation
-into UNKNOWN/NOT_APPLICABLE.
+BTC strategies are selected by the active M5 regime first, then each
+strategy evaluates its own Core Gate, Score and Risk Filter. H1 direction
+is a hard directional gate and is recorded explicitly in the trace.
 """
 
 from .asset_strategies import _b1, _b2, _b3
+from .regime import strategy_allowed_by_regime
+from .h1_gate import allows_trend_direction, gate_reason
 
 BTC_STRATEGIES = ("B1", "B2", "B3")
 BTC_FUNCTIONS = {"B1": _b1, "B2": _b2, "B3": _b3}
 
 
-def evaluate_btc_strategies(m5, regime):
-    """Evaluate every BTC strategy/direction and return candidates + trace.
+def _h1_gate_result(engine, direction, regime):
+    h1_bias = str(regime.get("h1_bias") or "NEUTRAL").upper()
+    if allows_trend_direction(h1_bias, direction):
+        return None
+    reason = gate_reason(h1_bias, direction)
+    return {
+        "status": "FAIL",
+        "engine": engine,
+        "strategy": f"BTC_{engine}",
+        "direction": direction,
+        "quality": 0.0,
+        "score_detail": {
+            "score": 0.0,
+            "minimum_score": None,
+            "qualified": False,
+            "failed_gate": ["h1_direction"],
+            "filter_rejections": [],
+            "h1_bias": h1_bias,
+            "h1_gate_reason": reason,
+        },
+        "rejection_reasons": [reason],
+        "evidence": {"h1_bias": h1_bias, "h1_gate": reason},
+    }
 
-    Each strategy is responsible for its own Core Gate, weighted Score and
-    Filters.  We intentionally do not short-circuit on the generic regime
-    registry here: the regime is supplied as strategy context so a strategy
-    can use it in its asset-specific rules without becoming UNKNOWN.
-    """
+
+def evaluate_btc_strategies(m5, regime):
+    """Evaluate only BTC strategies compatible with the current M5 regime."""
     candidates = []
     trace = []
+    current_regime = str(regime.get("m5_regime") or regime.get("regime") or "TRANSITION").upper()
+
     for engine in BTC_STRATEGIES:
+        if not strategy_allowed_by_regime("BTC", engine, current_regime):
+            trace.append({
+                "status": "NOT_APPLICABLE",
+                "engine": engine,
+                "strategy": f"BTC_{engine}",
+                "regime": current_regime,
+                "reason": "REGIME_NOT_COMPATIBLE",
+            })
+            continue
+
         fn = BTC_FUNCTIONS[engine]
         for direction in ("BUY", "SELL"):
+            h1_failure = _h1_gate_result(engine, direction, regime)
+            if h1_failure is not None:
+                trace.append(h1_failure)
+                continue
             try:
                 result = fn(m5.tail(140).reset_index(drop=True).copy(), direction, regime)
             except Exception as exc:
