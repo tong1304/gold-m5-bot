@@ -10,6 +10,22 @@ def test_wait_has_no_fixed_three_bar_expiry():
     assert resolve_engine_state(False, ("E2_DIRECTION_UNCLEAR",), wait_bars=20) == "WAIT"
 
 
+def test_missing_structure_evidence_is_wait_not_immediate_fail():
+    assert resolve_engine_state(False, ("E3_STRUCTURE_NOT_CONFIRMED",), wait_bars=20) == "WAIT"
+
+
+def test_missing_liquidity_evidence_is_wait_not_immediate_fail():
+    assert resolve_engine_state(False, ("E4_LIQUIDITY_EVIDENCE_INSUFFICIENT",), wait_bars=20) == "WAIT"
+
+
+def test_developing_setup_is_wait_not_immediate_fail():
+    assert resolve_engine_state(False, ("E6_SETUP_NOT_MATURE",), wait_bars=20) == "WAIT"
+
+
+def test_hard_invalidation_is_immediate_fail():
+    assert resolve_engine_state(False, ("E7_CONFIRMATION_INVALIDATED",)) == "FAIL"
+
+
 def test_hard_risk_failure_is_immediate_fail():
     assert resolve_engine_state(False, ("E8_RR_BELOW_MINIMUM",)) == "FAIL"
 
