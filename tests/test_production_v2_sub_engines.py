@@ -27,7 +27,10 @@ SUFFIX = {
 
 
 def module_name(code):
-    return f"trading_system.engines.e{code[0]}.{SUFFIX[code]}"
+    # SUB_ENGINE_NAMES contain the full identifier (e.g. 1A_DATA_QUALITY),
+    # while SUFFIX is keyed by the two-character engine code (e.g. 1A).
+    key = code[:2]
+    return f"trading_system.engines.e{key[0]}.{SUFFIX[key]}"
 
 
 def test_all_58_sub_engines_exist_and_expose_contract():
