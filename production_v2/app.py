@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import os
 
 from flask import Flask, jsonify, request
@@ -8,12 +9,25 @@ from .market_data import normalize_market_data
 from .pipeline import ProductionPipeline
 from .statistics import build_statistics, store
 
+logger = logging.getLogger(__name__)
 app = Flask(__name__)
 pipeline = ProductionPipeline()
+app.config["PRODUCTION_V2_LIVE_REQUIRED"] = True
 
-if os.getenv("LSE_API_KEY"):
+
+def start_production_runtime() -> None:
+    """Start the production-v2 live M5 runtime exactly once at import time."""
+    key = os.getenv("LSE_API_KEY")
+    if not key:
+        logger.error("[PRODUCTION V2] LSE_API_KEY is missing; live M5 runtime cannot start")
+        raise RuntimeError("LSE_API_KEY is required for production-v2 live runtime")
+
     from .service import start_live_service
     start_live_service()
+    logger.info("[PRODUCTION V2] Live M5 runtime started; architecture=E1->E2->E3->E4->E5->E6->E7->E8->E9")
+
+
+start_production_runtime()
 
 
 @app.get("/")
@@ -24,6 +38,7 @@ def index():
         "architecture": "E1 -> E2 -> E3 -> E4 -> E5 -> E6 -> E7 -> E8 -> E9",
         "decision_authority": "E9",
         "legacy_runtime": False,
+        "live_runtime": "RUNNING",
         "environment": os.getenv("RENDER_ENV", "production"),
     })
 
@@ -36,6 +51,8 @@ def health():
         "version": "production-v2",
         "legacy_runtime": False,
         "decision_authority": "E9",
+        "live_runtime": "RUNNING",
+        "timeframe": "M5",
     })
 
 
