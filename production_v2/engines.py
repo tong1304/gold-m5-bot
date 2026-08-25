@@ -47,6 +47,86 @@ def _module(code: str):
     return importlib.import_module(f"trading_system.engines.e{code[0]}.{SUFFIX[code]}")
 
 
+def _professional_gate(engine_id: str, output: dict[str, Any], context: dict[str, Any]) -> tuple[bool, tuple[str, ...]]:
+    """Hard decision conditions for the nine professional decision layers.
+
+    Scores describe quality; these gates decide whether the evidence is sufficient
+    to continue. No score is allowed to override a failed professional gate.
+    """
+    def state(code: str, key: str = "state") -> Any:
+        return output.get(code, {}).get(key)
+
+    direction = state("1C", "direction")
+    if engine_id == "E1":
+        if direction not in {"UP", "DOWN"}:
+            return False, ("E1_MARKET_STATE_UNCLEAR",)
+        if state("1G") == "TRANSITION":
+            return False, ("E1_MARKET_STATE_TRANSITION",)
+        return True, ()
+
+    if engine_id == "E2":
+        if direction not in {"UP", "DOWN"}:
+            return False, ("E2_DIRECTION_UNCLEAR",)
+        if state("2F") == "TRANSITION":
+            return False, ("E2_REGIME_TRANSITION",)
+        regime_states = [state(code, "regime") for code in ("2A", "2B", "2C", "2D", "2E", "2F")]
+        if not any(s in {"TREND", "RANGE", "MEAN_REVERSION", "BREAKOUT", "EXPANSION_PHASE", "BALANCED_PHASE", "STABLE"} for s in regime_states):
+            return False, ("E2_REGIME_UNCLEAR",)
+        return True, ()
+
+    if engine_id == "E3":
+        structure = state("3B")
+        bos = state("3C")
+        aligned = state("3F") == "INTERNAL_EXTERNAL_ALIGNED"
+        if structure not in {"BULLISH", "BEARISH"} or bos != "BOS_CONFIRMED" or not aligned:
+            return False, ("E3_STRUCTURE_NOT_CONFIRMED",)
+        return True, ()
+
+    if engine_id == "E4":
+        quality = state("4F") == "QUALITY_MEASURABLE"
+        sweep = state("4B") in {"SWEEP_HIGH", "SWEEP_LOW"}
+        rejection = state("4C") == "REJECTION"
+        acceptance = state("4D") == "ACCEPTANCE"
+        if not quality or not (sweep and rejection or acceptance):
+            return False, ("E4_LIQUIDITY_EVIDENCE_INSUFFICIENT",)
+        return True, ()
+
+    if engine_id == "E5":
+        if state("5D") == "EXTENDED" or state("5E") != "SPACE_AVAILABLE":
+            return False, ("E5_LOCATION_DISADVANTAGED",)
+        if state("5F") != "LOCATION_QUALITY_MEASURABLE":
+            return False, ("E5_LOCATION_UNCONFIRMED",)
+        return True, ()
+
+    if engine_id == "E6":
+        if state("6D") != "NOT_INVALIDATED" or state("6F") not in {"MATURE"}:
+            return False, ("E6_SETUP_NOT_MATURE",)
+        if state("6B") != "DIRECTIONAL_SETUP":
+            return False, ("E6_SETUP_NOT_DIRECTIONAL",)
+        return True, ()
+
+    if engine_id == "E7":
+        if state("7F") != "CONFIRMATION_PASS":
+            return False, ("E7_CONFIRMATION_INSUFFICIENT",)
+        if state("7A") != "TRIGGER_OBSERVED" or state("7B") != "QUALITY_PASS":
+            return False, ("E7_TRIGGER_NOT_CONFIRMED",)
+        if state("7D") != "NO_FAILURE":
+            return False, ("E7_CONFIRMATION_INVALIDATED",)
+        return True, ()
+
+    if engine_id == "E8":
+        plan = output.get("trade_plan", {})
+        if not plan.get("valid"):
+            return False, ("E8_RISK_PLAN_INVALID",)
+        if state("8G") != "RISK_GATE_READY":
+            return False, ("E8_RISK_GATE_NOT_READY",)
+        if float(plan.get("rr_tp2", 0)) < 2.0:
+            return False, ("E8_RR_BELOW_MINIMUM",)
+        return True, ()
+
+    return True, ()
+
+
 def _trade_plan(context: dict[str, Any], direction: str) -> dict[str, Any]:
     bars = context.get("bars") or []
     if len(bars) < 15 or direction not in {"UP", "DOWN"}:
@@ -114,7 +194,10 @@ def run_engine(engine_id: str, context: dict[str, Any]) -> EngineResult:
         if not plan.get("valid"):
             return EngineResult(engine_id, ENGINE_NAMES[engine_id], False, score, output, (plan.get("reason", "RISK_PLAN_INVALID"),))
 
-    return EngineResult(engine_id, ENGINE_NAMES[engine_id], True, score, output, ())
+    gate_passed, reasons = _professional_gate(engine_id, output, context)
+    output["professional_gate"] = "PASS" if gate_passed else "FAIL"
+    output["professional_reason_codes"] = list(reasons)
+    return EngineResult(engine_id, ENGINE_NAMES[engine_id], gate_passed, score, output, reasons)
 
 
 def run_e9_decision(context: dict[str, Any], upstream: list[EngineResult]) -> EngineResult:
