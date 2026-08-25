@@ -47,6 +47,53 @@ def _module(code: str):
     return importlib.import_module(f"trading_system.engines.e{code[0]}.{SUFFIX[code]}")
 
 
+def _trade_plan(context: dict[str, Any], direction: str) -> dict[str, Any]:
+    bars = context.get("bars") or []
+    if len(bars) < 15 or direction not in {"UP", "DOWN"}:
+        return {"valid": False, "reason": "INSUFFICIENT_RISK_DATA"}
+
+    recent = bars[-15:]
+    entry = float(recent[-1]["close"])
+    true_ranges = []
+    previous_close = None
+    for bar in recent:
+        high, low, close = float(bar["high"]), float(bar["low"]), float(bar["close"])
+        tr = high - low if previous_close is None else max(high - low, abs(high - previous_close), abs(low - previous_close))
+        true_ranges.append(tr)
+        previous_close = close
+    atr = sum(true_ranges) / len(true_ranges)
+    if atr <= 0:
+        return {"valid": False, "reason": "INVALID_ATR"}
+
+    buffer = max(atr * 0.25, entry * 0.0002)
+    risk_distance = atr * 1.5
+    if direction == "UP":
+        structural_stop = min(float(b["low"]) for b in recent) - buffer
+        stop = min(entry - risk_distance, structural_stop)
+        risk = entry - stop
+        tp1 = entry + risk
+        tp2 = entry + 2.0 * risk
+    else:
+        structural_stop = max(float(b["high"]) for b in recent) + buffer
+        stop = max(entry + risk_distance, structural_stop)
+        risk = stop - entry
+        tp1 = entry - risk
+        tp2 = entry - 2.0 * risk
+
+    return {
+        "valid": risk > 0 and tp2 > 0,
+        "direction": "BUY" if direction == "UP" else "SELL",
+        "entry": round(entry, 8),
+        "stop_loss": round(stop, 8),
+        "take_profit_1": round(tp1, 8),
+        "take_profit_2": round(tp2, 8),
+        "risk_distance": round(risk, 8),
+        "atr": round(atr, 8),
+        "rr_tp1": 1.0,
+        "rr_tp2": 2.0,
+    }
+
+
 def run_engine(engine_id: str, context: dict[str, Any]) -> EngineResult:
     results = []
     for code in SUB_ENGINE_CODES[engine_id]:
@@ -59,6 +106,14 @@ def run_engine(engine_id: str, context: dict[str, Any]) -> EngineResult:
 
     score = mean(r.score for r in results)
     output = {r.sub_engine_id: r.output for r in results}
+
+    if engine_id == "E8":
+        trend = context.get("E1_result", {}).get("1C", {}).get("direction", "NEUTRAL")
+        plan = _trade_plan(context, trend)
+        output["trade_plan"] = plan
+        if not plan.get("valid"):
+            return EngineResult(engine_id, ENGINE_NAMES[engine_id], False, score, output, (plan.get("reason", "RISK_PLAN_INVALID"),))
+
     return EngineResult(engine_id, ENGINE_NAMES[engine_id], True, score, output, ())
 
 
@@ -69,9 +124,19 @@ def run_e9_decision(context: dict[str, Any], upstream: list[EngineResult]) -> En
                             {"decision": "NO_TRADE", "blocked_by": [e.engine_id for e in upstream if not e.gate_passed]},
                             ("UPSTREAM_GATE_FAILED",))
 
-    trend = next((e.output.get("1C", {}).get("direction") for e in upstream if e.engine_id == "E1"), "NEUTRAL")
-    decision = trend if trend in {"UP", "DOWN"} else "NO_TRADE"
-    decision = {"UP": "BUY", "DOWN": "SELL"}.get(decision, "NO_TRADE")
-    return EngineResult("E9", ENGINE_NAMES["E9"], sub.gate_passed, sub.score,
-                        {"decision": decision, "decision_authority": "E9", "pipeline": "E1>E2>E3>E4>E5>E6>E7>E8>E9"},
-                        tuple(sub.reason_codes))
+    e1 = next(e for e in upstream if e.engine_id == "E1")
+    e8 = next(e for e in upstream if e.engine_id == "E8")
+    trend = e1.output.get("1C", {}).get("direction", "NEUTRAL")
+    plan = e8.output.get("trade_plan", {})
+    decision = plan.get("direction", "NO_TRADE") if plan.get("valid") else "NO_TRADE"
+    final_gate = sub.gate_passed and decision in {"BUY", "SELL"}
+    output = {
+        "decision": decision if final_gate else "NO_TRADE",
+        "decision_authority": "E9",
+        "pipeline": "E1>E2>E3>E4>E5>E6>E7>E8>E9",
+        "trade_plan": plan,
+        "upstream_direction": trend,
+        "gate_passed": final_gate,
+    }
+    return EngineResult("E9", ENGINE_NAMES["E9"], final_gate, sub.score,
+                        output, tuple(sub.reason_codes) if final_gate else tuple(sub.reason_codes) + ("FINAL_EXECUTION_GATE_FAILED",))
