@@ -1,19 +1,25 @@
 import importlib
+import sys
+import types
+
+import pytest
 
 
-def test_production_v2_requires_live_data_configuration(monkeypatch):
+def test_production_v2_fails_fast_without_lse_key(monkeypatch):
     monkeypatch.delenv("LSE_API_KEY", raising=False)
-    import production_v2.app as app_module
-    app_module = importlib.reload(app_module)
-    assert app_module.app is not None
-    assert app_module.app.config["PRODUCTION_V2_LIVE_REQUIRED"] is True
+    sys.modules.pop("production_v2.app", None)
+    with pytest.raises(RuntimeError, match="LSE_API_KEY is required"):
+        importlib.import_module("production_v2.app")
 
 
-def test_production_v2_starts_live_service_when_lse_key_exists(monkeypatch):
+def test_production_v2_starts_live_service_with_lse_key(monkeypatch):
     monkeypatch.setenv("LSE_API_KEY", "test-key")
     started = []
+    fake_service = types.ModuleType("production_v2.service")
+    fake_service.start_live_service = lambda: started.append(True)
+    monkeypatch.setitem(sys.modules, "production_v2.service", fake_service)
+    sys.modules.pop("production_v2.app", None)
 
-    import production_v2.app as app_module
-    monkeypatch.setattr(app_module, "start_live_service", lambda: started.append(True), raising=False)
-    importlib.reload(app_module)
+    importlib.import_module("production_v2.app")
+
     assert started == [True]
