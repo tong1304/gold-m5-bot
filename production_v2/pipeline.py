@@ -11,12 +11,17 @@ from .engines import run_e9_decision, run_engine
 # across any number of closed M5 candles while its structure is intact.
 WAIT_MAX_BARS = None
 
-# Immediate FAIL is reserved for conditions that invalidate the thesis or make
-# the trade objectively unacceptable. Missing evidence is NOT a failure:
-# professional traders wait for confirmation when the underlying thesis is
-# still structurally valid.
+# Immediate FAIL is reserved for conditions that invalidate the current thesis
+# or make the trade objectively unacceptable. Missing evidence is NOT a
+# failure: the system waits while the thesis remains structurally valid.
+#
+# E2_REGIME_TRANSITION is intentionally a hard invalidation. A regime
+# transition means the market context that justified the current thesis has
+# changed; a professional decision engine should discard that thesis rather
+# than keep waiting for the old setup to become valid again.
 HARD_FAIL_REASONS = {
     "E1_MARKET_STATE_TRANSITION",
+    "E2_REGIME_TRANSITION",
     "E5_LOCATION_DISADVANTAGED",
     "E7_CONFIRMATION_INVALIDATED",
     "E8_RISK_PLAN_INVALID",
@@ -46,10 +51,14 @@ def resolve_engine_state(
 def resume_from_wait(waiting_engine: str, *, structure_changed: bool) -> str:
     """Return the first engine that must be recomputed after a WAIT.
 
-    Before E3 there is no established structural thesis to preserve. Once the
-    pipeline has reached E4+, unchanged structure lets us resume exactly at the
-    waiting engine. A structural change invalidates the downstream thesis and
-    reopens the decision from E3, while deliberately preserving E1/E2.
+    The rule is deliberately asymmetric:
+      - engines before the blocker are reused;
+      - the blocker is re-evaluated because its missing evidence may now exist;
+      - E3+ structural changes invalidate downstream cached evidence;
+      - E1/E2 are not re-run merely because a downstream setup is waiting.
+
+    For E4+ WAIT, E3 is monitored because it is the source of the structural
+    thesis. That is a structural check, not a full restart of the pipeline.
     """
     if waiting_engine not in ENGINE_INDEX:
         raise ValueError(f"unknown waiting engine: {waiting_engine}")
@@ -76,8 +85,8 @@ class ProductionPipeline:
 
     PASS means evidence is sufficient. WAIT means the thesis is still valid but
     one missing condition must appear. FAIL means the thesis/risk is invalid.
-    A WAIT resumes from the waiting engine; E1/E2/E3 are reused unless E3 is
-    being monitored and its structural signature has changed.
+    A WAIT resumes from the waiting engine; upstream engines are reused unless
+    the structural monitor explicitly detects a structural change.
     """
 
     ENGINE_ORDER = ENGINE_ORDER
@@ -208,6 +217,10 @@ class ProductionPipeline:
         waiting_engine = str(resume_state.get("waiting_engine") or "E1")
         structure_changed = False
 
+        # For a downstream WAIT (E4+), E3 is the only upstream engine that must
+        # be monitored continuously because it defines the structural thesis.
+        # E1/E2 remain cached and are NOT re-evaluated unless the decision cycle
+        # is explicitly invalidated by a hard failure.
         if ENGINE_INDEX.get(waiting_engine, 0) >= ENGINE_INDEX["E4"]:
             cached_e3 = next((e for e in cached if e.engine_id == "E3"), None)
             current_e3 = run_engine("E3", dict(market_data))
