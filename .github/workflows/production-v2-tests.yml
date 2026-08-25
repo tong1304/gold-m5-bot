@@ -19,4 +19,4 @@ jobs:
       - name: Install test dependencies
         run: python -m pip install --upgrade pip pytest flask requests
       - name: Run production-v2 tests
-        run: python -m pytest -q tests/test_production_v2_sub_engines.py tests/test_production_v2_runtime.py tests/test_production_v2_telegram.py tests/test_production_v2_professional_gates.py tests/test_production_v2_startup.py tests/test_production_v2_wait_state.py tests/test_production_v2_professional_wait_policy.py
+        run: python -m pytest -q tests/test_production_v2_sub_engines.py tests/test_production_v2_runtime.py tests/test_production_v2_telegram.py tests/test_production_v2_professional_gates.py tests/test_production_v2_startup.py tests/test_production_v2_wait_state.py tests/test_production_v2_professional_wait_policy.py tests/test_production_v2_professional_m5.py
