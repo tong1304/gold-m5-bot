@@ -11,7 +11,7 @@ class EngineResult:
     gate_passed: bool
     score: float
     output: dict[str, Any] = field(default_factory=dict)
-    reason_codes: list[str] = field(default_factory=list)
+    reason_codes: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -28,6 +28,10 @@ class DecisionResult:
     @property
     def legacy_runtime(self) -> bool:
         return False
+
+    @property
+    def trade_plan(self) -> dict[str, Any]:
+        return dict(self.risk.get("trade_plan") or {})
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -47,10 +51,11 @@ class DecisionResult:
                     "gate_passed": e.gate_passed,
                     "score": e.score,
                     "output": e.output,
-                    "reason_codes": e.reason_codes,
+                    "reason_codes": list(e.reason_codes),
                 }
                 for e in self.engines
             ],
             "risk": self.risk,
+            "trade_plan": self.trade_plan,
             "reason_codes": list(self.reason_codes),
         }
