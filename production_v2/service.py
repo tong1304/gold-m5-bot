@@ -7,7 +7,7 @@ import time
 from .live_data import LiveMarketData
 from .market_data import normalize_market_data
 from .notifications.telegram import format_critical, format_startup, format_status, send, send_decision
-from .pipeline import ProductionPipeline
+from .pipeline import ProductionPipeline, WAIT_MAX_BARS
 from .statistics import store
 
 
@@ -19,6 +19,7 @@ class LiveService:
         self.status_interval_seconds = int(os.getenv("STATUS_INTERVAL_SECONDS", "900"))
         self._started = False
         self._last_candle: dict[str, str] = {}
+        self._wait_bars: dict[str, int] = {}
         self._last_status_at = 0.0
         self._runtime_errors: dict[str, str] = {}
         self._last_prices: dict[str, float] = {}
@@ -49,6 +50,7 @@ class LiveService:
     def _trace_result(self, alias: str, result) -> None:
         print(
             f"[PRODUCTION V2] {alias} PIPELINE decision={result.decision} "
+            f"state={result.risk.get('engine_state')} wait_bars={result.risk.get('wait_bars')} "
             f"gate={result.gate_passed} score={result.score:.2f} "
             f"engines={len(result.engines)}",
             flush=True,
@@ -83,10 +85,21 @@ class LiveService:
                     if self._last_candle.get(alias) == candle:
                         continue
                     self._last_candle[alias] = candle
-                    result = self.pipeline.run(payload)
+
+                    wait_bars = self._wait_bars.get(alias, 0)
+                    result = self.pipeline.run(payload, wait_bars=wait_bars)
                     self._runtime_errors.pop(alias, None)
                     store.record(result, self._last_prices.get(alias))
                     self._trace_result(alias, result)
+
+                    if result.decision == "WAIT":
+                        self._wait_bars[alias] = min(wait_bars + 1, WAIT_MAX_BARS)
+                    else:
+                        # PASS/FAIL starts a fresh decision cycle on the next candle.
+                        self._wait_bars.pop(alias, None)
+
+                    # Telegram is intentionally silent for WAIT and NO_TRADE.
+                    # Only executable BUY/SELL decisions are sent.
                     if result.decision in {"BUY", "SELL"} and result.gate_passed:
                         send_decision(result)
                 except Exception as exc:
