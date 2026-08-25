@@ -22,6 +22,16 @@ ASSET_STRATEGY_REGIMES={
     "B3":{"asset":"BTC","regimes":{"RANGE","TRANSITION"}},
 }
 
+def _normal_asset(asset: str) -> str:
+    asset=str(asset or "").upper()
+    if asset in ("XAU","XAUUSD","XAU/USD","XAU/USDT"):return "GOLD"
+    if asset in ("BTCUSD","BTC/USD","BTC/USDT"):return "BTC"
+    return asset
+
+def native_strategy_ids(asset: str, regime: str) -> list[str]:
+    target=_normal_asset(asset);regime=str(regime or "").upper()
+    return [engine for engine,profile in ASSET_STRATEGY_REGIMES.items() if profile.get("asset")==target and regime in profile.get("regimes",set())]
+
 def allowed_engines_for_regime(regime:str)->set[str]:
     regime=str(regime).upper()
     if regime=="TREND":return set(TREND_ENGINES)
@@ -30,7 +40,7 @@ def allowed_engines_for_regime(regime:str)->set[str]:
     return set()
 
 def strategy_allowed_by_regime(asset: str, strategy: str, regime: str) -> bool:
-    asset=str(asset).upper(); strategy=str(strategy).upper(); regime=str(regime).upper()
+    asset=_normal_asset(asset);strategy=str(strategy).upper();regime=str(regime).upper()
     profile=ASSET_STRATEGY_REGIMES.get(strategy)
     return bool(profile and profile["asset"]==asset and regime in profile["regimes"])
 
@@ -101,27 +111,19 @@ def _classify_m15(m15):
     else:regime="TRANSITION"
     return {"regime":regime,"direction":trend_direction,"trend_direction":trend_direction,"adx14":adx,"di_plus":di_plus,"di_minus":di_minus,"ema20":_finite(e20.iloc[-1]),"ema50":_finite(e50.iloc[-1]),"ema200":_finite(e200.iloc[-1]),"ema20_slope_atr":_finite(slope),"ema20_flat":ema_flat,"atr14":a,"bb_width":_finite(bw.iloc[-1]) if len(bw) else None,"bb_width_lowest50":lowest50,"range_filter":range_regime,"structure":s,"trend_up":trend_up,"trend_down":trend_down,"trend_threshold_adx":TREND_ADX_THRESHOLD,"trend_ema_alignment":f"{TREND_EMA_FAST}>{TREND_EMA_SLOW}"}
 
-def _m5_range(c):
-    return max(_finite(c.high)-_finite(c.low),0.0)
+def _m5_range(c):return max(_finite(c.high)-_finite(c.low),0.0)
 
 def detect_m5_regime(m5):
     x=m5.tail(80).reset_index(drop=True).copy()
     if len(x)<30:return "TRANSITION"
-    a=_atr(x) or 1e-12; e20=ema(x,20)
-    close=_finite(x.close.iloc[-1])
+    a=_atr(x) or 1e-12;e20=ema(x,20);close=_finite(x.close.iloc[-1])
     if close is None:return "TRANSITION"
-    bw=_bollinger_width(x,20,2.0)
-    squeeze=bool(len(bw)>=40 and _finite(bw.iloc[-5]) is not None and _finite(bw.iloc[-5])<=_finite(bw.tail(40).quantile(.25)))
-    last_range=_m5_range(x.iloc[-1])
-    expansion=last_range>=1.35*a and len(bw)>=2 and _finite(bw.iloc[-1]) is not None and _finite(bw.iloc[-2]) is not None and bw.iloc[-1]>bw.iloc[-2]
-    rh=_finite(x.high.iloc[-21:-1].max());rl=_finite(x.low.iloc[-21:-1].min())
-    breakout=bool((close>rh or close<rl) and last_range>=0.6*a)
-    retest=False
+    bw=_bollinger_width(x,20,2.0);squeeze=bool(len(bw)>=40 and _finite(bw.iloc[-5]) is not None and _finite(bw.iloc[-5])<=_finite(bw.tail(40).quantile(.25)))
+    last_range=_m5_range(x.iloc[-1]);expansion=last_range>=1.35*a and len(bw)>=2 and _finite(bw.iloc[-1]) is not None and _finite(bw.iloc[-2]) is not None and bw.iloc[-1]>bw.iloc[-2]
+    rh=_finite(x.high.iloc[-21:-1].max());rl=_finite(x.low.iloc[-21:-1].min());breakout=bool((close>rh or close<rl) and last_range>=0.6*a);retest=False
     if breakout and len(x)>=3:
-        level=rh if close>rh else rl
-        retest=bool(_finite(x.low.iloc[-2])<=level<=_finite(x.high.iloc[-2]))
-    adx,_,_=_adx(x)
-    slope=abs((_finite(e20.iloc[-1])-_finite(e20.iloc[-6]))/a) if len(e20)>=6 else 0
+        level=rh if close>rh else rl;retest=bool(_finite(x.low.iloc[-2])<=level<=_finite(x.high.iloc[-2]))
+    adx,_,_=_adx(x);slope=abs((_finite(e20.iloc[-1])-_finite(e20.iloc[-6]))/a) if len(e20)>=6 else 0
     if expansion and breakout:return "EXPANSION"
     if retest:return "BREAKOUT_RETEST"
     if squeeze and breakout:return "EXPANSION"
@@ -134,10 +136,8 @@ def classify_regime(m5,m15=None,h1=None):
     x=m5.tail(100).reset_index(drop=True).copy();h1_bias=_mtf_trend_direction(h1)
     m15_info=_classify_m15(m15) if m15 is not None else {"regime":"UNKNOWN","direction":"NEUTRAL","trend_direction":"NEUTRAL","reason":"M15_REQUIRED"}
     m5_regime=detect_m5_regime(x)
-    if len(x)<60:
-        return {"regime":"UNKNOWN","m5_regime":m5_regime,"allowed_engines":[],"direction":"NEUTRAL","h1_bias":h1_bias,"m15_regime":m15_info.get("regime"),"m15_trend":m15_info.get("trend_direction"),"m15_context":m15_info,"reason":"INSUFFICIENT_M5_CONTEXT"}
-    direction=m15_info.get("trend_direction","NEUTRAL")
-    h1_gate={"bias":h1_bias,"mode":"DIRECTIONAL_CONTEXT","directional_constraint":h1_bias if h1_bias in ("BUY","SELL") else None}
+    if len(x)<60:return {"regime":"UNKNOWN","m5_regime":m5_regime,"allowed_engines":[],"direction":"NEUTRAL","h1_bias":h1_bias,"m15_regime":m15_info.get("regime"),"m15_trend":m15_info.get("trend_direction"),"m15_context":m15_info,"reason":"INSUFFICIENT_M5_CONTEXT"}
+    direction=m15_info.get("trend_direction","NEUTRAL");h1_gate={"bias":h1_bias,"mode":"DIRECTIONAL_CONTEXT","directional_constraint":h1_bias if h1_bias in ("BUY","SELL") else None}
     return {"regime":m5_regime,"m5_regime":m5_regime,"allowed_engines":[],"direction":direction,"h1_bias":h1_bias,"h1_gate":h1_gate,"m15_regime":m15_info.get("regime"),"m15_trend":direction,"m15_context":m15_info,"m5_context_bars":min(100,len(x)),"m15_regime_filter_enabled":False,"m15_role":"TREND_CONTEXT"}
 
 def build_regime_context(m5,m15=None,h1=None):return classify_regime(m5,m15,h1)
