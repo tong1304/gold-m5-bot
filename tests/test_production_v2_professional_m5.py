@@ -18,7 +18,7 @@ def test_trade_plan_rejects_structural_stop_that_is_too_wide_for_m5():
     for i in range(20):
         bars.append({"open": price, "high": price + 1, "low": price - 1, "close": price + 0.5})
         price += 0.5
-    bars[-10]["low"] = 80.0
+    bars[-5]["low"] = 80.0
 
     plan = _trade_plan(
         {
