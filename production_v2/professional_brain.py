@@ -188,46 +188,13 @@ def _hard_invalidations(by):
     return sorted(set(r))
 
 
-def _atr_from_context(context: dict[str, Any]) -> float:
-    bars = [b for b in (context.get("bars") or []) if isinstance(b, dict) and all(k in b for k in ("high", "low", "close"))][-14:]
-    if not bars:
-        return 0.0
-    trs, prev = [], None
-    for b in bars:
-        h, l, c = map(float, (b["high"], b["low"], b["close"]))
-        trs.append(h - l if prev is None else max(h - l, abs(h - prev), abs(l - prev)))
-        prev = c
-    return mean(trs) if trs else 0.0
+def _execution_readiness(by, direction):
+    """Execution readiness must come from E8's verified trade plan.
 
-
-def _derive_trade_plan(context: dict[str, Any], direction: str) -> dict[str, Any] | None:
-    bars = [b for b in (context.get("bars") or []) if isinstance(b, dict) and all(k in b for k in ("high", "low", "close"))]
-    if len(bars) < 20 or direction not in DIRECTIONS:
-        return None
-    atr = _atr_from_context(context)
-    if atr <= 0:
-        return None
-    price = float(bars[-1]["close"])
-    recent = bars[-20:]
-    swing_low = min(float(b["low"]) for b in recent)
-    swing_high = max(float(b["high"]) for b in recent)
-    buffer = 0.15 * atr
-    if direction == "BUY":
-        stop = min(swing_low, price - atr) - buffer
-        risk = price - stop
-        if risk <= 0:
-            return None
-        tp1, tp2 = price + risk, price + 1.5 * risk
-    else:
-        stop = max(swing_high, price + atr) + buffer
-        risk = stop - price
-        if risk <= 0:
-            return None
-        tp1, tp2 = price - risk, price - 1.5 * risk
-    return {"valid": True, "direction": direction, "entry": price, "stop_loss": stop, "take_profit_1": tp1, "take_profit_2": tp2, "rr_tp2": 1.5, "risk_distance": risk, "source": "E9_DERIVED_FROM_CLOSED_M5_EVIDENCE", "calculated_at_closed_candle": True}
-
-
-def _execution_readiness(context, by, direction):
+    E9 is the final decision-maker, but it must never invent entry/SL/TP/RR
+    merely to make an opportunity executable. E8 owns trade economics; E9
+    challenges and accepts/rejects that evidence.
+    """
     if direction not in DIRECTIONS:
         return {"ready": False, "reasons": ["NO_ACTIONABLE_DIRECTION"], "plan": None, "risk_basis": "UNRESOLVED"}
     e8 = by.get("E8")
@@ -235,37 +202,30 @@ def _execution_readiness(context, by, direction):
         return {"ready": False, "reasons": ["E8_MISSING"], "plan": None, "risk_basis": "MISSING"}
     o = e8.output or {}
     p = _find_key(o, {"trade_plan"})
-    if isinstance(p, dict):
-        required = ("entry", "stop_loss", "take_profit_1", "take_profit_2", "rr_tp2")
-        if all(p.get(k) is not None for k in required):
-            try:
-                if float(p["rr_tp2"]) > 0:
-                    return {"ready": True, "reasons": [], "plan": p, "risk_basis": "E8_VERIFIED_PLAN"}
-            except (TypeError, ValueError):
-                pass
-    # E8 is evidence, not a veto. E9 independently derives risk geometry
-    # from the immutable closed-M5 market snapshot when E8 did not package it.
-    plan = _derive_trade_plan(context, direction)
-    if plan:
-        return {"ready": True, "reasons": [], "plan": plan, "risk_basis": "E9_INDEPENDENT_RISK_ASSESSMENT"}
-    return {"ready": False, "reasons": ["E9_CANNOT_DERIVE_EXECUTION_PLAN"], "plan": None, "risk_basis": "UNRESOLVED"}
+    if not isinstance(p, dict):
+        return {"ready": False, "reasons": ["E8_TRADE_PLAN_INCOMPLETE"], "plan": None, "risk_basis": "MISSING_PLAN"}
+    required = ("entry", "stop_loss", "take_profit_1", "take_profit_2", "rr_tp2")
+    if any(p.get(k) is None for k in required):
+        return {"ready": False, "reasons": ["E8_TRADE_PLAN_INCOMPLETE"], "plan": None, "risk_basis": "INCOMPLETE_PLAN"}
+    try:
+        rr = float(p["rr_tp2"])
+    except (TypeError, ValueError):
+        return {"ready": False, "reasons": ["E8_INVALID_RR"], "plan": None, "risk_basis": "INVALID_RR"}
+    if rr <= 0:
+        return {"ready": False, "reasons": ["E8_INVALID_RR"], "plan": None, "risk_basis": "INVALID_RR"}
+    risk_gate = _text(_find_key(o, {"risk_gate"})).strip()
+    if risk_gate not in {"RISK_READY", "PASS", "READY", "TRUE"}:
+        return {"ready": False, "reasons": ["E8_RISK_NOT_READY"], "plan": None, "risk_basis": "RISK_NOT_READY"}
+    return {"ready": True, "reasons": [], "plan": p, "risk_basis": "E8_VERIFIED_PLAN"}
 
 
 def _independent_setup_maturity(by, direction, execution_ready):
-    """E9 judges setup maturity from multiple independent dimensions.
-
-    E6's label is evidence, not a mandatory gate. This prevents a missing
-    specialist label such as MATURE from vetoing a setup that E9 can verify
-    through structure, location and confirmation.
-    """
     e3, e5, e6, e7 = by.get("E3"), by.get("E5"), by.get("E6"), by.get("E7")
     structure = bool(e3 and (e3.score >= 60 or _has(_blob(e3), "BOS", "BREAK_OF_STRUCTURE", "HIGHER_HIGH", "LOWER_LOW", "BULLISH", "BEARISH")))
     location = bool(e5 and (e5.score >= 60 or _has(_blob(e5), "ADVANTAGEOUS", "FAVORABLE", "DISCOUNT", "PREMIUM", "SPACE_AVAILABLE", "GOOD_LOCATION")))
     setup_evidence = bool(e6 and (e6.score >= 60 or _has(_blob(e6), "VALID_SETUP", "CONTINUATION_SETUP", "REVERSAL_SETUP", "FORMING", "MATURE")))
     confirmation = bool(e7 and (e7.score >= 60 or _has(_blob(e7), "CONFIRMED", "CONFIRMATION_PASS", "TRIGGER_OBSERVED", "FOLLOW_THROUGH")))
     supporting = sum((structure, location, setup_evidence, confirmation))
-    # A professional entry requires confirmation plus at least two other
-    # independent pieces of setup evidence. Execution readiness is separate.
     mature = direction in DIRECTIONS and confirmation and supporting >= 3
     return {"mature": mature, "structure": structure, "location": location, "setup_evidence": setup_evidence, "confirmation": confirmation, "supporting_dimensions": supporting, "execution_ready": execution_ready}
 
@@ -277,11 +237,8 @@ def run_professional_e9(context, upstream, historical_calibration=None):
     conf = _conflicts(by)
     inv = _hard_invalidations(by)
     alignment = _weighted_alignment(upstream)
-    execution = _execution_readiness(context, by, d)
+    execution = _execution_readiness(by, d)
     setup = _independent_setup_maturity(by, d, execution["ready"])
-
-    # E9's thesis score measures evidence quality/alignment, not permission
-    # from a specialist gate. Missing E8 packaging therefore cannot zero it.
     thesis = 0.0 if d == "NEUTRAL" else round(_clamp(
         alignment
         + sum(3.5 for k in ("structure_support", "liquidity_event", "location_quality") if dims[k])
@@ -300,8 +257,6 @@ def run_professional_e9(context, upstream, historical_calibration=None):
         reasons.append("ENTRY_CONFIRMATION_NOT_PROVEN")
     if not execution["ready"]:
         reasons.extend(execution["reasons"])
-    if execution["ready"] and execution["risk_basis"] == "E9_INDEPENDENT_RISK_ASSESSMENT":
-        reasons.append("E8_PLAN_SUPPLEMENTED_BY_E9_RISK_ASSESSMENT")
 
     ready = bool(
         d in DIRECTIONS
@@ -313,7 +268,6 @@ def run_professional_e9(context, upstream, historical_calibration=None):
     )
     decision = d if ready else "NO_TRADE"
     plan = execution["plan"] or {}
-
     out = {
         "decision": decision,
         "decision_authority": "E9",
@@ -329,15 +283,11 @@ def run_professional_e9(context, upstream, historical_calibration=None):
             "alternative_thesis": "Opposite direction only if primary structure/setup thesis fails",
             "invalidation": "; ".join(inv) if inv else "Structural/setup/confirmation premise failure",
             "dimensions": dims,
-            "setup_maturity": setup,
+            "independent_setup": setup,
             "conflicts": conf,
             "hard_invalidations": inv,
-            "execution_ready": ready,
+            "execution_ready": execution["ready"],
             "risk_basis": execution["risk_basis"],
-            "directional_evidence": {
-                "BUY": sum(EVIDENCE_WEIGHTS.get(e.engine_id, 1.0) for e in by.values() if "BUY" in _direction_hints(e)),
-                "SELL": sum(EVIDENCE_WEIGHTS.get(e.engine_id, 1.0) for e in by.values() if "SELL" in _direction_hints(e)),
-            },
         },
         "decision_reasons": sorted(set(reasons)),
         "evidence_conflicts": conf,
@@ -349,5 +299,6 @@ def run_professional_e9(context, upstream, historical_calibration=None):
         "learning_policy": "ADVISORY_ONLY_NO_OVERRIDE",
         "professional_decision": "APPROVE_TRADE" if ready else "NO_TRADE",
     }
-    out["historical_calibration"] = build_advisory(context, historical_calibration) if historical_calibration is not None else None
+    advisory = build_advisory(context, historical_calibration) if historical_calibration is not None else None
+    out["historical_calibration"] = advisory
     return EngineResult("E9", ENGINE_NAMES.get("E9", "Master Decision Brain"), ready, thesis, out, tuple(sorted(set(reasons))))
