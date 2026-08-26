@@ -1,9 +1,9 @@
 from __future__ import annotations
-"""Production-V2 specialist Evidence Bus.
+"""Production-V2 engine dispatcher.
 
-E1-E8 are qualitative specialist analysts. They observe, explain and report
-market evidence. They do not produce BUY/SELL decisions, scores as decisions,
-or gates. E9 alone owns the final trade decision.
+E1-E8 are qualitative analysts. E2 is intentionally core-only: its former
+2A-2F specialists are paused and must not execute or influence the E2 thesis.
+E9 remains the only trade-decision authority.
 """
 import importlib
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -11,54 +11,43 @@ from statistics import mean
 from typing import Any
 from .contracts import EngineResult
 from .e1_brain import analyze_e1
+from .e2_brain import analyze_e2
 
 ENGINE_NAMES={"E1":"Market State Brain","E2":"Opportunity / Regime Brain","E3":"Market Structure Brain","E4":"Liquidity Brain","E5":"Location / Value Brain","E6":"Setup Brain","E7":"Confirmation Brain","E8":"Trade Economics Brain","E9":"Master Decision Brain"}
-SUB_ENGINE_CODES={"E1":["1A","1B","1C","1D","1E","1F","1G"],"E2":["2A","2B","2C","2D","2E","2F"],"E3":["3A","3B","3C","3D","3E","3F"],"E4":["4A","4B","4C","4D","4E","4F"],"E5":["5A","5B","5C","5D","5E","5F"],"E6":["6A","6B","6C","6D","6E","6F"],"E7":["7A","7B","7C","7D","7E","7F"],"E8":["8A","8B","8C","8D","8E","8F","8G"]}
+SUB_ENGINE_CODES={"E1":["1A","1B","1C","1D","1E","1F","1G"],"E2":[],"E3":["3A","3B","3C","3D","3E","3F"],"E4":["4A","4B","4C","4D","4E","4F"],"E5":["5A","5B","5C","5D","5E","5F"],"E6":["6A","6B","6C","6D","6E","6F"],"E7":["7A","7B","7C","7D","7E","7F"],"E8":["8A","8B","8C","8D","8E","8F","8G"]}
 SUFFIX={"1A":"a_data_quality","1B":"b_volatility_state","1C":"c_trend_state","1D":"d_range_state","1E":"e_compression","1F":"f_expansion","1G":"g_transition","2A":"a_trend_regime","2B":"b_range_regime","2C":"c_mean_reversion_behavior","2D":"d_breakout_regime","2E":"e_regime_phase","2F":"f_regime_transition","3A":"a_swing_detection","3B":"b_structure_classification","3C":"c_break_of_structure","3D":"d_structural_failure","3E":"e_structure_strength","3F":"f_internal_external_structure","4A":"a_liquidity_zone_detection","4B":"b_sweep_detection","4C":"c_reaction_rejection","4D":"d_acceptance","4E":"e_reclaim_failed_break","4F":"f_liquidity_strength_quality","5A":"a_equilibrium_value","5B":"b_structural_location","5C":"c_liquidity_location","5D":"d_extension","5E":"e_available_space","5F":"f_location_quality","6A":"a_setup_context","6B":"b_setup_archetype","6C":"c_setup_formation_state_machine","6D":"d_setup_invalidation","6E":"e_setup_quality","6F":"f_setup_maturity","7A":"a_trigger_detection","7B":"b_trigger_quality","7C":"c_follow_through","7D":"d_failure_invalidation","7E":"e_execution_conditions","7F":"f_confirmation_quality","8A":"a_invalidation_model","8B":"b_stop_placement","8C":"c_target_liquidity_objective","8D":"d_r_multiple","8E":"e_position_size","8F":"f_exposure_limits","8G":"g_risk_gate"}
 ENGINE_IDS=tuple(SUB_ENGINE_CODES)
 EVIDENCE_INPUTS={engine_id: tuple(other for other in ENGINE_IDS if other != engine_id) for engine_id in ENGINE_IDS}
 
-
 def _module(code:str): return importlib.import_module(f"trading_system.engines.e{code[0]}.{SUFFIX[code]}")
 
-
-def _qualitative(value: Any, key: str | None = None):
-    """Remove trade-decision semantics while preserving market-state evidence."""
-    if isinstance(value, dict):
+def _qualitative(value:Any,key:str|None=None):
+    if isinstance(value,dict):
         result={}
         for k,v in value.items():
             lk=str(k).lower()
-            if lk in {"decision","trade_decision","decision_score","score","gate","gate_passed","specialist_gate"}:
-                continue
+            if lk in {"decision","trade_decision","decision_score","score","gate","gate_passed","specialist_gate"}: continue
             if lk in {"direction","bias","orientation","market_direction"} and isinstance(v,str):
-                uv=v.upper().strip()
-                if uv in {"BUY","LONG"}: v="UP"
-                elif uv in {"SELL","SHORT"}: v="DOWN"
+                uv=v.upper().strip(); v="UP" if uv in {"BUY","LONG"} else "DOWN" if uv in {"SELL","SHORT"} else v
             result[k]=_qualitative(v,lk)
         return result
-    if isinstance(value,(list,tuple)):
-        return [_qualitative(v,key) for v in value]
+    if isinstance(value,(list,tuple)): return [_qualitative(v,key) for v in value]
     return value
-
 
 def _legacy_context(permitted:dict[str,Any])->dict[str,Any]:
     ctx={}
-    for engine_id, package in permitted.items():
+    for engine_id,package in permitted.items():
         if not isinstance(package,dict): continue
-        specialists=package.get("evidence") or package.get("specialists") or {}
-        clean={}
+        specialists=package.get("evidence") or package.get("specialists") or {}; clean={}
         if isinstance(specialists,dict):
             for sid,item in specialists.items():
                 if isinstance(item,dict): clean[sid]=_qualitative(item)
         ctx[f"{engine_id}_result"]=clean
     return ctx
 
-
-def _dependency_report(engine_id:str, permitted:dict[str,Any])->dict[str,Any]:
-    required=sorted(EVIDENCE_INPUTS.get(engine_id,()))
-    received=sorted(k for k in permitted if k in required)
+def _dependency_report(engine_id:str,permitted:dict[str,Any])->dict[str,Any]:
+    required=sorted(EVIDENCE_INPUTS.get(engine_id,())); received=sorted(k for k in permitted if k in required)
     return {"required":required,"received":received,"missing":sorted(set(required)-set(received)),"complete":set(required).issubset(received),"decisions_received":False,"gates_received":False,"channel":"QUALITATIVE_EVIDENCE_ONLY"}
-
 
 def _upstream_analysis(permitted:dict[str,Any])->dict[str,Any]:
     report={}
@@ -69,23 +58,17 @@ def _upstream_analysis(permitted:dict[str,Any])->dict[str,Any]:
         report[engine_id]={"engine_id":package.get("engine_id",engine_id),"specialist_count":len(specialists) if isinstance(specialists,dict) else 0,"reason_codes":list(package.get("reason_codes") or []),"interpretation":"Peer observations available; no score, decision or gate is consumed."}
     return report
 
-
 def _run(code:str,snapshot:dict[str,Any],evidence_bus:dict[str,Any]|None=None):
-    local=dict(snapshot); permitted=evidence_bus or {}
-    local["evidence_bus"]={k:_qualitative(v) for k,v in permitted.items()}; local.update(_legacy_context(permitted)); local["upstream_analysis"]=_upstream_analysis(permitted)
+    local=dict(snapshot); permitted=evidence_bus or {}; local["evidence_bus"]={k:_qualitative(v) for k,v in permitted.items()}; local.update(_legacy_context(permitted)); local["upstream_analysis"]=_upstream_analysis(permitted)
     local["evidence_context_meta"]={"source_engines":sorted(permitted),"decisions_excluded":True,"gates_excluded":True,"scores_excluded":True,"analysis_mode":"PEER_REINTERPRETATION" if permitted else "INDEPENDENT_BASELINE"}
     return _module(code).SubEngine().run(local)
 
-
-def _value_observations(value: Any, prefix: str = "") -> list[str]:
+def _value_observations(value:Any,prefix:str="")->list[str]:
     observations=[]
     if isinstance(value,dict):
         for key,item in value.items():
-            lk=str(key).lower()
-            if lk in {"score","decision","trade_decision","gate","gate_passed","specialist_gate"}:
-                continue
-            if isinstance(item,(str,int,float,bool)):
-                if str(item).strip(): observations.append(f"{key}={item}")
+            if str(key).lower() in {"score","decision","trade_decision","gate","gate_passed","specialist_gate"}: continue
+            if isinstance(item,(str,int,float,bool)) and str(item).strip(): observations.append(f"{key}={item}")
             elif isinstance(item,(list,tuple)):
                 for child in item[:4]:
                     if isinstance(child,(str,int,float,bool)) and str(child).strip(): observations.append(f"{key}={child}")
@@ -94,81 +77,49 @@ def _value_observations(value: Any, prefix: str = "") -> list[str]:
             if isinstance(item,(str,int,float,bool)) and str(item).strip(): observations.append(str(item))
     return observations[:12]
 
-
-def _reason_statements(result) -> list[str]:
-    trace=getattr(result,"trace",{}) or {}
-    reasons=list(getattr(result,"reason_codes",()) or [])
+def _reason_statements(result)->list[str]:
+    trace=getattr(result,"trace",{}) or {}; reasons=list(getattr(result,"reason_codes",()) or [])
     for key in ("reasons","reason","findings","finding","observations","observation"):
         value=trace.get(key)
         if isinstance(value,(list,tuple)): reasons.extend(str(x) for x in value if x)
         elif value: reasons.append(str(value))
     return list(dict.fromkeys(str(x) for x in reasons if str(x).strip()))[:12]
 
-
 def _e1_contract_normalize(brain:dict[str,Any])->dict[str,Any]:
-    """Keep the public E1 pressure vocabulary stable while retaining rich internals."""
-    out=dict(brain)
-    pressure=str(out.get("directional_pressure") or "BALANCED").upper()
-    if pressure == "UP": pressure="BULLISH"
-    elif pressure == "DOWN": pressure="BEARISH"
-    out["directional_pressure"]=pressure
+    out=dict(brain); pressure=str(out.get("directional_pressure") or "BALANCED").upper(); out["directional_pressure"]="BULLISH" if pressure=="UP" else "BEARISH" if pressure=="DOWN" else pressure; out["analysis_status"]="COMPLETE"; return out
 
-    # Very low price efficiency means directional movement is mostly noise/chop.
-    # Do not let a small EMA/slope imbalance manufacture a professional trend thesis.
-    evidence=" ".join(str(x) for x in (out.get("evidence") or []))
-    match=__import__("re").search(r"price_efficiency=([0-9.]+)", evidence)
-    if match:
-        try:
-            if float(match.group(1)) < 0.25:
-                out["directional_pressure"]="BALANCED"
-        except ValueError:
-            pass
-    out["analysis_status"]="COMPLETE"
-    return out
-
+def _e2_e1_context(permitted:dict[str,Any])->dict[str,Any]:
+    package=permitted.get("E1") or {}; evidence=package.get("evidence") if isinstance(package,dict) else {}; brain=evidence.get("output") if isinstance(evidence,dict) else None
+    return brain if isinstance(brain,dict) else {}
 
 def run_engine(engine_id:str,snapshot:dict[str,Any],evidence_bus:dict[str,Any]|None=None)->EngineResult:
-    allowed=set(EVIDENCE_INPUTS.get(engine_id,()))
-    permitted={k:evidence_bus[k] for k in allowed if evidence_bus and k in evidence_bus}
+    allowed=set(EVIDENCE_INPUTS.get(engine_id,())); permitted={k:evidence_bus[k] for k in allowed if evidence_bus and k in evidence_bus}
+    if engine_id=="E2":
+        local=dict(snapshot); local["E1_result"]=_e2_e1_context(permitted); brain=analyze_e2(local)
+        output={"architecture":"E2_PROFESSIONAL_CORE_ONLY","sub_engines_active":False,"sub_engines_status":"PAUSED","specialists":{},**brain,"decision":None,"entry":None,"trigger":None,"risk":None,"gate":None,"trade_decision_authority":"E9_ONLY","reasoning_role":"OPPORTUNITY_REGIME_ANALYST","upstream_decisions_used":False,"upstream_gates_used":False,"score_used":False}
+        return EngineResult("E2",ENGINE_NAMES["E2"],None,float(brain.get("confidence",0.0))*100.0,output,tuple(brain.get("reason_codes",())))
     codes=SUB_ENGINE_CODES[engine_id]; results=[]
-    with ThreadPoolExecutor(max_workers=len(codes)) as pool:
+    with ThreadPoolExecutor(max_workers=max(1,len(codes))) as pool:
         fs={pool.submit(_run,c,snapshot,permitted):c for c in codes}
         for f in as_completed(fs):
             code=fs[f]
             try: results.append(f.result())
             except Exception as exc: results.append(EngineResult(code,code,None,0.0,{"error":str(exc)},("SPECIALIST_EXCEPTION",)))
-    results.sort(key=lambda r:r.sub_engine_id)
-    evidence={}
+    results.sort(key=lambda r:r.sub_engine_id); evidence={}
     for r in results:
-        output=_qualitative(r.output)
-        observations=list(r.trace.get("observations",[]) if isinstance(r.trace,dict) else [])
-        observations.extend(_value_observations(output))
-        reasons=_reason_statements(r)
-        evidence[r.sub_engine_id]={"output":output,"observations":list(dict.fromkeys(str(x) for x in observations))[:12],"reason_codes":reasons}
-
-    if engine_id == "E1":
-        brain=_e1_contract_normalize(analyze_e1(snapshot.get("bars") or []))
-        output={"architecture":"E1_PROFESSIONAL_MARKET_STATE_BRAIN_V2.1","specialists":evidence,**brain,"evidence_count":len(evidence),"peer_evidence_count":len(permitted),"upstream_decisions_used":False,"upstream_gates_used":False,"score_used":False,"reasoning_role":"MARKET_STATE_ANALYST"}
-        return EngineResult("E1",ENGINE_NAMES["E1"],None,float(brain["confidence"])*100.0,output,())
-
-    score=mean(float(r.score) for r in results) if results else 0.0
-    used=[package.get("engine_id") for package in permitted.values() if isinstance(package,dict) and package.get("engine_id")]
-    dependency=_dependency_report(engine_id,permitted)
+        output=_qualitative(r.output); observations=list(r.trace.get("observations",[]) if isinstance(r.trace,dict) else []); observations.extend(_value_observations(output)); evidence[r.sub_engine_id]={"output":output,"observations":list(dict.fromkeys(str(x) for x in observations))[:12],"reason_codes":_reason_statements(r)}
+    if engine_id=="E1":
+        brain=_e1_contract_normalize(analyze_e1(snapshot.get("bars") or [])); output={"architecture":"E1_PROFESSIONAL_MARKET_STATE_BRAIN_V2.1","specialists":evidence,**brain,"evidence_count":len(evidence),"peer_evidence_count":len(permitted),"upstream_decisions_used":False,"upstream_gates_used":False,"score_used":False,"reasoning_role":"MARKET_STATE_ANALYST"}; return EngineResult("E1",ENGINE_NAMES["E1"],None,float(brain["confidence"])*100.0,output,())
+    score=mean(float(r.score) for r in results) if results else 0.0; used=[package.get("engine_id") for package in permitted.values() if isinstance(package,dict) and package.get("engine_id")]; dependency=_dependency_report(engine_id,permitted)
     output={"architecture":"PARALLEL_PEER_EVIDENCE_BUS","specialists":evidence,"decision_authority":"E9_ONLY","gate_semantics":"DISABLED_FOR_E1_E8","evidence_inputs":sorted(allowed),"evidence_used":sorted(used),"evidence_dependency":dependency,"upstream_analysis":_upstream_analysis(permitted),"professional_reasoning":{"question":_question(engine_id),"conclusion":_conclusion(evidence),"evidence_count":len(evidence),"peer_evidence_count":len(permitted),"upstream_decisions_used":False,"upstream_gates_used":False,"score_used":False,"reasoning_mode":"QUALITATIVE_EVIDENCE"}}
     return EngineResult(engine_id,ENGINE_NAMES[engine_id],None,score,output,())
 
-
 def _question(e): return {"E1":"What is the market doing right now?","E2":"What opportunity is being offered?","E3":"What is price structure communicating?","E4":"Where is liquidity and what did price do with it?","E5":"Is current location advantageous?","E6":"What setup is forming?","E7":"Has the thesis been confirmed?","E8":"Is the trade economically attractive?"}[e]
-
 
 def _conclusion(evidence):
     vals=[]
     for x in evidence.values():
-        o=x.get("output") or {}
-        vals.extend(str(o[k]) for k in ("state","regime","direction","classification","quality","phase","setup","confirmation","risk_gate") if k in o)
-    text=";".join(vals[-8:]) or "UNRESOLVED"
-    return text.replace("BUY","UP").replace("SELL","DOWN").replace("LONG","UP").replace("SHORT","DOWN")
+        o=x.get("output") or {}; vals.extend(str(o[k]) for k in ("state","regime","direction","classification","quality","phase","setup","confirmation","risk_gate") if k in o)
+    return (";".join(vals[-8:]) or "UNRESOLVED").replace("BUY","UP").replace("SELL","DOWN").replace("LONG","UP").replace("SHORT","DOWN")
 
-
-def run_all_parallel(snapshot:dict[str,Any])->list[EngineResult]:
-    return [run_engine(e,snapshot,None) for e in ENGINE_IDS]
+def run_all_parallel(snapshot:dict[str,Any])->list[EngineResult]: return [run_engine(e,snapshot,None) for e in ENGINE_IDS]
