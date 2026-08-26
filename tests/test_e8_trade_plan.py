@@ -3,10 +3,8 @@ from trading_system.engines.e8.g_risk_gate import SubEngine
 
 def _bars():
     bars = []
-    for i in range(55):
-        close = 100.0 + i * 0.09
-        bars.append({"open": close - 0.02, "high": close + 0.08, "low": close - 0.08, "close": close})
-    for close in (104.90, 104.95, 105.00, 105.05, 105.00):
+    for i in range(60):
+        close = 100.0 + i * 0.04
         bars.append({"open": close - 0.02, "high": close + 0.08, "low": close - 0.08, "close": close})
     return bars
 
