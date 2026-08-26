@@ -9,26 +9,47 @@ from .professional_brain import run_professional_e9
 from .engines import ENGINE_IDS, EVIDENCE_INPUTS, run_engine
 
 ENGINE_ORDER = ENGINE_IDS
-_DIRECTION_WORDS = {"BUY":"TRADE_DECISION","SELL":"TRADE_DECISION","LONG":"UPSIDE_EXPOSURE","SHORT":"DOWNSIDE_EXPOSURE"}
+_DIRECTION_WORDS = {"BUY":"UP","SELL":"DOWN","LONG":"UP","SHORT":"DOWN"}
+_DIRECTION_KEYS = {"direction","bias","orientation","market_direction"}
+_DECISION_KEYS = {"decision","trade_decision"}
 
 
 def _sanitize_directional_text(text: str) -> str:
-    result=text
-    for old,new in sorted(_DIRECTION_WORDS.items(),key=lambda item:-len(item[0])):
-        result=re.sub(rf"(?<![A-Z0-9_]){re.escape(old)}(?![A-Z0-9_])",new,result)
-    return re.sub(r"\b(?:DIRECTION|BIAS|ORIENTATION|MARKET_DIRECTION)\s*=\s*(?:UP|DOWN|BUY|SELL|BULLISH|BEARISH|LONG|SHORT)\b","direction=UNRESOLVED",result,flags=re.IGNORECASE)
+    """Remove execution semantics while preserving market-direction semantics.
+
+    Specialist evidence may describe directional market evidence as UP/DOWN. The
+    previous sanitizer converted DIRECTION/BIASES to UNRESOLVED, so authoritative
+    E1 direction was lost after the peer-analysis pass. Only execution vocabulary
+    is normalized now; analytical direction is retained.
+    """
+    result = text
+    for old, new in sorted(_DIRECTION_WORDS.items(), key=lambda item: -len(item[0])):
+        result = re.sub(rf"(?<![A-Z0-9_]){re.escape(old)}(?![A-Z0-9_])", new, result, flags=re.IGNORECASE)
+    return result
 
 
 def _sanitize_specialist_value(value: Any, key: str = "") -> Any:
-    if isinstance(value,dict):
-        return {k:_sanitize_specialist_value(v,str(k)) for k,v in value.items() if str(k).lower() not in {"direction","bias","orientation","market_direction","decision","score","gate","handoff"}}
-    if isinstance(value,(list,tuple)): return [_sanitize_specialist_value(v,key) for v in value]
-    if isinstance(value,str): return _sanitize_directional_text(value)
+    if isinstance(value, dict):
+        cleaned = {}
+        for k, v in value.items():
+            lk = str(k).lower()
+            if lk in _DECISION_KEYS or lk in {"decision_score", "score", "gate", "gate_passed", "specialist_gate", "handoff"}:
+                continue
+            # Direction is analytical evidence, not an execution decision.
+            if lk in _DIRECTION_KEYS and isinstance(v, str):
+                v = _sanitize_directional_text(v)
+            cleaned[k] = _sanitize_specialist_value(v, lk)
+        return cleaned
+    if isinstance(value, (list, tuple)):
+        return [_sanitize_specialist_value(v, key) for v in value]
+    if isinstance(value, str):
+        return _sanitize_directional_text(value)
     return value
 
 
 def _sanitize_specialist_result(result: EngineResult) -> EngineResult:
-    output=_sanitize_specialist_value(dict(result.output or {})); output.update({"trade_decision_authority":False,"specialist_gate":"NONE","gate":None,"reasoning_role":"SPECIALIST_EVIDENCE","analysis_complete":True})
+    output = _sanitize_specialist_value(dict(result.output or {}))
+    output.update({"trade_decision_authority":False,"specialist_gate":"NONE","gate":None,"reasoning_role":"SPECIALIST_EVIDENCE","analysis_complete":True})
     return EngineResult(result.engine_id,result.name,None,None,output,result.reason_codes)
 
 
