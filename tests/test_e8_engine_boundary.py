@@ -4,7 +4,7 @@ from production_v2.engines import run_engine
 def _bars():
     bars = []
     for i in range(60):
-        close = 100.0 + i * 0.10
+        close = 100.0 + i * 0.04
         bars.append({
             "open": close - 0.02,
             "high": close + 0.08,
