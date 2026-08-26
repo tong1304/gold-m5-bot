@@ -16,17 +16,14 @@ def run_professional_engine(engine_id:str,context:dict[str,Any])->EngineResult:
 def _clamp(v:float,lo=0.0,hi=100.0)->float:return max(lo,min(hi,float(v)))
 def _text(v:Any)->str:return str(v).upper()
 def _has(blob:str,*terms:str)->bool:return any(t in blob for t in terms)
-def _nested(v:Any)->list[Any]:
+def _walk(v:Any):
     if isinstance(v,dict):
-        r=[]
-        for x in v.values():r.extend(_nested(x))
-        return r
-    if isinstance(v,(list,tuple,set)):
-        r=[]
-        for x in v:r.extend(_nested(x))
-        return r
-    return [v]
-def _blob(e:EngineResult|None)->str:return _text(_nested(e.output)) if e else ""
+        for k,x in v.items():
+            yield str(k);yield from _walk(x)
+    elif isinstance(v,(list,tuple,set)):
+        for x in v:yield from _walk(x)
+    else:yield str(v)
+def _blob(e:EngineResult|None)->str:return " | ".join(_text(x) for x in _walk(e.output)) if e else ""
 def _exact(e:EngineResult|None,token:str)->bool:return bool(re.search(rf"(?<![A-Z0-9_]){re.escape(token)}(?![A-Z0-9_])",_blob(e)))
 
 def _find_key(v:Any,keys:set[str]):
@@ -41,13 +38,27 @@ def _find_key(v:Any,keys:set[str]):
             if found is not None:return found
     return None
 
-def _direction_hints(e:EngineResult|None)->set[str]:
+def _state_values(e:EngineResult|None)->set[str]:
     if not e:return set()
-    blob=_blob(e); hints=set()
-    # Specialist engines encode direction in both structured state names and
-    # observation strings (for example state=TREND_UP, direction=DOWN).
-    if re.search(r"(?:TREND_|DIRECTION\s*[=:]\s*|STRUCTURE\s*[=:]\s*)UP\b|BULLISH",blob):hints.add("BUY")
-    if re.search(r"(?:TREND_|DIRECTION\s*[=:]\s*|STRUCTURE\s*[=:]\s*)DOWN\b|BEARISH",blob):hints.add("SELL")
+    vals=set()
+    def rec(v):
+        if isinstance(v,dict):
+            for k,x in v.items():
+                kl=str(k).lower()
+                if kl in {"state","direction","bias","orientation","market_direction","classification","regime","setup","confirmation","risk_gate","phase"} and isinstance(x,(str,int,float,bool)):
+                    vals.add(_text(x).strip())
+                rec(x)
+        elif isinstance(v,(list,tuple,set)):
+            for x in v:rec(x)
+    rec(e.output);return vals
+
+def _direction_hints(e:EngineResult|None)->set[str]:
+    states=_state_values(e);hints=set();blob=_blob(e)
+    for s in states:
+        if s in {"UP","BULLISH","LONG","BUY","TREND_UP","BULLISH_BOS","STRUCTURAL_DISCOUNT","LIQUIDITY_ABOVE"}:hints.add("BUY")
+        if s in {"DOWN","BEARISH","SHORT","SELL","TREND_DOWN","BEARISH_BOS","STRUCTURAL_PREMIUM","LIQUIDITY_BELOW"}:hints.add("SELL")
+    if re.search(r"TREND[_ ]?UP|DIRECTION\s*[=:]\s*UP|STRUCTURE\s*[=:]\s*UP|BULLISH",blob):hints.add("BUY")
+    if re.search(r"TREND[_ ]?DOWN|DIRECTION\s*[=:]\s*DOWN|STRUCTURE\s*[=:]\s*DOWN|BEARISH",blob):hints.add("SELL")
     return hints
 
 def _structured_direction(e:EngineResult|None)->str|None:
@@ -64,21 +75,20 @@ def _structured_direction(e:EngineResult|None)->str|None:
 def _direction(evidence:dict[str,EngineResult])->str:
     buy=sell=0.0
     for e in evidence.values():
-        w=EVIDENCE_WEIGHTS.get(e.engine_id,1.0);d=_structured_direction(e)
+        hints=_direction_hints(e);w=EVIDENCE_WEIGHTS.get(e.engine_id,1.0)
+        if len(hints)==1:
+            buy+=w if "BUY" in hints else 0.0;sell+=w if "SELL" in hints else 0.0;continue
+        d=_structured_direction(e)
         if d=="BUY":buy+=w
         elif d=="SELL":sell+=w
-        else:
-            c=_find_key(e.output,{"conclusion","directional_conclusion"});c=_text(c) if isinstance(c,str) else ""
-            if _has(c,"BUY","BULLISH","TREND_UP","LONG") and not _has(c,"SELL","BEARISH","TREND_DOWN","SHORT"):buy+=w*.75
-            elif _has(c,"SELL","BEARISH","TREND_DOWN","SHORT") and not _has(c,"BUY","BULLISH","TREND_UP","LONG"):sell+=w*.75
     return "BUY" if buy>sell else "SELL" if sell>buy else "NEUTRAL"
 
 def _weighted_alignment(upstream:list[EngineResult])->float:
     w=[EVIDENCE_WEIGHTS.get(e.engine_id,1.0) for e in upstream];return round(sum(_clamp(e.score)*x for e,x in zip(upstream,w))/sum(w),2) if w else 0.0
 
 def _dimension_state(by):
-    b={k:_blob(by.get(k)) for k in SPECIALIST_QUESTIONS}
-    return {"market_context":bool(b["E1"] or b["E2"]),"structure_support":_has(b["E3"],"BOS","BREAK_OF_STRUCTURE","HIGHER_HIGH","LOWER_LOW","STRUCTURE"),"liquidity_event":_has(b["E4"],"SWEEP","RECLAIM","REJECTION","LIQUIDITY"),"location_quality":_has(b["E5"],"ADVANTAGEOUS","FAVORABLE","DISCOUNT","PREMIUM","GOOD_LOCATION"),"setup_mature":_has(b["E6"],"MATURE","FORMED","VALID_SETUP","CONTINUATION_SETUP","REVERSAL_SETUP"),"confirmation":_has(b["E7"],"CONFIRMED","CONFIRMATION_PASS","TRIGGER_OBSERVED","FOLLOW_THROUGH"),"economics":_has(b["E8"],"ATTRACTIVE","RISK_GATE_READY","RR_OK","POSITIVE_EXPECTANCY")}
+    b={k:_blob(by.get(k)) for k in SPECIALIST_QUESTIONS};s={k:_state_values(by.get(k)) for k in SPECIALIST_QUESTIONS}
+    return {"market_context":bool(b["E1"] or b["E2"]),"structure_support":bool(s["E3"]&{"BULLISH","BEARISH","ALIGNED","STRONG","MODERATE"}) or _has(b["E3"],"BOS","BREAK_OF_STRUCTURE","HIGHER_HIGH","LOWER_LOW"),"liquidity_event":bool(s["E4"]&{"SWEEP_HIGH","SWEEP_LOW","REJECTION","ACCEPTANCE","RECLAIM","HIGH_QUALITY"}) or _has(b["E4"],"SWEEP","RECLAIM","REJECTION","LIQUIDITY"),"location_quality":bool(s["E5"]&{"LOCATION_QUALITY_PASS","DISCOUNT","PREMIUM","EQUILIBRIUM","SPACE_AVAILABLE"}) or _has(b["E5"],"ADVANTAGEOUS","FAVORABLE","DISCOUNT","PREMIUM","GOOD_LOCATION"),"setup_mature":bool(s["E6"]&{"MATURE"}) or _has(b["E6"],"MATURE","VALID_SETUP","CONTINUATION_SETUP","REVERSAL_SETUP"),"confirmation":bool(s["E7"]&{"CONFIRMATION_PASS","CONFIRMED","FOLLOW_THROUGH_OBSERVED","TRIGGER_OBSERVED"}) or _has(b["E7"],"CONFIRMED","CONFIRMATION_PASS","TRIGGER_OBSERVED","FOLLOW_THROUGH"),"economics":bool(s["E8"]&{"RISK_READY","RR_OK","POSITIVE_EXPECTANCY","ATTRACTIVE"}) or _has(b["E8"],"ATTRACTIVE","RISK_GATE_READY","RR_OK","POSITIVE_EXPECTANCY")}
 
 def _conflicts(by):
     r=[]
@@ -120,6 +130,6 @@ def run_professional_e9(context,upstream,historical_calibration=None):
     reasons.extend(execution["reasons"])
     ready=(d in DIRECTIONS and execution["ready"] and dims["setup_mature"] and dims["confirmation"] and dims["economics"] and thesis>=70 and not conf and not inv)
     decision=d if ready else "NO_TRADE";e8=by.get("E8");plan=_find_key(e8.output if e8 else {},{"trade_plan"})
-    out={"decision":decision,"decision_authority":"E9","trade_decision_authority":True,"architecture":"PROFESSIONAL_THESIS_REASONING","analysis_complete":True,"direction":d,"evidence_alignment":alignment,"thesis_quality":thesis,"professional_reasoning":{"question":"Is there a clear, asymmetric, confirmed opportunity worth risking capital on now?","primary_thesis":d,"alternative_thesis":"Opposite direction only if primary structure/setup thesis fails","invalidation":"; ".join(inv) if inv else "Structural/setup/confirmation premise failure","dimensions":dims,"conflicts":conf,"hard_invalidations":inv,"execution_ready":ready},"decision_reasons":sorted(set(reasons)),"evidence_conflicts":conf,"hard_invalidations":inv,"trade_plan":plan if isinstance(plan,dict) else {},"gate":ready,"upstream_gates_ignored":True,"gate_semantics":"E9_MASTER_ONLY","learning_policy":"ADVISORY_ONLY_NO_OVERRIDE","professional_decision":"APPROVE_TRADE" if ready else "NO_TRADE"}
+    out={"decision":decision,"decision_authority":"E9","trade_decision_authority":True,"architecture":"PROFESSIONAL_THESIS_REASONING","analysis_complete":True,"direction":d,"evidence_alignment":alignment,"thesis_quality":thesis,"professional_reasoning":{"question":"Is there a clear, asymmetric, confirmed opportunity worth risking capital on now?","primary_thesis":d,"alternative_thesis":"Opposite direction only if primary structure/setup thesis fails","invalidation":"; ".join(inv) if inv else "Structural/setup/confirmation premise failure","dimensions":dims,"conflicts":conf,"hard_invalidations":inv,"execution_ready":ready,"directional_evidence":{"BUY":sum(EVIDENCE_WEIGHTS.get(e.engine_id,1.0) for e in by.values() if "BUY" in _direction_hints(e)),"SELL":sum(EVIDENCE_WEIGHTS.get(e.engine_id,1.0) for e in by.values() if "SELL" in _direction_hints(e))}},"decision_reasons":sorted(set(reasons)),"evidence_conflicts":conf,"hard_invalidations":inv,"trade_plan":plan if isinstance(plan,dict) else {},"gate":ready,"upstream_gates_ignored":True,"gate_semantics":"E9_MASTER_ONLY","learning_policy":"ADVISORY_ONLY_NO_OVERRIDE","professional_decision":"APPROVE_TRADE" if ready else "NO_TRADE"}
     out["historical_calibration"]=build_advisory(context,historical_calibration) if historical_calibration is not None else None
     return EngineResult("E9",ENGINE_NAMES.get("E9","Master Decision Brain"),ready,thesis,out,tuple(sorted(set(reasons))))
