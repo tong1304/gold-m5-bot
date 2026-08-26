@@ -17,7 +17,6 @@ def _bars(direction="down", n=80):
 def test_e1_reports_market_state_without_trade_direction_or_authority():
     result=run_engine("E1", {"symbol":"XAU/USD","timeframe":"M5","bars":_bars("down")})
     out=result.output
-
     assert out["decision_authority"] == "E9_ONLY"
     assert out["market_state"] in {"TREND_DOWN", "EXPANSION", "TRANSITION", "UNCLEAR"}
     assert out["directional_pressure"] in {"BEARISH", "BULLISH", "BALANCED"}
@@ -39,3 +38,20 @@ def test_e1_can_admit_unclear_instead_of_forcing_direction():
     out=result.output
     assert out["directional_pressure"] == "BALANCED"
     assert out["market_state"] in {"RANGE", "COMPRESSION", "TRANSITION", "UNCLEAR"}
+
+
+def test_e1_brain_exposes_professional_question_and_decision_independent_reasoning():
+    result=run_engine("E1", {"symbol":"XAU/USD","timeframe":"M5","bars":_bars("down")})
+    out=result.output
+    assert out["question"] == "What is the market doing right now?"
+    assert out["reasoning_role"] == "MARKET_STATE_ANALYST"
+    assert out["analysis_status"] == "COMPLETE"
+    assert out["decision_authority"] == "E9_ONLY"
+    assert out["professional_reasoning"]["directional_pressure"] == out["directional_pressure"]
+    assert out["professional_reasoning"]["market_state"] == out["market_state"]
+    assert out["professional_reasoning"]["confidence"] == out["confidence"]
+    assert out["professional_reasoning"]["next_question"] in {
+        "IS_THIS_STATE_STABLE_OR_TRANSITIONING?",
+        "IS_DIRECTIONAL_PRESSURE_STRONG_ENOUGH_TO_MATTER?",
+        "IS_MARKET_TOO_BALANCED_TO_CLASSIFY?",
+    }
