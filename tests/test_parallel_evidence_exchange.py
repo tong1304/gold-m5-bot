@@ -35,9 +35,13 @@ def test_e1_to_e8_share_observations_without_sequential_decision_flow(monkeypatc
     result = pipeline_module.ProductionPipeline().run({"symbol": "GOLD", "timeframe": "M5", "bars": [{"close": 1.0}]})
 
     assert result.decision == "NO_TRADE"
-    assert [x[0] for x in calls] == sorted(pipeline_module.ENGINE_ORDER)
-    for engine_id, received, decisions, gates in calls:
-        assert engine_id in pipeline_module.ENGINE_ORDER
+    assert len(calls) == 16
+    first_pass = calls[:8]
+    second_pass = calls[8:]
+    assert {x[0] for x in first_pass} == set(pipeline_module.ENGINE_ORDER)
+    assert {x[0] for x in second_pass} == set(pipeline_module.ENGINE_ORDER)
+    assert all(received == () for _, received, _, _ in first_pass)
+    for engine_id, received, decisions, gates in second_pass:
         assert set(received) == set(pipeline_module.ENGINE_ORDER) - {engine_id}
         assert decisions is False
         assert gates is False
@@ -51,7 +55,6 @@ def test_specialist_gate_is_not_a_boolean_authority(monkeypatch):
 
         return Specialist()
 
-    monkeypatch.setattr(pipeline_module, "run_engine", lambda *args, **kwargs: None)
     from production_v2 import engines as engines_module
     monkeypatch.setattr(engines_module, "_module", fake_module)
     monkeypatch.setattr(engines_module, "SUB_ENGINE_CODES", {"E1": ["1A"]})
