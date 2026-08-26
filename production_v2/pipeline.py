@@ -11,7 +11,6 @@ ENGINE_ORDER = ENGINE_IDS
 
 
 def _run_wave(engine_ids: tuple[str, ...], snapshot: dict[str, Any], evidence_bus: dict[str, Any] | None) -> dict[str, EngineResult]:
-    """Run specialist engines concurrently against one immutable evidence snapshot."""
     results: dict[str, EngineResult] = {}
     with ThreadPoolExecutor(max_workers=len(engine_ids), thread_name_prefix="prod-v2-specialist") as pool:
         futures = {pool.submit(run_engine, engine_id, snapshot, evidence_bus): engine_id for engine_id in engine_ids}
@@ -22,7 +21,6 @@ def _run_wave(engine_ids: tuple[str, ...], snapshot: dict[str, Any], evidence_bu
 
 
 def _evidence_package(result: EngineResult) -> dict[str, Any]:
-    """Publish specialist reasoning only; no score, decision or gate is a decision input."""
     return {
         "engine_id": result.engine_id,
         "name": result.name,
@@ -35,7 +33,6 @@ def _evidence_package(result: EngineResult) -> dict[str, Any]:
 
 
 def _normalize_e8_execution_boundary(e8: EngineResult | None) -> EngineResult | None:
-    """Expose E8 risk observations without making E8 a trade decision authority."""
     if e8 is None:
         return None
     output = dict(e8.output or {})
@@ -46,7 +43,6 @@ def _normalize_e8_execution_boundary(e8: EngineResult | None) -> EngineResult | 
         for key in ("trade_plan", "plan_status", "risk_gate", "risk_basis"):
             if key in risk_output:
                 output[key] = risk_output[key]
-    # Explicitly prevent E8 from publishing a BUY/SELL decision or direction.
     output["direction"] = None
     output["decision"] = None
     output["trade_decision_authority"] = False
@@ -54,10 +50,10 @@ def _normalize_e8_execution_boundary(e8: EngineResult | None) -> EngineResult | 
     return EngineResult(e8.engine_id, e8.name, None, e8.score, output, e8.reason_codes)
 
 
-def _e8_trade_plan_complete(e8: EngineResult | None) -> bool:
-    if e8 is None:
+def _trade_plan_complete(result: EngineResult | None) -> bool:
+    if result is None:
         return False
-    plan = (e8.output or {}).get("trade_plan")
+    plan = (result.output or {}).get("trade_plan")
     if not isinstance(plan, dict):
         return False
     required = ("entry", "stop_loss", "take_profit_1", "take_profit_2", "rr_tp2")
@@ -70,17 +66,20 @@ def _e8_trade_plan_complete(e8: EngineResult | None) -> bool:
 
 
 def _enforce_e9_execution_invariant(e9: EngineResult, e8: EngineResult | None) -> EngineResult:
-    """Execution incompleteness produces NO_TRADE, never a runtime exception."""
-    if not e9.gate_passed or _e8_trade_plan_complete(e8):
+    """E9 alone decides. Missing final execution data means E9 decides NO_TRADE, never an exception."""
+    if not e9.gate_passed:
         return e9
+    e8_ready = _trade_plan_complete(e8)
+    e9_ready = _trade_plan_complete(e9)
+    if e8_ready and e9_ready:
+        return e9
+
     output = dict(e9.output or {})
     reasoning = dict(output.get("professional_reasoning") or {})
     reasons = list(e9.reason_codes)
-    diagnostic = "EXECUTION_PLAN_NOT_READY"
-    if "E9_EXECUTION_NOT_READY" not in reasons:
-        reasons.append("E9_EXECUTION_NOT_READY")
-    if diagnostic not in reasons:
-        reasons.append(diagnostic)
+    for diagnostic in ("E9_EXECUTION_NOT_READY", "EXECUTION_PLAN_NOT_READY"):
+        if diagnostic not in reasons:
+            reasons.append(diagnostic)
     output.update({
         "decision": "NO_TRADE",
         "execution_readiness_score": 0.0,
@@ -88,12 +87,16 @@ def _enforce_e9_execution_invariant(e9: EngineResult, e8: EngineResult | None) -
         "trade_plan": {},
         "invariant_blocked": True,
         "invariant": "E9_EXECUTION_NOT_READY",
+        "trade_decision_authority": True,
+        "decision_authority": "E9",
     })
     reasoning.update({
         "final_decision": "NO_TRADE",
         "execution_ready": False,
         "decision_authority": "E9",
         "invariant": "E9_EXECUTION_NOT_READY",
+        "e8_plan_complete": e8_ready,
+        "e9_plan_complete": e9_ready,
     })
     output["professional_reasoning"] = reasoning
     return EngineResult(e9.engine_id, e9.name, False, 0.0, output, tuple(reasons))
@@ -134,17 +137,18 @@ class ProductionPipeline:
         e9 = _enforce_e9_execution_invariant(e9, enriched.get("E8"))
         engines.append(e9)
         trade_plan = e9.output.get("trade_plan", {})
+        final_gate = bool(e9.gate_passed and e9.output.get("decision") in {"BUY", "SELL"})
         return DecisionResult(
             symbol,
             timeframe,
             e9.output.get("decision", "NO_TRADE"),
-            e9.gate_passed,
+            final_gate,
             e9.score,
             tuple(engines),
             {
-                "risk_gate": bool(trade_plan.get("valid")),
+                "risk_gate": bool(trade_plan.get("valid")) if isinstance(trade_plan, dict) else False,
                 "trade_plan": trade_plan,
-                "engine_state": "TRADE_APPROVED" if e9.gate_passed else "ANALYSIS_COMPLETE_NO_TRADE",
+                "engine_state": "TRADE_APPROVED" if final_gate else "ANALYSIS_COMPLETE_NO_TRADE",
                 "blocked_by": None,
                 "cycle_complete": True,
                 "analysis_architecture": "PARALLEL_BASELINE -> PARALLEL_PEER_REANALYSIS -> E9",
