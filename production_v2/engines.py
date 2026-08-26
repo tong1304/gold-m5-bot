@@ -21,10 +21,10 @@ EVIDENCE_INPUTS={"E1":(),"E2":("E1","E3","E4"),"E3":(),"E4":("E3",),"E5":("E3","
 def _module(code:str): return importlib.import_module(f"trading_system.engines.e{code[0]}.{SUFFIX[code]}")
 
 def _legacy_context(permitted:dict[str,Any])->dict[str,Any]:
-    """Expose immutable upstream evidence under the context keys used by legacy specialist logic.
+    """Expose immutable upstream evidence under specialist context keys.
 
-    This is an adapter, not a decision channel. Only the declared EVIDENCE_INPUTS
-    are copied, and decision/gate fields are explicitly removed.
+    This is an evidence channel only. Decision/gate fields are removed so a
+    specialist can interpret upstream findings without inheriting authority.
     """
     ctx={}
     for engine_id, package in permitted.items():
@@ -37,17 +37,48 @@ def _legacy_context(permitted:dict[str,Any])->dict[str,Any]:
                 if not isinstance(item,dict):
                     continue
                 clean[sid]={k:v for k,v in item.items() if k not in {"decision","gate","gate_passed","trade_decision"}}
-                if "output" not in clean[sid] and isinstance(item.get("output"),dict):
-                    clean[sid]["output"]=item["output"]
         ctx[f"{engine_id}_result"]=clean
     return ctx
+
+def _dependency_report(engine_id:str, permitted:dict[str,Any])->dict[str,Any]:
+    required=sorted(EVIDENCE_INPUTS.get(engine_id,()))
+    received=sorted(k for k in permitted if k in required)
+    missing=sorted(set(required)-set(received))
+    decisions_received=any(isinstance(v,dict) and v.get("decision") is not None for v in permitted.values())
+    gates_received=any(isinstance(v,dict) and (v.get("gate") is not None or v.get("gate_passed") is not None) for v in permitted.values())
+    return {
+        "required": required,
+        "received": received,
+        "missing": missing,
+        "complete": not missing,
+        "decisions_received": decisions_received,
+        "gates_received": gates_received,
+        "channel": "EVIDENCE_ONLY",
+    }
+
+def _upstream_analysis(permitted:dict[str,Any])->dict[str,Any]:
+    """Build a compact analyst-to-analyst handoff without copying authority."""
+    report={}
+    for engine_id in sorted(permitted):
+        package=permitted.get(engine_id)
+        if not isinstance(package,dict):
+            continue
+        specialists=package.get("evidence") or package.get("specialists") or {}
+        report[engine_id]={
+            "engine_id": package.get("engine_id",engine_id),
+            "score": float(package.get("score",0.0) or 0.0),
+            "specialist_count": len(specialists) if isinstance(specialists,dict) else 0,
+            "reason_codes": list(package.get("reason_codes") or []),
+            "interpretation": "Evidence available for independent re-analysis; upstream authority is ignored.",
+        }
+    return report
 
 def _run(code:str,snapshot:dict[str,Any],evidence_bus:dict[str,Any]|None=None):
     local=dict(snapshot)
     permitted=evidence_bus or {}
     local["evidence_bus"]={k:v for k,v in permitted.items()}
     local.update(_legacy_context(permitted))
-    # Make the context auditable inside every specialist execution.
+    local["upstream_analysis"]=_upstream_analysis(permitted)
     local["evidence_context_meta"]={"source_engines":sorted(permitted),"decisions_excluded":True,"gates_excluded":True}
     return _module(code).SubEngine().run(local)
 
@@ -67,7 +98,26 @@ def run_engine(engine_id:str,snapshot:dict[str,Any],evidence_bus:dict[str,Any]|N
     used=[]
     for package in permitted.values():
         if isinstance(package,dict): used.append(package.get("engine_id"))
-    output={"architecture":"CONTROLLED_EVIDENCE_BUS","specialists":evidence,"evidence_quality":round(score,2),"decision_authority":"E9_ONLY","gate_semantics":"DISABLED_FOR_E1_E8","evidence_inputs":sorted(allowed),"evidence_used":sorted(x for x in used if x),"professional_reasoning":{"question":_question(engine_id),"conclusion":_conclusion(evidence),"evidence_count":len(evidence),"upstream_evidence_count":len(permitted),"upstream_decisions_used":False,"upstream_gates_used":False}}
+    dependency=_dependency_report(engine_id,permitted)
+    output={
+        "architecture":"CONTROLLED_EVIDENCE_BUS",
+        "specialists":evidence,
+        "evidence_quality":round(score,2),
+        "decision_authority":"E9_ONLY",
+        "gate_semantics":"DISABLED_FOR_E1_E8",
+        "evidence_inputs":sorted(allowed),
+        "evidence_used":sorted(x for x in used if x),
+        "evidence_dependency":dependency,
+        "upstream_analysis":_upstream_analysis(permitted),
+        "professional_reasoning":{
+            "question":_question(engine_id),
+            "conclusion":_conclusion(evidence),
+            "evidence_count":len(evidence),
+            "upstream_evidence_count":len(permitted),
+            "upstream_decisions_used":False,
+            "upstream_gates_used":False,
+        },
+    }
     return EngineResult(engine_id,ENGINE_NAMES[engine_id],True,score,output,())
 
 def _question(e): return {"E1":"What is the market doing right now?","E2":"What opportunity is being offered?","E3":"What is price structure communicating?","E4":"Where is liquidity and what did price do with it?","E5":"Is current location advantageous?","E6":"What setup is forming?","E7":"Has the thesis been confirmed?","E8":"Is the trade economically attractive?"}[e]
@@ -79,6 +129,7 @@ def _conclusion(evidence):
     return ";".join(vals[-8:]) or "UNRESOLVED"
 
 def run_all_parallel(snapshot:dict[str,Any])->list[EngineResult]:
+    """Compatibility helper: roots-only execution. Production uses ProductionPipeline waves."""
     return [run_engine(e,snapshot,None) for e in SUB_ENGINE_CODES]
 
 def run_e9_decision(snapshot:dict[str,Any],upstream:list[EngineResult])->EngineResult:
