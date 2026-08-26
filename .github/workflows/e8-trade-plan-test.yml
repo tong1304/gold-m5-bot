@@ -1,0 +1,19 @@
+name: e8-trade-plan-test
+on:
+  push:
+    branches: [production-v2]
+
+jobs:
+  test-e8-trade-plan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.11'
+      - name: Install test dependencies
+        run: python -m pip install --upgrade pip pytest pandas numpy flask requests lse-data
+      - name: Compile E8
+        run: python -m compileall -q trading_system
+      - name: Run E8 trade plan test
+        run: python -m pytest -q tests/test_e8_trade_plan.py
