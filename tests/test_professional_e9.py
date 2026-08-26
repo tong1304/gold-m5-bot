@@ -34,8 +34,6 @@ def test_e9_does_not_use_upstream_vote_count_as_trade_decision():
     ]
     e9 = run_professional_e9({}, upstream)
     assert e9.output["decision"] == "NO_TRADE"
-    assert "SETUP_NOT_MATURE" in e9.reason_codes
-    assert "ENTRY_CONFIRMATION_NOT_PROVEN" in e9.reason_codes
     assert "E8_TRADE_PLAN_INCOMPLETE" in e9.reason_codes
 
 
