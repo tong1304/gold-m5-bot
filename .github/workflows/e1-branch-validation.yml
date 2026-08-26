@@ -1,0 +1,15 @@
+name: e1-independent-validation
+on:
+  push:
+    branches: [e1-independent-professional-v3]
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: python -m pip install -q pytest pandas numpy flask requests lse-data
+      - run: python -m compileall -q production_v2
+      - run: python -m pytest -q tests/test_e1_brain_v21.py tests/test_e1_professional_brain.py tests/test_e1_independence.py
