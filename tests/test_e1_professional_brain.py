@@ -68,3 +68,31 @@ def test_e1_confidence_degrades_when_evidence_disagrees():
     trend_out = analyze_e1(_bars_from_closes(trend))
     conflict_out = analyze_e1(_bars_from_closes(conflict))
     assert conflict_out["confidence"] < trend_out["confidence"]
+
+
+def test_e1_never_calls_trend_when_ema_and_structure_disagree():
+    # The last regime rises strongly enough to create bullish structure, while
+    # the longer EMA relationship still says DOWN. A professional state analyst
+    # must preserve the disagreement as TRANSITION rather than manufacture TREND_UP.
+    closes = [120 - 0.20 * i for i in range(55)]
+    closes.extend([109 + 0.65 * i for i in range(25)])
+    out = analyze_e1(_bars_from_closes(closes, spread=0.10))
+    assert out["professional_reasoning"]["independent_evidence"]["ema_relationship"] == "DOWN"
+    assert out["professional_reasoning"]["independent_evidence"]["structure"] == "BULLISH"
+    assert out["market_state"] == "TRANSITION"
+    assert out["transition"] == "PRESENT"
+    assert "directional_structure_conflict" in out["conflicts"]
+
+
+def test_e1_requires_horizon_consensus_before_directional_trend_state():
+    # A single short-term impulse is not enough. E1 must distinguish an impulse
+    # inside a larger regime from a confirmed market-state transition.
+    closes = [100 + 0.35 * i for i in range(60)]
+    closes.extend([121 + 0.75 * i for i in range(20)])
+    out = analyze_e1(_bars_from_closes(closes, spread=0.10))
+    detail = out["professional_reasoning"]["directional_consensus"]
+    assert detail["ema"] == "UP"
+    assert detail["short"] == "UP"
+    assert detail["medium"] == "UP"
+    assert detail["long"] == "UP"
+    assert detail["confirmed"] is True
