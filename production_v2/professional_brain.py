@@ -41,6 +41,15 @@ def _find_key(v:Any,keys:set[str]):
             if found is not None:return found
     return None
 
+def _direction_hints(e:EngineResult|None)->set[str]:
+    if not e:return set()
+    blob=_blob(e); hints=set()
+    # Specialist engines encode direction in both structured state names and
+    # observation strings (for example state=TREND_UP, direction=DOWN).
+    if re.search(r"(?:TREND_|DIRECTION\s*[=:]\s*|STRUCTURE\s*[=:]\s*)UP\b|BULLISH",blob):hints.add("BUY")
+    if re.search(r"(?:TREND_|DIRECTION\s*[=:]\s*|STRUCTURE\s*[=:]\s*)DOWN\b|BEARISH",blob):hints.add("SELL")
+    return hints
+
 def _structured_direction(e:EngineResult|None)->str|None:
     if not e:return None
     v=_find_key(e.output,{"direction","bias","orientation","market_direction"})
@@ -49,7 +58,8 @@ def _structured_direction(e:EngineResult|None)->str|None:
         if x in DIRECTIONS:return x
         if x in {"BULLISH","UP","LONG","TREND_UP"}:return "BUY"
         if x in {"BEARISH","DOWN","SHORT","TREND_DOWN"}:return "SELL"
-    return None
+    hints=_direction_hints(e)
+    return next(iter(hints)) if len(hints)==1 else None
 
 def _direction(evidence:dict[str,EngineResult])->str:
     buy=sell=0.0
@@ -58,9 +68,7 @@ def _direction(evidence:dict[str,EngineResult])->str:
         if d=="BUY":buy+=w
         elif d=="SELL":sell+=w
         else:
-            # Only use explicit conclusion text as secondary evidence.
-            c=_find_key(e.output,{"conclusion","directional_conclusion"})
-            c=_text(c) if isinstance(c,str) else ""
+            c=_find_key(e.output,{"conclusion","directional_conclusion"});c=_text(c) if isinstance(c,str) else ""
             if _has(c,"BUY","BULLISH","TREND_UP","LONG") and not _has(c,"SELL","BEARISH","TREND_DOWN","SHORT"):buy+=w*.75
             elif _has(c,"SELL","BEARISH","TREND_DOWN","SHORT") and not _has(c,"BUY","BULLISH","TREND_UP","LONG"):sell+=w*.75
     return "BUY" if buy>sell else "SELL" if sell>buy else "NEUTRAL"
@@ -111,7 +119,7 @@ def run_professional_e9(context,upstream,historical_calibration=None):
     if not dims["economics"]:reasons.append("TRADE_ECONOMICS_NOT_READY")
     reasons.extend(execution["reasons"])
     ready=(d in DIRECTIONS and execution["ready"] and dims["setup_mature"] and dims["confirmation"] and dims["economics"] and thesis>=70 and not conf and not inv)
-    decision=d if ready else "NO_TRADE";plan=_find_key(by.get("E8").output if by.get("E8") else {},{"trade_plan"})
+    decision=d if ready else "NO_TRADE";e8=by.get("E8");plan=_find_key(e8.output if e8 else {},{"trade_plan"})
     out={"decision":decision,"decision_authority":"E9","trade_decision_authority":True,"architecture":"PROFESSIONAL_THESIS_REASONING","analysis_complete":True,"direction":d,"evidence_alignment":alignment,"thesis_quality":thesis,"professional_reasoning":{"question":"Is there a clear, asymmetric, confirmed opportunity worth risking capital on now?","primary_thesis":d,"alternative_thesis":"Opposite direction only if primary structure/setup thesis fails","invalidation":"; ".join(inv) if inv else "Structural/setup/confirmation premise failure","dimensions":dims,"conflicts":conf,"hard_invalidations":inv,"execution_ready":ready},"decision_reasons":sorted(set(reasons)),"evidence_conflicts":conf,"hard_invalidations":inv,"trade_plan":plan if isinstance(plan,dict) else {},"gate":ready,"upstream_gates_ignored":True,"gate_semantics":"E9_MASTER_ONLY","learning_policy":"ADVISORY_ONLY_NO_OVERRIDE","professional_decision":"APPROVE_TRADE" if ready else "NO_TRADE"}
     out["historical_calibration"]=build_advisory(context,historical_calibration) if historical_calibration is not None else None
     return EngineResult("E9",ENGINE_NAMES.get("E9","Master Decision Brain"),ready,thesis,out,tuple(sorted(set(reasons))))
