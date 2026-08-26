@@ -4,12 +4,16 @@ from datetime import datetime, timezone
 import os
 import threading
 import time
+from zoneinfo import ZoneInfo
 
 from .live_data import LiveMarketData
 from .market_data import normalize_market_data
+from .notifications.no_trade import send_no_trade
 from .notifications.telegram import format_critical, format_startup, format_status, send, send_decision
 from .pipeline import ProductionPipeline
 from .statistics import store
+
+BANGKOK_TZ = ZoneInfo("Asia/Bangkok")
 
 
 class LiveService:
@@ -18,9 +22,6 @@ class LiveService:
         self.data = LiveMarketData()
         self.interval = int(os.getenv("SIGNAL_INTERVAL_SECONDS", "60"))
         self.status_interval_seconds = int(os.getenv("STATUS_INTERVAL_SECONDS", "900"))
-        # A professional decision engine must never make a fresh decision from
-        # stale market data. Ten minutes covers normal polling/network jitter
-        # while still protecting the M5 runtime from an old candle.
         self.max_candle_age_seconds = int(os.getenv("MAX_CANDLE_AGE_SECONDS", "600"))
         self._started = False
         self._last_candle: dict[str, str] = {}
@@ -28,6 +29,8 @@ class LiveService:
         self._last_status_at = 0.0
         self._runtime_errors: dict[str, str] = {}
         self._last_prices: dict[str, float] = {}
+        self._latest_results: dict[str, object] = {}
+        self._last_no_trade_slot: str | None = None
 
     def start(self) -> None:
         if self._started:
@@ -52,6 +55,36 @@ class LiveService:
         send(format_status(status))
         self._last_status_at = time.monotonic()
 
+    def _send_aligned_no_trade(self) -> None:
+        """Send once during each Bangkok 00/10/20/30/40/50 minute slot.
+
+        The report is sent only when every configured asset has a latest
+        decision and none of those decisions is an executable BUY/SELL.
+        """
+        now = datetime.now(BANGKOK_TZ)
+        if now.minute % 10 != 0:
+            return
+        slot = now.strftime("%Y%m%d%H%M")
+        if slot == self._last_no_trade_slot:
+            return
+
+        symbols = self.data.symbols()
+        if set(self._latest_results) != set(symbols):
+            return
+        if any(
+            getattr(result, "decision", None) in {"BUY", "SELL"}
+            and bool(getattr(result, "gate_passed", False))
+            for result in self._latest_results.values()
+        ):
+            self._last_no_trade_slot = slot
+            return
+
+        try:
+            send_no_trade(dict(self._latest_results), now)
+            self._last_no_trade_slot = slot
+        except Exception as exc:
+            print(f"[PRODUCTION V2] Telegram no-trade error: {exc}", flush=True)
+
     @staticmethod
     def _candle_age_seconds(candle: str) -> float | None:
         try:
@@ -65,9 +98,6 @@ class LiveService:
     def _trace_result(self, alias: str, result) -> None:
         state = result.risk.get("engine_state")
         blocked_by = result.risk.get("blocked_by")
-        # Score is retained only as an internal diagnostic field for backwards
-        # compatibility. It is deliberately excluded from the decision trace:
-        # PASS/WAIT/FAIL is determined by gates and thesis validity, not points.
         print(
             f"[PRODUCTION V2] {alias} PIPELINE decision={result.decision} "
             f"state={state} blocked_by={blocked_by} "
@@ -99,9 +129,6 @@ class LiveService:
 
                     age = self._candle_age_seconds(candle)
                     if age is not None and age > self.max_candle_age_seconds:
-                        # Do not mark stale data as the last processed candle.
-                        # Once the provider catches up, the real closed candle
-                        # must still enter the decision pipeline.
                         print(
                             f"[PRODUCTION V2] {alias} STALE_CANDLE "
                             f"candle={candle} age_seconds={int(age)} "
@@ -112,10 +139,6 @@ class LiveService:
                         self._runtime_errors[alias] = f"stale candle: {candle}"
                         continue
 
-                    # LSE may return the same closed candle on multiple polling
-                    # cycles. A duplicate candle is data refresh only: never
-                    # rerun E1..E9, never advance WAIT, and never overwrite the
-                    # current professional WAIT state.
                     if self._last_candle.get(alias) == candle:
                         print(
                             f"[PRODUCTION V2] {alias} DUPLICATE_CANDLE "
@@ -148,6 +171,7 @@ class LiveService:
                         resume_state=wait_state,
                     )
                     self._runtime_errors.pop(alias, None)
+                    self._latest_results[alias] = result
                     store.record(result, self._last_prices.get(alias))
                     self._trace_result(alias, result)
 
@@ -156,21 +180,18 @@ class LiveService:
                         self._wait_state[alias] = {
                             "waiting_engine": blocked_by,
                             "engines": result.engines,
-                            # Informational counter only. It NEVER expires WAIT.
                             "wait_bars": wait_bars + 1,
                         }
                     else:
-                        # PASS/FAIL starts a fresh decision cycle. FAIL is never
-                        # kept alive as a WAIT state.
                         self._wait_state.pop(alias, None)
 
-                    # Telegram is intentionally silent for WAIT and NO_TRADE.
-                    # Only executable BUY/SELL decisions are sent.
                     if result.decision in {"BUY", "SELL"} and result.gate_passed:
                         send_decision(result)
                 except Exception as exc:
                     self._runtime_errors[alias] = str(exc)
                     print(f"[PRODUCTION V2] {alias} ERROR {exc}", flush=True)
+
+            self._send_aligned_no_trade()
 
             if time.monotonic() - self._last_status_at >= self.status_interval_seconds:
                 try:
