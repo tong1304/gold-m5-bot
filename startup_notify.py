@@ -2,21 +2,28 @@ from __future__ import annotations
 
 import threading
 
-from production_v2_telegram import format_system_monitor_message, send_telegram
+from production_v2_telegram import send_telegram
 
 _LOCK = threading.Lock()
 _SENT = False
 
-STARTUP_FORMAT = "PRODUCTION-V2-E1-E9-STATUS"
+STARTUP_FORMAT = "PRODUCTION-V2-9-ENGINE-STARTUP"
 
 
 def _startup_message() -> str:
-    """Use the single Production-V2 status contract for startup as well."""
-    return format_system_monitor_message()
+    """Canonical Production-V2 startup notification. Do not share the monitor template."""
+    return (
+        "<b>✅ ระบบ 9-Engine เริ่มทำงาน</b>\n\n"
+        "⚙️ ระบบ: PRODUCTION-V2\n"
+        "🧠 โครงสร้าง: E1 → E2 → E3 → E4 → E5 → E6 → E7 → E8 → E9\n"
+        "📊 สินทรัพย์: GOLD, BTC\n"
+        "⏱ Timeframe: M5\n\n"
+        "✅ ระบบพร้อมทำงาน"
+    )
 
 
 def send_startup_notification(symbol="BTC + GOLD / LSE", engine_version=None):
-    """Send the Production-V2 startup/status notification once per process."""
+    """Send the canonical Production-V2 startup notification once per process."""
     global _SENT
     with _LOCK:
         if _SENT:
