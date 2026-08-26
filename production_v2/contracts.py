@@ -8,7 +8,7 @@ from typing import Any
 class EngineResult:
     engine_id: str
     name: str
-    gate_passed: bool
+    gate_passed: bool | None
     score: float
     output: dict[str, Any] = field(default_factory=dict)
     reason_codes: tuple[str, ...] = ()
