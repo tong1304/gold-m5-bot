@@ -17,3 +17,5 @@ jobs:
         run: python -m compileall -q trading_system
       - name: Run E8 trade plan test
         run: python -m pytest -q tests/test_e8_trade_plan.py
+      - name: Run E8-to-E9 boundary regression test
+        run: python -m pytest -q tests/test_e8_engine_boundary.py
