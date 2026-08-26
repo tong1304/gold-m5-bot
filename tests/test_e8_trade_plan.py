@@ -6,7 +6,7 @@ def _bars():
     for i in range(55):
         close = 100.0 + i * 0.09
         bars.append({"open": close - 0.02, "high": close + 0.08, "low": close - 0.08, "close": close})
-    for close in (104.5, 104.8, 105.1, 105.3, 105.0):
+    for close in (104.90, 104.95, 105.00, 105.05, 105.00):
         bars.append({"open": close - 0.02, "high": close + 0.08, "low": close - 0.08, "close": close})
     return bars
 
