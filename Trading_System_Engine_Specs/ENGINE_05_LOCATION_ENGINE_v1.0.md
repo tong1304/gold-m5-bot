@@ -1,28 +1,28 @@
-# ENGINE 05 — LOCATION / VALUE ENGINE v1.0
+# ENGINE 05 — LOCATION / VALUE BRAIN v2.0
 
 ## PURPOSE
-Evaluate price location relative to value, structure, liquidity, extension, and available space.
+Determine whether current price is located where a proposed market idea has favorable asymmetry, using value, structure, liquidity, extension and available space.
 
 ## SUB-ENGINES
 5A Equilibrium/Value · 5B Structural Location · 5C Liquidity Location · 5D Extension · 5E Available Space · 5F Location Quality
 
 ## INPUT
-ENGINE 01–04 outputs, price data, value references, structural and liquidity levels.
+E1–E4 evidence, current price, structural levels, liquidity zones, value references, volatility/extension measures.
 
 ## PROCESSING
-Determine value relationship, structural/liquidity location, extension, available space, quality.
+Evaluate premium/discount/equilibrium, proximity to structural and liquidity references, extension, room to target, and whether price is attractively positioned or already late/chased. Compare both long and short location when appropriate.
 
 ## OUTPUT
-Location state, value relationship, extension/space measures, quality/confidence, reason codes.
+value_state, structural_location, liquidity_location, extension_state, available_space, long_location_quality, short_location_quality, preferred_location, evidence[], conflicts[], confidence, observations[], reasoning_trace.
 
 ## GATE
-Block interpretation when reference levels are invalid, stale, or insufficient.
+NONE. Poor location is an observation, not a gate. The engine must describe the location even when neither side is attractive.
 
 ## SCORE
-Location quality is evidence only and cannot authorize a trade or bypass a gate.
+Confidence describes certainty of the location assessment; location quality describes asymmetry and is evidence for E6–E9.
 
 ## TRACEABILITY
-Record reference levels, source candles, upstream versions, timestamp, gate status, scores, confidence, reason codes.
+Record reference levels, distances, extension calculations, available-space calculations, upstream evidence and timestamp.
 
 ## DECISION BOUNDARY
-Location/value analysis only; no BUY/SELL decision.
+Location/value analysis only.
