@@ -1,3 +1,5 @@
+from math import sin
+
 from production_v2.e1_brain import analyze_e1
 
 
@@ -21,11 +23,7 @@ def _bearish_impulse_with_long_horizon_conflict():
 
 
 def _clean_bear_trend():
-    closes = []
-    price = 200.0
-    for _ in range(90):
-        price -= 0.55
-        closes.append(price)
+    closes = [200.0 - 0.55 * i + 0.90 * sin(i * 0.70) for i in range(100)]
     return _bars_from_closes(closes)
 
 
