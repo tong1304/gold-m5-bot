@@ -2,11 +2,11 @@ from __future__ import annotations
 
 from typing import Any
 
-from trading_system.engines.e2.professional_regime import ProfessionalE2Brain
+from trading_system.engines.e2.professional_regime_v2 import ProfessionalE2Brain
 
 
 class E2CoreBrain(ProfessionalE2Brain):
-    """Single E2 professional opportunity/regime brain; legacy 2A-2F are paused."""
+    """Single E2 professional opportunity/regime brain; legacy 2A-2F remain paused."""
     pass
 
 
@@ -24,11 +24,6 @@ def analyze_e2(snapshot: dict[str, Any]) -> dict[str, Any]:
     result["reasoning_mode"] = "SINGLE_PROFESSIONAL_CORE"
     result["sub_engines_active"] = False
     result["sub_engines_status"] = "PAUSED"
-
-    # The live service reads professional_reasoning.conclusion for its E2
-    # diagnostic line. Previously E2 returned a valid internal thesis but did
-    # not publish that field, so production logs incorrectly showed
-    # question=None / finding=UNRESOLVED. Publish the E2 answer explicitly.
     result["professional_reasoning"] = {
         "question": result.get("question") or ProfessionalE2Brain.QUESTION,
         "conclusion": (
