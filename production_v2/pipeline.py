@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any
+import re
 
 from .contracts import DecisionResult, EngineResult
 from .professional_brain import run_professional_e9
@@ -11,20 +12,45 @@ ENGINE_ORDER = ENGINE_IDS
 
 
 _DIRECTION_WORDS = {
-    "BUY": "BULLISH_PRESSURE",
-    "SELL": "BEARISH_PRESSURE",
+    "BUY": "TRADE_DIRECTION",
+    "SELL": "TRADE_DIRECTION",
     "LONG": "UPSIDE_EXPOSURE",
     "SHORT": "DOWNSIDE_EXPOSURE",
+    "BULLISH": "DIRECTIONAL_PRESSURE",
+    "BEARISH": "DIRECTIONAL_PRESSURE",
+    "TREND_UP": "TREND_PRESENT",
+    "TREND_DOWN": "TREND_PRESENT",
+    "BULLISH_BOS": "STRUCTURE_BREAK",
+    "BEARISH_BOS": "STRUCTURE_BREAK",
+    "STRUCTURAL_DISCOUNT": "LOCATION_FAVORABLE",
+    "STRUCTURAL_PREMIUM": "LOCATION_FAVORABLE",
+    "LIQUIDITY_ABOVE": "LIQUIDITY_LEVEL",
+    "LIQUIDITY_BELOW": "LIQUIDITY_LEVEL",
 }
 
 
+def _sanitize_directional_text(text: str) -> str:
+    """Remove directional conclusions from specialist presentation text."""
+    result = text
+    for old, new in sorted(_DIRECTION_WORDS.items(), key=lambda item: -len(item[0])):
+        result = re.sub(rf"(?<![A-Z0-9_]){re.escape(old)}(?![A-Z0-9_])", new, result)
+    # Direction fields may have been serialized into observations such as
+    # direction=UP/DOWN/BUY/SELL. Replace the complete assertion, not merely
+    # the word, so the specialist cannot appear to choose a side.
+    result = re.sub(r"\b(?:DIRECTION|BIAS|ORIENTATION|MARKET_DIRECTION)\s*=\s*(?:UP|DOWN|BUY|SELL|BULLISH|BEARISH|LONG|SHORT)\b", "direction=UNRESOLVED", result, flags=re.IGNORECASE)
+    return result
+
+
 def _sanitize_specialist_value(value: Any, key: str = "") -> Any:
-    """Presentation boundary: E1-E8 expose evidence, never trade commands."""
+    """Presentation boundary: E1-E8 expose evidence/reasons, never trade commands."""
     if isinstance(value, dict):
         cleaned = {}
         for k, v in value.items():
             lk = str(k).lower()
-            if lk in {"direction", "bias", "orientation", "market_direction", "decision", "score", "gate", "handoff"}:
+            if lk in {
+                "direction", "bias", "orientation", "market_direction",
+                "decision", "score", "gate", "handoff",
+            }:
                 continue
             cleaned[k] = _sanitize_specialist_value(v, str(k))
         return cleaned
@@ -33,10 +59,7 @@ def _sanitize_specialist_value(value: Any, key: str = "") -> Any:
     if isinstance(value, tuple):
         return [_sanitize_specialist_value(v, key) for v in value]
     if isinstance(value, str):
-        text = value
-        for old, new in _DIRECTION_WORDS.items():
-            text = text.replace(old, new)
-        return text
+        return _sanitize_directional_text(value)
     return value
 
 
@@ -49,7 +72,6 @@ def _sanitize_specialist_result(result: EngineResult) -> EngineResult:
         "reasoning_role": "SPECIALIST_EVIDENCE",
         "analysis_complete": True,
     })
-    # Specialist score is intentionally not part of the evidence contract.
     return EngineResult(result.engine_id, result.name, None, None, output, result.reason_codes)
 
 
@@ -171,9 +193,6 @@ class ProductionPipeline:
         if normalized_e8 is not None:
             enriched["E8"] = normalized_e8
 
-        # E9 receives the complete internal evidence. The externally logged
-        # E1-E8 objects are sanitized after E9 analysis so specialists cannot
-        # appear to issue a trade command or expose a numeric score.
         internal_engines = [enriched[engine_id] for engine_id in ENGINE_ORDER]
         calibration = historical_calibration or snapshot.get("historical_calibration")
         e9 = run_professional_e9(
