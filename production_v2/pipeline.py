@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 from .contracts import DecisionResult, EngineResult
-from .engines import run_e9_decision, run_engine
+from .professional_brain import run_professional_e9, run_professional_engine
 
 ENGINE_ORDER = ("E1", "E2", "E3", "E4", "E5", "E6", "E7", "E8")
 
@@ -12,11 +12,12 @@ class ProductionPipeline:
     ENGINE_ORDER = ENGINE_ORDER
 
     def run(self, market_data: dict[str, Any], *, wait_bars: int = 0, resume_state: dict[str, Any] | None = None) -> DecisionResult:
-        """One closed M5 candle is one complete E1->E9 decision cycle.
+        """Run one complete closed-M5 professional decision cycle.
 
-        No WAIT/resume state is carried between candles. Every engine receives the
-        answers from engines before it and gets an opportunity to produce evidence.
-        E9 is the only final decision authority.
+        Every candle starts a fresh E1->E9 cycle. E1-E8 are specialist analysts:
+        each receives all prior evidence, answers its own question, and hands its
+        conclusion forward. Their conclusions do not themselves approve/reject
+        a trade. E9 alone decides BUY, SELL, or NO_TRADE.
         """
         symbol = str(market_data.get("symbol") or "UNKNOWN")
         timeframe = str(market_data.get("timeframe") or "M5")
@@ -24,11 +25,11 @@ class ProductionPipeline:
         engines: list[EngineResult] = []
 
         for engine_id in ENGINE_ORDER:
-            result = run_engine(engine_id, context)
+            result = run_professional_engine(engine_id, context)
             engines.append(result)
             context[f"{engine_id}_result"] = result.output
 
-        e9 = run_e9_decision(context, engines)
+        e9 = run_professional_e9(context, engines)
         engines.append(e9)
         trade_plan = e9.output.get("trade_plan", {})
         return DecisionResult(
@@ -39,13 +40,15 @@ class ProductionPipeline:
             e9.score,
             tuple(engines),
             {
-                "risk_gate": next((e.gate_passed for e in engines if e.engine_id == "E8"), False),
+                "risk_gate": bool(e9.output.get("trade_plan", {}).get("valid")),
                 "trade_plan": trade_plan,
-                "engine_state": "PASS" if e9.gate_passed else "FAIL",
+                "engine_state": "TRADE_APPROVED" if e9.gate_passed else "ANALYSIS_COMPLETE_NO_TRADE",
                 "blocked_by": e9.output.get("blocked_by"),
                 "cycle_complete": True,
                 "next_evaluation": "NEXT_CLOSED_M5_CANDLE",
                 "wait_bars": 0,
+                "decision_reasons": list(e9.reason_codes),
+                "evidence_score": e9.output.get("evidence_score", e9.score),
             },
             tuple(e9.reason_codes),
         )
