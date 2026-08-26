@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+from datetime import datetime
 from typing import Any
 
 import requests
@@ -83,10 +84,38 @@ def format_startup(symbols: list[str]) -> str:
 
 
 def format_status(status: dict[str, Any]) -> str:
-    symbols = status.get("symbols", {}); lines = ["🟢 สถานะระบบ", "", "⚙️ ระบบ: PRODUCTION-V2", "🧠 โครงสร้าง: E1 → E2 → E3 → E4 → E5 → E6 → E7 → E8 → E9", "👑 ผู้ตัดสินใจ: E9", f"⏱ Timeframe: {status.get('timeframe', 'M5')}", "", "📡 สถานะการเชื่อมต่อ:"]
-    for symbol, state in symbols.items():
-        price = status.get("prices", {}).get(symbol); suffix = f" — ราคา {price}" if price is not None else ""; lines.append(f"• {symbol}: {state}{suffix}")
-    return _validate("\n".join(lines + ["", "✅ ระบบทำงานปกติ"]))
+    """Format the independent 15-minute Production-V2 health/status alert."""
+    timestamp = status.get("timestamp")
+    if isinstance(timestamp, datetime):
+        timestamp_text = timestamp.strftime("%d/%m/%Y %H:%M:00")
+    else:
+        timestamp_text = str(timestamp or datetime.now().strftime("%d/%m/%Y %H:%M:00"))
+
+    prices = status.get("prices", {})
+    def price_text(symbol: str) -> str:
+        value = prices.get(symbol)
+        if value is None:
+            return "ไม่พร้อมใช้งาน"
+        try:
+            return f"{float(value):,.2f}"
+        except (TypeError, ValueError):
+            return str(value)
+
+    lines = [
+        "✅ สถานะระบบ PRODUCTION-V2",
+        "",
+        "🧠 โครงสร้าง: E1 → E2 → E3 → E4 → E5 → E6 → E7 → E8 → E9",
+        "⏱ Timeframe: M5",
+        "",
+        f"🚨เวลาแจ้งเตือน: {timestamp_text} (ประเทศไทย)",
+        "",
+        "📡 ราคาแท่งปัจจุบัน:",
+        f"🌕 GOLD: {price_text('GOLD')}",
+        f"🪙 BTC: {price_text('BTC')}",
+        "",
+        "✅ ระบบทำงานปกติ",
+    ]
+    return _validate("\n".join(lines))
 
 
 def format_critical(message: str, component: str) -> str:
