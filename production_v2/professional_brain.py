@@ -268,6 +268,8 @@ def run_professional_e9(context, upstream, historical_calibration=None):
     )
     decision = d if ready else "NO_TRADE"
     plan = execution["plan"] or {}
+    execution_score = 100.0 if ready else 0.0
+    decision_score = thesis if ready else 0.0
     out = {
         "decision": decision,
         "decision_authority": "E9",
@@ -277,6 +279,9 @@ def run_professional_e9(context, upstream, historical_calibration=None):
         "direction": d,
         "evidence_alignment": alignment,
         "thesis_quality": thesis,
+        "execution_readiness_score": execution_score,
+        "decision_score": decision_score,
+        "score_semantics": "DECISION_SCORE_ONLY; THESIS_QUALITY_REPORTED_SEPARATELY",
         "professional_reasoning": {
             "question": "Is there a clear, asymmetric, confirmed opportunity worth risking capital on now?",
             "primary_thesis": d,
@@ -301,4 +306,4 @@ def run_professional_e9(context, upstream, historical_calibration=None):
     }
     advisory = build_advisory(context, historical_calibration) if historical_calibration is not None else None
     out["historical_calibration"] = advisory
-    return EngineResult("E9", ENGINE_NAMES.get("E9", "Master Decision Brain"), ready, thesis, out, tuple(sorted(set(reasons))))
+    return EngineResult("E9", ENGINE_NAMES.get("E9", "Master Decision Brain"), ready, decision_score, out, tuple(sorted(set(reasons))))
