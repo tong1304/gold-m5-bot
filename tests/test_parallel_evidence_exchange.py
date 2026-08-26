@@ -48,15 +48,13 @@ def test_e1_to_e8_share_observations_without_sequential_decision_flow(monkeypatc
 
 
 def test_specialist_gate_is_not_a_boolean_authority(monkeypatch):
-    def fake_module(code):
-        class Specialist:
+    class FakeModule:
+        class SubEngine:
             def run(self, context):
-                return EngineResult(code, code, False, 80.0, {"state": "OBSERVED"}, ())
-
-        return Specialist()
+                return EngineResult("1A", "1A", False, 80.0, {"state": "OBSERVED"}, ())
 
     from production_v2 import engines as engines_module
-    monkeypatch.setattr(engines_module, "_module", fake_module)
+    monkeypatch.setattr(engines_module, "_module", lambda code: FakeModule)
     monkeypatch.setattr(engines_module, "SUB_ENGINE_CODES", {"E1": ["1A"]})
     monkeypatch.setattr(engines_module, "EVIDENCE_INPUTS", {"E1": ()})
 
