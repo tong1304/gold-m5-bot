@@ -14,7 +14,7 @@ app = Flask(__name__)
 pipeline = ProductionPipeline()
 app.config["PRODUCTION_V2_LIVE_REQUIRED"] = True
 _runtime_started = False
-ARCHITECTURE = "PARALLEL:E1|E2|E3|E4|E5|E6|E7|E8 -> E9"
+ARCHITECTURE = "PARALLEL_BASELINE:E1-E8 -> PARALLEL_PEER_REANALYSIS:E1-E8 -> E9"
 
 
 def start_production_runtime() -> None:
@@ -49,7 +49,7 @@ def index():
         "system": "9-ENGINE",
         "version": "production-v2",
         "architecture": ARCHITECTURE,
-        "specialist_mode": "PARALLEL_SHARED_SNAPSHOT",
+        "specialist_mode": "PARALLEL_SHARED_MARKET_AND_PEER_EVIDENCE",
         "decision_authority": "E9",
         "legacy_runtime": False,
         "live_runtime": "RUNNING" if _runtime_started else "NOT_RUNNING",
@@ -64,7 +64,7 @@ def health():
         "system": "9-ENGINE",
         "version": "production-v2",
         "architecture": ARCHITECTURE,
-        "specialist_mode": "PARALLEL_SHARED_SNAPSHOT",
+        "specialist_mode": "PARALLEL_SHARED_MARKET_AND_PEER_EVIDENCE",
         "legacy_runtime": False,
         "decision_authority": "E9",
         "live_runtime": "RUNNING" if _runtime_started else "NOT_RUNNING",
