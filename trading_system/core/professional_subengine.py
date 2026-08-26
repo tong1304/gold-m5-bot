@@ -1,12 +1,9 @@
 from .subengine import SubEngine as Base, SubEngineResult
+import re
 
 
 class ProfessionalSubEngine(Base):
-    """Specialist contract: evidence and thesis first; E9 decides.
-
-    E1-E8 may use upstream specialist evidence to reinterpret their own
-    question, but they never inherit an upstream trade decision or gate.
-    """
+    """Specialist contract: evidence and thesis first; E9 decides."""
 
     @staticmethod
     def _flatten(value):
@@ -27,14 +24,7 @@ class ProfessionalSubEngine(Base):
             if key:
                 out.add(key)
             text = str(item).upper()
-            for token in (
-                "TREND_UP", "TREND_DOWN", "BULLISH", "BEARISH", "UP", "DOWN",
-                "RANGE", "COMPRESSION", "EXPANSION", "TRANSITION", "SWEEP_HIGH",
-                "SWEEP_LOW", "REJECTION", "ACCEPTANCE", "NO_TRIGGER",
-                "FOLLOW_THROUGH_OBSERVED", "CONFIRMATION_PASS", "MATURE", "DEVELOPING",
-            ):
-                if token in text:
-                    out.add(token)
+            out.update(re.findall(r"(?<![A-Z0-9_])[A-Z][A-Z0-9_]*(?![A-Z0-9_])", text))
         return out
 
     @classmethod
@@ -63,8 +53,6 @@ class ProfessionalSubEngine(Base):
         output["upstream_evidence_summary"] = sorted(k for k in context if k != sid)
         output["peer_direction"] = direction
         if direction in ("UP", "DOWN"):
-            # Internal E9 evidence can use this qualitative direction. It is
-            # not a BUY/SELL instruction and is removed from specialist gates.
             output["direction"] = direction
 
         if sid.startswith("2"):
@@ -106,7 +94,7 @@ class ProfessionalSubEngine(Base):
 
         elif sid.startswith("6"):
             has_trend = "TREND" in tokens or "TREND_UP" in tokens or "TREND_DOWN" in tokens
-            has_rejection = "REJECTION" in tokens or "ACCEPTANCE" in tokens or "SWEEP_HIGH" in tokens or "SWEEP_LOW" in tokens
+            has_rejection = any(t in tokens for t in ("REJECTION", "ACCEPTANCE", "SWEEP_HIGH", "SWEEP_LOW"))
             if has_trend and not has_rejection and output.get("state") in {"CONTEXT_ALIGNED", "SETUP_FORMING", "DEVELOPING", "QUALITY_WEAK"}:
                 archetype = "TREND_PULLBACK"
                 output["archetype"] = archetype
@@ -173,7 +161,7 @@ class ProfessionalSubEngine(Base):
             s,
             {
                 **r.trace,
-                "spec_version": "production-v2.4.0-peer-reasoning",
+                "spec_version": "production-v2.4.1-peer-reasoning",
                 "evidence_first": True,
                 "peer_reasoning": True,
                 "output": o,
