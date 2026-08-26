@@ -3,7 +3,7 @@ on:
   push:
     branches: [production-v2]
   pull_request:
-    branches: [main]
+    branches: [main, production-v2]
 
 env:
   PRODUCTION_V2_DISABLE_LIVE: "1"
