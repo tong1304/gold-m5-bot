@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 from production_v2.contracts import EngineResult
 from production_v2 import pipeline as pipeline_module
 
@@ -48,10 +50,18 @@ def test_e1_to_e8_share_observations_without_sequential_decision_flow(monkeypatc
 
 
 def test_specialist_gate_is_not_a_boolean_authority(monkeypatch):
+    @dataclass(frozen=True)
+    class FakeSubEngineResult:
+        sub_engine_id: str
+        output: dict
+        gate_passed: bool
+        score: float
+        trace: dict
+
     class FakeModule:
         class SubEngine:
             def run(self, context):
-                return EngineResult("1A", "1A", False, 80.0, {"state": "OBSERVED"}, ())
+                return FakeSubEngineResult("1A", {"state": "OBSERVED"}, False, 80.0, {})
 
     from production_v2 import engines as engines_module
     monkeypatch.setattr(engines_module, "_module", lambda code: FakeModule)
