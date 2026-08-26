@@ -28,7 +28,7 @@ def _base_result():
 
 
 def test_e9_can_authorize_only_when_all_evidence_layers_exist():
-    result = wrap(lambda **_: _base_result())(None)
+    result = wrap(lambda **_: _base_result(), legacy_engine_version="LEGACY-TEST")(None)
     assert result["signal"] == "BUY"
     assert result["decision_authority"] == "E9"
     assert result["professional_decision"]["e9"]["execution_eligible"] is True
@@ -41,7 +41,7 @@ def test_missing_specialist_evidence_forces_no_trade():
         result["selected_setup"]["evidence"].pop("sweep_index")
         return result
 
-    result = wrap(legacy)(None)
+    result = wrap(legacy, legacy_engine_version="LEGACY-TEST")(None)
     assert result["signal"] == "NO_TRADE"
     assert result["professional_decision"]["e9"]["execution_eligible"] is False
     assert any("E4:LIQUIDITY_EVIDENCE_UNAVAILABLE" in x for x in result["professional_decision"]["hard_failures"])
