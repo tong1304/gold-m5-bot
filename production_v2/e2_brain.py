@@ -2,26 +2,26 @@ from __future__ import annotations
 
 from typing import Any
 
-from trading_system.engines.e2.professional_regime_v2 import ProfessionalE2Brain
+from trading_system.engines.e2.professional_regime import ProfessionalE2Brain
 
 
 class E2CoreBrain(ProfessionalE2Brain):
-    """Single E2 professional opportunity/regime brain; legacy 2A-2F remain paused."""
-    pass
-
-
-def analyze_e2(snapshot: dict[str, Any]) -> dict[str, Any]:
-    """Run E2 as one independent professional analyst.
+    """Production E2 brain backed by the real E2 professional regime engine.
 
     E2 owns the opportunity/regime thesis. E1 is only a cross-check and must
     never supply E2's conclusion. Execution remains exclusively E9's job.
     """
+    pass
+
+
+def analyze_e2(snapshot: dict[str, Any]) -> dict[str, Any]:
+    """Run the real production E2 brain as one independent analyst."""
     brain = E2CoreBrain("E2_CORE")
     output, confidence, reasons = brain._analyse(snapshot)
     result = dict(output)
     result["confidence"] = float(confidence)
     result["reason_codes"] = list(reasons or ())
-    result["reasoning_mode"] = "SINGLE_PROFESSIONAL_CORE"
+    result["reasoning_mode"] = "REAL_PRODUCTION_E2_BRAIN"
     result["sub_engines_active"] = False
     result["sub_engines_status"] = "PAUSED"
     result["professional_reasoning"] = {
