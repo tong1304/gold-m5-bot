@@ -78,6 +78,37 @@ def _run(code:str,snapshot:dict[str,Any],evidence_bus:dict[str,Any]|None=None):
     return _module(code).SubEngine().run(local)
 
 
+def _value_observations(value: Any, prefix: str = "") -> list[str]:
+    """Turn structured specialist output into human-readable evidence statements."""
+    observations=[]
+    if isinstance(value,dict):
+        for key,item in value.items():
+            lk=str(key).lower()
+            if lk in {"score","decision","trade_decision","gate","gate_passed","specialist_gate"}:
+                continue
+            if isinstance(item,(str,int,float,bool)):
+                if str(item).strip():
+                    observations.append(f"{key}={item}")
+            elif isinstance(item,(list,tuple)):
+                for child in item[:4]:
+                    if isinstance(child,(str,int,float,bool)) and str(child).strip():
+                        observations.append(f"{key}={child}")
+    elif isinstance(value,(list,tuple)):
+        for item in value[:8]:
+            if isinstance(item,(str,int,float,bool)) and str(item).strip(): observations.append(str(item))
+    return observations[:12]
+
+
+def _reason_statements(result) -> list[str]:
+    trace=getattr(result,"trace",{}) or {}
+    reasons=list(getattr(result,"reason_codes",()) or [])
+    for key in ("reasons","reason","findings","finding","observations","observation"):
+        value=trace.get(key)
+        if isinstance(value,(list,tuple)): reasons.extend(str(x) for x in value if x)
+        elif value: reasons.append(str(value))
+    return list(dict.fromkeys(str(x) for x in reasons if str(x).strip()))[:12]
+
+
 def run_engine(engine_id:str,snapshot:dict[str,Any],evidence_bus:dict[str,Any]|None=None)->EngineResult:
     allowed=set(EVIDENCE_INPUTS.get(engine_id,()))
     permitted={k:evidence_bus[k] for k in allowed if evidence_bus and k in evidence_bus}
@@ -89,13 +120,17 @@ def run_engine(engine_id:str,snapshot:dict[str,Any],evidence_bus:dict[str,Any]|N
             try: results.append(f.result())
             except Exception as exc: results.append(EngineResult(code,code,None,0.0,{"error":str(exc)},("SPECIALIST_EXCEPTION",)))
     results.sort(key=lambda r:r.sub_engine_id)
-    evidence={r.sub_engine_id:{"output":_qualitative(r.output),"observations":r.trace.get("observations",[]),"reason_codes":r.trace.get("reason_codes",[])} for r in results}
-    # Retain the numeric value only as an internal compatibility field; it is
-    # deliberately excluded from the Evidence Bus and specialist logs.
+    evidence={}
+    for r in results:
+        output=_qualitative(r.output)
+        observations=list(r.trace.get("observations",[]) if isinstance(r.trace,dict) else [])
+        observations.extend(_value_observations(output))
+        reasons=_reason_statements(r)
+        evidence[r.sub_engine_id]={"output":output,"observations":list(dict.fromkeys(str(x) for x in observations))[:12],"reason_codes":reasons}
     score=mean(float(r.score) for r in results) if results else 0.0
     used=[package.get("engine_id") for package in permitted.values() if isinstance(package,dict) and package.get("engine_id")]
     dependency=_dependency_report(engine_id,permitted)
-    output={"architecture":"PARALLEL_PEER_EVIDENCE_BUS","specialists":evidence,"decision_authority":"E9_ONLY","gate_semantics":"DISABLED_FOR_E1_E8","evidence_inputs":sorted(allowed),"evidence_used":sorted(used),"evidence_dependency":dependency,"upstream_analysis":_upstream_analysis(permitted),"professional_reasoning":{"question":_question(engine_id),"conclusion":_conclusion(evidence),"evidence_count":len(evidence),"peer_evidence_count":len(permitted),"upstream_decisions_used":False,"upstream_gates_used":False,"score_used":False}}
+    output={"architecture":"PARALLEL_PEER_EVIDENCE_BUS","specialists":evidence,"decision_authority":"E9_ONLY","gate_semantics":"DISABLED_FOR_E1_E8","evidence_inputs":sorted(allowed),"evidence_used":sorted(used),"evidence_dependency":dependency,"upstream_analysis":_upstream_analysis(permitted),"professional_reasoning":{"question":_question(engine_id),"conclusion":_conclusion(evidence),"evidence_count":len(evidence),"peer_evidence_count":len(permitted),"upstream_decisions_used":False,"upstream_gates_used":False,"score_used":False,"reasoning_mode":"QUALITATIVE_EVIDENCE"}}
     return EngineResult(engine_id,ENGINE_NAMES[engine_id],None,score,output,())
 
 
