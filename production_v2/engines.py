@@ -20,28 +20,28 @@ def _professional_gate(engine_id:str,output:dict[str,Any],context:dict[str,Any])
         if _state(output,"1A","data_quality")!="VALID": return False,("E1_DATA_INVALID",)
         state=_state(output,"1G")
         direction=_direction(output,"1C")
-        # TRANSITION is a context, not a trade-killer. E2 must resolve it.
-        if state=="TRANSITION": return direction!="NEUTRAL",(("E1_TRANSITION_HANDOFF",) if direction!="NEUTRAL" else ("E1_DIRECTION_UNCLEAR",))
-        if state=="NON_DOMINANT": return direction!="NEUTRAL",(("E1_NON_DOMINANT_HANDOFF",) if direction!="NEUTRAL" else ("E1_DIRECTION_UNCLEAR",))
-        if direction=="NEUTRAL": return False,("E1_DIRECTION_UNCLEAR",)
+        # E1 is a market-state/context engine.  It must not decide trade direction.
+        # TRANSITION, NON_DOMINANT and NEUTRAL direction are all valid handoffs.
+        # The next engine owns regime/opportunity discovery.
+        if state=="TRANSITION": return True,("E1_TRANSITION_HANDOFF",)
+        if state=="NON_DOMINANT": return True,("E1_NON_DOMINANT_HANDOFF",)
+        if direction=="NEUTRAL": return True,("E1_DIRECTION_UNCLEAR_HANDOFF",)
         return True,()
     if engine_id=="E2":
         regime=_state(output,"2F","regime")
         direction=next((v.get("direction") for v in output.values() if isinstance(v,dict) and v.get("direction") in {"UP","DOWN"}),"NEUTRAL")
-        # A transition can be a profitable breakout/reversal candidate. Pass it downstream;
-        # E3/E4/E6/E7 decide whether the move actually formed a tradeable structure/setup.
-        if regime=="TRANSITION": return direction!="NEUTRAL",(("E2_TRANSITION_CANDIDATE",) if direction!="NEUTRAL" else ("E2_REGIME_UNCLEAR",))
+        # Regime discovery is E2's responsibility. A neutral direction is not a failure;
+        # E2 can hand off RANGE/TRANSITION context for E3 to resolve structurally.
+        if regime=="TRANSITION": return True,("E2_TRANSITION_CANDIDATE",)
         if regime not in {"TREND","RANGE","BREAKOUT","MEAN_REVERSION"}: return False,("E2_REGIME_UNCLEAR",)
         return True,()
     if engine_id=="E3":
         if _state(output,"3D")!="NO_FAILURE": return False,("E3_STRUCTURE_INVALIDATED",)
         if _state(output,"3B") not in {"BULLISH","BEARISH"}: return False,("E3_STRUCTURE_UNRESOLVED",)
-        # Internal/external misalignment is information for the setup engine, not an automatic ban.
         if _state(output,"3F")!="INTERNAL_EXTERNAL_ALIGNED": return True,("E3_STRUCTURE_MIXED_ALIGNMENT",)
         return True,()
     if engine_id=="E4":
         quality=_state(output,"4F")
-        # Liquidity quality is a score/filter. Only explicit adverse liquidity invalidates the trade.
         if quality in {"LOW_QUALITY","INVALID","UNRESOLVED"}: return False,("E4_LIQUIDITY_ADVERSE",)
         return True,()
     if engine_id=="E5":
