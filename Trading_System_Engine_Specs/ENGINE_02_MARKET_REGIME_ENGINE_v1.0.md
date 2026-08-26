@@ -1,28 +1,28 @@
-# ENGINE 02 — MARKET REGIME ENGINE v1.0
+# ENGINE 02 — MARKET REGIME / OPPORTUNITY BRAIN v2.0
 
 ## PURPOSE
-Interpret market state into behavioral regime for downstream analysis.
+Interpret E1 market state as market behavior and identify what type of opportunity the market is currently offering. It does not select an order.
 
 ## SUB-ENGINES
 2A Trend Regime · 2B Range Regime · 2C Mean-Reversion Behavior · 2D Breakout Regime · 2E Regime Phase · 2F Regime Transition
 
 ## INPUT
-ENGINE 01 outputs, permitted OHLCV/volatility evidence, regime metadata.
+E1 evidence, M5 price/volatility behavior, permitted M15/H1 context, regime history.
 
 ## PROCESSING
-Classify regime behavior, phase, and transitions without making an entry decision.
+Assess continuation, range/reversion, breakout, expansion and transition behavior. Determine regime phase (early/mature/late/failed), opportunity direction(s), and uncertainty. Multiple playbooks may remain candidates when evidence conflicts.
 
 ## OUTPUT
-Regime classification, phase, transition status, evidence, quality/confidence, reason codes.
+regime, regime_phase, candidate_playbooks[], preferred_playbook, opportunity_bias, evidence[], conflicts[], confidence, observations[], reasoning_trace.
 
 ## GATE
-Block interpretation when required state evidence is invalid or unavailable.
+NONE. E2 must always return its best interpretation of the available evidence, including WAIT/UNRESOLVED when the regime is ambiguous.
 
 ## SCORE
-Regime quality/confidence is analytical evidence and cannot override gates or authorize a trade.
+Confidence measures certainty of the regime interpretation, not trade profitability.
 
 ## TRACEABILITY
-Record upstream versions, symbol/timeframe, timestamp, outputs, gate results, scores, confidence, reason codes.
+Record E1 inputs, sub-engine conclusions, regime transitions, phase evidence, competing interpretations and final synthesis.
 
 ## DECISION BOUNDARY
-Regime classification only; no BUY/SELL or execution instruction.
+Opportunity/regime analysis only; no BUY/SELL authorization.
