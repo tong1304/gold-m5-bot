@@ -28,27 +28,28 @@ def _fmt(value: Any) -> str:
 
 def _analysis_status(engine: Any) -> str:
     status = engine.output.get("analysis_status", "")
-    return {"STRONG_EVIDENCE":"🟢 หลักฐานแข็งแรง","PARTIAL_EVIDENCE":"🟡 หลักฐานบางส่วน","WEAK_EVIDENCE":"🟠 หลักฐานอ่อน","NOT_CONFIRMED":"🟡 ยังไม่ยืนยัน","CONFIRMED":"🟢 ยืนยันแล้ว","ECONOMICS_READY":"🟢 Economics พร้อมประเมิน","ECONOMICS_UNAVAILABLE":"🟡 Economics ยังประเมินไม่ได้","CONFLICT_OR_INVALID":"🔴 Conflict / Invalidation"}.get(status, "🟡 วิเคราะห์แล้ว")
+    return {"STRONG_EVIDENCE":"🟢","PARTIAL_EVIDENCE":"🟡","WEAK_EVIDENCE":"🟠","NOT_CONFIRMED":"🟡","CONFIRMED":"🟢","ECONOMICS_READY":"🟢","ECONOMICS_UNAVAILABLE":"🟡","CONFLICT_OR_INVALID":"🔴"}.get(status, "🟡")
 
 
-def _engine_answer(engine: Any) -> list[str]:
+def _engine_answer(engine: Any) -> str:
     e = engine.engine_id; r = engine.output.get("professional_reasoning", {}) or {}
-    lines = [f"{e} — {ENGINE_THAI_NAMES.get(e, e)}", _analysis_status(engine)]
-    if e == "E1": lines += [f"• คำตอบ: Market State = {_fmt(r.get('market_state'))}", f"• Bias: {_fmt(r.get('direction_bias'))}"]
-    elif e == "E2": lines += [f"• คำตอบ: Regime = {_fmt(r.get('regime'))}", f"• Playbook: {_fmt(r.get('regime'))}", f"• Bias บริบท: {_fmt(r.get('preferred_direction'))}"]
-    elif e == "E3": lines += [f"• คำตอบ: Structure = {_fmt(r.get('structure'))}", f"• Structure Bias: {_fmt(r.get('structure_direction'))}", f"• Alignment: {_fmt(r.get('alignment'))}"]
-    elif e == "E4": lines += [f"• คำตอบ: Liquidity Quality = {_fmt(r.get('liquidity_quality'))}", f"• Sweep: {_fmt(r.get('sweep'))}", f"• Reclaim: {_fmt(r.get('reclaim'))}"]
-    elif e == "E5": lines += [f"• คำตอบ: Location Quality = {_fmt(r.get('location_quality'))}", f"• Extension: {_fmt(r.get('extension'))}", f"• Space: {_fmt(r.get('space'))}"]
-    elif e == "E6": lines += [f"• คำตอบ: Setup = {_fmt(r.get('setup_type'))}", f"• Setup Bias: {_fmt(r.get('direction'))}", f"• Formation: {_fmt(r.get('formation'))}", f"• Setup Quality: {_fmt(r.get('setup_quality'))}"]
-    elif e == "E7": lines += [f"• คำตอบ: Trigger = {_fmt(r.get('trigger'))}", f"• Trigger Quality: {_fmt(r.get('trigger_quality'))}", f"• Follow-through: {_fmt(r.get('follow_through'))}", f"• Confirmation: {_fmt(r.get('confirmation'))}"]
-    elif e == "E8":
-        p = r.get("trade_plan") or {}; lines.append(f"• คำตอบ: Risk Gate = {_fmt(r.get('risk_gate'))}")
-        if p.get("valid"): lines += [f"• Entry: {p.get('entry')}", f"• Stop Loss: {p.get('stop_loss')}", f"• Take Profit 1: {p.get('take_profit_1')}", f"• Take Profit 2: {p.get('take_profit_2')}", f"• RR: 1:{float(p.get('rr_tp2',0)):.1f}"]
-        else: lines.append(f"• Trade Plan: {_fmt(p.get('reason'))}")
-    elif e == "E9": lines += [f"• คำตอบสุดท้าย: {'BUY' if engine.output.get('decision') == 'BUY' else 'SELL' if engine.output.get('decision') == 'SELL' else 'NO_TRADE'}", f"• Evidence Score: {float(engine.output.get('evidence_score', engine.score)):.1f}"]
-    conclusion = r.get("specialist_conclusion")
-    if conclusion: lines.append(f"• สรุปของ Engine: {conclusion}")
-    return lines
+    prefix = f"{_analysis_status(engine)} {e} — {ENGINE_THAI_NAMES.get(e, e)}"
+    if e == "E1": return f"{prefix}: {_fmt(r.get('market_state'))} / {_fmt(r.get('direction_bias'))}"
+    if e == "E2": return f"{prefix}: {_fmt(r.get('regime'))} / {_fmt(r.get('preferred_direction'))}"
+    if e == "E3": return f"{prefix}: {_fmt(r.get('structure'))} / {_fmt(r.get('alignment'))}"
+    if e == "E4": return f"{prefix}: {_fmt(r.get('liquidity_quality'))} / Sweep {_fmt(r.get('sweep'))}"
+    if e == "E5": return f"{prefix}: {_fmt(r.get('location_quality'))} / {_fmt(r.get('space'))}"
+    if e == "E6": return f"{prefix}: {_fmt(r.get('setup_type'))} / {_fmt(r.get('formation'))}"
+    if e == "E7": return f"{prefix}: {_fmt(r.get('trigger'))} / {_fmt(r.get('confirmation'))}"
+    if e == "E8":
+        p = r.get("trade_plan") or {}
+        if p.get("valid"): return f"{prefix}: RR 1:{float(p.get('rr_tp2',0)):.1f}"
+        return f"{prefix}: {_fmt(p.get('reason'))}"
+    if e == "E9":
+        decision = engine.output.get("decision")
+        answer = "BUY" if decision == "BUY" else "SELL" if decision == "SELL" else "NO_TRADE"
+        return f"{prefix}: {answer}"
+    return prefix
 
 
 def format_decision(result: DecisionResult) -> str:
@@ -56,8 +57,8 @@ def format_decision(result: DecisionResult) -> str:
     plan = result.trade_plan; required = ("entry", "stop_loss", "take_profit_1", "take_profit_2", "rr_tp2")
     if not plan.get("valid") or any(k not in plan for k in required): raise ValueError("Actionable E9 decision requires a complete E8 trade plan")
     direction = "ซื้อ" if result.decision == "BUY" else "ขาย"
-    lines = [f"{'🟢 BUY' if result.decision=='BUY' else '🔴 SELL'} — {direction}", "", f"📊 สินทรัพย์: {result.symbol}", f"⏱ Timeframe: {result.timeframe}", "🧠 E1-E8 วิเคราะห์หลักฐานเฉพาะด้าน → E9 เป็นผู้ตัดสินใจเทรดเท่านั้น", "", "━━━━━━━━━━━━━━━━━━", "🧠 คำตอบจากแต่ละ Engine", "━━━━━━━━━━━━━━━━━━"]
-    for engine in result.engines: lines += [""] + _engine_answer(engine)
+    lines = [f"{'🟢 BUY' if result.decision=='BUY' else '🔴 SELL'} — {direction}", "", f"📊 สินทรัพย์: {result.symbol}", f"⏱ Timeframe: {result.timeframe}", "🧠 E1-E8 วิเคราะห์หลักฐานเฉพาะด้าน → E9 เป็นผู้ตัดสินใจเทรดเท่านั้น", "", "━━━━━━━━━━━━━━━━━━", "🧠 คำตอบสั้นจากแต่ละ Engine", "━━━━━━━━━━━━━━━━━━"]
+    for engine in result.engines: lines.append(_engine_answer(engine))
     lines += ["", "━━━━━━━━━━━━━━━━━━", "🎯 FINAL DECISION", "━━━━━━━━━━━━━━━━━━", "🟢 E9 อนุมัติการออกออเดอร์", f"📈 Evidence / Edge Score: {result.score:.1f}", "", "━━━━━━━━━━━━━━━━━━", "📋 Trade Plan", "━━━━━━━━━━━━━━━━━━", f"📍 Entry: {plan['entry']}", f"🛑 Stop Loss: {plan['stop_loss']}", f"🎯 Take Profit 1: {plan['take_profit_1']}", f"🎯 Take Profit 2: {plan['take_profit_2']}", f"📐 RR: 1:{plan['rr_tp2']:.1f}"]
     return _validate("\n".join(lines))
 
