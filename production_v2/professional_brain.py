@@ -14,10 +14,6 @@ DIRECTIONS = {"BUY","SELL"}
 
 def run_professional_engine(engine_id: str, context: dict[str, Any]) -> EngineResult:
     raw = _engine_analyzer(engine_id, dict(context)); output = dict(raw.output)
-    # Normalize the specialist contract before E9 sees it. Some specialist
-    # payloads expose direction in findings/observations while the legacy
-    # `direction` field remains UNRESOLVED. E9 must receive the resolved
-    # directional evidence, not an implementation-detail placeholder.
     normalized_direction = _structured_direction(raw)
     if normalized_direction in DIRECTIONS:
         output["direction"] = normalized_direction
@@ -152,15 +148,29 @@ def _execution_readiness(by,direction):
 
 
 def _independent_setup_maturity(by,direction):
+    """Require E6 to explicitly declare a mature setup before E9 calls it mature.
+
+    Structure and location are supporting evidence, not substitutes for setup maturity.
+    A forming/developing setup must remain non-mature even when E3/E5 are strong.
+    """
     e3,e5,e6,e7=by.get("E3"),by.get("E5"),by.get("E6"),by.get("E7")
-    structure=bool(e3 and (e3.score>=60 or _has(_blob(e3),"BOS","BREAK_OF_STRUCTURE","HIGHER_HIGH","LOWER_LOW","BULLISH","BEARISH")))
+    structure=bool(e3 and (e3.score>=60 or _has(_blob(e3),"BOS","BREAK_OF_STRUCTURE","HIGHER_HIGH","LOWER_HIGH","LOWER_LOW","BULLISH","BEARISH")))
     location=bool(e5 and (e5.score>=60 or _has(_blob(e5),"ADVANTAGEOUS","FAVORABLE","DISCOUNT","PREMIUM","SPACE_AVAILABLE","GOOD_LOCATION")))
-    setup_evidence=bool(e6 and (e6.score>=60 or _has(_blob(e6),"VALID_SETUP","CONTINUATION_SETUP","REVERSAL_SETUP","FORMING","MATURE")))
+    setup_mature=bool(e6 and _has(_blob(e6),"MATURE"))
+    setup_evidence=bool(e6 and (_has(_blob(e6),"VALID_SETUP","CONTINUATION_SETUP","REVERSAL_SETUP","SETUP_FORMING","MATURE") or e6.score>=60))
     trigger=bool(e7 and _has(_blob(e7),"TRIGGER_OBSERVED","FOLLOW_THROUGH_OBSERVED"))
     confirmation=bool(e7 and (e7.score>=60 or _has(_blob(e7),"CONFIRMED","CONFIRMATION_PASS")))
-    supporting=sum((structure,location,setup_evidence)); mature=direction in DIRECTIONS and setup_evidence and supporting>=2
-    state="MATURE" if mature else "DEVELOPING" if supporting>=2 else "FORMING" if supporting>=1 else "UNRESOLVED"
-    return {"state":state,"mature":mature,"structure":structure,"location":location,"setup_evidence":setup_evidence,"trigger":trigger,"confirmation":confirmation,"supporting_dimensions":supporting}
+    supporting=sum((structure,location,setup_evidence))
+    mature=direction in DIRECTIONS and setup_mature and structure and location and not _has(_blob(e6),"INVALIDATED","SETUP_INVALIDATED","HARD_INVALIDATION")
+    if mature:
+        state="MATURE"
+    elif setup_evidence and supporting>=2:
+        state="DEVELOPING"
+    elif setup_evidence or supporting>=1:
+        state="FORMING"
+    else:
+        state="UNRESOLVED"
+    return {"state":state,"mature":mature,"structure":structure,"location":location,"setup_evidence":setup_evidence,"explicit_e6_maturity":setup_mature,"trigger":trigger,"confirmation":confirmation,"supporting_dimensions":supporting}
 
 
 def _confirmation_state(engine):
