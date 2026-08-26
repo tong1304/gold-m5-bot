@@ -47,6 +47,18 @@ def _ema(values: list[float], period: int) -> float:
     return value
 
 
+def _ema_series(values: list[float], period: int) -> list[float]:
+    if not values:
+        return []
+    alpha = 2.0 / (period + 1.0)
+    result = [values[0]]
+    value = values[0]
+    for item in values[1:]:
+        value = alpha * item + (1.0 - alpha) * value
+        result.append(value)
+    return result
+
+
 def _true_ranges(bars: list[dict[str, Any]]) -> list[float]:
     trs: list[float] = []
     previous = None
@@ -97,6 +109,14 @@ def _slope_atr(closes: list[float], atr: float, lookback: int) -> float:
     if len(closes) <= lookback or atr <= 0:
         return 0.0
     return (closes[-1] - closes[-1 - lookback]) / atr
+
+
+def _direction(value: float, threshold: float = 0.15) -> str:
+    if value > threshold:
+        return "UP"
+    if value < -threshold:
+        return "DOWN"
+    return "FLAT"
 
 
 def _structure(bars: list[dict[str, Any]]) -> tuple[str, float, dict[str, Any]]:
@@ -150,7 +170,6 @@ def _range_quality(bars: list[dict[str, Any]], atr: float, efficiency: float) ->
     if not sample or atr <= 0:
         return 0.0, {"channel_width_atr": 0.0, "efficiency": efficiency}
     width = (max(sample) - min(sample)) / atr
-    # A genuine range is relatively contained and inefficient, not merely flat for one bar.
     width_quality = max(0.0, min(1.0, 1.0 - max(0.0, width - 5.0) / 5.0))
     chop_quality = max(0.0, min(1.0, (0.50 - efficiency) / 0.50))
     return 0.5 * width_quality + 0.5 * chop_quality, {
@@ -175,11 +194,12 @@ def _volatility(bars: list[dict[str, Any]]) -> tuple[str, bool, bool, float, dic
 
 
 def analyze_e1(bars: list[dict[str, Any]]) -> dict[str, Any]:
-    """E1 Professional Market-State Brain.
+    """E1 professional market-state analyst.
 
-    The brain answers one question only: "What is the market doing right now?"
-    It classifies behavior from independent evidence, preserves conflicts, and
-    never makes a BUY/SELL, entry, stop, target, RR, sizing, or trade decision.
+    E1 answers one question only: "What is the market doing right now?"
+    It must first establish data quality, then volatility, structure, directional
+    pressure, persistence and conflicts. It may describe a market state, but it
+    has no authority over setup, entry, risk, target, sizing or execution.
     """
     valid, data_problems = _clean_bars(bars)
     if len(valid) < 60:
@@ -196,7 +216,7 @@ def analyze_e1(bars: list[dict[str, Any]]) -> dict[str, Any]:
             "confidence": 0.0,
             "evidence": ["valid_candles_below_minimum", *data_problems[:6]],
             "conflicts": [],
-            "reasoning_trace": ["QUESTION -> data quality -> insufficient valid candles -> classification withheld"],
+            "reasoning_trace": ["QUESTION -> DATA_QUALITY -> insufficient valid candles -> classification withheld"],
             "professional_reasoning": {
                 "question": PROFESSIONAL_QUESTION,
                 "task": "DESCRIBE_MARKET_STATE_ONLY",
@@ -204,6 +224,7 @@ def analyze_e1(bars: list[dict[str, Any]]) -> dict[str, Any]:
                 "next_question": "IS_MARKET_TOO_BALANCED_TO_CLASSIFY?",
                 "evidence_hierarchy": EVIDENCE_HIERARCHY,
                 "trend_persistence": {"aligned_windows": 0, "windows": {}},
+                "directional_consensus": {"confirmed": False},
                 "conflict_detected": bool(data_problems),
             },
             "analysis_status": "INCOMPLETE",
@@ -216,36 +237,89 @@ def analyze_e1(bars: list[dict[str, Any]]) -> dict[str, Any]:
     lows = [float(b["low"]) for b in valid]
     closes = [float(b["close"]) for b in valid]
     atr = _atr(valid)
-    ema20, ema50 = _ema(closes, 20), _ema(closes, 50)
-    ema_fast_slope = _slope_atr(closes[-35:], atr, 10)
-    ema_gap_atr = abs(ema20 - ema50) / max(atr, 1e-12)
+    ema20_series = _ema_series(closes, 20)
+    ema50_series = _ema_series(closes, 50)
+    ema20, ema50 = ema20_series[-1], ema50_series[-1]
+    ema20_slope = _slope_atr(ema20_series, atr, 5)
+    ema50_slope = _slope_atr(ema50_series, atr, 5)
+    ema_gap_signed = (ema20 - ema50) / max(atr, 1e-12)
+    ema_gap_atr = abs(ema_gap_signed)
+
     structure, structure_quality, structure_detail = _structure(valid)
     volatility_state, compression, expansion, range_ratio, volatility_detail = _volatility(valid)
     efficiency_10 = _efficiency(closes, 10)
     efficiency_20 = _efficiency(closes, 20)
 
     ema_direction = "UP" if ema20 > ema50 else "DOWN" if ema20 < ema50 else "FLAT"
-    slope_direction = "UP" if ema_fast_slope > 0.15 else "DOWN" if ema_fast_slope < -0.15 else "FLAT"
+    short_slope = _slope_atr(closes, atr, 5)
+    medium_slope = _slope_atr(closes, atr, 10)
+    long_slope = _slope_atr(closes, atr, 20)
+    short_direction = _direction(short_slope)
+    medium_direction = _direction(medium_slope, 0.20)
+    long_direction = _direction(long_slope, 0.30)
     structure_direction = "UP" if structure == "BULLISH" else "DOWN" if structure == "BEARISH" else "FLAT"
 
-    raw_up = int(ema_direction == "UP") + int(slope_direction == "UP") + int(structure_direction == "UP")
-    raw_down = int(ema_direction == "DOWN") + int(slope_direction == "DOWN") + int(structure_direction == "DOWN")
-    pressure = "UP" if raw_up >= 2 and raw_up > raw_down else "DOWN" if raw_down >= 2 and raw_down > raw_up else "BALANCED"
+    votes = {
+        "ema": ema_direction,
+        "short": short_direction,
+        "medium": medium_direction,
+        "long": long_direction,
+        "structure": structure_direction,
+    }
+    up_votes = sum(v == "UP" for v in votes.values())
+    down_votes = sum(v == "DOWN" for v in votes.values())
+    pressure = "UP" if up_votes >= 3 and up_votes > down_votes else "DOWN" if down_votes >= 3 and down_votes > up_votes else "BALANCED"
+
     persistence, persistence_detail = _persistence(closes, atr, pressure)
+    trend_persistence_confirmed = persistence >= 2 / 3
+    directional_consensus_confirmed = (
+        pressure in {"UP", "DOWN"}
+        and max(up_votes, down_votes) >= 4
+        and trend_persistence_confirmed
+    )
 
-    # Professional distinction: direction is not enough; it must persist across horizons.
-    directional_strength = (max(raw_up, raw_down) / 3.0) * 0.45 + persistence * 0.35 + min(1.0, ema_gap_atr / 1.0) * 0.20
-    strong_direction = pressure in {"UP", "DOWN"} and persistence >= 2 / 3 and directional_strength >= 0.62
+    # Professional state analysis gives more weight to regime-changing conflicts
+    # than to a single fast move. EMA regime, structure and long horizon must not
+    # silently disagree while E1 calls the market a confirmed trend.
+    directional_structure_conflict = (
+        ema_direction in {"UP", "DOWN"}
+        and structure_direction in {"UP", "DOWN"}
+        and ema_direction != structure_direction
+    )
+    horizon_conflict = (
+        long_direction in {"UP", "DOWN"}
+        and short_direction in {"UP", "DOWN"}
+        and long_direction != short_direction
+    )
+    ema_slope_conflict = (
+        ema_direction in {"UP", "DOWN"}
+        and ((ema_direction == "UP" and (ema20_slope < -0.10 or ema50_slope < -0.10))
+             or (ema_direction == "DOWN" and (ema20_slope > 0.10 or ema50_slope > 0.10)))
+    )
 
-    # A short/long disagreement is more informative than a single opposite candle.
-    long_slope = _slope_atr(closes, atr, 20)
-    short_slope = _slope_atr(closes, atr, 5)
-    slope_flip = (long_slope > 0.45 and short_slope < -0.20) or (long_slope < -0.45 and short_slope > 0.20)
-    structural_conflict = (pressure == "UP" and structure == "BEARISH") or (pressure == "DOWN" and structure == "BULLISH")
-    liquidity_break = highs[-1] > max(highs[-21:-1]) and closes[-1] < max(highs[-21:-1])
-    liquidity_break |= lows[-1] < min(lows[-21:-1]) and closes[-1] > min(lows[-21:-1])
-    transition = structural_conflict or slope_flip or liquidity_break
+    # A failed break/sweep is state information, not an entry trigger. It matters
+    # because it can mark a transition even when the older trend remains intact.
+    prior_high = max(highs[-21:-1])
+    prior_low = min(lows[-21:-1])
+    swept_high = highs[-1] > prior_high and closes[-1] < prior_high
+    swept_low = lows[-1] < prior_low and closes[-1] > prior_low
+    liquidity_event = swept_high or swept_low
 
+    transition_reasons: list[str] = []
+    if directional_structure_conflict:
+        transition_reasons.append("directional_structure_conflict")
+    if horizon_conflict:
+        transition_reasons.append("short_long_horizon_conflict")
+    if ema_slope_conflict:
+        transition_reasons.append("ema_slope_conflict")
+    if liquidity_event:
+        transition_reasons.append("liquidity_sweep_or_failed_break")
+
+    # Do not label a market TREND_UP/DOWN merely because price moved quickly.
+    # A confirmed trend needs multi-horizon consensus and persistence. A meaningful
+    # disagreement between regime-level evidence is explicitly classified as TRANSITION.
+    transition = bool(transition_reasons)
+    strong_direction = directional_consensus_confirmed and not directional_structure_conflict and not ema_slope_conflict
     range_quality, range_detail = _range_quality(valid, atr, efficiency_20)
     balanced_behavior = pressure == "BALANCED" or persistence < 1 / 3
 
@@ -257,9 +331,6 @@ def analyze_e1(bars: list[dict[str, Any]]) -> dict[str, Any]:
         market_state = "TREND_UP"
     elif strong_direction and pressure == "DOWN":
         market_state = "TREND_DOWN"
-    elif expansion and strong_direction:
-        # Expansion is retained as volatility evidence, while the primary behavior remains trend.
-        market_state = "TREND_UP" if pressure == "UP" else "TREND_DOWN"
     elif range_quality >= 0.55 and balanced_behavior:
         market_state = "RANGE"
     elif expansion:
@@ -267,61 +338,64 @@ def analyze_e1(bars: list[dict[str, Any]]) -> dict[str, Any]:
     else:
         market_state = "UNCLEAR"
 
-    if market_state == "TREND_UP": trend_state = "UP"
-    elif market_state == "TREND_DOWN": trend_state = "DOWN"
-    else: trend_state = "NONE"
+    trend_state = "UP" if market_state == "TREND_UP" else "DOWN" if market_state == "TREND_DOWN" else "NONE"
 
     conflicts: list[str] = []
     if data_problems:
         conflicts.append("data_quality_anomalies_present")
-    if structural_conflict:
-        conflicts.append(f"direction={pressure} conflicts with structure={structure}")
-    if slope_flip:
-        conflicts.append("short_horizon_slope_conflicts_with_long_horizon_slope")
-    if liquidity_break:
-        conflicts.append("liquidity_sweep_or_failed_break_detected")
-    if balanced_behavior and pressure == "BALANCED":
+    conflicts.extend(transition_reasons)
+    if pressure == "BALANCED":
         conflicts.append("directional_pressure_is_balanced")
 
-    # Confidence rewards independent agreement and penalizes unresolved conflict.
-    agreement = max(raw_up, raw_down) / 3.0
+    agreement = max(up_votes, down_votes) / 5.0
     persistence_quality = persistence
     state_quality = {
-        "TREND_UP": 0.92,
-        "TREND_DOWN": 0.92,
-        "RANGE": 0.78,
+        "TREND_UP": 0.94,
+        "TREND_DOWN": 0.94,
+        "RANGE": 0.80,
         "COMPRESSION": 0.82,
         "EXPANSION": 0.72,
         "TRANSITION": 0.58,
         "UNCLEAR": 0.35,
     }[market_state]
+    conflict_penalty = min(0.28, 0.08 * len(conflicts))
     confidence = (
-        0.20 * agreement
-        + 0.20 * structure_quality
-        + 0.20 * persistence_quality
-        + 0.15 * min(1.0, ema_gap_atr / 1.0)
+        0.22 * agreement
+        + 0.18 * structure_quality
+        + 0.22 * persistence_quality
+        + 0.13 * min(1.0, ema_gap_atr)
         + 0.15 * min(1.0, efficiency_20 / 0.65)
         + 0.10 * state_quality
+        - conflict_penalty
     )
-    confidence -= 0.12 * min(1.0, len(conflicts) / 3.0)
     if data_problems:
         confidence -= 0.08
+    if market_state == "TRANSITION":
+        confidence = min(confidence, 0.72)
     confidence = max(0.0, min(1.0, confidence))
 
-    if market_state in {"TRANSITION", "UNCLEAR"}:
-        next_question = "IS_MARKET_TOO_BALANCED_OR_TRANSITIONAL_TO_CLASSIFY?"
-    elif pressure == "BALANCED":
-        next_question = "IS_DIRECTIONAL_PRESSURE_STRONG_ENOUGH_TO_CLASSIFY_STATE?"
+    if market_state == "TRANSITION":
+        next_question = "WHICH_SIDE_IS_GAINING_CONTROL_AFTER_THE_TRANSITION?"
+    elif market_state == "RANGE":
+        next_question = "IS_PRICE_ACCEPTING_OR_REJECTING_THE_RANGE_BOUNDARIES?"
+    elif market_state == "COMPRESSION":
+        next_question = "IS_COMPRESSION_BUILDING_TOWARD_EXPANSION_OR_REMAINING_BALANCED?"
+    elif market_state in {"TREND_UP", "TREND_DOWN"}:
+        next_question = "IS_THE_ESTABLISHED_DIRECTION_PERSISTING_WITHOUT_STRUCTURAL_BREAK?"
+    elif market_state == "EXPANSION":
+        next_question = "IS_EXPANSION_DIRECTIONAL_OR_TWO_SIDED?"
     else:
-        next_question = "IS_THIS_STATE_STABLE_OR_TRANSITIONING?"
+        next_question = "IS_THERE_ENOUGH_INDEPENDENT_EVIDENCE_TO_CLASSIFY_THE_REGIME?"
 
     evidence = [
         f"ema20_vs_ema50={ema_direction}",
         f"ema_gap_atr={ema_gap_atr:.3f}",
+        f"ema20_slope_atr={ema20_slope:.3f}",
+        f"ema50_slope_atr={ema50_slope:.3f}",
         f"price_slope_atr={short_slope:.3f}",
         f"structure={structure}",
         f"directional_pressure={pressure}",
-        f"directional_consensus={max(raw_up, raw_down)}/3",
+        f"directional_consensus={max(up_votes, down_votes)}/5",
         f"trend_persistence={persistence:.3f}",
         f"price_efficiency_10={efficiency_10:.3f}",
         f"price_efficiency_20={efficiency_20:.3f}",
@@ -329,17 +403,18 @@ def analyze_e1(bars: list[dict[str, Any]]) -> dict[str, Any]:
         f"atr_short_long_ratio={volatility_detail['atr_short_long_ratio']:.3f}",
         f"expansion={expansion}",
         f"compression={compression}",
-        f"slope_flip={slope_flip}",
-        f"liquidity_event={liquidity_break}",
+        f"transition={transition}",
+        f"liquidity_event={liquidity_event}",
     ]
 
     reasoning = [
         f"QUESTION: {PROFESSIONAL_QUESTION}",
         f"DATA_QUALITY: valid_candles={len(valid)}; anomalies={len(data_problems)}.",
         f"VOLATILITY: {volatility_state}; short_long_atr={volatility_detail['atr_short_long_ratio']:.3f}; range_ratio={range_ratio:.3f}.",
-        f"STRUCTURE: {structure}; quality={structure_quality:.2f}; pivots={structure_detail['pivot_highs'][-2:]} / {structure_detail['pivot_lows'][-2:]}.",
-        f"PRESSURE: {pressure}; EMA={ema_direction}; slope={slope_direction}; structure={structure_direction}; votes={raw_up}/{raw_down}.",
-        f"PERSISTENCE: {persistence:.2f}; windows={persistence_detail['windows']}.",
+        f"STRUCTURE: {structure}; quality={structure_quality:.2f}; HH={structure_detail['higher_highs']}; LH={structure_detail['lower_highs']}; HL={structure_detail['higher_lows']}; LL={structure_detail['lower_lows']}.",
+        f"PRESSURE: {pressure}; votes={up_votes}UP/{down_votes}DOWN; EMA={ema_direction}; structure={structure_direction}.",
+        f"PERSISTENCE: {persistence:.2f}; windows={persistence_detail['windows']}; confirmed={trend_persistence_confirmed}.",
+        f"CONSENSUS: {votes}; confirmed={directional_consensus_confirmed}.",
         f"CONFLICT_CHECK: {'; '.join(conflicts) if conflicts else 'no major unresolved conflict'}.",
         f"STATE: {market_state}; primary_behavior={'DIRECTIONAL' if trend_state != 'NONE' else 'NON_DIRECTIONAL'}.",
         f"CONFIDENCE: {confidence:.2f}; classification confidence only, never trade probability.",
@@ -373,11 +448,24 @@ def analyze_e1(bars: list[dict[str, Any]]) -> dict[str, Any]:
             "confidence": round(confidence, 4),
             "evidence_hierarchy": EVIDENCE_HIERARCHY,
             "trend_persistence": persistence_detail,
+            "directional_consensus": {
+                "ema": ema_direction,
+                "short": short_direction,
+                "medium": medium_direction,
+                "long": long_direction,
+                "structure": structure_direction,
+                "up_votes": up_votes,
+                "down_votes": down_votes,
+                "confirmed": directional_consensus_confirmed,
+            },
             "conflict_detected": bool(conflicts),
             "independent_evidence": {
                 "ema_relationship": ema_direction,
                 "ema_gap_atr": round(ema_gap_atr, 4),
+                "ema20_slope_atr": round(ema20_slope, 4),
+                "ema50_slope_atr": round(ema50_slope, 4),
                 "price_slope_short_atr": round(short_slope, 4),
+                "price_slope_medium_atr": round(medium_slope, 4),
                 "price_slope_long_atr": round(long_slope, 4),
                 "structure": structure,
                 "structure_quality": round(structure_quality, 4),
@@ -385,6 +473,7 @@ def analyze_e1(bars: list[dict[str, Any]]) -> dict[str, Any]:
                 "price_efficiency_20": round(efficiency_20, 4),
                 "range_ratio": round(range_ratio, 4),
                 "atr_short_long_ratio": volatility_detail["atr_short_long_ratio"],
+                "liquidity_event": liquidity_event,
             },
             "next_question": next_question,
         },
