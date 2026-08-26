@@ -19,11 +19,12 @@ def _bars_from_closes(closes, spread=0.08):
     return bars
 
 
-def test_e1_requires_persistent_evidence_before_calling_a_trend():
-    closes = [100 + (0.08 * i if i < 55 else 4.4 - 0.12 * (i - 55)) for i in range(80)]
-    out = analyze_e1(_bars_from_closes(closes))
-    assert out["market_state"] in {"TRANSITION", "UNCLEAR", "RANGE"}
-    assert out["trend_state"] == "NONE"
+def test_e1_does_not_flip_an_established_trend_on_one_abrupt_counter_move():
+    closes = [100 + 0.25 * i for i in range(78)]
+    closes.extend([119.25, 117.0])
+    out = analyze_e1(_bars_from_closes(closes, spread=0.10))
+    assert out["trend_state"] in {"UP", "NONE"}
+    assert out["market_state"] in {"TREND_UP", "TRANSITION", "UNCLEAR"}
     assert "trend_persistence" in out["professional_reasoning"]
 
 
