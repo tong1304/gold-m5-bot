@@ -1,28 +1,28 @@
-# ENGINE 07 — ENTRY CONFIRMATION ENGINE v1.0
+# ENGINE 07 — ENTRY CONFIRMATION BRAIN v2.0
 
 ## PURPOSE
-Evaluate whether a valid setup has sufficient trigger and follow-through evidence for downstream consideration.
+Determine whether price has actually confirmed the setup thesis and characterize trigger quality, follow-through and failure risk. It does not authorize execution.
 
 ## SUB-ENGINES
 7A Trigger Detection · 7B Trigger Quality · 7C Follow-through · 7D Failure/Invalidation · 7E Execution Conditions · 7F Confirmation Quality
 
 ## INPUT
-ENGINE 01–06 outputs, closed-candle evidence, trigger definitions, execution-condition data.
+E1–E6 evidence, closed M5 candles, setup state, trigger definitions, price reaction and permitted execution-condition data.
 
 ## PROCESSING
-Detect trigger, evaluate quality/follow-through, detect failure, assess execution conditions.
+Look for displacement, directional trigger, break/reclaim, rejection, follow-through and failure signals appropriate to the setup archetype. Distinguish anticipation from actual confirmation. Record both confirming and contradicting evidence.
 
 ## OUTPUT
-Trigger state, confirmation state, quality/confidence, execution-condition status, failure status, reason codes.
+trigger_state, trigger_type, confirmation_state, confirmation_strength, follow_through, failure_risk, execution_conditions, evidence[], conflicts[], confidence, observations[], reasoning_trace.
 
 ## GATE
-Fail confirmation when setup is invalid, trigger evidence absent, or execution conditions unsafe/invalid.
+NONE. UNCONFIRMED is a valid conclusion. E7 reports what price has or has not proven; E9 decides whether that evidence is sufficient.
 
 ## SCORE
-Confirmation quality is evidence only and cannot override gates or determine final execution.
+Confirmation strength measures evidence quality, not permission to enter.
 
 ## TRACEABILITY
-Record trigger candle, setup version, evidence, state transitions, gate status, scores, confidence, reason codes.
+Record exact trigger candle(s), setup version, trigger conditions, follow-through window, failures, execution observations and upstream evidence.
 
 ## DECISION BOUNDARY
-Confirmation only; not a standalone trading decision engine.
+Confirmation analysis only.
