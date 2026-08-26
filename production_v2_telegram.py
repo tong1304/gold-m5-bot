@@ -30,12 +30,7 @@ def _current_m5_slot(now_utc: datetime) -> datetime:
 
 
 def current_m5_open(symbol: str, now_utc: datetime | None = None):
-    """Return Open of the currently forming M5 candle.
-
-    This value is deliberately independent from the live tick stream. The
-    monitor reports a fixed candle-open price for the current M5 slot, while
-    signal analysis continues to consume closed M5 candles.
-    """
+    """Return Open of the currently forming M5 candle, not the live tick."""
     try:
         from lse import LSE
 
@@ -93,7 +88,7 @@ def format_system_monitor_message(now_bkk: datetime | None = None):
     btc_open = current_m5_open("BTC", now_utc)
     return (
         "<b>✅ สถานะระบบ PRODUCTION-V2</b>\n\n"
-        "🧠 โครงสร้าง: E1 → E2 → E3 → E4 → E5 → E6 → E7 → E8\n"
+        "🧠 โครงสร้าง: E1 → E2 → E3 → E4 → E5 → E6 → E7 → E8 → E9\n"
         "⏱ Timeframe: M5\n\n"
         f"🚨เวลาแจ้งเตือน: {now_bkk.strftime('%d/%m/%Y %H:%M:%S')} (ประเทศไทย)\n\n"
         "📡 ราคาแท่งปัจจุบัน:\n"
@@ -122,12 +117,7 @@ def send_telegram(text: str):
     url = f"https://api.telegram.org/bot{token}/sendMessage"
 
     try:
-        req = Request(
-            url,
-            data=body,
-            headers={"Content-Type": "application/json"},
-            method="POST",
-        )
+        req = Request(url, data=body, headers={"Content-Type": "application/json"}, method="POST")
         with urlopen(req, timeout=10) as response:
             raw = response.read().decode("utf-8", errors="replace")
         payload = json.loads(raw)
