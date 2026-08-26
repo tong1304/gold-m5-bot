@@ -48,9 +48,9 @@ def _normalize_e8_execution_boundary(e8):
     if e8 is None: return None
     output=dict(e8.output or {}); specialists=output.get("specialists") or {}; risk_specialist=specialists.get("8G") if isinstance(specialists,dict) else None; risk_output=risk_specialist.get("output") if isinstance(risk_specialist,dict) else None
     if isinstance(risk_output,dict):
-        for key in ("trade_plan","trade_plan_candidates","candidate_errors","plan_status","risk_gate","risk_basis"):
+        for key in ("trade_plan","trade_plan_candidates","candidate_errors","plan_status","risk_gate","risk_basis","direction","direction_source","peer_direction_score"):
             if key in risk_output: output[key]=risk_output[key]
-    output.update({"direction":None,"decision":None,"trade_decision_authority":False,"specialist_gate":"NONE"})
+    output.update({"decision":None,"trade_decision_authority":False,"specialist_gate":"NONE"})
     return EngineResult(e8.engine_id,e8.name,None,e8.score,output,e8.reason_codes)
 
 
