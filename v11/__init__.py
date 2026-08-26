@@ -2,24 +2,19 @@
 from . import engine as _engine
 from .engine_gold import analyze as _gold_analyze
 from .strategy_engine import ENGINE_NAMES
+from .professional_decision import wrap as _wrap_professional_decision
 
 # Keep the public engine module used by scheduler/live scanner, but route GOLD
 # through its dedicated G-series and keep BTC on B1-B3 only.
 # IMPORTANT: do not overwrite _engine.ENGINE_VERSION here; engine.py is the
-# single source of truth for the deployed engine version.
+# single source of truth for the specialist engine implementation.
 _original_analyze = _engine.analyze
-ENGINE_VERSION = _engine.ENGINE_VERSION
+ENGINE_VERSION = "PROFESSIONAL-DECISION-9E-v1.0"
 
+# E1-E8 remain specialist evidence producers. The wrapper gives E9 the only
+# system-level authority to emit BUY/SELL/NO_TRADE.
+_engine.analyze = _wrap_professional_decision(_original_analyze, _gold_analyze)
 
-def _analyze(m5, m15=None, symbol=None, index=None, setup_state=None, h1=None):
-    normalized = str(symbol or "").upper()
-    if normalized in ("GOLD", "XAU/USD", "XAU/USDT", "XAU", "XAUUSD"):
-        return _gold_analyze(m5, m15=m15, symbol=symbol, index=index, setup_state=setup_state, h1=h1)
-    return _original_analyze(m5, m15=m15, symbol=symbol, index=index, setup_state=setup_state, h1=h1)
-
-
-_engine.analyze = _analyze
-ENGINE_VERSION = _engine.ENGINE_VERSION
-analyze = _analyze
+analyze = _engine.analyze
 
 __all__ = ["ENGINE_VERSION", "analyze", "ENGINE_NAMES"]
