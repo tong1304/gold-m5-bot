@@ -75,24 +75,32 @@ class LiveService:
 
     @staticmethod
     def _reasoning(engine) -> dict:
-        """Expose qualitative evidence only; E1-E8 never present a trade decision."""
+        """Expose reasons and observations, never specialist scores or trade decisions."""
         output = engine.output or {}
         reasoning = output.get("professional_reasoning") or {}
         specialists = output.get("specialists") or {}
         conclusion = reasoning.get("conclusion") or output.get("analyst_conclusion") or "UNRESOLVED"
         observations = []
-        reason_codes = list(engine.reason_codes or [])
+        reasons = list(engine.reason_codes or [])
         if isinstance(specialists, dict):
             for item in specialists.values():
                 if not isinstance(item, dict):
                     continue
                 observations.extend(item.get("observations") or [])
-                reason_codes.extend(item.get("reason_codes") or [])
+                reasons.extend(item.get("reason_codes") or [])
+                nested = item.get("output")
+                if isinstance(nested, dict):
+                    for key in ("reason", "reasons", "observation", "observations", "finding", "findings"):
+                        value = nested.get(key)
+                        if isinstance(value, (list, tuple)):
+                            observations.extend(value)
+                        elif value:
+                            observations.append(value)
         return {
             "question": reasoning.get("question") or output.get("specialist_question"),
             "conclusion": str(conclusion),
-            "observations": [str(x) for x in observations[:8]],
-            "reason_codes": sorted(set(str(x) for x in reason_codes))[:12],
+            "observations": [str(x) for x in observations[:12]],
+            "reasons": sorted(set(str(x) for x in reasons))[:16],
             "role": output.get("reasoning_role", "SPECIALIST_EVIDENCE"),
         }
 
@@ -103,14 +111,14 @@ class LiveService:
             if engine.engine_id == "E9":
                 reasoning = engine.output.get("professional_reasoning") or {}
                 print(
-                    f"[PRODUCTION V2] {alias} E9 DECISION={engine.output.get('decision', result.decision)} "
-                    f"thesis={engine.output.get('thesis_quality', 0):.1f} "
-                    f"direction={engine.output.get('direction', 'NEUTRAL')} "
-                    f"setup={((reasoning.get('independent_setup') or {}).get('state', 'UNRESOLVED'))} "
-                    f"execution={((reasoning.get('execution') or {}).get('state', 'UNKNOWN'))} "
+                    f"[PRODUCTION V2] {alias} E9 MASTER "
+                    f"decision={engine.output.get('decision', result.decision)} "
+                    f"reason={engine.output.get('decision_reasons', list(engine.reason_codes))} "
+                    f"thesis={reasoning.get('primary_thesis', 'UNRESOLVED')} "
+                    f"setup={((reasoning.get('independent_setup') or reasoning.get('setup') or {}).get('state', reasoning.get('setup_state', 'UNKNOWN')))} "
+                    f"execution={((reasoning.get('execution') or {}).get('state', reasoning.get('execution_state', 'UNKNOWN')))} "
                     f"conflicts={reasoning.get('conflicts', [])} "
-                    f"invalidations={reasoning.get('hard_invalidations', [])} "
-                    f"reasons={engine.output.get('decision_reasons', list(engine.reason_codes))}",
+                    f"invalidations={reasoning.get('hard_invalidations', [])}",
                     flush=True,
                 )
                 continue
@@ -118,9 +126,9 @@ class LiveService:
             print(
                 f"[PRODUCTION V2] {alias} {engine.engine_id} "
                 f"ROLE={why['role']} question={why['question']} "
-                f"conclusion={why['conclusion']} "
+                f"finding={why['conclusion']} "
                 f"observations={why['observations']} "
-                f"reasons={why['reason_codes']}",
+                f"reasons={why['reasons']}",
                 flush=True,
             )
 
@@ -150,6 +158,7 @@ class LiveService:
 
 
 _service = None
+
 
 def start_live_service() -> None:
     global _service
