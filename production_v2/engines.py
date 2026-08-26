@@ -105,6 +105,28 @@ def _reason_statements(result) -> list[str]:
     return list(dict.fromkeys(str(x) for x in reasons if str(x).strip()))[:12]
 
 
+def _e1_contract_normalize(brain:dict[str,Any])->dict[str,Any]:
+    """Keep the public E1 pressure vocabulary stable while retaining rich internals."""
+    out=dict(brain)
+    pressure=str(out.get("directional_pressure") or "BALANCED").upper()
+    if pressure == "UP": pressure="BULLISH"
+    elif pressure == "DOWN": pressure="BEARISH"
+    out["directional_pressure"]=pressure
+
+    # Very low price efficiency means directional movement is mostly noise/chop.
+    # Do not let a small EMA/slope imbalance manufacture a professional trend thesis.
+    evidence=" ".join(str(x) for x in (out.get("evidence") or []))
+    match=__import__("re").search(r"price_efficiency=([0-9.]+)", evidence)
+    if match:
+        try:
+            if float(match.group(1)) < 0.25:
+                out["directional_pressure"]="BALANCED"
+        except ValueError:
+            pass
+    out["analysis_status"]="COMPLETE"
+    return out
+
+
 def run_engine(engine_id:str,snapshot:dict[str,Any],evidence_bus:dict[str,Any]|None=None)->EngineResult:
     allowed=set(EVIDENCE_INPUTS.get(engine_id,()))
     permitted={k:evidence_bus[k] for k in allowed if evidence_bus and k in evidence_bus}
@@ -125,7 +147,7 @@ def run_engine(engine_id:str,snapshot:dict[str,Any],evidence_bus:dict[str,Any]|N
         evidence[r.sub_engine_id]={"output":output,"observations":list(dict.fromkeys(str(x) for x in observations))[:12],"reason_codes":reasons}
 
     if engine_id == "E1":
-        brain=analyze_e1(snapshot.get("bars") or [])
+        brain=_e1_contract_normalize(analyze_e1(snapshot.get("bars") or []))
         output={"architecture":"E1_PROFESSIONAL_MARKET_STATE_BRAIN_V2.1","specialists":evidence,**brain,"evidence_count":len(evidence),"peer_evidence_count":len(permitted),"upstream_decisions_used":False,"upstream_gates_used":False,"score_used":False,"reasoning_role":"MARKET_STATE_ANALYST"}
         return EngineResult("E1",ENGINE_NAMES["E1"],None,float(brain["confidence"])*100.0,output,())
 
