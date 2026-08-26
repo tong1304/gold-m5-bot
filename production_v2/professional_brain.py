@@ -1,9 +1,10 @@
 from __future__ import annotations
 
+from statistics import mean
 from typing import Any
 
 from .contracts import EngineResult
-from .engines import ENGINE_NAMES, ENGINE_WEIGHTS, EDGE_THRESHOLD, run_engine as _engine_analyzer
+from .engines import ENGINE_NAMES, run_engine as _engine_analyzer
 
 SPECIALIST_QUESTIONS = {
     "E1": "What market state is present right now?",
@@ -16,88 +17,138 @@ SPECIALIST_QUESTIONS = {
     "E8": "What are the trade economics, invalidation and asymmetry?",
 }
 
+# Importance is used only by E9's evidence synthesis; it is not an E1-E8 gate.
+EVIDENCE_WEIGHTS = {"E1": 1.00, "E2": 1.00, "E3": 1.20, "E4": 1.15, "E5": 1.10, "E6": 1.20, "E7": 1.30, "E8": 1.25}
+
 
 def run_professional_engine(engine_id: str, context: dict[str, Any]) -> EngineResult:
-    """Run one specialist against the shared market snapshot.
-
-    This function deliberately does not read E1-E8 results and never assigns
-    execution authority. A low-quality conclusion is evidence, not a gate.
-    """
     raw = _engine_analyzer(engine_id, dict(context))
     output = dict(raw.output)
-    output["analysis_status"] = "COMPLETE"
-    output["analysis_complete"] = True
-    output["specialist_question"] = SPECIALIST_QUESTIONS.get(engine_id, "Analyze the assigned market dimension.")
-    output["trade_decision_authority"] = False
-    output["specialist_gate"] = "NONE"
-    output["gate"] = None
-    output["input_mode"] = "SHARED_MARKET_SNAPSHOT"
-    output["upstream_engine_dependency"] = None
-    output["reasoning_role"] = "SPECIALIST_EVIDENCE"
-    output["analysis_reason_codes"] = list(raw.reason_codes)
-    if engine_id == "E8":
-        plan = dict(output.get("trade_plan") or {})
-        direction = plan.pop("direction", None)
-        if direction in {"BUY", "SELL"}:
-            plan["orientation"] = "UP" if direction == "BUY" else "DOWN"
-        output["trade_plan"] = plan
+    output.update({
+        "analysis_status": "COMPLETE",
+        "analysis_complete": True,
+        "specialist_question": SPECIALIST_QUESTIONS.get(engine_id, "Analyze the assigned market dimension."),
+        "trade_decision_authority": False,
+        "specialist_gate": "NONE",
+        "gate": None,
+        "input_mode": "SHARED_MARKET_SNAPSHOT",
+        "upstream_engine_dependency": None,
+        "reasoning_role": "SPECIALIST_EVIDENCE",
+        "analysis_reason_codes": list(raw.reason_codes),
+    })
     return EngineResult(raw.engine_id, raw.name, True, raw.score, output, raw.reason_codes)
 
 
-def _weighted_evidence(upstream: list[EngineResult]) -> float:
-    values = {e.engine_id: float(e.score) for e in upstream if e.engine_id in ENGINE_WEIGHTS}
-    weight = sum(ENGINE_WEIGHTS[k] for k in values)
-    return round(sum(values[k] * ENGINE_WEIGHTS[k] for k in values) / weight, 2) if weight else 0.0
+def _text(e: EngineResult | None) -> str:
+    return str(e.output if e else "").upper()
+
+
+def _has(blob: str, *terms: str) -> bool:
+    return any(term in blob for term in terms)
+
+
+def _direction(evidence: dict[str, EngineResult]) -> str:
+    votes = {"BUY": 0.0, "SELL": 0.0}
+    for eid, e in evidence.items():
+        b = _text(e)
+        w = EVIDENCE_WEIGHTS.get(eid, 1.0)
+        if _has(b, "BUY", "BULLISH", "TREND_UP", "LONG", "UP") and not _has(b, "BEARISH", "TREND_DOWN"):
+            votes["BUY"] += w
+        if _has(b, "SELL", "BEARISH", "TREND_DOWN", "SHORT", "DOWN") and not _has(b, "BULLISH", "TREND_UP"):
+            votes["SELL"] += w
+    if votes["BUY"] == votes["SELL"]: return "NEUTRAL"
+    return "BUY" if votes["BUY"] > votes["SELL"] else "SELL"
+
+
+def _weighted_alignment(upstream: list[EngineResult]) -> float:
+    vals=[]; weights=[]
+    for e in upstream:
+        w=EVIDENCE_WEIGHTS.get(e.engine_id,1.0)
+        vals.append(max(0.0,min(100.0,float(e.score)))*w); weights.append(w)
+    return round(sum(vals)/sum(weights),2) if weights else 0.0
+
+
+def _professional_dimensions(by: dict[str, EngineResult]) -> dict[str, Any]:
+    b={k:_text(v) for k,v in by.items()}
+    return {
+        "market_state": {"engine":"E1","evidence":b.get("E1","")[:600]},
+        "opportunity": {"engine":"E2","evidence":b.get("E2","")[:600]},
+        "structure": {"engine":"E3","evidence":b.get("E3","")[:600]},
+        "liquidity": {"engine":"E4","evidence":b.get("E4","")[:600]},
+        "location": {"engine":"E5","evidence":b.get("E5","")[:600]},
+        "setup": {"engine":"E6","evidence":b.get("E6","")[:600]},
+        "confirmation": {"engine":"E7","evidence":b.get("E7","")[:600]},
+        "economics": {"engine":"E8","evidence":b.get("E8","")[:600]},
+    }
 
 
 def run_professional_e9(context: dict[str, Any], upstream: list[EngineResult]) -> EngineResult:
-    """E9 is the sole master decision brain and synthesizes independent evidence."""
-    by_id = {e.engine_id: e for e in upstream}
-    e6, e7, e8 = by_id.get("E6"), by_id.get("E7"), by_id.get("E8")
-    plan = dict(e8.output.get("trade_plan", {}) if e8 else {})
-    evidence_score = _weighted_evidence(upstream)
-    r7 = e7.output.get("professional_reasoning", {}) if e7 else {}
-    confirmation_ready = (
-        r7.get("confirmation") == "CONFIRMATION_PASS"
-        and r7.get("trigger_quality") == "QUALITY_PASS"
-        and r7.get("follow_through") == "FOLLOW_THROUGH_OBSERVED"
-    )
-    economics_ready = bool(plan.get("valid")) and float(plan.get("rr_tp2", plan.get("rr", 0)) or 0) >= float(plan.get("min_rr", 1.5) or 1.5)
-    orientation = plan.get("orientation") if economics_ready else None
-    direction = {"UP": "BUY", "DOWN": "SELL"}.get(orientation)
-    reasons: list[str] = []
-    if e6 is None or e6.output.get("trade_plan", {}).get("setup") in {None, "NONE"} or e6.output.get("setup") in {None, "NONE", "NO_VALID_SETUP"}:
-        reasons.append("NO_MATURE_SETUP")
-    if not confirmation_ready:
-        reasons.append("ENTRY_CONFIRMATION_NOT_PROVEN")
-    if not economics_ready:
-        reasons.append("TRADE_ECONOMICS_NOT_READY")
-    if evidence_score < EDGE_THRESHOLD:
-        reasons.append("EVIDENCE_SCORE_BELOW_THRESHOLD")
-    # Directional disagreement is evidence conflict, not an upstream gate.
-    e1 = by_id.get("E1")
-    e3 = by_id.get("E3")
-    e1_bias = (e1.output.get("professional_reasoning", {}) if e1 else {}).get("bias")
-    e3_bias = e3.output.get("professional_reasoning", {}).get("bias") if e3 else None
-    if e1_bias and e3_bias and e1_bias not in {"NEUTRAL", e3_bias}:
-        reasons.append("DIRECTIONAL_EVIDENCE_CONFLICT")
-    final = bool(direction in {"BUY", "SELL"} and confirmation_ready and economics_ready and evidence_score >= EDGE_THRESHOLD and "DIRECTIONAL_EVIDENCE_CONFLICT" not in reasons)
-    decision = direction if final else "NO_TRADE"
-    out = {
-        "decision": decision,
-        "decision_authority": "E9",
-        "trade_decision_authority": True,
-        "pipeline": "PARALLEL:E1|E2|E3|E4|E5|E6|E7|E8 -> E9",
-        "trade_plan": plan,
-        "evidence_score": evidence_score,
-        "edge_score": evidence_score,
-        "edge_threshold": EDGE_THRESHOLD,
-        "gate_passed": final,
-        "professional_decision": "APPROVE_TRADE" if final else "NO_TRADE",
-        "blocked_by": None,
-        "decision_reasons": reasons,
-        "evidence_conflicts": [r for r in reasons if "CONFLICT" in r],
-        "specialist_conclusions": {e.engine_id: e.output.get("conclusion", e.output.get("professional_reasoning", {})) for e in upstream},
-        "analysis_complete": True,
+    """Professional E9: assess evidence, confluence, conflict, thesis and economics.
+
+    E1-E8 provide evidence only. E9 does not inherit their gate decisions.
+    """
+    by={e.engine_id:e for e in upstream}
+    blobs={k:_text(v) for k,v in by.items()}
+    alignment=_weighted_alignment(upstream)
+    direction=_direction(by)
+
+    # Independent evidence dimensions. These are conclusions, not upstream gates.
+    setup_mature=_has(blobs.get("E6",""),"MATURE","FORMED","VALID_SETUP","SETUP_QUALITY","CONTINUATION_SETUP","REVERSAL_SETUP")
+    confirmation=_has(blobs.get("E7",""),"CONFIRMED","CONFIRMATION_PASS","TRIGGER_OBSERVED","FOLLOW_THROUGH")
+    economics=_has(blobs.get("E8",""),"ATTRACTIVE","RISK_GATE_READY","RR_OK","POSITIVE_EXPECTANCY")
+    good_location=_has(blobs.get("E5",""),"ADVANTAGEOUS","FAVORABLE","DISCOUNT","PREMIUM","GOOD_LOCATION")
+    structural_support=_has(blobs.get("E3",""),"BULLISH","BEARISH","BREAK_OF_STRUCTURE","BOS","STRUCTURE")
+    liquidity_event=_has(blobs.get("E4",""),"SWEEP","RECLAIM","REJECTION","LIQUIDITY")
+
+    buy_support=sum(EVIDENCE_WEIGHTS.get(k,1.0) for k,b in blobs.items() if _has(b,"BUY","BULLISH","TREND_UP","LONG"))
+    sell_support=sum(EVIDENCE_WEIGHTS.get(k,1.0) for k,b in blobs.items() if _has(b,"SELL","BEARISH","TREND_DOWN","SHORT"))
+    conflict=abs(buy_support-sell_support) < 1.0 and direction != "NEUTRAL"
+    if _has(blobs.get("E1",""),"TREND_UP") and _has(blobs.get("E3",""),"TREND_DOWN","BEARISH"):
+        conflict=True
+    if _has(blobs.get("E1",""),"TREND_DOWN") and _has(blobs.get("E3",""),"TREND_UP","BULLISH"):
+        conflict=True
+
+    reasons=[]
+    if direction=="NEUTRAL": reasons.append("DIRECTIONAL_THESIS_UNRESOLVED")
+    if not setup_mature: reasons.append("SETUP_THESIS_NOT_MATURE")
+    if not confirmation: reasons.append("ENTRY_CONFIRMATION_NOT_PROVEN")
+    if not economics: reasons.append("TRADE_ECONOMICS_NOT_READY")
+    if not good_location: reasons.append("LOCATION_QUALITY_NOT_ESTABLISHED")
+    if conflict: reasons.append("DIRECTIONAL_EVIDENCE_CONFLICT")
+
+    # E9 evaluates a thesis; it does not blindly require every specialist to say yes.
+    confluence_count=sum((structural_support,liquidity_event,good_location,setup_mature,confirmation,economics))
+    thesis_quality=round(min(100.0, alignment + confluence_count*2.5 - (12.0 if conflict else 0.0)),2)
+    final=(direction in {"BUY","SELL"} and setup_mature and confirmation and economics and
+           thesis_quality>=70.0 and not conflict)
+    decision=direction if final else "NO_TRADE"
+
+    # Scenario analysis: primary thesis plus explicit invalidation/alternative.
+    primary=f"{direction} thesis" if direction in {"BUY","SELL"} else "No directional thesis"
+    alternative="Opposite-direction scenario if structure/confirmation fails"
+    invalidation="Use E8 invalidation evidence; if absent, thesis is not execution-ready"
+
+    out={
+        "decision":decision,
+        "decision_authority":"E9",
+        "trade_decision_authority":True,
+        "pipeline":"PARALLEL:E1|E2|E3|E4|E5|E6|E7|E8 -> E9",
+        "architecture":"PROFESSIONAL_EVIDENCE_SYNTHESIS",
+        "analysis_complete":True,
+        "evidence_alignment":alignment,
+        "thesis_quality":thesis_quality,
+        "direction":direction,
+        "directional_evidence":{"buy":round(buy_support,2),"sell":round(sell_support,2)},
+        "confluence":{"count":confluence_count,"structure":structural_support,"liquidity":liquidity_event,"location":good_location,"setup":setup_mature,"confirmation":confirmation,"economics":economics},
+        "conflict_analysis":{"detected":conflict,"status":"CONFLICT" if conflict else "ALIGNED"},
+        "thesis":{"primary":primary,"alternative":alternative,"invalidation":invalidation},
+        "professional_dimensions":_professional_dimensions(by),
+        "decision_reasons":reasons,
+        "evidence_conflicts":[r for r in reasons if "CONFLICT" in r],
+        "all_evidence_received":sorted(by),
+        "upstream_gates_ignored":True,
+        "gate_semantics":"E9_MASTER_ONLY",
+        "professional_decision":"APPROVE_TRADE" if final else "NO_TRADE",
+        "learning_target":"REPLAY_OUTCOME_REQUIRED",
     }
-    return EngineResult("E9", ENGINE_NAMES.get("E9", "Master Decision"), final, evidence_score, out, tuple(reasons))
+    return EngineResult("E9",ENGINE_NAMES.get("E9","Master Decision Brain"),final,thesis_quality,out,tuple(reasons))
