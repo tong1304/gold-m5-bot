@@ -75,11 +75,28 @@ class LiveService:
 
     @staticmethod
     def _reasoning(engine) -> dict:
-        """Expose reasons and observations, never specialist scores or trade decisions."""
+        """Expose each specialist's own answer; E1 must describe market state only."""
         output = engine.output or {}
         reasoning = output.get("professional_reasoning") or {}
         specialists = output.get("specialists") or {}
-        conclusion = reasoning.get("conclusion") or output.get("analyst_conclusion") or "UNRESOLVED"
+
+        # E1 has a deliberately non-directional contract.  Do not derive its
+        # answer from a generic conclusion field because that can collapse into
+        # UNRESOLVED when the E1 brain intentionally omits a trade direction.
+        if engine.engine_id == "E1":
+            market_state = reasoning.get("market_state") or output.get("market_state") or "UNCLEAR"
+            volatility = reasoning.get("volatility_state") or output.get("volatility_state") or "UNKNOWN"
+            structure = reasoning.get("structure_state") or output.get("structure_state") or "UNCLEAR"
+            transition = reasoning.get("transition") or output.get("transition") or "UNKNOWN"
+            conclusion = (
+                f"MARKET_STATE={market_state}; "
+                f"VOLATILITY={volatility}; "
+                f"STRUCTURE={structure}; "
+                f"TRANSITION={transition}"
+            )
+        else:
+            conclusion = reasoning.get("conclusion") or output.get("analyst_conclusion") or "UNRESOLVED"
+
         observations = []
         reasons = list(engine.reason_codes or [])
         if isinstance(specialists, dict):
@@ -96,6 +113,15 @@ class LiveService:
                             observations.extend(value)
                         elif value:
                             observations.append(value)
+
+        # Add the E1 brain's own classification evidence to the trace.  This is
+        # descriptive evidence, not a BUY/SELL recommendation and not a gate.
+        if engine.engine_id == "E1":
+            for key in ("directional_pressure", "trend_state", "volatility_state", "structure_state", "compression", "expansion", "transition"):
+                value = reasoning.get(key) or output.get(key)
+                if value is not None:
+                    observations.append(f"{key}={value}")
+
         return {
             "question": reasoning.get("question") or output.get("specialist_question"),
             "conclusion": str(conclusion),
