@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any
 
 from .contracts import DecisionResult, EngineResult
@@ -12,24 +13,31 @@ class ProductionPipeline:
     ENGINE_ORDER = ENGINE_ORDER
 
     def run(self, market_data: dict[str, Any], *, wait_bars: int = 0, resume_state: dict[str, Any] | None = None) -> DecisionResult:
-        """Run one complete closed-M5 professional decision cycle.
+        """Run one closed-M5 decision cycle using a shared market snapshot.
 
-        Every candle starts a fresh E1->E9 cycle. E1-E8 are specialist analysts:
-        each receives all prior evidence, answers its own question, and hands its
-        conclusion forward. Their conclusions do not themselves approve/reject
-        a trade. E9 alone decides BUY, SELL, or NO_TRADE.
+        E1-E8 are independent specialist brains. They receive the same immutable
+        market snapshot and analyze it in parallel. No E1->E2->... evidence chain
+        exists. E9 runs only after all eight specialist conclusions are available
+        and is the sole component that decides BUY, SELL, or NO_TRADE.
         """
         symbol = str(market_data.get("symbol") or "UNKNOWN")
         timeframe = str(market_data.get("timeframe") or "M5")
-        context = dict(market_data)
-        engines: list[EngineResult] = []
+        snapshot = dict(market_data)
+        engines_by_id: dict[str, EngineResult] = {}
 
-        for engine_id in ENGINE_ORDER:
-            result = run_professional_engine(engine_id, context)
-            engines.append(result)
-            context[f"{engine_id}_result"] = result.output
+        # Specialists intentionally receive the same snapshot. Results are not
+        # inserted into that snapshot, preventing accidental sequential reasoning.
+        with ThreadPoolExecutor(max_workers=len(ENGINE_ORDER), thread_name_prefix="prod-v2-e") as pool:
+            futures = {
+                pool.submit(run_professional_engine, engine_id, snapshot): engine_id
+                for engine_id in ENGINE_ORDER
+            }
+            for future in as_completed(futures):
+                engine_id = futures[future]
+                engines_by_id[engine_id] = future.result()
 
-        e9 = run_professional_e9(context, engines)
+        engines = [engines_by_id[engine_id] for engine_id in ENGINE_ORDER]
+        e9 = run_professional_e9(snapshot, engines)
         engines.append(e9)
         trade_plan = e9.output.get("trade_plan", {})
         return DecisionResult(
@@ -43,8 +51,9 @@ class ProductionPipeline:
                 "risk_gate": bool(e9.output.get("trade_plan", {}).get("valid")),
                 "trade_plan": trade_plan,
                 "engine_state": "TRADE_APPROVED" if e9.gate_passed else "ANALYSIS_COMPLETE_NO_TRADE",
-                "blocked_by": e9.output.get("blocked_by"),
+                "blocked_by": None,
                 "cycle_complete": True,
+                "analysis_architecture": "PARALLEL_E1_E8_SNAPSHOT_TO_E9",
                 "next_evaluation": "NEXT_CLOSED_M5_CANDLE",
                 "wait_bars": 0,
                 "decision_reasons": list(e9.reason_codes),
