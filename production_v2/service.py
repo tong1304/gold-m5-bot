@@ -26,7 +26,7 @@ class LiveService:
         self._started = False
         self._last_candle: dict[str, str] = {}
         self._wait_state: dict[str, dict] = {}
-        self._last_status_at = 0.0
+        self._last_status_slot: str | None = None
         self._runtime_errors: dict[str, str] = {}
         self._last_prices: dict[str, float] = {}
         self._latest_results: dict[str, object] = {}
@@ -37,25 +37,33 @@ class LiveService:
             return
         self._started = True
         send(format_startup(list(self.data.symbols().keys())))
-        self._last_status_at = time.monotonic()
         threading.Thread(target=self._loop, name="production-v2-scheduler", daemon=True).start()
 
-    def _send_status(self) -> None:
+    def _send_status(self, now: datetime) -> None:
         status = {
             "prices": dict(self._last_prices),
             "timeframe": "M5",
-            "timestamp": datetime.now(BANGKOK_TZ),
+            "timestamp": now,
             "architecture": "E1 -> E2 -> E3 -> E4 -> E5 -> E6 -> E7 -> E8 -> E9",
         }
         send(format_status(status))
-        self._last_status_at = time.monotonic()
+        self._last_status_slot = now.strftime("%Y%m%d%H%M")
+
+    def _send_aligned_status(self) -> None:
+        """Send the independent health/status alert exactly on Bangkok :00/:15/:30/:45."""
+        now = datetime.now(BANGKOK_TZ)
+        if now.minute % 15 != 0:
+            return
+        slot = now.strftime("%Y%m%d%H%M")
+        if slot == self._last_status_slot:
+            return
+        try:
+            self._send_status(now)
+        except Exception as exc:
+            print(f"[PRODUCTION V2] Telegram status error: {exc}", flush=True)
 
     def _send_aligned_no_trade(self) -> None:
-        """Send once during each Bangkok 00/10/20/30/40/50 minute slot.
-
-        The report is sent only when every configured asset has a latest
-        decision and none of those decisions is an executable BUY/SELL.
-        """
+        """Send once during each Bangkok 00/10/20/30/40/50 minute slot."""
         now = datetime.now(BANGKOK_TZ)
         if now.minute % 10 != 0:
             return
@@ -187,13 +195,7 @@ class LiveService:
                     print(f"[PRODUCTION V2] {alias} ERROR {exc}", flush=True)
 
             self._send_aligned_no_trade()
-
-            if time.monotonic() - self._last_status_at >= self.status_interval_seconds:
-                try:
-                    _ = format_critical
-                    self._send_status()
-                except Exception as exc:
-                    print(f"[PRODUCTION V2] Telegram status error: {exc}", flush=True)
+            self._send_aligned_status()
             time.sleep(self.interval)
 
 
