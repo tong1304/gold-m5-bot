@@ -18,28 +18,27 @@ def test_upstream_context_excludes_decisions_and_gates():
     assert "gate" not in item
 
 
-def test_engine_reports_exact_upstream_evidence_contract():
-    result = run_engine("E2", {"bars": _bars(60), "symbol": "XAU/USD", "timeframe": "M5"}, {
-        "E1": {"engine_id": "E1", "evidence": {}},
-        "E3": {"engine_id": "E3", "evidence": {}},
-        "E4": {"engine_id": "E4", "evidence": {}},
-    })
+def test_engine_reports_all_peer_evidence_contract():
+    peers = {engine_id: {"engine_id": engine_id, "evidence": {}} for engine_id in EVIDENCE_INPUTS["E2"]}
+    result = run_engine("E2", {"bars": _bars(60), "symbol": "XAU/USD", "timeframe": "M5"}, peers)
     report = result.output["evidence_dependency"]
-    assert report["required"] == ["E1", "E3", "E4"]
-    assert report["received"] == ["E1", "E3", "E4"]
+    assert report["required"] == sorted(EVIDENCE_INPUTS["E2"])
+    assert report["received"] == sorted(EVIDENCE_INPUTS["E2"])
     assert report["missing"] == []
     assert report["decisions_received"] is False
     assert report["gates_received"] is False
+    assert result.gate_passed is None
 
 
-def test_engine_does_not_claim_unreceived_upstream_evidence():
+def test_engine_reports_partial_peer_evidence_without_claiming_completion():
     result = run_engine("E5", {"bars": _bars(60), "symbol": "XAU/USD", "timeframe": "M5"}, {
         "E3": {"engine_id": "E3", "evidence": {}},
     })
     report = result.output["evidence_dependency"]
-    assert report["required"] == ["E3", "E4"]
+    assert report["required"] == sorted(EVIDENCE_INPUTS["E5"])
     assert report["received"] == ["E3"]
-    assert report["missing"] == ["E4"]
+    assert "E3" in report["received"]
+    assert set(report["missing"]) == set(report["required"]) - {"E3"}
 
 
 def _bars(n):
