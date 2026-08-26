@@ -16,8 +16,8 @@ SUB_ENGINE_CODES={"E1":["1A","1B","1C","1D","1E","1F","1G"],"E2":["2A","2B","2C"
 SUFFIX={"1A":"a_data_quality","1B":"b_volatility_state","1C":"c_trend_state","1D":"d_range_state","1E":"e_compression","1F":"f_expansion","1G":"g_transition","2A":"a_trend_regime","2B":"b_range_regime","2C":"c_mean_reversion_behavior","2D":"d_breakout_regime","2E":"e_regime_phase","2F":"f_regime_transition","3A":"a_swing_detection","3B":"b_structure_classification","3C":"c_break_of_structure","3D":"d_structural_failure","3E":"e_structure_strength","3F":"f_internal_external_structure","4A":"a_liquidity_zone_detection","4B":"b_sweep_detection","4C":"c_reaction_rejection","4D":"d_acceptance","4E":"e_reclaim_failed_break","4F":"f_liquidity_strength_quality","5A":"a_equilibrium_value","5B":"b_structural_location","5C":"c_liquidity_location","5D":"d_extension","5E":"e_available_space","5F":"f_location_quality","6A":"a_setup_context","6B":"b_setup_archetype","6C":"c_setup_formation_state_machine","6D":"d_setup_invalidation","6E":"e_setup_quality","6F":"f_setup_maturity","7A":"a_trigger_detection","7B":"b_trigger_quality","7C":"c_follow_through","7D":"d_failure_invalidation","7E":"e_execution_conditions","7F":"f_confirmation_quality","8A":"a_invalidation_model","8B":"b_stop_placement","8C":"c_target_liquidity_objective","8D":"d_r_multiple","8E":"e_position_size","8F":"f_exposure_limits","8G":"g_risk_gate"}
 
 ENGINE_IDS=tuple(SUB_ENGINE_CODES)
-# All specialists receive the same immutable peer-evidence snapshot during the
-enriched analysis pass. They can reinterpret observations, never decisions.
+# Every specialist receives the same immutable peer-evidence snapshot during
+# the enriched analysis pass. A specialist never receives peer authority.
 EVIDENCE_INPUTS={engine_id: tuple(other for other in ENGINE_IDS if other != engine_id) for engine_id in ENGINE_IDS}
 
 
@@ -67,7 +67,7 @@ def _run(code:str,snapshot:dict[str,Any],evidence_bus:dict[str,Any]|None=None):
 
 
 def run_engine(engine_id:str,snapshot:dict[str,Any],evidence_bus:dict[str,Any]|None=None)->EngineResult:
-    allowed=set(EVIDENCE_INPUTS.get(engine_id(),())) if False else set(EVIDENCE_INPUTS.get(engine_id,()))
+    allowed=set(EVIDENCE_INPUTS.get(engine_id,()))
     permitted={k:evidence_bus[k] for k in allowed if evidence_bus and k in evidence_bus}
     codes=SUB_ENGINE_CODES[engine_id]; results=[]
     with ThreadPoolExecutor(max_workers=len(codes)) as pool:
