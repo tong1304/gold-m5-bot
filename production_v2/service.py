@@ -41,15 +41,10 @@ class LiveService:
         threading.Thread(target=self._loop, name="production-v2-scheduler", daemon=True).start()
 
     def _send_status(self) -> None:
-        symbols = self.data.symbols()
         status = {
-            "symbols": {
-                name: ("เชื่อมต่อแล้ว" if name not in self._runtime_errors else "มีปัญหา")
-                for name in symbols
-            },
             "prices": dict(self._last_prices),
             "timeframe": "M5",
-            "runtime_errors": dict(self._runtime_errors),
+            "timestamp": datetime.now(BANGKOK_TZ),
             "architecture": "E1 -> E2 -> E3 -> E4 -> E5 -> E6 -> E7 -> E8 -> E9",
         }
         send(format_status(status))
