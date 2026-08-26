@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+from statistics import mean
 from typing import Any
 
 from .contracts import EngineResult
@@ -18,8 +19,7 @@ def _text(v:Any)->str:return str(v).upper()
 def _has(blob:str,*terms:str)->bool:return any(t in blob for t in terms)
 def _walk(v:Any):
     if isinstance(v,dict):
-        for k,x in v.items():
-            yield str(k);yield from _walk(x)
+        for k,x in v.items():yield str(k);yield from _walk(x)
     elif isinstance(v,(list,tuple,set)):
         for x in v:yield from _walk(x)
     else:yield str(v)
@@ -44,9 +44,7 @@ def _state_values(e:EngineResult|None)->set[str]:
     def rec(v):
         if isinstance(v,dict):
             for k,x in v.items():
-                kl=str(k).lower()
-                if kl in {"state","direction","bias","orientation","market_direction","classification","regime","setup","confirmation","risk_gate","phase"} and isinstance(x,(str,int,float,bool)):
-                    vals.add(_text(x).strip())
+                if str(k).lower() in {"state","direction","bias","orientation","market_direction","classification","regime","setup","confirmation","risk_gate","phase"} and isinstance(x,(str,int,float,bool)):vals.add(_text(x).strip())
                 rec(x)
         elif isinstance(v,(list,tuple,set)):
             for x in v:rec(x)
@@ -69,18 +67,19 @@ def _structured_direction(e:EngineResult|None)->str|None:
         if x in DIRECTIONS:return x
         if x in {"BULLISH","UP","LONG","TREND_UP"}:return "BUY"
         if x in {"BEARISH","DOWN","SHORT","TREND_DOWN"}:return "SELL"
-    hints=_direction_hints(e)
-    return next(iter(hints)) if len(hints)==1 else None
+    hints=_direction_hints(e);return next(iter(hints)) if len(hints)==1 else None
 
 def _direction(evidence:dict[str,EngineResult])->str:
     buy=sell=0.0
     for e in evidence.values():
         hints=_direction_hints(e);w=EVIDENCE_WEIGHTS.get(e.engine_id,1.0)
         if len(hints)==1:
-            buy+=w if "BUY" in hints else 0.0;sell+=w if "SELL" in hints else 0.0;continue
-        d=_structured_direction(e)
-        if d=="BUY":buy+=w
-        elif d=="SELL":sell+=w
+            if "BUY" in hints:buy+=w
+            else:sell+=w
+        else:
+            d=_structured_direction(e)
+            if d=="BUY":buy+=w
+            elif d=="SELL":sell+=w
     return "BUY" if buy>sell else "SELL" if sell>buy else "NEUTRAL"
 
 def _weighted_alignment(upstream:list[EngineResult])->float:
@@ -104,32 +103,61 @@ def _hard_invalidations(by):
     if any(_exact(by.get("E8"),t) for t in ("INVALID_RISK","INVALID_RISK_GEOMETRY","NEGATIVE_RR","RR_BELOW_MINIMUM")):r.append("E8_RISK_GEOMETRY_INVALID")
     return sorted(set(r))
 
-def _execution_readiness(by,direction):
-    if direction not in DIRECTIONS:return {"ready":False,"reasons":["NO_ACTIONABLE_DIRECTION"]}
+def _atr_from_context(context:dict[str,Any])->float:
+    bars=[b for b in (context.get("bars") or []) if isinstance(b,dict) and all(k in b for k in ("high","low","close"))][-14:]
+    if not bars:return 0.0
+    trs=[];prev=None
+    for b in bars:
+        h,l,c=map(float,(b["high"],b["low"],b["close"]));trs.append(h-l if prev is None else max(h-l,abs(h-prev),abs(l-prev)));prev=c
+    return mean(trs) if trs else 0.0
+
+def _derive_trade_plan(context:dict[str,Any],direction:str)->dict[str,Any]|None:
+    bars=[b for b in (context.get("bars") or []) if isinstance(b,dict) and all(k in b for k in ("high","low","close"))]
+    if len(bars)<20 or direction not in DIRECTIONS:return None
+    atr=_atr_from_context(context)
+    if atr<=0:return None
+    price=float(bars[-1]["close"]);recent=bars[-20:]
+    swing_low=min(float(b["low"]) for b in recent);swing_high=max(float(b["high"]) for b in recent)
+    buffer=.15*atr
+    if direction=="BUY":
+        stop=min(swing_low,price-atr)-buffer
+        risk=price-stop
+        if risk<=0:return None
+        tp1=price+1.0*risk;tp2=price+1.5*risk
+    else:
+        stop=max(swing_high,price+atr)+buffer
+        risk=stop-price
+        if risk<=0:return None
+        tp1=price-1.0*risk;tp2=price-1.5*risk
+    return {"valid":True,"direction":direction,"entry":price,"stop_loss":stop,"take_profit_1":tp1,"take_profit_2":tp2,"rr_tp2":1.5,"risk_distance":risk,"source":"E9_DERIVED_FROM_CLOSED_M5_EVIDENCE","calculated_at_closed_candle":True}
+
+def _execution_readiness(context,by,direction):
+    if direction not in DIRECTIONS:return {"ready":False,"reasons":["NO_ACTIONABLE_DIRECTION"],"plan":None}
     e8=by.get("E8")
-    if not e8:return {"ready":False,"reasons":["E8_MISSING"]}
+    if not e8:return {"ready":False,"reasons":["E8_MISSING"],"plan":None}
     o=e8.output or {};p=_find_key(o,{"trade_plan"})
-    if not isinstance(p,dict):return {"ready":False,"reasons":["E8_TRADE_PLAN_INCOMPLETE"]}
-    required=("entry","stop_loss","take_profit_1","take_profit_2","rr_tp2")
-    if any(p.get(k) is None for k in required):return {"ready":False,"reasons":["E8_TRADE_PLAN_INCOMPLETE"]}
-    rg=_find_key(o,{"risk_gate"})
-    if _text(rg) not in {"RISK_READY","PASS","READY","TRUE"}:return {"ready":False,"reasons":["E8_RISK_NOT_READY"]}
-    try:
-        if float(p["rr_tp2"])<=0:return {"ready":False,"reasons":["E8_INVALID_RR"]}
-    except (TypeError,ValueError):return {"ready":False,"reasons":["E8_INVALID_RR"]}
-    return {"ready":True,"reasons":[]}
+    if isinstance(p,dict):
+        required=("entry","stop_loss","take_profit_1","take_profit_2","rr_tp2")
+        if all(p.get(k) is not None for k in required):
+            try:
+                if float(p["rr_tp2"])>0:return {"ready":True,"reasons":[],"plan":p}
+            except (TypeError,ValueError):pass
+    risk_ready=bool(_state_values(e8)&{"RISK_READY"}) or _has(_blob(e8),"RISK_READY")
+    if not risk_ready:return {"ready":False,"reasons":["E8_RISK_NOT_READY"],"plan":None}
+    plan=_derive_trade_plan(context,direction)
+    return {"ready":bool(plan),"reasons":[] if plan else ["E9_CANNOT_DERIVE_EXECUTION_PLAN"],"plan":plan}
 
 def run_professional_e9(context,upstream,historical_calibration=None):
     by={e.engine_id:e for e in upstream};d=_direction(by);dims=_dimension_state(by);conf=_conflicts(by);inv=_hard_invalidations(by);alignment=_weighted_alignment(upstream)
     thesis=round(_clamp(alignment+sum(3.5 for k in ("structure_support","liquidity_event","location_quality","setup_mature","confirmation","economics") if dims[k])-min(24.0,len(conf)*8.0)),2) if d!="NEUTRAL" else 0.0
-    execution=_execution_readiness(by,d);reasons=list(inv)+list(conf)
+    execution=_execution_readiness(context,by,d);reasons=list(inv)+list(conf)
     if d=="NEUTRAL":reasons.append("DIRECTIONAL_THESIS_UNRESOLVED")
     if not dims["setup_mature"]:reasons.append("SETUP_NOT_MATURE")
     if not dims["confirmation"]:reasons.append("ENTRY_CONFIRMATION_NOT_PROVEN")
     if not dims["economics"]:reasons.append("TRADE_ECONOMICS_NOT_READY")
     reasons.extend(execution["reasons"])
     ready=(d in DIRECTIONS and execution["ready"] and dims["setup_mature"] and dims["confirmation"] and dims["economics"] and thesis>=70 and not conf and not inv)
-    decision=d if ready else "NO_TRADE";e8=by.get("E8");plan=_find_key(e8.output if e8 else {},{"trade_plan"})
-    out={"decision":decision,"decision_authority":"E9","trade_decision_authority":True,"architecture":"PROFESSIONAL_THESIS_REASONING","analysis_complete":True,"direction":d,"evidence_alignment":alignment,"thesis_quality":thesis,"professional_reasoning":{"question":"Is there a clear, asymmetric, confirmed opportunity worth risking capital on now?","primary_thesis":d,"alternative_thesis":"Opposite direction only if primary structure/setup thesis fails","invalidation":"; ".join(inv) if inv else "Structural/setup/confirmation premise failure","dimensions":dims,"conflicts":conf,"hard_invalidations":inv,"execution_ready":ready,"directional_evidence":{"BUY":sum(EVIDENCE_WEIGHTS.get(e.engine_id,1.0) for e in by.values() if "BUY" in _direction_hints(e)),"SELL":sum(EVIDENCE_WEIGHTS.get(e.engine_id,1.0) for e in by.values() if "SELL" in _direction_hints(e))}},"decision_reasons":sorted(set(reasons)),"evidence_conflicts":conf,"hard_invalidations":inv,"trade_plan":plan if isinstance(plan,dict) else {},"gate":ready,"upstream_gates_ignored":True,"gate_semantics":"E9_MASTER_ONLY","learning_policy":"ADVISORY_ONLY_NO_OVERRIDE","professional_decision":"APPROVE_TRADE" if ready else "NO_TRADE"}
+    decision=d if ready else "NO_TRADE";plan=execution["plan"] or {}
+    out={"decision":decision,"decision_authority":"E9","trade_decision_authority":True,"architecture":"PROFESSIONAL_THESIS_REASONING","analysis_complete":True,"direction":d,"evidence_alignment":alignment,"thesis_quality":thesis,"professional_reasoning":{"question":"Is there a clear, asymmetric, confirmed opportunity worth risking capital on now?","primary_thesis":d,"alternative_thesis":"Opposite direction only if primary structure/setup thesis fails","invalidation":"; ".join(inv) if inv else "Structural/setup/confirmation premise failure","dimensions":dims,"conflicts":conf,"hard_invalidations":inv,"execution_ready":ready,"directional_evidence":{"BUY":sum(EVIDENCE_WEIGHTS.get(e.engine_id,1.0) for e in by.values() if "BUY" in _direction_hints(e)),"SELL":sum(EVIDENCE_WEIGHTS.get(e.engine_id,1.0) for e in by.values() if "SELL" in _direction_hints(e))}},"decision_reasons":sorted(set(reasons)),"evidence_conflicts":conf,"hard_invalidations":inv,"trade_plan":plan,"gate":ready,"upstream_gates_ignored":True,"gate_semantics":"E9_MASTER_ONLY","learning_policy":"ADVISORY_ONLY_NO_OVERRIDE","professional_decision":"APPROVE_TRADE" if ready else "NO_TRADE"}
     out["historical_calibration"]=build_advisory(context,historical_calibration) if historical_calibration is not None else None
     return EngineResult("E9",ENGINE_NAMES.get("E9","Master Decision Brain"),ready,thesis,out,tuple(sorted(set(reasons))))
