@@ -1,28 +1,28 @@
-# ENGINE 04 — LIQUIDITY ENGINE v1.0
+# ENGINE 04 — LIQUIDITY BRAIN v2.0
 
 ## PURPOSE
-Identify relevant liquidity locations and price interaction with them.
+Determine where liquidity is likely concentrated and how price interacted with it. Liquidity evidence informs the thesis; it does not create a trade signal.
 
 ## SUB-ENGINES
 4A Liquidity Zone Detection · 4B Sweep Detection · 4C Reaction/Rejection · 4D Acceptance · 4E Reclaim/Failed Break · 4F Liquidity Strength/Quality
 
 ## INPUT
-Market state, regime, structure outputs, OHLCV, permitted liquidity evidence.
+E1–E3 evidence, M5 candles, structural highs/lows, permitted higher-timeframe liquidity references.
 
 ## PROCESSING
-Detect zones, sweeps, reactions, acceptance, reclaim/failed-break behavior, liquidity quality.
+Map liquidity pools and zones; identify sweeps, rejection, acceptance, reclaim and failed breaks; distinguish real interaction from ordinary volatility; assess whether liquidity behavior supports continuation or reversal.
 
 ## OUTPUT
-Liquidity zones/events, interaction state, quality/confidence, reason codes.
+liquidity_map, active_zones[], event, reaction, acceptance, reclaim_state, directional_implication, strength, evidence[], conflicts[], confidence, observations[], reasoning_trace.
 
 ## GATE
-Block conclusions when required price/structure evidence is invalid or insufficient.
+NONE. NO_EVENT is a valid conclusion. Ambiguous liquidity is preserved as uncertainty rather than treated as failure.
 
 ## SCORE
-Liquidity quality is analytical evidence only; it cannot create an entry decision.
+Confidence measures clarity and quality of liquidity evidence only.
 
 ## TRACEABILITY
-Record source candles, zone/event IDs, upstream versions, timestamps, gate status, scores, confidence, reason codes.
+Record zone sources, event candle, pre/post-event price behavior, upstream structure and all competing interpretations.
 
 ## DECISION BOUNDARY
-Liquidity analysis only; no trade decision.
+Liquidity analysis only.
