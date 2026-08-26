@@ -10,6 +10,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from statistics import mean
 from typing import Any
 from .contracts import EngineResult
+from .e1_brain import analyze_e1
 
 ENGINE_NAMES={"E1":"Market State Brain","E2":"Opportunity / Regime Brain","E3":"Market Structure Brain","E4":"Liquidity Brain","E5":"Location / Value Brain","E6":"Setup Brain","E7":"Confirmation Brain","E8":"Trade Economics Brain","E9":"Master Decision Brain"}
 SUB_ENGINE_CODES={"E1":["1A","1B","1C","1D","1E","1F","1G"],"E2":["2A","2B","2C","2D","2E","2F"],"E3":["3A","3B","3C","3D","3E","3F"],"E4":["4A","4B","4C","4D","4E","4F"],"E5":["5A","5B","5C","5D","5E","5F"],"E6":["6A","6B","6C","6D","6E","6F"],"E7":["7A","7B","7C","7D","7E","7F"],"E8":["8A","8B","8C","8D","8E","8F","8G"]}
@@ -22,7 +23,7 @@ def _module(code:str): return importlib.import_module(f"trading_system.engines.e
 
 
 def _qualitative(value: Any, key: str | None = None):
-    """Remove specialist trade-decision semantics while preserving observations."""
+    """Remove trade-decision semantics while preserving market-state evidence."""
     if isinstance(value, dict):
         result={}
         for k,v in value.items():
@@ -37,8 +38,6 @@ def _qualitative(value: Any, key: str | None = None):
         return result
     if isinstance(value,(list,tuple)):
         return [_qualitative(v,key) for v in value]
-    if isinstance(value,str) and key in {"conclusion","analyst_conclusion"}:
-        value=value.replace("BUY","UP").replace("SELL","DOWN").replace("LONG","UP").replace("SHORT","DOWN")
     return value
 
 
@@ -79,7 +78,6 @@ def _run(code:str,snapshot:dict[str,Any],evidence_bus:dict[str,Any]|None=None):
 
 
 def _value_observations(value: Any, prefix: str = "") -> list[str]:
-    """Turn structured specialist output into human-readable evidence statements."""
     observations=[]
     if isinstance(value,dict):
         for key,item in value.items():
@@ -87,12 +85,10 @@ def _value_observations(value: Any, prefix: str = "") -> list[str]:
             if lk in {"score","decision","trade_decision","gate","gate_passed","specialist_gate"}:
                 continue
             if isinstance(item,(str,int,float,bool)):
-                if str(item).strip():
-                    observations.append(f"{key}={item}")
+                if str(item).strip(): observations.append(f"{key}={item}")
             elif isinstance(item,(list,tuple)):
                 for child in item[:4]:
-                    if isinstance(child,(str,int,float,bool)) and str(child).strip():
-                        observations.append(f"{key}={child}")
+                    if isinstance(child,(str,int,float,bool)) and str(child).strip(): observations.append(f"{key}={child}")
     elif isinstance(value,(list,tuple)):
         for item in value[:8]:
             if isinstance(item,(str,int,float,bool)) and str(item).strip(): observations.append(str(item))
@@ -127,6 +123,12 @@ def run_engine(engine_id:str,snapshot:dict[str,Any],evidence_bus:dict[str,Any]|N
         observations.extend(_value_observations(output))
         reasons=_reason_statements(r)
         evidence[r.sub_engine_id]={"output":output,"observations":list(dict.fromkeys(str(x) for x in observations))[:12],"reason_codes":reasons}
+
+    if engine_id == "E1":
+        brain=analyze_e1(snapshot.get("bars") or [])
+        output={"architecture":"E1_PROFESSIONAL_MARKET_STATE_BRAIN_V2.1","specialists":evidence,**brain,"evidence_count":len(evidence),"peer_evidence_count":len(permitted),"upstream_decisions_used":False,"upstream_gates_used":False,"score_used":False,"reasoning_role":"MARKET_STATE_ANALYST"}
+        return EngineResult("E1",ENGINE_NAMES["E1"],None,float(brain["confidence"])*100.0,output,())
+
     score=mean(float(r.score) for r in results) if results else 0.0
     used=[package.get("engine_id") for package in permitted.values() if isinstance(package,dict) and package.get("engine_id")]
     dependency=_dependency_report(engine_id,permitted)
