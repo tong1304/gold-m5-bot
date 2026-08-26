@@ -5,25 +5,27 @@ from typing import Any
 from trading_system.engines.e2.professional_regime import ProfessionalE2Brain
 
 
-class E2CoreBrain(ProfessionalE2Brain):
-    """Production E2 brain backed by the real E2 professional regime engine.
-
-    E2 owns the opportunity/regime thesis. E1 is only a cross-check and must
-    never supply E2's conclusion. Execution remains exclusively E9's job.
-    """
-    pass
+# E2's production entry point is deliberately direct: production_v2 calls
+# analyze_e2(), and this module owns the E2 brain invocation.  Sub-engines stay
+# paused; E1 is only an independent upstream market-state input.
+E2_BRAIN = ProfessionalE2Brain
 
 
 def analyze_e2(snapshot: dict[str, Any]) -> dict[str, Any]:
-    """Run the real production E2 brain as one independent analyst."""
-    brain = E2CoreBrain("E2_CORE")
+    """Analyze the opportunity/regime directly with the real E2 brain.
+
+    No E2 sub-engine, scorer, gate, or newly-created replacement brain is
+    inserted between the production pipeline and the real E2 implementation.
+    """
+    brain = E2_BRAIN("E2_CORE")
     output, confidence, reasons = brain._analyse(snapshot)
     result = dict(output)
     result["confidence"] = float(confidence)
     result["reason_codes"] = list(reasons or ())
-    result["reasoning_mode"] = "REAL_PRODUCTION_E2_BRAIN"
+    result["reasoning_mode"] = "REAL_PRODUCTION_E2_BRAIN_DIRECT"
     result["sub_engines_active"] = False
     result["sub_engines_status"] = "PAUSED"
+    result["reasoning_role"] = "OPPORTUNITY_REGIME_ANALYST"
     result["professional_reasoning"] = {
         "question": result.get("question") or ProfessionalE2Brain.QUESTION,
         "conclusion": (
@@ -43,5 +45,4 @@ def analyze_e2(snapshot: dict[str, Any]) -> dict[str, Any]:
         "e1_cross_check": result.get("alignment_with_e1", "INCONCLUSIVE"),
     }
     result["finding"] = result["professional_reasoning"]["conclusion"]
-    result["reasoning_role"] = "OPPORTUNITY_REGIME_ANALYST"
     return result
