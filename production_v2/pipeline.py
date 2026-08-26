@@ -38,6 +38,39 @@ def _evidence_package(result: EngineResult) -> dict[str, Any]:
     }
 
 
+def _normalize_e8_execution_boundary(e8: EngineResult | None) -> EngineResult | None:
+    """Promote E8's verified execution evidence to the E8 engine boundary.
+
+    E8G is the specialist that owns trade economics. ``run_engine`` keeps all
+    specialist evidence nested for traceability, but E9 must receive the
+    verified execution contract without having to know E8's internal
+    specialist layout. No values are invented here; this function only copies
+    fields that E8G actually published.
+    """
+    if e8 is None:
+        return None
+
+    output = dict(e8.output or {})
+    specialists = output.get("specialists") or {}
+    risk_specialist = specialists.get("8G") if isinstance(specialists, dict) else None
+    risk_output = risk_specialist.get("output") if isinstance(risk_specialist, dict) else None
+    if not isinstance(risk_output, dict):
+        return e8
+
+    for key in ("trade_plan", "plan_status", "risk_gate", "risk_basis", "direction", "direction_source"):
+        if key in risk_output:
+            output[key] = risk_output[key]
+
+    return EngineResult(
+        e8.engine_id,
+        e8.name,
+        e8.gate_passed,
+        e8.score,
+        output,
+        e8.reason_codes,
+    )
+
+
 def _e8_trade_plan_complete(e8: EngineResult | None) -> bool:
     """Return True only for a fully verified E8 execution plan.
 
@@ -141,6 +174,10 @@ class ProductionPipeline:
             for future in as_completed(futures):
                 engine_id = futures[future]
                 enriched[engine_id] = future.result()
+
+        # E8's trade economics are an execution contract, not hidden internal
+        # specialist state. Promote the contract before E9 reasons over it.
+        enriched["E8"] = _normalize_e8_execution_boundary(enriched.get("E8")) or enriched.get("E8")
 
         engines = [enriched[engine_id] for engine_id in ENGINE_ORDER]
         calibration = historical_calibration or snapshot.get("historical_calibration")
