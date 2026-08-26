@@ -7,6 +7,10 @@ from production_v2_telegram import send_telegram
 _LOCK = threading.Lock()
 _SENT = False
 
+# Production-V2 startup notification contract.
+# No legacy/V11 startup text is permitted in this module.
+STARTUP_FORMAT = "PRODUCTION-V2-E1-E9"
+
 
 def _startup_message() -> str:
     return (
@@ -20,7 +24,7 @@ def _startup_message() -> str:
 
 
 def send_startup_notification(symbol="BTC + GOLD / LSE", engine_version=None):
-    """Send the approved Production-V2 startup notification once per process."""
+    """Send only the Production-V2 startup notification, once per process."""
     global _SENT
     with _LOCK:
         if _SENT:
