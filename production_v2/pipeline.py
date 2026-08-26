@@ -10,6 +10,49 @@ from .engines import ENGINE_IDS, EVIDENCE_INPUTS, run_engine
 ENGINE_ORDER = ENGINE_IDS
 
 
+_DIRECTION_WORDS = {
+    "BUY": "BULLISH_PRESSURE",
+    "SELL": "BEARISH_PRESSURE",
+    "LONG": "UPSIDE_EXPOSURE",
+    "SHORT": "DOWNSIDE_EXPOSURE",
+}
+
+
+def _sanitize_specialist_value(value: Any, key: str = "") -> Any:
+    """Presentation boundary: E1-E8 expose evidence, never trade commands."""
+    if isinstance(value, dict):
+        cleaned = {}
+        for k, v in value.items():
+            lk = str(k).lower()
+            if lk in {"direction", "bias", "orientation", "market_direction", "decision", "score", "gate", "handoff"}:
+                continue
+            cleaned[k] = _sanitize_specialist_value(v, str(k))
+        return cleaned
+    if isinstance(value, list):
+        return [_sanitize_specialist_value(v, key) for v in value]
+    if isinstance(value, tuple):
+        return [_sanitize_specialist_value(v, key) for v in value]
+    if isinstance(value, str):
+        text = value
+        for old, new in _DIRECTION_WORDS.items():
+            text = text.replace(old, new)
+        return text
+    return value
+
+
+def _sanitize_specialist_result(result: EngineResult) -> EngineResult:
+    output = _sanitize_specialist_value(dict(result.output or {}))
+    output.update({
+        "trade_decision_authority": False,
+        "specialist_gate": "NONE",
+        "gate": None,
+        "reasoning_role": "SPECIALIST_EVIDENCE",
+        "analysis_complete": True,
+    })
+    # Specialist score is intentionally not part of the evidence contract.
+    return EngineResult(result.engine_id, result.name, None, None, output, result.reason_codes)
+
+
 def _run_wave(engine_ids: tuple[str, ...], snapshot: dict[str, Any], evidence_bus: dict[str, Any] | None) -> dict[str, EngineResult]:
     results: dict[str, EngineResult] = {}
     with ThreadPoolExecutor(max_workers=len(engine_ids), thread_name_prefix="prod-v2-specialist") as pool:
@@ -66,7 +109,7 @@ def _trade_plan_complete(result: EngineResult | None) -> bool:
 
 
 def _enforce_e9_execution_invariant(e9: EngineResult, e8: EngineResult | None) -> EngineResult:
-    """E9 alone decides. Missing final execution data means E9 decides NO_TRADE, never an exception."""
+    """E9 alone decides. Missing execution data can only produce NO_TRADE."""
     if not e9.gate_passed:
         return e9
     e8_ready = _trade_plan_complete(e8)
@@ -89,6 +132,7 @@ def _enforce_e9_execution_invariant(e9: EngineResult, e8: EngineResult | None) -
         "invariant": "E9_EXECUTION_NOT_READY",
         "trade_decision_authority": True,
         "decision_authority": "E9",
+        "gate": False,
     })
     reasoning.update({
         "final_decision": "NO_TRADE",
@@ -127,21 +171,26 @@ class ProductionPipeline:
         if normalized_e8 is not None:
             enriched["E8"] = normalized_e8
 
-        engines = [enriched[engine_id] for engine_id in ENGINE_ORDER]
+        # E9 receives the complete internal evidence. The externally logged
+        # E1-E8 objects are sanitized after E9 analysis so specialists cannot
+        # appear to issue a trade command or expose a numeric score.
+        internal_engines = [enriched[engine_id] for engine_id in ENGINE_ORDER]
         calibration = historical_calibration or snapshot.get("historical_calibration")
         e9 = run_professional_e9(
             {**snapshot, "evidence_bus": {k: _evidence_package(v) for k, v in enriched.items()}},
-            engines,
+            internal_engines,
             calibration,
         )
         e9 = _enforce_e9_execution_invariant(e9, enriched.get("E8"))
-        engines.append(e9)
+
+        visible_specialists = [_sanitize_specialist_result(enriched[engine_id]) for engine_id in ENGINE_ORDER]
+        engines = visible_specialists + [e9]
         trade_plan = e9.output.get("trade_plan", {})
-        final_gate = bool(e9.gate_passed and e9.output.get("decision") in {"BUY", "SELL"})
+        final_gate = bool(e9.gate_passed and e9.output.get("decision") in {"BUY", "SELL"} and _trade_plan_complete(e9))
         return DecisionResult(
             symbol,
             timeframe,
-            e9.output.get("decision", "NO_TRADE"),
+            e9.output.get("decision", "NO_TRADE") if final_gate else "NO_TRADE",
             final_gate,
             e9.score,
             tuple(engines),
@@ -157,7 +206,7 @@ class ProductionPipeline:
                 "next_evaluation": "NEXT_CLOSED_M5_CANDLE",
                 "wait_bars": 0,
                 "decision_reasons": list(e9.reason_codes),
-                "evidence_score": e9.output.get("evidence_score", e9.score),
+                "evidence_score": None,
             },
             tuple(e9.reason_codes),
         )
