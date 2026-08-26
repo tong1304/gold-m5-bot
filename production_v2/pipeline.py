@@ -10,7 +10,6 @@ from .engines import ENGINE_IDS, EVIDENCE_INPUTS, run_engine
 
 ENGINE_ORDER = ENGINE_IDS
 
-
 _DIRECTION_WORDS = {
     "BUY": "TRADE_DIRECTION",
     "SELL": "TRADE_DIRECTION",
@@ -30,27 +29,24 @@ _DIRECTION_WORDS = {
 
 
 def _sanitize_directional_text(text: str) -> str:
-    """Remove directional conclusions from specialist presentation text."""
     result = text
     for old, new in sorted(_DIRECTION_WORDS.items(), key=lambda item: -len(item[0])):
         result = re.sub(rf"(?<![A-Z0-9_]){re.escape(old)}(?![A-Z0-9_])", new, result)
-    # Direction fields may have been serialized into observations such as
-    # direction=UP/DOWN/BUY/SELL. Replace the complete assertion, not merely
-    # the word, so the specialist cannot appear to choose a side.
-    result = re.sub(r"\b(?:DIRECTION|BIAS|ORIENTATION|MARKET_DIRECTION)\s*=\s*(?:UP|DOWN|BUY|SELL|BULLISH|BEARISH|LONG|SHORT)\b", "direction=UNRESOLVED", result, flags=re.IGNORECASE)
+    result = re.sub(
+        r"\b(?:DIRECTION|BIAS|ORIENTATION|MARKET_DIRECTION)\s*=\s*(?:UP|DOWN|BUY|SELL|BULLISH|BEARISH|LONG|SHORT)\b",
+        "direction=UNRESOLVED",
+        result,
+        flags=re.IGNORECASE,
+    )
     return result
 
 
 def _sanitize_specialist_value(value: Any, key: str = "") -> Any:
-    """Presentation boundary: E1-E8 expose evidence/reasons, never trade commands."""
     if isinstance(value, dict):
         cleaned = {}
         for k, v in value.items():
             lk = str(k).lower()
-            if lk in {
-                "direction", "bias", "orientation", "market_direction",
-                "decision", "score", "gate", "handoff",
-            }:
+            if lk in {"direction", "bias", "orientation", "market_direction", "decision", "score", "gate", "handoff"}:
                 continue
             cleaned[k] = _sanitize_specialist_value(v, str(k))
         return cleaned
@@ -80,8 +76,7 @@ def _run_wave(engine_ids: tuple[str, ...], snapshot: dict[str, Any], evidence_bu
     with ThreadPoolExecutor(max_workers=len(engine_ids), thread_name_prefix="prod-v2-specialist") as pool:
         futures = {pool.submit(run_engine, engine_id, snapshot, evidence_bus): engine_id for engine_id in engine_ids}
         for future in as_completed(futures):
-            engine_id = futures[future]
-            results[engine_id] = future.result()
+            results[futures[future]] = future.result()
     return results
 
 
@@ -130,28 +125,118 @@ def _trade_plan_complete(result: EngineResult | None) -> bool:
         return False
 
 
-def _enforce_e9_execution_invariant(e9: EngineResult, e8: EngineResult | None) -> EngineResult:
-    """E9 alone decides. Missing execution data can only produce NO_TRADE."""
-    if not e9.gate_passed:
-        return e9
-    e8_ready = _trade_plan_complete(e8)
-    e9_ready = _trade_plan_complete(e9)
-    if e8_ready and e9_ready:
-        return e9
+def _exact_tokens(value: Any) -> set[str]:
+    text = str(value).upper()
+    return set(re.findall(r"(?<![A-Z0-9_])[A-Z][A-Z0-9_]*(?![A-Z0-9_])", text))
 
+
+def _specialist_has_negative_execution_state(e8: EngineResult | None) -> list[str]:
+    """Detect explicit E8 states that make execution unavailable.
+
+    This is deliberately exact-token based so NO_FOLLOW_THROUGH cannot be
+    mistaken for FOLLOW_THROUGH and RISK_NOT_READY cannot be mistaken for
+    RISK_READY.
+    """
+    if e8 is None:
+        return ["E8_MISSING"]
+    blob = " ".join(str(x) for x in _walk_tokens(e8.output))
+    tokens = _exact_tokens(blob)
+    blockers = []
+    checks = (
+        ("INVALIDATION_PENDING", "E8_INVALIDATION_NOT_DEFINED"),
+        ("RISK_NOT_READY", "E8_RISK_NOT_READY"),
+        ("NO_RISK_READY", "E8_RISK_NOT_READY"),
+        ("INCOMPLETE_PLAN", "E8_PLAN_INCOMPLETE"),
+        ("EXECUTION_PLAN_NOT_READY", "E8_PLAN_INCOMPLETE"),
+        ("MISSING_PLAN", "E8_PLAN_MISSING"),
+        ("INVALID_RR", "E8_INVALID_RR"),
+        ("RR_BELOW_MINIMUM", "E8_INVALID_RR"),
+        ("INVALID_RISK", "E8_INVALID_RISK"),
+        ("INVALID_RISK_GEOMETRY", "E8_INVALID_RISK"),
+    )
+    for token, reason in checks:
+        if token in tokens and reason not in blockers:
+            blockers.append(reason)
+    return blockers
+
+
+def _walk_tokens(value: Any):
+    if isinstance(value, dict):
+        for k, v in value.items():
+            yield str(k)
+            yield from _walk_tokens(v)
+    elif isinstance(value, (list, tuple, set)):
+        for item in value:
+            yield from _walk_tokens(item)
+    elif value is not None:
+        yield str(value)
+
+
+def _specialist_confirmation_ready(e7: EngineResult | None) -> bool:
+    if e7 is None:
+        return False
+    tokens = _exact_tokens(" ".join(_walk_tokens(e7.output)))
+    negative = {
+        "NO_TRIGGER", "NO_FOLLOW_THROUGH", "WAIT", "CONFIRMATION_WAIT",
+        "TRIGGER_NOT_OBSERVED", "CONFIRMATION_NOT_PROVEN", "QUALITY_NOT_PROVEN",
+    }
+    positive = {"CONFIRMATION_PASS", "CONFIRMED", "FOLLOW_THROUGH_OBSERVED", "TRIGGER_OBSERVED"}
+    if tokens & negative:
+        return False
+    return bool(tokens & positive)
+
+
+def _specialist_setup_ready(e6: EngineResult | None) -> bool:
+    if e6 is None:
+        return False
+    tokens = _exact_tokens(" ".join(_walk_tokens(e6.output)))
+    negative = {"QUALITY_WEAK", "DEVELOPING", "NOT_INVALIDATED"}
+    positive = {"MATURE", "VALID_SETUP", "CONTINUATION_SETUP", "REVERSAL_SETUP", "QUALITY_PASS"}
+    if tokens & {"QUALITY_WEAK", "DEVELOPING"}:
+        return False
+    return bool(tokens & positive) and "MATURE" in tokens
+
+
+def _enforce_e9_execution_invariant(e9: EngineResult, e8: EngineResult | None, e6: EngineResult | None = None, e7: EngineResult | None = None) -> EngineResult:
+    """E9 is the sole authority, but it may approve only a complete contract.
+
+    A BUY/SELL produced before execution is complete is never actionable.
+    Negative specialist states are interpreted exactly, not by substring.
+    """
     output = dict(e9.output or {})
     reasoning = dict(output.get("professional_reasoning") or {})
     reasons = list(e9.reason_codes)
-    for diagnostic in ("E9_EXECUTION_NOT_READY", "EXECUTION_PLAN_NOT_READY"):
+
+    e8_plan_ready = _trade_plan_complete(e8)
+    e9_plan_ready = _trade_plan_complete(e9)
+    e8_blockers = _specialist_has_negative_execution_state(e8)
+    confirmation_ready = _specialist_confirmation_ready(e7)
+    setup_ready = _specialist_setup_ready(e6)
+
+    if not e8_plan_ready:
+        e8_blockers.append("E8_PLAN_INCOMPLETE")
+    if not confirmation_ready:
+        e8_blockers.append("ENTRY_CONFIRMATION_NOT_PROVEN")
+    if not setup_ready:
+        e8_blockers.append("SETUP_NOT_MATURE")
+    e8_blockers = sorted(set(e8_blockers))
+
+    contract_ready = bool(e8_plan_ready and e9_plan_ready and not e8_blockers)
+
+    if e9.gate_passed and contract_ready:
+        return e9
+
+    for diagnostic in e8_blockers or ["E9_EXECUTION_NOT_READY"]:
         if diagnostic not in reasons:
             reasons.append(diagnostic)
+
     output.update({
         "decision": "NO_TRADE",
         "execution_readiness_score": 0.0,
         "decision_score": 0.0,
         "trade_plan": {},
         "invariant_blocked": True,
-        "invariant": "E9_EXECUTION_NOT_READY",
+        "invariant": "E9_EXECUTION_CONTRACT_NOT_READY",
         "trade_decision_authority": True,
         "decision_authority": "E9",
         "gate": False,
@@ -160,12 +245,16 @@ def _enforce_e9_execution_invariant(e9: EngineResult, e8: EngineResult | None) -
         "final_decision": "NO_TRADE",
         "execution_ready": False,
         "decision_authority": "E9",
-        "invariant": "E9_EXECUTION_NOT_READY",
-        "e8_plan_complete": e8_ready,
-        "e9_plan_complete": e9_ready,
+        "invariant": "E9_EXECUTION_CONTRACT_NOT_READY",
+        "e8_plan_complete": e8_plan_ready,
+        "e9_plan_complete": e9_plan_ready,
+        "setup_state": "MATURE" if setup_ready else "NOT_MATURE",
+        "confirmation_state": "CONFIRMED" if confirmation_ready else "NOT_CONFIRMED",
+        "execution_state": "READY" if contract_ready else "NOT_READY",
+        "contract_blockers": e8_blockers,
     })
     output["professional_reasoning"] = reasoning
-    return EngineResult(e9.engine_id, e9.name, False, 0.0, output, tuple(reasons))
+    return EngineResult("E9", e9.name, False, 0.0, output, tuple(sorted(set(reasons))))
 
 
 class ProductionPipeline:
@@ -186,8 +275,7 @@ class ProductionPipeline:
                 peer_bus = {k: v for k, v in baseline_bus.items() if k in EVIDENCE_INPUTS[engine_id]}
                 futures[pool.submit(run_engine, engine_id, snapshot, peer_bus)] = engine_id
             for future in as_completed(futures):
-                engine_id = futures[future]
-                enriched[engine_id] = future.result()
+                enriched[futures[future]] = future.result()
 
         normalized_e8 = _normalize_e8_execution_boundary(enriched.get("E8"))
         if normalized_e8 is not None:
@@ -200,16 +288,17 @@ class ProductionPipeline:
             internal_engines,
             calibration,
         )
-        e9 = _enforce_e9_execution_invariant(e9, enriched.get("E8"))
+        e9 = _enforce_e9_execution_invariant(e9, enriched.get("E8"), enriched.get("E6"), enriched.get("E7"))
 
         visible_specialists = [_sanitize_specialist_result(enriched[engine_id]) for engine_id in ENGINE_ORDER]
         engines = visible_specialists + [e9]
         trade_plan = e9.output.get("trade_plan", {})
         final_gate = bool(e9.gate_passed and e9.output.get("decision") in {"BUY", "SELL"} and _trade_plan_complete(e9))
+        final_decision = e9.output.get("decision", "NO_TRADE") if final_gate else "NO_TRADE"
         return DecisionResult(
             symbol,
             timeframe,
-            e9.output.get("decision", "NO_TRADE") if final_gate else "NO_TRADE",
+            final_decision,
             final_gate,
             e9.score,
             tuple(engines),
