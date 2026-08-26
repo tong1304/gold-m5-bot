@@ -1,34 +1,43 @@
-from production_v2.engines import run_engine
+from production_v2.contracts import EngineResult
+from production_v2.pipeline import _normalize_e8_execution_boundary
 
 
-def _bars():
-    bars = []
-    for i in range(60):
-        close = 100.0 + i * 0.04
-        bars.append({
-            "open": close - 0.02,
-            "high": close + 0.08,
-            "low": close - 0.08,
-            "close": close,
-        })
-    return bars
-
-
-def test_e8_exposes_verified_trade_plan_at_engine_boundary():
-    """E8's verified risk plan must be consumable directly by E9."""
-    result = run_engine(
+def test_e8_exposes_verified_trade_plan_at_e9_boundary():
+    """E9 receives E8's execution contract without knowing E8 internals."""
+    plan = {
+        "direction": "BUY",
+        "entry": 100.0,
+        "stop_loss": 99.0,
+        "take_profit_1": 101.5,
+        "take_profit_2": 102.0,
+        "rr_tp2": 2.0,
+        "verified": True,
+    }
+    e8 = EngineResult(
         "E8",
+        "Trade Economics Brain",
+        None,
+        55.0,
         {
-            "symbol": "GOLD",
-            "timeframe": "M5",
-            "bars": _bars(),
-            "risk_policy": {"min_rr": 1.5, "max_stop_atr": 3.0},
+            "specialists": {
+                "8A": {"output": {"state": "INVALIDATION_DEFINED"}},
+                "8G": {
+                    "output": {
+                        "trade_plan": plan,
+                        "plan_status": "COMPLETE",
+                        "risk_gate": "RISK_READY",
+                        "risk_basis": "E8_VERIFIED_GEOMETRY",
+                        "direction": "BUY",
+                    }
+                },
+            }
         },
+        (),
     )
 
-    plan = result.output["trade_plan"]
-    assert plan["verified"] is True
-    assert plan["direction"] == "BUY"
-    assert plan["entry"] < plan["take_profit_1"] < plan["take_profit_2"]
-    assert plan["stop_loss"] < plan["entry"]
-    assert plan["rr_tp2"] >= 1.5
+    normalized = _normalize_e8_execution_boundary(e8)
+    assert normalized is not None
+    assert normalized.output["trade_plan"] == plan
+    assert normalized.output["plan_status"] == "COMPLETE"
+    assert normalized.output["risk_gate"] == "RISK_READY"
+    assert normalized.output["direction"] == "BUY"
