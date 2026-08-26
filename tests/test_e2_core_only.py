@@ -23,14 +23,19 @@ def _transition_bars(n=100):
     bars = []
     price = 3000.0
     for i in range(n):
-        # Old downtrend remains in the longer EMA, while the recent impulse
-        # turns upward. A professional E2 should treat this as repricing/transition,
-        # not force a tradeable trend from a single moving-average crossover.
         if i < n - 12:
             close = price - i * 1.8
         else:
             close = price - (n - 12) * 1.8 + (i - (n - 12)) * 7.0
         bars.append({"open": close - 0.2, "high": close + 1.5, "low": close - 1.5, "close": close})
+    return bars
+
+
+def _balanced_range_bars(n=100):
+    bars = []
+    for i in range(n):
+        close = 3000.0 + (0.8 if i % 4 in (0, 1) else -0.8)
+        bars.append({"open": close, "high": close + 2.0, "low": close - 2.0, "close": close})
     return bars
 
 
@@ -70,6 +75,10 @@ def test_e2_professional_brain_publishes_a_complete_independent_thesis():
     assert output["professional_reasoning"]["evidence"]
     assert output["professional_reasoning"]["missing_evidence"] == []
     assert output["professional_reasoning"]["counter_evidence"] == []
+    assert output["auction_state"] in {"ACCEPTING_UP", "BALANCED", "REPRICING_UP"}
+    assert output["location_context"] in {"MID_RANGE", "EDGE_HIGH", "EDGE_LOW"}
+    assert output["regime_confidence"] > 0.0
+    assert output["decision_factors"]
 
 
 def test_e2_does_not_turn_old_ema_bias_into_a_false_trend_during_repricing():
@@ -80,6 +89,16 @@ def test_e2_does_not_turn_old_ema_bias_into_a_false_trend_during_repricing():
         assert output["direction"] == "NEUTRAL"
         assert output["opportunity"] == "WAIT_FOR_REPRICING"
         assert output["opportunity_state"] == "WAIT"
+
+
+def test_e2_never_calls_the_middle_of_a_range_a_range_rotation_entry_opportunity():
+    result = run_engine("E2", {"bars": _balanced_range_bars()}, {})
+    output = result.output
+    assert output["regime"] == "RANGE"
+    assert output["location_context"] == "MID_RANGE"
+    assert output["opportunity"] == "WAIT_FOR_RANGE_EDGE"
+    assert output["opportunity_state"] == "WAIT"
+    assert "range edge" in output["decision_factors"][0].lower()
 
 
 def test_e2_e1_is_only_cross_check_not_a_direction_override():
