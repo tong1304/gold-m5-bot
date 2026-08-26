@@ -9,12 +9,13 @@ from .professional_brain import run_professional_e9
 from .engines import ENGINE_IDS, EVIDENCE_INPUTS, run_engine
 
 ENGINE_ORDER = ENGINE_IDS
-_DIRECTION_WORDS = {"BUY":"TRADE_DIRECTION","SELL":"TRADE_DIRECTION","LONG":"UPSIDE_EXPOSURE","SHORT":"DOWNSIDE_EXPOSURE","BULLISH":"DIRECTIONAL_PRESSURE","BEARISH":"DIRECTIONAL_PRESSURE","TREND_UP":"TREND_PRESENT","TREND_DOWN":"TREND_PRESENT","BULLISH_BOS":"STRUCTURE_BREAK","BEARISH_BOS":"STRUCTURE_BREAK","STRUCTURAL_DISCOUNT":"LOCATION_FAVORABLE","STRUCTURAL_PREMIUM":"LOCATION_FAVORABLE","LIQUIDITY_ABOVE":"LIQUIDITY_LEVEL","LIQUIDITY_BELOW":"LIQUIDITY_LEVEL"}
+_DIRECTION_WORDS = {"BUY":"TRADE_DECISION","SELL":"TRADE_DECISION","LONG":"UPSIDE_EXPOSURE","SHORT":"DOWNSIDE_EXPOSURE"}
 
 
 def _sanitize_directional_text(text: str) -> str:
     result=text
-    for old,new in sorted(_DIRECTION_WORDS.items(),key=lambda item:-len(item[0])): result=re.sub(rf"(?<![A-Z0-9_]){re.escape(old)}(?![A-Z0-9_])",new,result)
+    for old,new in sorted(_DIRECTION_WORDS.items(),key=lambda item:-len(item[0])):
+        result=re.sub(rf"(?<![A-Z0-9_]){re.escape(old)}(?![A-Z0-9_])",new,result)
     return re.sub(r"\b(?:DIRECTION|BIAS|ORIENTATION|MARKET_DIRECTION)\s*=\s*(?:UP|DOWN|BUY|SELL|BULLISH|BEARISH|LONG|SHORT)\b","direction=UNRESOLVED",result,flags=re.IGNORECASE)
 
 
