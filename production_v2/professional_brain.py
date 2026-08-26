@@ -10,30 +10,21 @@ _FATAL_REASONS = {"E1_DATA_INVALID", "E3_STRUCTURE_INVALIDATED", "E6_SETUP_INVAL
 
 def _status_from_legacy(result: EngineResult) -> str:
     reasons = set(result.reason_codes)
-    if reasons & _FATAL_REASONS:
-        return "CONFLICT_OR_INVALID"
+    if reasons & _FATAL_REASONS: return "CONFLICT_OR_INVALID"
     if result.engine_id == "E7":
-        confirmation = result.output.get("professional_reasoning", {}).get("confirmation")
-        return "CONFIRMED" if confirmation == "CONFIRMATION_PASS" else "NOT_CONFIRMED"
+        return "CONFIRMED" if result.output.get("professional_reasoning", {}).get("confirmation") == "CONFIRMATION_PASS" else "NOT_CONFIRMED"
     if result.engine_id == "E8":
         return "ECONOMICS_READY" if result.output.get("trade_plan", {}).get("valid") else "ECONOMICS_UNAVAILABLE"
-    if result.score >= 75:
-        return "STRONG_EVIDENCE"
-    if result.score >= 55:
-        return "PARTIAL_EVIDENCE"
+    if result.score >= 75: return "STRONG_EVIDENCE"
+    if result.score >= 55: return "PARTIAL_EVIDENCE"
     return "WEAK_EVIDENCE"
 
 
 def _professional_answer(engine_id: str, output: dict[str, Any], prior: dict[str, Any]) -> dict[str, Any]:
-    """Create the specialist's conclusion without assigning a trade action."""
+    """Create the specialist conclusion without assigning a trade action."""
     r = dict(output.get("professional_reasoning") or {})
-    r["inputs_from_previous_engines"] = [
-        key for key, value in prior.items()
-        if key.startswith("E") and key.endswith("_result") and isinstance(value, dict)
-    ]
-    r["specialist_status"] = _status_from_legacy(
-        EngineResult(engine_id, ENGINE_NAMES[engine_id], True, float(output.get("evidence_quality", 0)), output)
-    )
+    r["inputs_from_previous_engines"] = [key for key, value in prior.items() if key.startswith("E") and key.endswith("_result") and isinstance(value, dict)]
+    r["specialist_status"] = _status_from_legacy(EngineResult(engine_id, ENGINE_NAMES[engine_id], True, float(output.get("evidence_quality", 0)), output))
     r["specialist_conclusion"] = {
         "E1": "กำหนดสภาวะตลาดและ Market Bias เพื่ออธิบายว่าตลาดกำลังอยู่ในสภาพใด",
         "E2": "เลือก Regime และ Playbook ที่เหมาะกับสภาวะจาก E1 โดยยังไม่ตัดสินการเข้าเทรด",
@@ -51,16 +42,20 @@ def run_professional_engine(engine_id: str, context: dict[str, Any]) -> EngineRe
     raw = _legacy_run_engine(engine_id, context)
     output = dict(raw.output)
     output["professional_reasoning"] = _professional_answer(engine_id, output, context)
+    # E8 may need a price plan, but that plan must describe orientation rather
+    # than decide BUY/SELL. E9 converts orientation into the final action.
+    if engine_id == "E8":
+        plan = dict(output.get("trade_plan") or {})
+        raw_direction = plan.pop("direction", None)
+        if raw_direction in {"BUY", "SELL"}: plan["orientation"] = "UP" if raw_direction == "BUY" else "DOWN"
+        output["trade_plan"] = plan
     output["analysis_status"] = _status_from_legacy(raw)
     output["analysis_complete"] = True
     output["handoff_allowed"] = True
     output["trade_decision_authority"] = False
     output["analysis_reason_codes"] = list(raw.reason_codes)
     fatal = bool(set(raw.reason_codes) & _FATAL_REASONS)
-    # Missing trigger, weak setup, no sweep, or weak economics are specialist
-    # conclusions. They must reach E9 rather than stopping the pipeline.
-    if engine_id == "E8" and not output.get("trade_plan", {}).get("valid"):
-        fatal = False
+    if engine_id == "E8" and not output.get("trade_plan", {}).get("valid"): fatal = False
     output["specialist_gate"] = "ANALYSIS_FATAL" if fatal else "ANALYSIS_COMPLETE"
     return EngineResult(raw.engine_id, raw.name, not fatal, raw.score, output, raw.reason_codes)
 
@@ -75,43 +70,28 @@ def run_professional_e9(context: dict[str, Any], upstream: list[EngineResult]) -
     """E9 is the only component allowed to emit BUY, SELL, or NO_TRADE."""
     by_id = {e.engine_id: e for e in upstream}
     e6, e7, e8 = by_id.get("E6"), by_id.get("E7"), by_id.get("E8")
-    plan = e8.output.get("trade_plan", {}) if e8 else {}
+    plan = dict(e8.output.get("trade_plan", {}) if e8 else {})
     evidence_score = _weighted_evidence(upstream)
     r7 = e7.output.get("professional_reasoning", {}) if e7 else {}
-    confirmation_ready = (
-        r7.get("confirmation") == "CONFIRMATION_PASS"
-        and r7.get("trigger_quality") == "QUALITY_PASS"
-        and r7.get("follow_through") == "FOLLOW_THROUGH_OBSERVED"
-    )
+    confirmation_ready = r7.get("confirmation") == "CONFIRMATION_PASS" and r7.get("trigger_quality") == "QUALITY_PASS" and r7.get("follow_through") == "FOLLOW_THROUGH_OBSERVED"
     economics_ready = bool(plan.get("valid")) and float(plan.get("rr_tp2", 0)) >= float(plan.get("min_rr", 1.5))
     critical_conflicts = [e.engine_id for e in upstream if e.engine_id in {"E1", "E3", "E6"} and not e.gate_passed]
-    direction = plan.get("direction") if economics_ready else None
+    orientation = plan.get("orientation") if economics_ready else None
+    direction = {"UP": "BUY", "DOWN": "SELL"}.get(orientation)
     reasons: list[str] = []
-    if critical_conflicts:
-        reasons.append("CRITICAL_EVIDENCE_CONFLICT:" + ",".join(critical_conflicts))
-    if not confirmation_ready:
-        reasons.append("ENTRY_CONFIRMATION_NOT_PROVEN")
-    if not economics_ready:
-        reasons.append("TRADE_ECONOMICS_NOT_READY")
-    if evidence_score < EDGE_THRESHOLD:
-        reasons.append("EVIDENCE_SCORE_BELOW_THRESHOLD")
+    if critical_conflicts: reasons.append("CRITICAL_EVIDENCE_CONFLICT:" + ",".join(critical_conflicts))
+    if not confirmation_ready: reasons.append("ENTRY_CONFIRMATION_NOT_PROVEN")
+    if not economics_ready: reasons.append("TRADE_ECONOMICS_NOT_READY")
+    if evidence_score < EDGE_THRESHOLD: reasons.append("EVIDENCE_SCORE_BELOW_THRESHOLD")
     final = bool(direction in {"BUY", "SELL"} and confirmation_ready and economics_ready and not critical_conflicts and evidence_score >= EDGE_THRESHOLD)
     decision = direction if final else "NO_TRADE"
     out = {
-        "decision": decision,
-        "decision_authority": "E9",
-        "trade_decision_authority": True,
-        "pipeline": "E1>E2>E3>E4>E5>E6>E7>E8>E9",
-        "trade_plan": plan,
-        "evidence_score": evidence_score,
-        "edge_score": evidence_score,
-        "edge_threshold": EDGE_THRESHOLD,
-        "gate_passed": final,
-        "professional_decision": "APPROVE_TRADE" if final else "NO_TRADE",
-        "blocked_by": None,
-        "decision_reasons": reasons,
+        "decision": decision, "decision_authority": "E9", "trade_decision_authority": True,
+        "pipeline": "E1>E2>E3>E4>E5>E6>E7>E8>E9", "trade_plan": plan,
+        "evidence_score": evidence_score, "edge_score": evidence_score, "edge_threshold": EDGE_THRESHOLD,
+        "gate_passed": final, "professional_decision": "APPROVE_TRADE" if final else "NO_TRADE",
+        "blocked_by": None, "decision_reasons": reasons,
         "specialist_conclusions": {e.engine_id: e.output.get("professional_reasoning", {}).get("specialist_conclusion", "") for e in upstream},
-        "setup_thesis": e6.output.get("professional_reasoning", {}) if e6 else {},
-        "analysis_complete": True,
+        "setup_thesis": e6.output.get("professional_reasoning", {}) if e6 else {}, "analysis_complete": True,
     }
     return EngineResult("E9", ENGINE_NAMES["E9"], final, evidence_score, out, tuple(reasons))
