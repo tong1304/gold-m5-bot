@@ -27,7 +27,12 @@ class ProfessionalSubEngine(Base):
             if key:
                 out.add(key)
             text = str(item).upper()
-            for token in ("TREND_UP", "TREND_DOWN", "BULLISH", "BEARISH", "UP", "DOWN", "RANGE", "COMPRESSION", "EXPANSION", "TRANSITION", "SWEEP_HIGH", "SWEEP_LOW", "REJECTION", "ACCEPTANCE", "NO_TRIGGER", "FOLLOW_THROUGH_OBSERVED", "CONFIRMATION_PASS", "MATURE", "DEVELOPING"):
+            for token in (
+                "TREND_UP", "TREND_DOWN", "BULLISH", "BEARISH", "UP", "DOWN",
+                "RANGE", "COMPRESSION", "EXPANSION", "TRANSITION", "SWEEP_HIGH",
+                "SWEEP_LOW", "REJECTION", "ACCEPTANCE", "NO_TRIGGER",
+                "FOLLOW_THROUGH_OBSERVED", "CONFIRMATION_PASS", "MATURE", "DEVELOPING",
+            ):
                 if token in text:
                     out.add(token)
         return out
@@ -41,7 +46,9 @@ class ProfessionalSubEngine(Base):
             if value:
                 context[engine_id] = value
         tokens = cls._tokens(context)
-        direction = "DOWN" if ("TREND_DOWN" in tokens or "BEARISH" in tokens) and "TREND_UP" not in tokens and "BULLISH" not in tokens else "UP" if ("TREND_UP" in tokens or "BULLISH" in tokens) and "TREND_DOWN" not in tokens and "BEARISH" not in tokens else "NEUTRAL"
+        down = "TREND_DOWN" in tokens or "BEARISH" in tokens
+        up = "TREND_UP" in tokens or "BULLISH" in tokens
+        direction = "DOWN" if down and not up else "UP" if up and not down else "NEUTRAL"
         return context, tokens, direction
 
     @classmethod
@@ -54,10 +61,12 @@ class ProfessionalSubEngine(Base):
 
         output["upstream_evidence_used"] = True
         output["upstream_evidence_summary"] = sorted(k for k in context if k != sid)
+        output["peer_direction"] = direction
         if direction in ("UP", "DOWN"):
+            # Internal E9 evidence can use this qualitative direction. It is
+            # not a BUY/SELL instruction and is removed from specialist gates.
             output["direction"] = direction
 
-        # E2 answers the opportunity question from E1's market-state thesis.
         if sid.startswith("2"):
             if "TREND_UP" in tokens or "TREND_DOWN" in tokens:
                 regime = "TREND"
@@ -79,28 +88,22 @@ class ProfessionalSubEngine(Base):
             output["regime"] = regime
             output["upstream_thesis"] = f"E1 market-state evidence supports {regime} with direction={direction}."
 
-        # E3 validates structure against E1 instead of independently guessing
-        # the directional thesis from the same candles.
         elif sid.startswith("3"):
             structure = "BULLISH" if direction == "UP" else "BEARISH" if direction == "DOWN" else output.get("state", "MIXED")
             if sid == "3B":
                 output["state"] = structure
                 output["classification"] = structure
             elif sid == "3F":
-                output["state"] = "ALIGNED" if direction != "NEUTRAL" and structure == ("BULLISH" if direction == "UP" else "BEARISH") else "MIXED"
+                output["state"] = "ALIGNED" if direction != "NEUTRAL" else "MIXED"
             output["structure"] = structure
             output["upstream_thesis"] = f"E1 directional evidence is {direction}; E3 independently checks whether structure agrees."
 
-        # E4/E5 retain their own specialist calculations but inherit the
-        # directional thesis as context, never as a trade instruction.
         elif sid.startswith("4"):
             output["upstream_thesis"] = f"Liquidity is evaluated in the context of the upstream {direction} market thesis."
 
         elif sid.startswith("5"):
             output["upstream_thesis"] = f"Location is evaluated relative to the upstream {direction} directional context."
 
-        # E6 can recognize a directional setup from the upstream evidence,
-        # while maturity still requires price-action evidence of its own.
         elif sid.startswith("6"):
             has_trend = "TREND" in tokens or "TREND_UP" in tokens or "TREND_DOWN" in tokens
             has_rejection = "REJECTION" in tokens or "ACCEPTANCE" in tokens or "SWEEP_HIGH" in tokens or "SWEEP_LOW" in tokens
@@ -126,17 +129,15 @@ class ProfessionalSubEngine(Base):
 
     def run(self, data):
         r = super().run(data)
-        o = dict(r.output or {})
+        o = self._apply_peer_reasoning(r.sub_engine_id, dict(r.output or {}), data)
         sid = r.sub_engine_id
-        o = self._apply_peer_reasoning(sid, o, data)
         state = str(o.get("state", "UNRESOLVED"))
         obs = []
         for k in (
-            "direction", "structure", "trend_strength_atr", "range_ratio",
-            "sweep_high", "sweep_low", "rejection", "acceptance",
-            "position_in_range", "archetype", "displacement", "trigger",
-            "follow_through", "failure", "min_rr", "max_stop_atr",
-            "regime", "upstream_thesis", "upstream_evidence_used",
+            "direction", "peer_direction", "structure", "trend_strength_atr", "range_ratio",
+            "sweep_high", "sweep_low", "rejection", "acceptance", "position_in_range",
+            "archetype", "displacement", "trigger", "follow_through", "failure",
+            "min_rr", "max_stop_atr", "regime", "upstream_thesis", "upstream_evidence_used",
         ):
             if k in o:
                 obs.append(f"{k}={o[k]}")
