@@ -1,6 +1,5 @@
-from ...core.subengine import SubEngine as _Base
+from .professional_regime import ProfessionalE2Brain
 
 
-class SubEngine(_Base):
-    def __init__(self):
-        super().__init__()
+class SubEngine(ProfessionalE2Brain):
+    pass
