@@ -38,6 +38,69 @@ def _evidence_package(result: EngineResult) -> dict[str, Any]:
     }
 
 
+def _e8_trade_plan_complete(e8: EngineResult | None) -> bool:
+    """Return True only for a fully verified E8 execution plan.
+
+    This is a pipeline-level safety invariant. E9 may synthesize and decide,
+    but it may never approve an actionable trade when E8 has not supplied the
+    complete trade economics and risk readiness required for execution.
+    """
+    if e8 is None:
+        return False
+    output = e8.output or {}
+    plan = output.get("trade_plan")
+    if not isinstance(plan, dict):
+        return False
+    required = ("entry", "stop_loss", "take_profit_1", "take_profit_2", "rr_tp2")
+    if any(plan.get(key) is None for key in required):
+        return False
+    try:
+        if float(plan["rr_tp2"]) <= 0:
+            return False
+    except (TypeError, ValueError):
+        return False
+    risk_gate = str(output.get("risk_gate", "")).upper().strip()
+    return risk_gate in {"RISK_READY", "PASS", "READY", "TRUE"}
+
+
+def _enforce_e9_execution_invariant(e9: EngineResult, e8: EngineResult | None) -> EngineResult:
+    """Hard-stop any E9 approval that lacks an independently verified E8 plan."""
+    if not e9.gate_passed or _e8_trade_plan_complete(e8):
+        return e9
+
+    output = dict(e9.output or {})
+    reasoning = dict(output.get("professional_reasoning") or {})
+    reasons = list(e9.reason_codes)
+    if "E8_TRADE_PLAN_INCOMPLETE" not in reasons:
+        reasons.append("E8_TRADE_PLAN_INCOMPLETE")
+    if "E9_EXECUTION_INVARIANT_BLOCK" not in reasons:
+        reasons.append("E9_EXECUTION_INVARIANT_BLOCK")
+
+    output.update({
+        "decision": "NO_TRADE",
+        "execution_readiness_score": 0.0,
+        "decision_score": 0.0,
+        "trade_plan": {},
+        "invariant_blocked": True,
+        "invariant": "E8_TRADE_PLAN_REQUIRED",
+    })
+    reasoning.update({
+        "final_decision": "NO_TRADE",
+        "execution_ready": False,
+        "decision_authority": "E9",
+        "invariant": "E8_TRADE_PLAN_REQUIRED",
+    })
+    output["professional_reasoning"] = reasoning
+    return EngineResult(
+        e9.engine_id,
+        e9.name,
+        False,
+        0.0,
+        output,
+        tuple(reasons),
+    )
+
+
 class ProductionPipeline:
     ENGINE_ORDER = ENGINE_ORDER
 
@@ -86,6 +149,12 @@ class ProductionPipeline:
             engines,
             calibration,
         )
+
+        # Hard invariant at the final authority boundary. Even if a future
+        # E9 implementation accidentally reports gate=True, E9 cannot approve
+        # a trade without a complete E8 trade plan.
+        e9 = _enforce_e9_execution_invariant(e9, enriched.get("E8"))
+
         engines.append(e9)
         trade_plan = e9.output.get("trade_plan", {})
         return DecisionResult(
