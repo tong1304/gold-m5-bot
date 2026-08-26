@@ -7,16 +7,13 @@ from ...core.subengine import SubEngine as _Base
 
 
 class SubEngine(_Base):
-    """E8G risk gate: construct and verify trade economics independently.
+    """E8G risk engine: publish verified execution geometry without deciding direction.
 
-    E8 owns entry/stop/targets/RR and invalidation geometry. Setup maturity and
-    confirmation belong to E6/E7 and are judged by E9. Therefore E8 must not
-    refuse to publish a risk plan merely because the setup is still developing.
-    E9 remains the sole authority that can turn the evidence into a trade.
-
-    Direction is an analytical input, not a trade decision. During the peer
-    re-analysis pass E8 may read E1-E7 evidence and infer the dominant direction
-    from that evidence. It never receives or uses another engine's decision/gate.
+    E8 owns entry/stop/targets/RR and invalidation geometry. Directional thesis,
+    setup maturity and confirmation belong to E1-E7/E9. When direction is not
+    resolved by specialist evidence, E8 publishes *both* valid directional
+    execution candidates so E9 can select the candidate matching its final
+    thesis without sending a decision backwards into E8.
     """
 
     def __init__(self):
@@ -24,18 +21,13 @@ class SubEngine(_Base):
 
     @staticmethod
     def _bars(d: dict[str, Any]):
-        return [
-            b for b in (d.get("bars") or [])
-            if isinstance(b, dict)
-            and all(k in b for k in ("open", "high", "low", "close"))
-        ]
+        return [b for b in (d.get("bars") or []) if isinstance(b, dict) and all(k in b for k in ("open", "high", "low", "close"))]
 
     @staticmethod
     def _atr(bs, n=14):
         if not bs:
             return 0.0
-        trs = []
-        prev = None
+        trs, prev = [], None
         for b in bs[-n:]:
             h, l, c = float(b["high"]), float(b["low"]), float(b["close"])
             trs.append(h - l if prev is None else max(h - l, abs(h - prev), abs(l - prev)))
@@ -57,8 +49,7 @@ class SubEngine(_Base):
         if len(bs) < 30:
             return "NEUTRAL"
         closes = [float(b["close"]) for b in bs]
-        e20 = cls._ema(closes, 20)
-        e50 = cls._ema(closes, 50)
+        e20, e50 = cls._ema(closes, 20), cls._ema(closes, 50)
         slope = closes[-1] - closes[-6]
         if e20 > e50 and slope > 0 and closes[-1] >= e20:
             return "BUY"
@@ -80,14 +71,8 @@ class SubEngine(_Base):
 
     @classmethod
     def _peer_direction(cls, d: dict[str, Any]) -> tuple[str, float, float]:
-        """Infer direction from E1-E7 evidence only.
-
-        This is deliberately evidence-only: decision/gate fields are excluded
-        by the production evidence bus, and this method ignores those fields
-        even if a malformed payload contains them.
-        """
-        weights = {"E1": 1.5, "E2": 1.0, "E3": 1.5, "E4": 1.0,
-                   "E5": 1.0, "E6": 1.5, "E7": 1.5}
+        """Infer direction from E1-E7 evidence only; never consume decisions/gates."""
+        weights = {"E1": 1.5, "E2": 1.0, "E3": 1.5, "E4": 1.0, "E5": 1.0, "E6": 1.5, "E7": 1.5}
         buy = sell = 0.0
         for engine_id, weight in weights.items():
             package = d.get(f"{engine_id}_result") or {}
@@ -108,9 +93,9 @@ class SubEngine(_Base):
                 elif explicit in {"SELL", "BEARISH", "DOWN", "SHORT", "TREND_DOWN"}:
                     sell_hit = True
                 else:
-                    if any(token in blob for token in ("TREND_UP", "BULLISH", "HIGHER_HIGH", "BULLISH_BOS", "DIRECTION=UP")):
+                    if any(token in blob for token in ("TREND_UP", "BULLISH", "HIGHER_HIGH", "BULLISH_BOS", "DIRECTION=UP", "DISCOUNT")):
                         buy_hit = True
-                    if any(token in blob for token in ("TREND_DOWN", "BEARISH", "LOWER_LOW", "BEARISH_BOS", "DIRECTION=DOWN")):
+                    if any(token in blob for token in ("TREND_DOWN", "BEARISH", "LOWER_LOW", "BEARISH_BOS", "DIRECTION=DOWN", "PREMIUM")):
                         sell_hit = True
             if buy_hit and not sell_hit:
                 buy += weight
@@ -127,47 +112,11 @@ class SubEngine(_Base):
         peer_direction, buy, sell = cls._peer_direction(d)
         if peer_direction in {"BUY", "SELL"}:
             return peer_direction, "PEER_EVIDENCE", buy, sell
-        local = cls._local_direction(bs)
-        return local, "LOCAL_PRICE_STRUCTURE", buy, sell
+        return cls._local_direction(bs), "LOCAL_PRICE_STRUCTURE", buy, sell
 
-    def run(self, d: dict[str, Any]):
-        # Keep the base specialist analysis for traceability, but do not let
-        # its setup-dependent RISK_NOT_READY state suppress E8's own geometry.
-        base = super().run(d)
-        out = dict(base.output)
-        bs = self._bars(d)
-        direction, direction_source, peer_buy, peer_sell = self._direction(bs, d)
-        out["direction"] = direction
-        out["direction_source"] = direction_source
-        out["peer_direction_score"] = {"BUY": peer_buy, "SELL": peer_sell}
-
-        if direction not in {"BUY", "SELL"} or len(bs) < 30:
-            out["plan_status"] = "PENDING"
-            out["risk_gate"] = "RISK_NOT_READY"
-            out["risk_basis"] = "INSUFFICIENT_DIRECTION_OR_DATA"
-            trace = dict(base.trace or {})
-            trace.update({"plan_status": "PENDING", "direction_source": direction_source,
-                          "peer_direction_score": {"BUY": peer_buy, "SELL": peer_sell}})
-            return replace(base, output=out, trace=trace)
-
-        atr = self._atr(bs)
-        if atr <= 0:
-            out["plan_status"] = "PENDING"
-            out["risk_gate"] = "RISK_NOT_READY"
-            out["risk_basis"] = "INVALID_ATR"
-            trace = dict(base.trace or {})
-            trace["plan_status"] = "PENDING"
-            return replace(base, output=out, trace=trace)
-
-        policy = d.get("risk_policy") or {}
-        min_rr = float(policy.get("min_rr", 1.5))
-        max_stop_atr = float(policy.get("max_stop_atr", 3.0))
-        entry = float(bs[-1]["close"])
-        recent_high = max(float(b["high"]) for b in bs[-10:])
-        recent_low = min(float(b["low"]) for b in bs[-10:])
-        recent_range = max(float(b["high"]) for b in bs[-40:]) - min(float(b["low"]) for b in bs[-40:])
+    @staticmethod
+    def _build_plan(direction: str, entry: float, atr: float, recent_high: float, recent_low: float, min_rr: float) -> dict[str, Any]:
         buffer = 0.10 * atr
-
         if direction == "BUY":
             stop = recent_low - buffer
             risk = entry - stop
@@ -180,42 +129,12 @@ class SubEngine(_Base):
             tp1 = entry - risk * min_rr
             tp2 = entry - risk * max(min_rr, 2.0)
             target_side = "BELOW"
-
         if risk <= 0:
-            out["plan_status"] = "PENDING"
-            out["risk_gate"] = "RISK_NOT_READY"
-            out["risk_basis"] = "NON_POSITIVE_RISK_DISTANCE"
-            trace = dict(base.trace or {})
-            trace["plan_status"] = "PENDING"
-            return replace(base, output=out, trace=trace)
-
-        if risk > max_stop_atr * atr:
-            out["plan_status"] = "PENDING"
-            out["risk_gate"] = "RISK_NOT_READY"
-            out["risk_basis"] = "STOP_TOO_WIDE"
-            trace = dict(base.trace or {})
-            trace["plan_status"] = "PENDING"
-            return replace(base, output=out, trace=trace)
-
-        if recent_range <= 0:
-            out["plan_status"] = "PENDING"
-            out["risk_gate"] = "RISK_NOT_READY"
-            out["risk_basis"] = "ZERO_MARKET_RANGE"
-            trace = dict(base.trace or {})
-            trace["plan_status"] = "PENDING"
-            return replace(base, output=out, trace=trace)
-
-        rr_tp1 = abs(tp1 - entry) / risk
-        rr_tp2 = abs(tp2 - entry) / risk
+            raise ValueError("NON_POSITIVE_RISK_DISTANCE")
+        rr_tp1, rr_tp2 = abs(tp1 - entry) / risk, abs(tp2 - entry) / risk
         if rr_tp2 < min_rr:
-            out["plan_status"] = "PENDING"
-            out["risk_gate"] = "RISK_NOT_READY"
-            out["risk_basis"] = "RR_BELOW_MINIMUM"
-            trace = dict(base.trace or {})
-            trace["plan_status"] = "PENDING"
-            return replace(base, output=out, trace=trace)
-
-        plan = {
+            raise ValueError("RR_BELOW_MINIMUM")
+        return {
             "direction": direction,
             "entry": round(entry, 8),
             "stop_loss": round(stop, 8),
@@ -229,25 +148,84 @@ class SubEngine(_Base):
             "basis": "E8_INVALIDATION_STOP_TARGET_RR",
             "verified": True,
             "setup_authority": "E6_E7",
-            "e9_authority": "CHALLENGE_OR_REJECT_ONLY",
+            "e9_authority": "SELECT_MATCHING_THESIS",
         }
-        out["trade_plan"] = plan
-        out["plan_status"] = "COMPLETE"
-        out["risk_gate"] = "RISK_READY"
-        out["risk_basis"] = "E8_VERIFIED_GEOMETRY"
+
+    def run(self, d: dict[str, Any]):
+        base = super().run(d)
+        out = dict(base.output)
+        bs = self._bars(d)
+        direction, direction_source, peer_buy, peer_sell = self._direction(bs, d)
+        out.update({"direction": direction, "direction_source": direction_source,
+                    "peer_direction_score": {"BUY": peer_buy, "SELL": peer_sell}})
+
+        if len(bs) < 30:
+            out.update({"plan_status": "PENDING", "risk_gate": "RISK_NOT_READY", "risk_basis": "INSUFFICIENT_DATA"})
+            trace = dict(base.trace or {})
+            trace.update({"plan_status": "PENDING", "direction_source": direction_source})
+            return replace(base, output=out, trace=trace)
+
+        atr = self._atr(bs)
+        if atr <= 0:
+            out.update({"plan_status": "PENDING", "risk_gate": "RISK_NOT_READY", "risk_basis": "INVALID_ATR"})
+            return replace(base, output=out, trace=dict(base.trace or {}))
+
+        policy = d.get("risk_policy") or {}
+        min_rr, max_stop_atr = float(policy.get("min_rr", 1.5)), float(policy.get("max_stop_atr", 3.0))
+        entry = float(bs[-1]["close"])
+        recent_high = max(float(b["high"]) for b in bs[-10:])
+        recent_low = min(float(b["low"]) for b in bs[-10:])
+        recent_range = max(float(b["high"]) for b in bs[-40:]) - min(float(b["low"]) for b in bs[-40:])
+        if recent_range <= 0:
+            out.update({"plan_status": "PENDING", "risk_gate": "RISK_NOT_READY", "risk_basis": "ZERO_MARKET_RANGE"})
+            return replace(base, output=out, trace=dict(base.trace or {}))
+
+        candidates, errors = {}, {}
+        directions = ("BUY", "SELL") if direction == "NEUTRAL" else (direction,)
+        for candidate_direction in directions:
+            try:
+                plan = self._build_plan(candidate_direction, entry, atr, recent_high, recent_low, min_rr)
+                if float(plan["risk_distance"]) > max_stop_atr * atr:
+                    errors[candidate_direction] = "STOP_TOO_WIDE"
+                    continue
+                candidates[candidate_direction] = plan
+            except ValueError as exc:
+                errors[candidate_direction] = str(exc)
+
+        if direction == "NEUTRAL":
+            if not candidates:
+                out.update({"plan_status": "PENDING", "risk_gate": "RISK_NOT_READY", "risk_basis": "NO_VALID_DIRECTIONAL_CANDIDATE"})
+                trace = dict(base.trace or {})
+                trace.update({"plan_status": "PENDING", "candidate_errors": errors})
+                return replace(base, output=out, trace=trace)
+            out.update({"trade_plan_candidates": candidates, "candidate_errors": errors,
+                        "plan_status": "CANDIDATES_READY", "risk_gate": "RISK_CANDIDATES_READY",
+                        "risk_basis": "E8_DIRECTION_NEUTRAL_CANDIDATE_GEOMETRY"})
+            out["observations"] = list(out.get("observations") or []) + [
+                "direction_unresolved_execution_candidates_published",
+                "e8_does_not_choose_trade_direction",
+            ]
+            trace = dict(base.trace or {})
+            trace.update({"plan_status": "CANDIDATES_READY", "trade_plan_candidates": candidates,
+                          "candidate_errors": errors, "risk_gate": "RISK_CANDIDATES_READY"})
+            return replace(base, output=out, trace=trace)
+
+        if direction not in candidates:
+            out.update({"plan_status": "PENDING", "risk_gate": "RISK_NOT_READY",
+                        "risk_basis": errors.get(direction, "INVALID_RISK_GEOMETRY")})
+            return replace(base, output=out, trace=dict(base.trace or {}))
+
+        plan = candidates[direction]
+        out.update({"trade_plan": plan, "plan_status": "COMPLETE", "risk_gate": "RISK_READY",
+                    "risk_basis": "E8_VERIFIED_GEOMETRY"})
         out["observations"] = list(out.get("observations") or []) + [
-            "verified_trade_plan_published",
-            "risk_geometry_independent_of_setup_maturity",
-            f"direction={direction}",
-            f"direction_source={direction_source}",
-            f"peer_buy={peer_buy:.2f}",
-            f"peer_sell={peer_sell:.2f}",
-            f"rr_tp2={rr_tp2:.4f}",
+            "verified_trade_plan_published", "risk_geometry_independent_of_setup_maturity",
+            f"direction={direction}", f"direction_source={direction_source}",
+            f"peer_buy={peer_buy:.2f}", f"peer_sell={peer_sell:.2f}",
+            f"rr_tp2={plan['rr_tp2']:.4f}",
         ]
         trace = dict(base.trace or {})
-        trace["trade_plan"] = plan
-        trace["plan_status"] = "COMPLETE"
-        trace["risk_gate"] = "RISK_READY"
-        trace["direction_source"] = direction_source
-        trace["peer_direction_score"] = {"BUY": peer_buy, "SELL": peer_sell}
+        trace.update({"trade_plan": plan, "plan_status": "COMPLETE", "risk_gate": "RISK_READY",
+                      "direction_source": direction_source,
+                      "peer_direction_score": {"BUY": peer_buy, "SELL": peer_sell}})
         return replace(base, output=out, trace=trace)
