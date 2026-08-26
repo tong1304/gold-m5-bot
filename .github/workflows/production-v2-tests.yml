@@ -24,3 +24,5 @@ jobs:
         run: python -m pytest -q tests/test_parallel_evidence_exchange.py
       - name: Run professional E9 reasoning regression tests
         run: python -m pytest -q tests/test_professional_e9.py
+      - name: Run E8 trade-plan boundary regression test
+        run: python -m pytest -q tests/test_e8_engine_boundary.py
