@@ -1,28 +1,28 @@
-# ENGINE 06 — TRADE SETUP ENGINE v1.0
+# ENGINE 06 — TRADE SETUP BRAIN v2.0
 
 ## PURPOSE
-Identify and evaluate whether a defined setup archetype is forming and remains valid.
+Determine whether the market evidence has formed a recognizable, tradable setup archetype and describe its current maturity. It does not authorize entry.
 
 ## SUB-ENGINES
 6A Setup Context · 6B Setup Archetype · 6C Setup Formation State Machine · 6D Setup Invalidation · 6E Setup Quality · 6F Setup Maturity
 
 ## INPUT
-ENGINE 01–05 outputs, permitted price/structure/liquidity/location evidence, setup definitions.
+E1–E5 evidence, closed-candle price behavior, structure/liquidity/location references, approved setup definitions and formation history.
 
 ## PROCESSING
-Evaluate context, identify archetype, track formation state, invalidation, quality, maturity.
+Generate candidate setup archetypes from context; track formation state (forming, mature, failed, expired); test invalidation; distinguish thesis from executable setup; compare competing setups and preserve the strongest explanation.
 
 ## OUTPUT
-Setup identity/state, formation stage, validity/invalidation status, quality/maturity, confidence, reason codes.
+candidate_setups[], selected_setup, setup_state, formation_stage, direction, invalidation, setup_quality, maturity, evidence[], conflicts[], confidence, observations[], reasoning_trace.
 
 ## GATE
-Reject/hold setup processing when required context is invalid or invalidation conditions are met.
+NONE. NO_SETUP, FORMING and FAILED are valid analytical conclusions. They are not execution gates.
 
 ## SCORE
-Setup quality/maturity is evidence only and cannot independently authorize entry.
+Setup quality and maturity are evidence. Confidence measures certainty of the setup interpretation.
 
 ## TRACEABILITY
-Record setup definition/version, source evidence, state transitions, invalidation reason, timestamp, scores, confidence, upstream versions.
+Record setup definition/version, state transitions, triggering evidence, invalidation evidence, candle references and upstream conclusions.
 
 ## DECISION BOUNDARY
-Setup state only; no execution or independent BUY/SELL decision.
+Setup identification and evaluation only.
