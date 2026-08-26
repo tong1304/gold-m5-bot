@@ -26,3 +26,5 @@ jobs:
         run: python -m pytest -q tests/test_professional_e9.py
       - name: Run E8 trade-plan boundary regression test
         run: python -m pytest -q tests/test_e8_engine_boundary.py
+      - name: Run E9 execution-readiness regression tests
+        run: python -m pytest -q tests/test_e9_execution_readiness.py
