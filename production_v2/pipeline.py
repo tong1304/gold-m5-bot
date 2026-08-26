@@ -72,12 +72,7 @@ def _normalize_e8_execution_boundary(e8: EngineResult | None) -> EngineResult | 
 
 
 def _e8_trade_plan_complete(e8: EngineResult | None) -> bool:
-    """Return True only for a fully verified E8 execution plan.
-
-    This is a pipeline-level safety invariant. E9 may synthesize and decide,
-    but it may never approve an actionable trade when E8 has not supplied the
-    complete trade economics and risk readiness required for execution.
-    """
+    """Return True only for a fully verified E8 execution plan."""
     if e8 is None:
         return False
     output = e8.output or {}
@@ -104,8 +99,17 @@ def _enforce_e9_execution_invariant(e9: EngineResult, e8: EngineResult | None) -
     output = dict(e9.output or {})
     reasoning = dict(output.get("professional_reasoning") or {})
     reasons = list(e9.reason_codes)
-    if "E8_TRADE_PLAN_INCOMPLETE" not in reasons:
+    e8_output = e8.output if e8 is not None else {}
+    e8_risk_gate = str(e8_output.get("risk_gate", "")).upper().strip()
+    e8_risk_basis = str(e8_output.get("risk_basis", "")).upper().strip()
+
+    if e8_risk_gate == "RISK_NOT_READY" and e8_risk_basis:
+        diagnostic = f"E8_RISK_NOT_READY:{e8_risk_basis}"
+        if diagnostic not in reasons:
+            reasons.append(diagnostic)
+    elif "E8_TRADE_PLAN_INCOMPLETE" not in reasons:
         reasons.append("E8_TRADE_PLAN_INCOMPLETE")
+
     if "E9_EXECUTION_INVARIANT_BLOCK" not in reasons:
         reasons.append("E9_EXECUTION_INVARIANT_BLOCK")
 
@@ -116,12 +120,14 @@ def _enforce_e9_execution_invariant(e9: EngineResult, e8: EngineResult | None) -
         "trade_plan": {},
         "invariant_blocked": True,
         "invariant": "E8_TRADE_PLAN_REQUIRED",
+        "e8_risk_diagnostic": e8_risk_basis or "TRADE_PLAN_MISSING",
     })
     reasoning.update({
         "final_decision": "NO_TRADE",
         "execution_ready": False,
         "decision_authority": "E9",
         "invariant": "E8_TRADE_PLAN_REQUIRED",
+        "e8_risk_diagnostic": e8_risk_basis or "TRADE_PLAN_MISSING",
     })
     output["professional_reasoning"] = reasoning
     return EngineResult(
@@ -145,16 +151,7 @@ class ProductionPipeline:
         resume_state: dict[str, Any] | None = None,
         historical_calibration: dict[str, Any] | None = None,
     ) -> DecisionResult:
-        """Run one closed-M5 cycle with parallel peer analysis and E9 synthesis.
-
-        Pass 1: E1-E8 independently analyze the market snapshot in parallel.
-        Pass 2: every E1-E8 independently re-analyzes the same snapshot while
-        reading the immutable peer evidence from Pass 1. Peer decisions and
-        gates are stripped from the evidence bus, so no specialist can become
-        a gatekeeper or inherit another specialist's authority.
-        E9 then receives only the final specialist evidence packages and is the
-        sole trade-decision authority.
-        """
+        """Run one closed-M5 cycle with parallel peer analysis and E9 synthesis."""
         symbol = str(market_data.get("symbol") or "UNKNOWN")
         timeframe = str(market_data.get("timeframe") or "M5")
         snapshot = dict(market_data)
@@ -162,9 +159,8 @@ class ProductionPipeline:
         baseline = _run_wave(ENGINE_ORDER, snapshot, None)
         baseline_bus = {engine_id: _evidence_package(result) for engine_id, result in baseline.items()}
 
-        # Each specialist receives every other specialist's baseline evidence.
-        # The engine-level dependency map controls which peer observations are
-        # visible; no peer decision or gate is ever transmitted.
+        # Each specialist receives peer evidence only; decisions and gates are
+        # stripped so every specialist remains an independent analyst.
         enriched: dict[str, EngineResult] = {}
         with ThreadPoolExecutor(max_workers=len(ENGINE_ORDER), thread_name_prefix="prod-v2-peer") as pool:
             futures = {}
@@ -177,7 +173,9 @@ class ProductionPipeline:
 
         # E8's trade economics are an execution contract, not hidden internal
         # specialist state. Promote the contract before E9 reasons over it.
-        enriched["E8"] = _normalize_e8_execution_boundary(enriched.get("E8")) or enriched.get("E8")
+        normalized_e8 = _normalize_e8_execution_boundary(enriched.get("E8"))
+        if normalized_e8 is not None:
+            enriched["E8"] = normalized_e8
 
         engines = [enriched[engine_id] for engine_id in ENGINE_ORDER]
         calibration = historical_calibration or snapshot.get("historical_calibration")
@@ -187,9 +185,8 @@ class ProductionPipeline:
             calibration,
         )
 
-        # Hard invariant at the final authority boundary. Even if a future
-        # E9 implementation accidentally reports gate=True, E9 cannot approve
-        # a trade without a complete E8 trade plan.
+        # Hard invariant at the final authority boundary: E9 cannot approve
+        # an actionable trade without a complete E8 execution contract.
         e9 = _enforce_e9_execution_invariant(e9, enriched.get("E8"))
 
         engines.append(e9)
