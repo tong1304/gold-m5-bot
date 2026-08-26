@@ -14,38 +14,30 @@ app = Flask(__name__)
 pipeline = ProductionPipeline()
 app.config["PRODUCTION_V2_LIVE_REQUIRED"] = True
 _runtime_started = False
+ARCHITECTURE = "PARALLEL:E1|E2|E3|E4|E5|E6|E7|E8 -> E9"
 
 
 def start_production_runtime() -> None:
-    """Start the production-v2 live M5 runtime exactly once at import time."""
     global _runtime_started
     if _runtime_started:
         return
-
-    # CI/test runs explicitly disable the live thread. The HTTP application
-    # remains healthy so the pipeline and API contracts can be tested without
-    # requiring a production LSE credential.
     if os.getenv("PRODUCTION_V2_DISABLE_LIVE", "").strip() == "1":
         logger.info("[PRODUCTION V2] Live runtime disabled by PRODUCTION_V2_DISABLE_LIVE")
         print("[PRODUCTION V2] Live runtime disabled by test environment", flush=True)
         _runtime_started = True
         return
-
     key = os.getenv("LSE_API_KEY", "").strip()
     if not key:
         logger.error("[PRODUCTION V2] LSE_API_KEY is missing; live M5 runtime cannot start")
         print("[PRODUCTION V2] FATAL: LSE_API_KEY is missing; live M5 runtime cannot start", flush=True)
         raise RuntimeError("LSE_API_KEY is required for production-v2 live runtime")
-
     logger.info("[PRODUCTION V2] Initializing live M5 runtime")
     print("[PRODUCTION V2] Initializing live M5 runtime", flush=True)
-
     from .service import start_live_service
     start_live_service()
     _runtime_started = True
-
-    logger.info("[PRODUCTION V2] Live M5 runtime started; architecture=E1->E2->E3->E4->E5->E6->E7->E8->E9")
-    print("[PRODUCTION V2] Live M5 runtime started; architecture=E1->E2->E3->E4->E5->E6->E7->E8->E9", flush=True)
+    logger.info("[PRODUCTION V2] Live M5 runtime started; architecture=%s", ARCHITECTURE)
+    print(f"[PRODUCTION V2] Live M5 runtime started; architecture={ARCHITECTURE}", flush=True)
 
 
 start_production_runtime()
@@ -56,7 +48,8 @@ def index():
     return jsonify({
         "system": "9-ENGINE",
         "version": "production-v2",
-        "architecture": "E1 -> E2 -> E3 -> E4 -> E5 -> E6 -> E7 -> E8 -> E9",
+        "architecture": ARCHITECTURE,
+        "specialist_mode": "PARALLEL_SHARED_SNAPSHOT",
         "decision_authority": "E9",
         "legacy_runtime": False,
         "live_runtime": "RUNNING" if _runtime_started else "NOT_RUNNING",
@@ -70,6 +63,8 @@ def health():
         "status": "ok" if _runtime_started else "degraded",
         "system": "9-ENGINE",
         "version": "production-v2",
+        "architecture": ARCHITECTURE,
+        "specialist_mode": "PARALLEL_SHARED_SNAPSHOT",
         "legacy_runtime": False,
         "decision_authority": "E9",
         "live_runtime": "RUNNING" if _runtime_started else "NOT_RUNNING",
