@@ -10,3 +10,24 @@ def test_e9_rejects_actionable_direction_without_complete_e8_plan():
 def test_e9_requires_complete_trade_plan_before_actionable_decision():
     result = _execution_readiness({"E8": {"output": {"trade_plan": {"entry": 4600, "stop": 4610, "target": 4580, "rr": 2.0}, "risk_gate": "RISK_READY"}}}, "SELL")
     assert result["ready"] is True
+
+
+def test_e9_uses_e8_top_level_risk_gate_not_nested_specialist_status():
+    plan = {
+        "entry": 4600,
+        "stop_loss": 4610,
+        "take_profit_1": 4585,
+        "take_profit_2": 4580,
+        "rr_tp2": 2.0,
+    }
+    e8_output = {
+        "specialists": {
+            "8A": {"output": {"risk_gate": "RISK_NOT_READY"}},
+            "8G": {"output": {"risk_gate": "RISK_READY"}},
+        },
+        "risk_gate": "RISK_READY",
+        "trade_plan": plan,
+    }
+    result = _execution_readiness({"E8": {"output": e8_output}}, "SELL")
+    assert result["ready"] is True
+    assert result["risk_basis"] == "E8_VERIFIED_PLAN"
