@@ -31,12 +31,12 @@ def run_professional_engine(engine_id: str, context: dict[str, Any]) -> EngineRe
         "trade_decision_authority": False,
         "specialist_gate": "NONE",
         "gate": None,
-        "input_mode": "SHARED_MARKET_SNAPSHOT",
+        "input_mode": "SHARED_MARKET_AND_PEER_EVIDENCE",
         "upstream_engine_dependency": None,
         "reasoning_role": "SPECIALIST_EVIDENCE",
         "analysis_reason_codes": list(raw.reason_codes),
     })
-    return EngineResult(raw.engine_id, raw.name, True, raw.score, output, raw.reason_codes)
+    return EngineResult(raw.engine_id, raw.name, None, raw.score, output, raw.reason_codes)
 
 
 def _text(e: EngineResult | None) -> str:
