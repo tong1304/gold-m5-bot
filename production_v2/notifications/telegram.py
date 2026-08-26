@@ -33,6 +33,9 @@ def _analysis_status(engine: Any) -> str:
     reasons = set(engine.output.get("analysis_reason_codes", ()) or engine.reason_codes or ())
     if eid == "E9":
         return "🟢" if engine.output.get("decision") in {"BUY", "SELL"} else "🔴"
+    if eid == "E1":
+        market_state = r.get("market_state") or engine.output.get("market_state")
+        return "🟢" if market_state and market_state != "UNCLEAR" else "🟡"
     if eid == "E5" and (r.get("location_quality") == "LOCATION_QUALITY_FAIL" or r.get("space") == "LIMITED_SPACE"): return "🔴"
     if eid == "E7" and r.get("confirmation") != "CONFIRMATION_PASS": return "🔴"
     if eid == "E8" and not (r.get("trade_plan") or {}).get("valid"): return "🔴"
@@ -42,7 +45,12 @@ def _analysis_status(engine: Any) -> str:
 
 def _engine_answer(engine: Any) -> str:
     e = engine.engine_id; r = engine.output.get("professional_reasoning", {}) or {}
-    if e == "E1": answer = f"{_fmt(r.get('direction_bias'))} / {_fmt(r.get('market_state'))}"
+    if e == "E1":
+        market_state = r.get("market_state") or engine.output.get("market_state")
+        volatility = r.get("volatility_state") or engine.output.get("volatility_state")
+        structure = r.get("structure_state") or engine.output.get("structure_state")
+        transition = r.get("transition") or engine.output.get("transition")
+        answer = f"State={_fmt(market_state)} / Volatility={_fmt(volatility)} / Structure={_fmt(structure)} / Transition={_fmt(transition)}"
     elif e == "E2": answer = f"{_fmt(r.get('regime'))} / {_fmt(r.get('preferred_direction'))}"
     elif e == "E3": answer = f"{_fmt(r.get('structure'))} / {_fmt(r.get('alignment'))}"
     elif e == "E4": answer = f"{_fmt(r.get('liquidity_quality'))} / Sweep {_fmt(r.get('sweep'))}"
