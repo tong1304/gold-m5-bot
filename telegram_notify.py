@@ -1,14 +1,15 @@
-"""Compatibility wrapper for Telegram notifications.
+"""Production-V2 Telegram notification boundary.
 
-All messages are routed through the 9-engine Telegram presentation boundary.
+All Telegram sends are routed through the Production-V2 sender.
+The legacy V11 Telegram sender is intentionally not imported or used.
 """
 
+from production_v2_telegram import send_telegram
 from trading_system.notifications.telegram import render_decision
-from v11.telegram import send_telegram
 
 
 def send_telegram_message(message):
-    """Send an already-rendered message through the 9-engine Telegram boundary."""
+    """Send an already-rendered message through the Production-V2 sender."""
     return send_telegram(message)
 
 
