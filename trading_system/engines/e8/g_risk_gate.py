@@ -13,6 +13,10 @@ class SubEngine(_Base):
     confirmation belong to E6/E7 and are judged by E9. Therefore E8 must not
     refuse to publish a risk plan merely because the setup is still developing.
     E9 remains the sole authority that can turn the evidence into a trade.
+
+    Direction is an analytical input, not a trade decision. During the peer
+    re-analysis pass E8 may read E1-E7 evidence and infer the dominant direction
+    from that evidence. It never receives or uses another engine's decision/gate.
     """
 
     def __init__(self):
@@ -49,7 +53,7 @@ class SubEngine(_Base):
         return x
 
     @classmethod
-    def _direction(cls, bs):
+    def _local_direction(cls, bs):
         if len(bs) < 30:
             return "NEUTRAL"
         closes = [float(b["close"]) for b in bs]
@@ -63,9 +67,68 @@ class SubEngine(_Base):
         return "NEUTRAL"
 
     @staticmethod
-    def _peer_blob(d: dict[str, Any], engine: str) -> str:
-        value = d.get(f"{engine}_result") or {}
-        return str(value).upper()
+    def _walk(v):
+        if isinstance(v, dict):
+            for k, x in v.items():
+                yield str(k).upper()
+                yield from SubEngine._walk(x)
+        elif isinstance(v, (list, tuple, set)):
+            for x in v:
+                yield from SubEngine._walk(x)
+        else:
+            yield str(v).upper()
+
+    @classmethod
+    def _peer_direction(cls, d: dict[str, Any]) -> tuple[str, float, float]:
+        """Infer direction from E1-E7 evidence only.
+
+        This is deliberately evidence-only: decision/gate fields are excluded
+        by the production evidence bus, and this method ignores those fields
+        even if a malformed payload contains them.
+        """
+        weights = {"E1": 1.5, "E2": 1.0, "E3": 1.5, "E4": 1.0,
+                   "E5": 1.0, "E6": 1.5, "E7": 1.5}
+        buy = sell = 0.0
+        for engine_id, weight in weights.items():
+            package = d.get(f"{engine_id}_result") or {}
+            if not isinstance(package, dict):
+                continue
+            evidence = package.get("evidence") or package.get("specialists") or {}
+            if not isinstance(evidence, dict):
+                continue
+            buy_hit = sell_hit = False
+            for item in evidence.values():
+                if not isinstance(item, dict):
+                    continue
+                output = item.get("output") or {}
+                blob = " ".join(cls._walk(output))
+                explicit = str(output.get("direction") or output.get("bias") or "").upper()
+                if explicit in {"BUY", "BULLISH", "UP", "LONG", "TREND_UP"}:
+                    buy_hit = True
+                elif explicit in {"SELL", "BEARISH", "DOWN", "SHORT", "TREND_DOWN"}:
+                    sell_hit = True
+                else:
+                    if any(token in blob for token in ("TREND_UP", "BULLISH", "HIGHER_HIGH", "BULLISH_BOS", "DIRECTION=UP")):
+                        buy_hit = True
+                    if any(token in blob for token in ("TREND_DOWN", "BEARISH", "LOWER_LOW", "BEARISH_BOS", "DIRECTION=DOWN")):
+                        sell_hit = True
+            if buy_hit and not sell_hit:
+                buy += weight
+            elif sell_hit and not buy_hit:
+                sell += weight
+        if buy > sell and buy - sell >= 1.0:
+            return "BUY", round(buy, 2), round(sell, 2)
+        if sell > buy and sell - buy >= 1.0:
+            return "SELL", round(buy, 2), round(sell, 2)
+        return "NEUTRAL", round(buy, 2), round(sell, 2)
+
+    @classmethod
+    def _direction(cls, bs, d):
+        peer_direction, buy, sell = cls._peer_direction(d)
+        if peer_direction in {"BUY", "SELL"}:
+            return peer_direction, "PEER_EVIDENCE", buy, sell
+        local = cls._local_direction(bs)
+        return local, "LOCAL_PRICE_STRUCTURE", buy, sell
 
     def run(self, d: dict[str, Any]):
         # Keep the base specialist analysis for traceability, but do not let
@@ -73,14 +136,18 @@ class SubEngine(_Base):
         base = super().run(d)
         out = dict(base.output)
         bs = self._bars(d)
-        direction = self._direction(bs)
+        direction, direction_source, peer_buy, peer_sell = self._direction(bs, d)
+        out["direction"] = direction
+        out["direction_source"] = direction_source
+        out["peer_direction_score"] = {"BUY": peer_buy, "SELL": peer_sell}
 
         if direction not in {"BUY", "SELL"} or len(bs) < 30:
             out["plan_status"] = "PENDING"
             out["risk_gate"] = "RISK_NOT_READY"
             out["risk_basis"] = "INSUFFICIENT_DIRECTION_OR_DATA"
             trace = dict(base.trace or {})
-            trace["plan_status"] = "PENDING"
+            trace.update({"plan_status": "PENDING", "direction_source": direction_source,
+                          "peer_direction_score": {"BUY": peer_buy, "SELL": peer_sell}})
             return replace(base, output=out, trace=trace)
 
         atr = self._atr(bs)
@@ -172,10 +239,15 @@ class SubEngine(_Base):
             "verified_trade_plan_published",
             "risk_geometry_independent_of_setup_maturity",
             f"direction={direction}",
+            f"direction_source={direction_source}",
+            f"peer_buy={peer_buy:.2f}",
+            f"peer_sell={peer_sell:.2f}",
             f"rr_tp2={rr_tp2:.4f}",
         ]
         trace = dict(base.trace or {})
         trace["trade_plan"] = plan
         trace["plan_status"] = "COMPLETE"
         trace["risk_gate"] = "RISK_READY"
+        trace["direction_source"] = direction_source
+        trace["peer_direction_score"] = {"BUY": peer_buy, "SELL": peer_sell}
         return replace(base, output=out, trace=trace)
