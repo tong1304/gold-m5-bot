@@ -73,12 +73,56 @@ class LiveService:
             return max(0.0, (datetime.now(timezone.utc) - timestamp).total_seconds())
         except (TypeError, ValueError): return None
 
+    @staticmethod
+    def _reasoning(engine) -> dict:
+        """Expose qualitative evidence only; E1-E8 never present a trade decision."""
+        output = engine.output or {}
+        reasoning = output.get("professional_reasoning") or {}
+        specialists = output.get("specialists") or {}
+        conclusion = reasoning.get("conclusion") or output.get("analyst_conclusion") or "UNRESOLVED"
+        observations = []
+        reason_codes = list(engine.reason_codes or [])
+        if isinstance(specialists, dict):
+            for item in specialists.values():
+                if not isinstance(item, dict):
+                    continue
+                observations.extend(item.get("observations") or [])
+                reason_codes.extend(item.get("reason_codes") or [])
+        return {
+            "question": reasoning.get("question") or output.get("specialist_question"),
+            "conclusion": str(conclusion),
+            "observations": [str(x) for x in observations[:8]],
+            "reason_codes": sorted(set(str(x) for x in reason_codes))[:12],
+            "role": output.get("reasoning_role", "SPECIALIST_EVIDENCE"),
+        }
+
     def _trace_result(self, alias: str, result) -> None:
         state = result.risk.get("engine_state"); blocked_by = result.risk.get("blocked_by")
         print(f"[PRODUCTION V2] {alias} PIPELINE decision={result.decision} state={state} blocked_by={blocked_by} wait_bars=0 gate={result.gate_passed} engines={len(result.engines)}", flush=True)
         for engine in result.engines:
-            handoff = (engine.output.get("professional_reasoning") or {}).get("handoff")
-            print(f"[PRODUCTION V2] {alias} {engine.engine_id} gate={engine.gate_passed} score={engine.score:.1f} handoff={handoff} reasons={list(engine.reason_codes)}", flush=True)
+            if engine.engine_id == "E9":
+                reasoning = engine.output.get("professional_reasoning") or {}
+                print(
+                    f"[PRODUCTION V2] {alias} E9 DECISION={engine.output.get('decision', result.decision)} "
+                    f"thesis={engine.output.get('thesis_quality', 0):.1f} "
+                    f"direction={engine.output.get('direction', 'NEUTRAL')} "
+                    f"setup={((reasoning.get('independent_setup') or {}).get('state', 'UNRESOLVED'))} "
+                    f"execution={((reasoning.get('execution') or {}).get('state', 'UNKNOWN'))} "
+                    f"conflicts={reasoning.get('conflicts', [])} "
+                    f"invalidations={reasoning.get('hard_invalidations', [])} "
+                    f"reasons={engine.output.get('decision_reasons', list(engine.reason_codes))}",
+                    flush=True,
+                )
+                continue
+            why = self._reasoning(engine)
+            print(
+                f"[PRODUCTION V2] {alias} {engine.engine_id} "
+                f"ROLE={why['role']} question={why['question']} "
+                f"conclusion={why['conclusion']} "
+                f"observations={why['observations']} "
+                f"reasons={why['reason_codes']}",
+                flush=True,
+            )
 
     def _loop(self) -> None:
         while True:
