@@ -127,7 +127,11 @@ def _validate_execution_plan(plan, output, *, candidate: bool):
     try: rr=float(plan["rr_tp2"])
     except (TypeError,ValueError): return {"ready":False,"state":"INVALID","reasons":["E8_INVALID_RR"],"plan":None,"risk_basis":"INVALID_RR"}
     if rr<=0: return {"ready":False,"state":"INVALID","reasons":["E8_INVALID_RR"],"plan":None,"risk_basis":"INVALID_RR"}
-    risk_gate=_text(_find_key(output,{"risk_gate"})).strip()
+    # E8's top-level risk_gate is the canonical execution boundary. Do not
+    # recursively search specialists here: nested 8A-8F observations may
+    # legitimately contain RISK_NOT_READY while 8G has already verified the
+    # final execution geometry as RISK_READY.
+    risk_gate=_text(output.get("risk_gate", "")).strip()
     if risk_gate not in {"RISK_READY","PASS","READY","TRUE","RISK_CANDIDATES_READY"}: return {"ready":False,"state":"NOT_READY","reasons":["EXECUTION_RISK_NOT_READY"],"plan":None,"risk_basis":"RISK_NOT_READY"}
     return {"ready":True,"state":"READY","reasons":[],"plan":plan,"risk_basis":"E8_VERIFIED_CANDIDATE" if candidate else "E8_VERIFIED_PLAN"}
 
@@ -174,4 +178,4 @@ def run_professional_e9(context,upstream,historical_calibration=None):
     out={"decision":decision,"decision_authority":"E9","trade_decision_authority":True,"architecture":"PROFESSIONAL_THESIS_REASONING","analysis_complete":True,"direction":direction,"evidence_alignment":alignment,"thesis_quality":thesis_quality,"execution_readiness_score":100.0 if execution["ready"] else 0.0,"decision_score":thesis_quality if ready else 0.0,"score_semantics":"DECISION_SCORE_ONLY; THESIS_QUALITY_REPORTED_SEPARATELY","professional_reasoning":{"question":"Is there a clear, asymmetric, confirmed opportunity worth risking capital on now?","primary_thesis":direction,"alternative_thesis":"Opposite direction only if primary structure/setup thesis fails","invalidation":"; ".join(invalidations) if invalidations else "Structural/setup/confirmation premise failure","dimensions":dimensions,"setup_state":setup["state"],"setup":setup,"conflicts":conflicts,"hard_invalidations":invalidations,"execution_state":execution["state"],"execution_ready":execution["ready"],"risk_basis":execution["risk_basis"],"decision_process":"THESIS -> DIRECTION -> SETUP MATURITY -> CONFLUENCE/CONTRADICTION -> EXECUTION -> DECISION"},"engine_theses":theses,"decision_reasons":sorted(set(reasons)),"evidence_conflicts":conflicts,"hard_invalidations":invalidations,"trade_plan":plan,"gate":ready,"upstream_gates_ignored":True,"gate_semantics":"E9_MASTER_ONLY","learning_policy":"ADVISORY_ONLY_NO_OVERRIDE","professional_decision":"APPROVE_TRADE" if ready else "NO_TRADE"}
     advisory=build_advisory(context,historical_calibration) if historical_calibration is not None else None
     if advisory is not None: out["learning_advisory"]=advisory
-    return EngineResult("E9",ENGINE_NAMES["E9"],ready,thesis_quality if ready else 0.0,out,tuple(sorted(set(reasons))))
+    return EngineResult("E9","Master Decision Brain",ready,thesis_quality,out,tuple(sorted(set(reasons))))
