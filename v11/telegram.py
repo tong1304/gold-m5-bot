@@ -2,77 +2,118 @@ from __future__ import annotations
 
 import json
 import os
-import re
+from datetime import datetime, timedelta, timezone
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
+from zoneinfo import ZoneInfo
 
-SYSTEM_NAME = "9-ENGINE-TRADING-DECISION-SYSTEM"
-ARCHITECTURE = (
-    "Market Data → E1 Market State → E2 Market Regime → E3 Market Structure "
-    "→ E4 Liquidity → E5 Location/Value → E6 Trade Setup "
-    "→ E7 Entry Confirmation → E8 Risk/Reward → E9 Master Decision/Execution"
-)
-
-LEGACY_TOKENS = (
-    "12.11-CROSS-ASSET-FALLBACK",
-    "CROSS-ASSET-FALLBACK",
-    "V12.11",
-    "V12",
-    "MTF:H1→M15→M5",
-    "H1→M15→M5",
-    "H1>M15>M5",
-    "H1 → M15 → M5",
-)
+BANGKOK = ZoneInfo("Asia/Bangkok")
+UTC = timezone.utc
 
 
-def _normalize_message(text: str) -> str:
-    """Render every outgoing Telegram message in the locked 9-engine vocabulary.
+def _fmt_price(value):
+    try:
+        value = float(value)
+        return f"{value:,.2f}" if value > 0 else "N/A"
+    except (TypeError, ValueError):
+        return "N/A"
 
-    This is presentation-only. It must never change a trading decision.
-    """
-    message = str(text)
 
-    # Legacy engine/version labels.
-    message = message.replace("12.11-CROSS-ASSET-FALLBACK", SYSTEM_NAME)
-    message = message.replace("CROSS-ASSET-FALLBACK", "9-ENGINE")
-    message = message.replace("V12.11", SYSTEM_NAME)
-    message = message.replace("V12", SYSTEM_NAME)
+def _current_m5_open(symbol: str, now_utc: datetime | None = None):
+    """Return Open of the currently forming M5 candle, not the live tick."""
+    try:
+        from lse import LSE
 
-    # Legacy timeframe/strategy architecture labels.
-    legacy_arch = (
-        "H1 → M15 → M5 + REGIME + BTC B1-B3 + GOLD G1-G3 + RE-ENTRY + MULTI-TP"
+        market = {"BTC": "BTC/USD", "GOLD": "XAU/USD"}.get(symbol.upper())
+        api_key = os.getenv("LSE_API_KEY", "").strip()
+        if not market or not api_key:
+            return None
+
+        now_utc = now_utc or datetime.now(UTC)
+        slot = now_utc.astimezone(UTC).replace(
+            minute=(now_utc.minute // 5) * 5,
+            second=0,
+            microsecond=0,
+        )
+        start = (slot - timedelta(minutes=5)).date().isoformat()
+        end = (slot + timedelta(minutes=5)).date().isoformat()
+
+        client = LSE(api_key=api_key)
+        try:
+            rows = client.candles(
+                market,
+                "5m",
+                start=start,
+                end=end,
+                limit=12,
+                order="desc",
+            )
+        finally:
+            try:
+                client.disconnect()
+            except Exception:
+                pass
+
+        rows = rows.get("data") if isinstance(rows, dict) else rows
+        if not isinstance(rows, (list, tuple)):
+            return None
+
+        for row in rows:
+            if not isinstance(row, dict) or "datetime" not in row or "open" not in row:
+                continue
+            try:
+                ts = datetime.fromisoformat(str(row["datetime"]).replace("Z", "+00:00"))
+                if ts.tzinfo is None:
+                    ts = ts.replace(tzinfo=UTC)
+                ts = ts.astimezone(UTC).replace(second=0, microsecond=0)
+                if ts == slot:
+                    return float(row["open"])
+            except (TypeError, ValueError):
+                continue
+        return None
+    except Exception:
+        return None
+
+
+def _format_production_v2_status(now_bkk: datetime | None = None):
+    now_bkk = now_bkk or datetime.now(UTC).astimezone(BANGKOK)
+    now_utc = now_bkk.astimezone(UTC)
+    gold_open = _current_m5_open("GOLD", now_utc)
+    btc_open = _current_m5_open("BTC", now_utc)
+    return (
+        "<b>✅ สถานะระบบ PRODUCTION-V2</b>\n\n"
+        "🧠 โครงสร้าง: E1 → E2 → E3 → E4 → E5 → E6 → E7 → E8\n"
+        "⏱ Timeframe: M5\n\n"
+        f"🚨เวลาแจ้งเตือน: {now_bkk.strftime('%d/%m/%Y %H:%M:%S')} (ประเทศไทย)\n\n"
+        "📡 ราคาแท่งปัจจุบัน:\n"
+        f"🌕 GOLD: {_fmt_price(gold_open)}\n"
+        f"🪙 BTC: {_fmt_price(btc_open)}\n\n"
+        "✅ ระบบทำงานปกติ"
     )
-    message = message.replace(legacy_arch, ARCHITECTURE)
-    message = message.replace("MTF:H1→M15→M5", "M5 / 9-ENGINE")
-    message = message.replace("H1→M15→M5", "M5 / 9-ENGINE")
-    message = message.replace("H1>M15>M5", "M5 / 9-ENGINE")
-    message = message.replace("H1 → M15 → M5", "M5 / 9-ENGINE")
-    message = message.replace("MODE=MTF", "MODE=9-ENGINE")
 
-    # Do not expose the old asset-specific strategy catalog in notifications.
-    for token in (
-        "B1_RANGE_SWEEP_DISPLACEMENT",
-        "B2_HTF_ZONE_M5_FVG_RETEST",
-        "B3_VOLATILITY_EXPANSION_BREAKOUT_RETEST",
-        "G1_LIQUIDITY_SWEEP_CHOCH",
-        "G2_HTF_ZONE_M5_FVG_RETEST",
-        "G3_VOLATILITY_EXPANSION_BREAKOUT_RETEST",
-    ):
-        message = message.replace(token, "SETUP_CANDIDATE")
 
-    # Normalize old logging-style engine names if they reach Telegram.
-    message = re.sub(r"(?i)(?:engine|ระบบวิเคราะห์)\s*[:=]\s*(?:12\.11[^\n]*)", "Engine: 9-ENGINE-TRADING-DECISION-SYSTEM", message)
-    return message
+def _is_system_monitor(text: str) -> bool:
+    markers = (
+        "ราคาสินทรัพย์ปัจจุบัน",
+        "แจ้งเตือนสถานะระบบ ไม่ใช่สัญญาณ BUY/SELL",
+        "สถานะระบบ",
+        "Architecture:",
+    )
+    return any(marker in str(text) for marker in markers)
 
 
 def send_telegram(text: str):
-    """Send an HTML Telegram message using the 9-engine presentation contract."""
+    """Send Telegram using the Production-V2 status presentation contract."""
     token = os.getenv("TELEGRAM_BOT_TOKEN") or os.getenv("BOT_TOKEN")
     chat_id = os.getenv("TELEGRAM_CHAT_ID") or os.getenv("CHAT_ID")
     if not token or not chat_id:
         return {"success": False, "error": "TELEGRAM_NOT_CONFIGURED"}
 
-    normalized_text = _normalize_message(text)
+    if _is_system_monitor(text):
+        normalized_text = _format_production_v2_status()
+    else:
+        normalized_text = str(text)
+
     url = f"https://api.telegram.org/bot{token}/sendMessage"
     body = json.dumps({
         "chat_id": chat_id,
@@ -90,17 +131,10 @@ def send_telegram(text: str):
         )
         with urlopen(req, timeout=10) as response:
             raw = response.read().decode("utf-8", errors="replace")
-
-        try:
-            payload = json.loads(raw)
-        except (TypeError, ValueError):
-            return {"success": False, "error_type": "TelegramResponseDecodeError", "error": "Telegram returned a non-JSON response", "response_text": raw[:500]}
-
+        payload = json.loads(raw)
         if not isinstance(payload, dict):
-            return {"success": False, "error_type": "TelegramResponseTypeError", "error": f"Telegram response must be an object, got {type(payload).__name__}", "response": payload}
-
+            return {"success": False, "error_type": "TelegramResponseTypeError", "response": payload}
         return {"success": bool(payload.get("ok", False)), "response": payload}
-
     except HTTPError as exc:
         try:
             raw = exc.read().decode("utf-8", errors="replace")
