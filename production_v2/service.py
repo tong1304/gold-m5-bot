@@ -80,23 +80,51 @@ class LiveService:
         reasoning = output.get("professional_reasoning") or {}
         specialists = output.get("specialists") or {}
 
-        # E1 has a deliberately non-directional contract.  Do not derive its
-        # answer from a generic conclusion field because that can collapse into
-        # UNRESOLVED when the E1 brain intentionally omits a trade direction.
         if engine.engine_id == "E1":
+            # E1's answer comes from the dedicated market-state brain, not
+            # from 1A's generic legacy direction field. E1 is descriptive only.
             market_state = reasoning.get("market_state") or output.get("market_state") or "UNCLEAR"
             volatility = reasoning.get("volatility_state") or output.get("volatility_state") or "UNKNOWN"
             structure = reasoning.get("structure_state") or output.get("structure_state") or "UNCLEAR"
             transition = reasoning.get("transition") or output.get("transition") or "UNKNOWN"
+            pressure = reasoning.get("directional_pressure") or output.get("directional_pressure") or "BALANCED"
+            trend_state = reasoning.get("trend_state") or output.get("trend_state") or "NONE"
             conclusion = (
-                f"MARKET_STATE={market_state}; "
-                f"VOLATILITY={volatility}; "
-                f"STRUCTURE={structure}; "
-                f"TRANSITION={transition}"
+                f"MARKET_STATE={market_state}; VOLATILITY={volatility}; "
+                f"STRUCTURE={structure}; PRESSURE={pressure}; "
+                f"TREND_STATE={trend_state}; TRANSITION={transition}"
             )
-        else:
-            conclusion = reasoning.get("conclusion") or output.get("analyst_conclusion") or "UNRESOLVED"
 
+            # Critical fix: E1 trace is sourced from the E1 brain first.
+            # Legacy 1A observations are secondary and cannot hide the real
+            # market-state classification behind direction=NEUTRAL.
+            observations = []
+            brain_evidence = output.get("evidence") or reasoning.get("evidence") or []
+            if isinstance(brain_evidence, (list, tuple)):
+                observations.extend(str(x) for x in brain_evidence if x)
+            trace = output.get("reasoning_trace") or []
+            if isinstance(trace, (list, tuple)):
+                observations.extend(str(x) for x in trace if x)
+            for key in ("directional_pressure", "trend_state", "volatility_state", "structure_state", "compression", "expansion", "transition"):
+                value = reasoning.get(key) or output.get(key)
+                if value is not None:
+                    observations.append(f"{key}={value}")
+
+            if isinstance(specialists, dict):
+                for item in specialists.values():
+                    if not isinstance(item, dict):
+                        continue
+                    observations.extend(str(x) for x in (item.get("observations") or []) if x)
+
+            return {
+                "question": reasoning.get("question") or output.get("question") or output.get("specialist_question"),
+                "conclusion": str(conclusion),
+                "observations": list(dict.fromkeys(observations))[:12],
+                "reasons": sorted(set(str(x) for x in (engine.reason_codes or [])))[:16],
+                "role": "MARKET_STATE_ANALYST",
+            }
+
+        conclusion = reasoning.get("conclusion") or output.get("analyst_conclusion") or "UNRESOLVED"
         observations = []
         reasons = list(engine.reason_codes or [])
         if isinstance(specialists, dict):
@@ -113,14 +141,6 @@ class LiveService:
                             observations.extend(value)
                         elif value:
                             observations.append(value)
-
-        # Add the E1 brain's own classification evidence to the trace.  This is
-        # descriptive evidence, not a BUY/SELL recommendation and not a gate.
-        if engine.engine_id == "E1":
-            for key in ("directional_pressure", "trend_state", "volatility_state", "structure_state", "compression", "expansion", "transition"):
-                value = reasoning.get(key) or output.get(key)
-                if value is not None:
-                    observations.append(f"{key}={value}")
 
         return {
             "question": reasoning.get("question") or output.get("specialist_question"),
