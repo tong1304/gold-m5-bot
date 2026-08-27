@@ -1,6 +1,9 @@
 from production_v2.e3_brain import analyze_e3
 
 
+# E3 is a single runtime brain; 3A-3F are intentionally parked.
+
+
 def _bars(closes):
     bars = []
     for i, close in enumerate(closes):
@@ -29,7 +32,7 @@ def test_e3_returns_real_evidence_contract():
     assert result["trade_decision_authority"] is False
 
 
-def test_e3_detects_confirmed_upward_break_without_upstream_input():
+def test_e3_detects_or_rejects_break_as_closed_candle_evidence():
     closes = [100.0] * 25
     closes += [101.0, 99.0, 101.5, 99.2, 100.0, 101.0, 100.0, 101.2]
     closes += [100.5, 102.5, 103.0, 103.2, 103.4]
