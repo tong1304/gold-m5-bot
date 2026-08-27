@@ -1,41 +1,33 @@
 from __future__ import annotations
-
 from statistics import mean
 from typing import Any
 from .contracts import EngineResult
 
 NAME="Setup Brain"
-QUESTION="What setup is forming?"
+QUESTION="What setup is forming, in what direction, and at what stage?"
 MIN_BARS=40
 
-
-def _ema(values,period):
-    if not values:return 0.0
-    a=2/(period+1); x=values[0]
-    for v in values[1:]:x=a*v+(1-a)*x
+def _ema(v,p):
+    a=2/(p+1); x=v[0]
+    for z in v[1:]: x=a*z+(1-a)*x
     return x
 
-
 def analyze_e6(snapshot:dict[str,Any],upstream:dict[str,EngineResult])->EngineResult:
-    bars=list(snapshot.get("bars") or []); e1=upstream.get("E1"); e2=upstream.get("E2"); e3=upstream.get("E3"); e4=upstream.get("E4"); e5=upstream.get("E5")
-    base={"question":QUESTION,"reasoning_role":"SETUP_ANALYST","decision_authority":"E9","trade_decision_authority":False}
-    if len(bars)<MIN_BARS:return EngineResult("E6",NAME,False,0.0,{**base,"state":"UNRESOLVED","setup":"NONE","maturity":"UNRESOLVED","evidence":[],"counter_evidence":["INSUFFICIENT_CLOSED_CANDLE_DATA"],"invalidation":["new closed candle"]},("INSUFFICIENT_DATA",))
-    closes=[float(b["close"]) for b in bars]; highs=[float(b["high"]) for b in bars]; lows=[float(b["low"]) for b in bars]
-    atr=mean(float(b["high"])-float(b["low"]) for b in bars[-14:]); price=closes[-1]; ema20=_ema(closes,20); ema50=_ema(closes,50)
-    state=str((e1.output if e1 else {}).get("market_state","UNCLEAR")); opportunity=str((e2.output if e2 else {}).get("finding","")).upper(); structure=str((e3.output if e3 else {}).get("finding","")).upper()
-    direction="BUY" if state=="TREND_UP" else "SELL" if state=="TREND_DOWN" else "NEUTRAL"
-    if direction=="NEUTRAL" and price>ema20>ema50:direction="BUY"
-    elif direction=="NEUTRAL" and price<ema20<ema50:direction="SELL"
-    body=abs(closes[-1]-float(bars[-1]["open"])); impulse=body>=max(.65*atr,1e-9)
-    prior_hi=max(highs[-11:-1]); prior_lo=min(lows[-11:-1]); breakout=(direction=="BUY" and price>prior_hi) or (direction=="SELL" and price<prior_lo)
-    pullback=(direction=="BUY" and abs(price-ema20)<=.60*atr) or (direction=="SELL" and abs(price-ema20)<=.60*atr)
-    location_ok=True
-    if e5: location_ok=str(e5.output.get("finding",e5.output.get("location_state",""))).upper() not in {"SPACE_CONSTRAINED","ADVERSE"}
-    setup_type="TREND_PULLBACK" if direction in {"BUY","SELL"} and pullback and location_ok else "BREAKOUT" if direction in {"BUY","SELL"} and breakout else "IMPULSE" if direction in {"BUY","SELL"} and impulse and location_ok else "NONE"
-    evidence=[f"direction={direction}",f"state={state}",f"impulse={impulse}",f"pullback={pullback}",f"breakout={breakout}",f"location_ok={location_ok}"]
-    counter=[]
-    if state in {"UNCLEAR","TRANSITION","RANGE","COMPRESSION"}:counter.append("REGIME_NOT_DIRECTIONALLY_CLEAR")
-    if not location_ok:counter.append("LOCATION_NOT_ADVANTAGEOUS")
-    if structure and "MIXED" in structure:counter.append("STRUCTURE_MIXED")
-    mature=setup_type!="NONE" and not counter
-    return EngineResult("E6",NAME,mature,80.0 if mature else 30.0,{**base,"state":"MATURE" if mature else "UNRESOLVED","setup":setup_type,"maturity":"MATURE" if mature else "UNRESOLVED","direction":direction,"atr":atr,"evidence":evidence,"counter_evidence":counter,"invalidation":["setup loses directional structure","location becomes constrained","new closed candle invalidates pattern"]},() if mature else tuple(counter or ["NO_CLEAR_SETUP"]))
+    bars=list(snapshot.get("bars") or []); base={"question":QUESTION,"reasoning_role":"SETUP_ANALYST","decision_authority":"E9","trade_decision_authority":False}
+    if len(bars)<MIN_BARS:return EngineResult("E6",NAME,None,0,{**base,"state":"WAIT","setup":"NONE","direction":"NEUTRAL","maturity":"UNRESOLVED","supporting_evidence":[],"counter_evidence":["INSUFFICIENT_CLOSED_CANDLE_DATA"],"missing_evidence":["sufficient price history"],"invalidation":["new closed candle"]},("INSUFFICIENT_DATA",))
+    c=[float(x["close"]) for x in bars]; h=[float(x["high"]) for x in bars]; l=[float(x["low"]) for x in bars]; atr=max(mean(float(x["high"])-float(x["low"]) for x in bars[-14:]),1e-9); price=c[-1]; e20=_ema(c,20); e50=_ema(c,50)
+    e1=(upstream.get("E1").output if upstream.get("E1") else {}); e2=(upstream.get("E2").output if upstream.get("E2") else {}); e3=(upstream.get("E3").output if upstream.get("E3") else {}); e5=(upstream.get("E5").output if upstream.get("E5") else {})
+    state=str(e1.get("market_state","UNCLEAR")).upper(); pressure=str(e1.get("directional_pressure","NONE")).upper(); opp=str(e2.get("thesis",e2.get("finding",""))).upper(); struct=str(e3.get("finding","" )).upper(); loc=str(e5.get("finding",e5.get("location_state",""))).upper()
+    buy=max(0,(state=="TREND_UP"),(pressure=="UP"),(price>e20>e50),("UP" in struct)); sell=max(0,(state=="TREND_DOWN"),(pressure=="DOWN"),(price<e20<e50),("DOWN" in struct))
+    direction="BUY" if buy>sell else "SELL" if sell>buy else "NEUTRAL"
+    body=abs(c[-1]-float(bars[-1]["open"])); impulse=body>=.65*atr; prior_hi=max(h[-11:-1]); prior_lo=min(l[-11:-1]); breakout=(direction=="BUY" and price>prior_hi) or (direction=="SELL" and price<prior_lo); pullback=abs(price-e20)<=.75*atr
+    setup="BREAKOUT" if breakout else "TREND_PULLBACK" if direction in {"BUY","SELL"} and pullback else "IMPULSE_CONTINUATION" if impulse else "NONE"
+    counter=[]; missing=[]
+    if direction=="NEUTRAL": counter.append("DIRECTIONAL_THESIS_CONFLICT")
+    if "MIXED" in struct: counter.append("STRUCTURE_MIXED")
+    if loc in {"SPACE_CONSTRAINED","ADVERSE"}: counter.append("LOCATION_CONSTRAINED")
+    if setup=="NONE": missing.append("clear_setup_pattern")
+    if setup in {"TREND_PULLBACK","IMPULSE_CONTINUATION"} and not impulse: missing.append("continuation_impulse")
+    maturity="MATURE" if setup!="NONE" and direction!="NEUTRAL" and not counter else "DEVELOPING" if setup!="NONE" and direction!="NEUTRAL" else "UNRESOLVED"
+    gate=maturity=="MATURE"; score=min(100,30+20*(buy+sell)+20*(setup!="NONE")+10*(maturity=="MATURE"))
+    return EngineResult("E6",NAME,gate,score,{**base,"state":maturity,"setup":setup,"direction":direction,"maturity":maturity,"supporting_evidence":[f"E1_state={state}",f"E1_pressure={pressure}",f"E2_thesis={opp}",f"E3_structure={struct}",f"impulse={impulse}",f"breakout={breakout}",f"pullback={pullback}"],"counter_evidence":counter,"missing_evidence":missing,"invalidation":["directional evidence reverses","setup structure breaks","location becomes materially constrained","closed candle invalidates setup"]},() if gate else tuple(counter or missing or ["SETUP_NOT_MATURE"]))
