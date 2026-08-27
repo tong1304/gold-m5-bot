@@ -38,8 +38,9 @@ def refine_e6(result, data, sub_engine_id):
     atr = max(_atr(bars), 1e-12)
     ema20 = _ema(closes, 20)
     ema50 = _ema(closes, 50)
-    slope = closes[-1] - closes[-6]
-    direction = "UP" if ema20 > ema50 and slope > 0 else "DOWN" if ema20 < ema50 and slope < 0 else "NEUTRAL"
+    short_slope = closes[-1] - closes[-6]
+    context_slope = closes[-1] - closes[-21]
+    direction = "UP" if ema20 > ema50 and context_slope > 0 else "DOWN" if ema20 < ema50 and context_slope < 0 else "NEUTRAL"
     last, previous = closes[-1], closes[-2]
 
     recent_high = max(highs[-9:-1])
@@ -85,6 +86,7 @@ def refine_e6(result, data, sub_engine_id):
 
     observations = [
         f"direction={direction}", f"ema20={ema20:.6f}", f"ema50={ema50:.6f}",
+        f"context_slope_atr={context_slope / atr:.3f}", f"short_slope_atr={short_slope / atr:.3f}",
         f"pullback_depth_atr={pullback_depth / atr:.3f}", f"pullback_active={pullback_active}",
         f"reclaim={reclaim}", f"continuation={continuation}",
         f"setup_formed={formed}", f"setup_mature={mature}",
