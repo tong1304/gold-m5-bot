@@ -20,7 +20,7 @@ def analyze_e7(snapshot:dict[str,Any],upstream:dict[str,EngineResult])->EngineRe
         return EngineResult("E7",NAME,None,0,{**base,"state":"WAIT","confirmation":"UNRESOLVED","trigger_status":"NOT_EVALUATED","direction":"NEUTRAL","trigger_observed":False,"supporting_evidence":[],"counter_evidence":["MISSING_SETUP_CONTEXT"],"missing_evidence":["closed-candle confirmation"],"invalidation":["new closed candle"]},("INSUFFICIENT_CONTEXT",))
 
     o=e6.output; direction=str(o.get("direction","NEUTRAL")).upper(); setup=str(o.get("setup","NONE")).upper(); b=bars[-1]; p=bars[-2]
-    op,hi,lo,cl=[float(b[k]) for k in ("open","high","close","low")]
+    op,hi,lo,cl=[float(b[k]) for k in ("open","high","low","close")]
     prev_open,prev_high,prev_low,prev_close=[float(p[k]) for k in ("open","high","low","close")]
     prev=float(p["close"]); rng=max(hi-lo,1e-9); body=abs(cl-op); atr=max(_atr(bars),1e-9); pos=(cl-lo)/rng
 
@@ -32,7 +32,6 @@ def analyze_e7(snapshot:dict[str,Any],upstream:dict[str,EngineResult])->EngineRe
     trigger=(direction=="BUY" and (bullish or engulf_bull)) or (direction=="SELL" and (bearish or engulf_bear))
 
     e4o=e4.output if e4 else {}
-    e4finding=str(e4o.get("finding","")).upper()
     e4dir=str(e4o.get("direction","NEUTRAL")).upper()
     liquidity_conflict=e4dir in {"UP","DOWN"} and ((direction=="BUY" and e4dir=="DOWN") or (direction=="SELL" and e4dir=="UP"))
 
@@ -52,5 +51,5 @@ def analyze_e7(snapshot:dict[str,Any],upstream:dict[str,EngineResult])->EngineRe
 
     gate=confirmation=="CONFIRMED" and trigger_status=="CONFIRMED"
     score=85 if gate else 50 if confirmation=="DEVELOPING" else 25
-    reasons=[] if gate else tuple(counter+missing or ["CONFIRMATION_NOT_PROVEN"])
+    reasons=() if gate else tuple(counter+missing or ["CONFIRMATION_NOT_PROVEN"])
     return EngineResult("E7",NAME,gate,score,{**base,"state":confirmation,"confirmation":confirmation,"trigger_status":trigger_status,"direction":direction,"setup":setup,"trigger_observed":trigger,"trigger_type":"BULLISH_CLOSE" if direction=="BUY" and trigger else "BEARISH_CLOSE" if direction=="SELL" and trigger else "NONE","impulse":impulse,"close_position":pos,"candle_body":body,"candle_range":rng,"supporting_evidence":[f"setup={setup}",f"direction={direction}",f"closed_candle_trigger={trigger}",f"impulse={impulse}",f"bullish_close={bullish}",f"bearish_close={bearish}",f"engulf_bull={engulf_bull}",f"engulf_bear={engulf_bear}"],"counter_evidence":list(dict.fromkeys(counter)),"missing_evidence":missing,"invalidation":["closed candle invalidates trigger","liquidity or structure materially contradicts confirmation"]},reasons)
