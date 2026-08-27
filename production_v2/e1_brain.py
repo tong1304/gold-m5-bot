@@ -1,118 +1,221 @@
-"""E1 — single professional Market-State Brain.
+"""E1 — Professional Market-State Brain.
 
-E1 is the sole decision authority for market-state classification.  No E1
-wrapper, reconciliation brain, or transition-guard brain is called from here.
-Helpers in this file only calculate evidence; analyze_e1() owns arbitration.
+E1 answers one question only: "What is the market doing right now?"
+It classifies market state from closed-candle OHLC evidence and never
+authorizes a trade or calls E2-E9.
 """
 from __future__ import annotations
+
 from math import isfinite
 from statistics import mean
 from typing import Any
 
 MARKET_STATES = {"TREND_UP", "TREND_DOWN", "RANGE", "COMPRESSION", "EXPANSION", "TRANSITION", "UNCLEAR"}
 QUESTION = "What is the market doing right now?"
-OWNERSHIP = {
-    "owns": ["data_integrity", "volatility_regime", "market_structure_context", "directional_pressure", "multi_horizon_alignment", "trend_persistence", "market_regime", "regime_transition"],
-    "does_not_own": ["opportunity_setup", "liquidity_auction", "trade_location", "entry_confirmation", "trade_economics", "risk_management", "trade_execution"],
-}
 MIN_BARS = 60
 
+OWNERSHIP = {
+    "owns": [
+        "data_integrity", "volatility_regime", "market_structure_context",
+        "directional_pressure", "multi_horizon_alignment", "trend_persistence",
+        "market_regime", "regime_transition",
+    ],
+    "does_not_own": [
+        "opportunity_setup", "liquidity_auction", "trade_location",
+        "entry_confirmation", "trade_economics", "risk_management", "trade_execution",
+    ],
+}
 
-def _num(x: Any):
+
+def _num(value: Any) -> float | None:
     try:
-        x = float(x)
+        value = float(value)
     except (TypeError, ValueError):
         return None
-    return x if isfinite(x) else None
+    return value if isfinite(value) else None
 
 
-def _ema(xs: list[float], p: int) -> list[float]:
-    if not xs:
+def _ema(values: list[float], period: int) -> list[float]:
+    if not values:
         return []
-    a = 2.0 / (p + 1.0)
-    cur = xs[0]
-    out = [cur]
-    for x in xs[1:]:
-        cur = a * x + (1.0 - a) * cur
-        out.append(cur)
-    return out
+    alpha = 2.0 / (period + 1.0)
+    current = values[0]
+    result = [current]
+    for value in values[1:]:
+        current = alpha * value + (1.0 - alpha) * current
+        result.append(current)
+    return result
 
 
-def _atr(bars: list[dict[str, Any]], n: int = 14) -> float:
+def _atr(bars: list[dict[str, Any]], period: int = 14) -> float:
+    if not bars:
+        return 0.0
+    sample = bars[-period:]
     trs: list[float] = []
-    prev = None
-    for b in bars[-n:]:
-        h, l, c = b["high"], b["low"], b["close"]
-        trs.append(h - l if prev is None else max(h - l, abs(h - prev), abs(l - prev)))
-        prev = c
+    previous_close: float | None = None
+    for bar in sample:
+        high, low, close = bar["high"], bar["low"], bar["close"]
+        true_range = high - low if previous_close is None else max(
+            high - low, abs(high - previous_close), abs(low - previous_close)
+        )
+        trs.append(max(0.0, true_range))
+        previous_close = close
     return mean(trs) if trs else 0.0
 
 
-def _slope(xs: list[float], atr: float, n: int) -> float:
-    return 0.0 if len(xs) <= n or atr <= 0 else (xs[-1] - xs[-1-n]) / atr
-
-
-def _eff(xs: list[float], n: int) -> float:
-    x = xs[-n:]
-    if len(x) < 2:
+def _slope(values: list[float], atr: float, lookback: int) -> float:
+    if atr <= 0 or len(values) <= lookback:
         return 0.0
-    path = sum(abs(x[i] - x[i-1]) for i in range(1, len(x)))
-    return abs(x[-1] - x[0]) / max(path, 1e-12)
+    return (values[-1] - values[-1 - lookback]) / atr
 
 
-def _structure(bars: list[dict[str, Any]]) -> tuple[str, float]:
-    hs, ls, w = [], [], 2
-    for i in range(w, len(bars) - w):
-        win = bars[i-w:i+w+1]
-        h, l = bars[i]["high"], bars[i]["low"]
-        if h >= max(x["high"] for x in win): hs.append(h)
-        if l <= min(x["low"] for x in win): ls.append(l)
-    hs, ls = hs[-6:], ls[-6:]
-    hh = sum(hs[i] > hs[i-1] for i in range(1, len(hs)))
-    lh = sum(hs[i] < hs[i-1] for i in range(1, len(hs)))
-    hl = sum(ls[i] > ls[i-1] for i in range(1, len(ls)))
-    ll = sum(ls[i] < ls[i-1] for i in range(1, len(ls)))
-    bull, bear = min(hh, hl), min(lh, ll)
-    if bull >= 2 and bull > bear: return "BULLISH", min(1.0, .65 + .08 * bull)
-    if bear >= 2 and bear > bull: return "BEARISH", min(1.0, .65 + .08 * bear)
-    if hh + hl >= 2 and hh + hl > lh + ll: return "BULLISH", .55
-    if lh + ll >= 2 and lh + ll > hh + hl: return "BEARISH", .55
-    return "MIXED", .30
+def _efficiency(values: list[float], lookback: int) -> float:
+    sample = values[-lookback:]
+    if len(sample) < 2:
+        return 0.0
+    path = sum(abs(sample[i] - sample[i - 1]) for i in range(1, len(sample)))
+    return abs(sample[-1] - sample[0]) / max(path, 1e-12)
 
 
-def _result(base: dict[str, Any], state: str, pressure: str, volatility: str,
-            structure: str, sq: float, compression: bool, expansion: bool,
-            transition: bool, confidence: float, evidence: list[str],
-            conflicts: list[str], reason: str, maturity: str,
-            trend_confirmed: bool) -> dict[str, Any]:
-    ts = "UP" if state == "TREND_UP" else "DOWN" if state == "TREND_DOWN" else "NONE"
+def _pivot_structure(bars: list[dict[str, Any]], wing: int = 2) -> tuple[str, float, dict[str, int]]:
+    highs: list[float] = []
+    lows: list[float] = []
+    for i in range(wing, len(bars) - wing):
+        window = bars[i - wing:i + wing + 1]
+        high = bars[i]["high"]
+        low = bars[i]["low"]
+        if high >= max(x["high"] for x in window):
+            highs.append(high)
+        if low <= min(x["low"] for x in window):
+            lows.append(low)
+
+    highs, lows = highs[-6:], lows[-6:]
+    hh = sum(highs[i] > highs[i - 1] for i in range(1, len(highs)))
+    lh = sum(highs[i] < highs[i - 1] for i in range(1, len(highs)))
+    hl = sum(lows[i] > lows[i - 1] for i in range(1, len(lows)))
+    ll = sum(lows[i] < lows[i - 1] for i in range(1, len(lows)))
+
+    bull = min(hh, hl)
+    bear = min(lh, ll)
+    if bull >= 2 and bull > bear:
+        quality = min(1.0, 0.62 + 0.09 * bull)
+        return "BULLISH", quality, {"HH": hh, "HL": hl, "LH": lh, "LL": ll}
+    if bear >= 2 and bear > bull:
+        quality = min(1.0, 0.62 + 0.09 * bear)
+        return "BEARISH", quality, {"HH": hh, "HL": hl, "LH": lh, "LL": ll}
+
+    directional_bull = hh + hl
+    directional_bear = lh + ll
+    if directional_bull >= 2 and directional_bull > directional_bear:
+        return "BULLISH", 0.52, {"HH": hh, "HL": hl, "LH": lh, "LL": ll}
+    if directional_bear >= 2 and directional_bear > directional_bull:
+        return "BEARISH", 0.52, {"HH": hh, "HL": hl, "LH": lh, "LL": ll}
+    return "MIXED", 0.30, {"HH": hh, "HL": hl, "LH": lh, "LL": ll}
+
+
+def _base_result() -> dict[str, Any]:
+    return {
+        "question": QUESTION,
+        "reasoning_role": "MARKET_STATE_ANALYST",
+        "trade_decision_authority": False,
+        "decision_authority": "E9_ONLY",
+        "architecture": "E1_SINGLE_PROFESSIONAL_BRAIN",
+    }
+
+
+def _incomplete(base: dict[str, Any], reason: str, evidence: list[str], conflicts: list[str] | None = None) -> dict[str, Any]:
+    return {
+        **base,
+        "market_state": "UNCLEAR",
+        "directional_pressure": "NEUTRAL",
+        "trend_state": "NONE",
+        "volatility_state": "UNKNOWN",
+        "structure_state": "UNCLEAR",
+        "structure_quality": 0.0,
+        "range_state": "UNKNOWN",
+        "compression": "UNKNOWN",
+        "expansion": "UNKNOWN",
+        "transition": "UNKNOWN",
+        "confidence": 0.0,
+        "evidence": evidence,
+        "observations": evidence,
+        "conflicts": conflicts or [],
+        "reasons": [reason],
+        "reasoning_trace": [
+            f"QUESTION -> {QUESTION}",
+            "DATA -> insufficient reliable evidence",
+            f"STATE -> UNCLEAR because={reason}",
+        ],
+        "professional_reasoning": {
+            "task": "DESCRIBE_MARKET_STATE_ONLY",
+            "primary_state": "UNCLEAR",
+            "market_state": "UNCLEAR",
+            "direction": "NEUTRAL",
+            "directional_pressure": "NEUTRAL",
+            "trend_maturity": "UNAVAILABLE",
+            "trend_confirmed": False,
+            "conflict_detected": bool(conflicts),
+            "conflict_count": len(conflicts or []),
+            "classification_reason": reason,
+            "ownership_boundaries": OWNERSHIP,
+        },
+        "analysis_status": "INCOMPLETE",
+    }
+
+
+def _result(
+    base: dict[str, Any], *, state: str, pressure: str, volatility: str,
+    structure: str, structure_quality: float, compression: bool,
+    expansion: bool, transition: bool, confidence: float, evidence: list[str],
+    conflicts: list[str], reason: str, maturity: str, trend_confirmed: bool,
+    range_state: str,
+) -> dict[str, Any]:
+    trend_state = "UP" if state == "TREND_UP" else "DOWN" if state == "TREND_DOWN" else "NONE"
     direction = "UP" if pressure == "UP" else "DOWN" if pressure == "DOWN" else "NEUTRAL"
     reasons = list(conflicts)
-    if transition: reasons.append("REGIME_CONFLICT_ACTIVE")
-    elif state == "UNCLEAR": reasons.append("REGIME_CONFIRMATION_INSUFFICIENT")
+    if transition:
+        reasons.append("REGIME_CONFLICT_ACTIVE")
+    elif state == "UNCLEAR":
+        reasons.append("REGIME_CONFIRMATION_INSUFFICIENT")
+
+    confidence = max(0.0, min(0.99, confidence))
     return {
-        **base, "market_state": state, "directional_pressure": direction,
-        "trend_state": ts, "volatility_state": volatility,
-        "structure_state": structure, "structure_quality": round(sq, 3),
+        **base,
+        "market_state": state,
+        "directional_pressure": direction,
+        "trend_state": trend_state,
+        "volatility_state": volatility,
+        "structure_state": structure,
+        "structure_quality": round(structure_quality, 3),
+        "range_state": range_state,
         "compression": "PRESENT" if compression else "ABSENT",
         "expansion": "PRESENT" if expansion else "ABSENT",
         "transition": "PRESENT" if transition else "ABSENT",
-        "confidence": round(max(0.0, min(.99, confidence)), 3),
-        "evidence": evidence, "conflicts": conflicts, "reasons": reasons,
+        "confidence": round(confidence, 3),
+        "evidence": evidence,
+        "observations": evidence,
+        "conflicts": conflicts,
+        "reasons": reasons,
         "reasoning_trace": [
             f"QUESTION -> {QUESTION}",
-            f"STRUCTURE -> {structure} quality={sq:.2f}",
+            f"STRUCTURE -> {structure} quality={structure_quality:.2f}",
             f"PRESSURE -> {direction}",
+            f"VOLATILITY -> {volatility}",
             f"REGIME_CONFIRMATION -> trend_confirmed={trend_confirmed} maturity={maturity}",
             f"STATE -> {state} because={reason}",
             f"TRANSITION -> {'PRESENT' if transition else 'ABSENT'}",
         ],
         "professional_reasoning": {
-            "task": "DESCRIBE_MARKET_STATE_ONLY", "primary_state": state,
-            "market_state": state, "direction": direction,
-            "directional_pressure": direction, "trend_maturity": maturity,
-            "trend_confirmed": trend_confirmed, "conflict_detected": bool(conflicts),
-            "conflict_count": len(conflicts), "classification_reason": reason,
+            "task": "DESCRIBE_MARKET_STATE_ONLY",
+            "primary_state": state,
+            "market_state": state,
+            "direction": direction,
+            "directional_pressure": direction,
+            "trend_maturity": maturity,
+            "trend_confirmed": trend_confirmed,
+            "conflict_detected": bool(conflicts),
+            "conflict_count": len(conflicts),
+            "classification_reason": reason,
             "ownership_boundaries": OWNERSHIP,
         },
         "analysis_status": "COMPLETE",
@@ -120,118 +223,252 @@ def _result(base: dict[str, Any], state: str, pressure: str, volatility: str,
 
 
 def analyze_e1(bars: list[dict[str, Any]] | None) -> dict[str, Any]:
-    """One and only E1 decision function.
+    """Classify the current market state from reliable closed-candle OHLC data.
 
-    Calculates evidence, arbitrates contradictions, classifies the regime, and
-    returns the professional market-state contract.  It never consumes E2-E9.
+    E1 owns market-state analysis only. It never produces BUY/SELL and never
+    consumes another engine's output.
     """
-    valid, bad = [], []
-    for i, b in enumerate(bars or []):
-        if not isinstance(b, dict):
-            bad.append(f"bar_{i}_not_mapping"); continue
-        v = {k: _num(b.get(k)) for k in ("open", "high", "low", "close")}
-        if any(x is None for x in v.values()):
-            bad.append(f"bar_{i}_ohlc_invalid"); continue
-        if v["high"] < max(v["open"], v["close"]) or v["low"] > min(v["open"], v["close"]) or v["high"] < v["low"]:
-            bad.append(f"bar_{i}_ohlc_inconsistent"); continue
-        valid.append({**b, **v})
+    base = _base_result()
+    valid: list[dict[str, Any]] = []
+    invalid_count = 0
 
-    base = {"question": QUESTION, "reasoning_role": "MARKET_STATE_ANALYST",
-            "trade_decision_authority": False, "decision_authority": "E9_ONLY",
-            "architecture": "E1_SINGLE_PROFESSIONAL_BRAIN"}
+    for index, raw in enumerate(bars or []):
+        if not isinstance(raw, dict):
+            invalid_count += 1
+            continue
+        values = {key: _num(raw.get(key)) for key in ("open", "high", "low", "close")}
+        if any(value is None for value in values.values()):
+            invalid_count += 1
+            continue
+        open_, high, low, close = values["open"], values["high"], values["low"], values["close"]
+        if high < low or high < max(open_, close) or low > min(open_, close):
+            invalid_count += 1
+            continue
+        valid.append({**raw, "open": open_, "high": high, "low": low, "close": close})
+
     if len(valid) < MIN_BARS:
-        return {**base, "market_state": "UNCLEAR", "directional_pressure": "NEUTRAL",
-                "trend_state": "NONE", "volatility_state": "UNKNOWN", "structure_state": "UNCLEAR",
-                "structure_quality": 0.0, "compression": "UNKNOWN", "expansion": "UNKNOWN",
-                "transition": "UNKNOWN", "confidence": 0.0, "evidence": ["valid_candles_below_minimum"],
-                "conflicts": bad[:6], "reasons": ["insufficient reliable candles; classification withheld"],
-                "analysis_status": "INCOMPLETE",
-                "professional_reasoning": {"task": "DESCRIBE_MARKET_STATE_ONLY", "trend_maturity": "UNAVAILABLE",
-                    "trend_confirmed": False, "classification_reason": "insufficient reliable candles; classification withheld",
-                    "ownership_boundaries": OWNERSHIP}}
+        return _incomplete(
+            base,
+            "insufficient reliable closed candles; classification withheld",
+            [f"valid_candles={len(valid)}", f"minimum_required={MIN_BARS}"],
+            ["DATA_QUALITY_ANOMALIES"] if invalid_count else [],
+        )
 
-    c = [b["close"] for b in valid]
+    closes = [bar["close"] for bar in valid]
     atr14 = _atr(valid, 14)
-    if atr14 <= 0:
-        return {**base, "market_state": "UNCLEAR", "directional_pressure": "NEUTRAL", "trend_state": "NONE",
-                "volatility_state": "UNKNOWN", "structure_state": "UNCLEAR", "structure_quality": 0.0,
-                "compression": "UNKNOWN", "expansion": "UNKNOWN", "transition": "UNKNOWN", "confidence": 0.0,
-                "evidence": ["atr_invalid"], "conflicts": ["ATR_INVALID"],
-                "reasons": ["ATR invalid; classification withheld"], "analysis_status": "INCOMPLETE",
-                "professional_reasoning": {"task": "DESCRIBE_MARKET_STATE_ONLY", "trend_maturity": "UNAVAILABLE",
-                    "trend_confirmed": False, "classification_reason": "ATR invalid; classification withheld",
-                    "ownership_boundaries": OWNERSHIP}}
+    atr50 = _atr(valid, 50)
+    if atr14 <= 0 or atr50 <= 0:
+        return _incomplete(base, "ATR invalid; classification withheld", ["ATR_INVALID"], ["ATR_INVALID"])
 
-    e20s, e50s = _ema(c, 20), _ema(c, 50)
-    rel = "UP" if e20s[-1] > e50s[-1] else "DOWN" if e20s[-1] < e50s[-1] else "FLAT"
-    gap = (e20s[-1] - e50s[-1]) / atr14
-    es20, es50 = _slope(e20s, atr14, 5), _slope(e50s, atr14, 5)
-    ss, ms, ls = (_slope(c, atr14, n) for n in (5, 10, 20))
-    dirs = ["UP" if ss > .15 else "DOWN" if ss < -.15 else "FLAT",
-            "UP" if ms > .20 else "DOWN" if ms < -.20 else "FLAT",
-            "UP" if ls > .30 else "DOWN" if ls < -.30 else "FLAT"]
-    up, down = dirs.count("UP"), dirs.count("DOWN")
-    pressure = "UP" if up > down else "DOWN" if down > up else "BALANCED"
-    aligned = sum((ss >= .20, ms >= .30, ls >= .45)) if pressure == "UP" else sum((ss <= -.20, ms <= -.30, ls <= -.45)) if pressure == "DOWN" else 0
-    persistence = aligned / 3.0
-    e10, e20 = _eff(c, 10), _eff(c, 20)
-    structure, sq = _structure(valid)
-    sd = "UP" if structure == "BULLISH" else "DOWN" if structure == "BEARISH" else "FLAT"
+    ema20_series = _ema(closes, 20)
+    ema50_series = _ema(closes, 50)
+    ema20 = ema20_series[-1]
+    ema50 = ema50_series[-1]
+    ema_relation = "UP" if ema20 > ema50 else "DOWN" if ema20 < ema50 else "FLAT"
+    ema_gap = (ema20 - ema50) / atr14
+    ema20_slope = _slope(ema20_series, atr14, 5)
+    ema50_slope = _slope(ema50_series, atr14, 5)
 
-    ema_ok = pressure in ("UP", "DOWN") and rel == pressure and ((pressure == "UP" and es20 >= -.05 and es50 >= -.10) or (pressure == "DOWN" and es20 <= .05 and es50 <= .10))
-    ema_conflict = pressure in ("UP", "DOWN") and rel in ("UP", "DOWN") and rel != pressure
-    struct_conflict = pressure in ("UP", "DOWN") and sd in ("UP", "DOWN") and sd != pressure
-    horizon_conflict = len({x for x in dirs if x in ("UP", "DOWN")}) > 1
-    conflicts = []
-    if bad: conflicts.append("DATA_QUALITY_ANOMALIES")
-    if ema_conflict: conflicts.append("EMA_VS_PRICE_PRESSURE")
-    if struct_conflict: conflicts.append("STRUCTURE_VS_PRICE_PRESSURE")
-    if horizon_conflict: conflicts.append("SHORT_VS_LONG_HORIZON")
-    if pressure == "BALANCED": conflicts.append("DIRECTIONAL_PRESSURE_BALANCED")
+    slope5 = _slope(closes, atr14, 5)
+    slope10 = _slope(closes, atr14, 10)
+    slope20 = _slope(closes, atr14, 20)
+    slope40 = _slope(closes, atr14, 40)
 
-    consensus = pressure in ("UP", "DOWN") and max(up, down) >= 2 and persistence >= 2/3
-    strong_structure = sd == pressure and sq >= .55
-    trend = consensus and ema_ok and abs(gap) >= .10 and e20 >= .12 and not ema_conflict and not struct_conflict and (strong_structure or persistence == 1.0)
+    def signed_direction(value: float, threshold: float) -> str:
+        return "UP" if value >= threshold else "DOWN" if value <= -threshold else "FLAT"
 
-    # Professional transition arbitration: a recent impulse alone is not a
-    # transition. It must materially contradict persistent prior context.
-    prior = (c[-31] - c[-71]) / atr14 if len(c) >= 71 else 0.0
-    recent = (c[-1] - c[-11]) / atr14 if len(c) >= 11 else 0.0
-    impulse_conflict = len(c) >= 71 and abs(prior) >= .35 and abs(recent) >= .80 and (prior > 0) != (recent > 0)
-    transition = (not trend) and (impulse_conflict or ((ema_conflict or struct_conflict) and persistence >= 1/3) or (horizon_conflict and e20 < .45))
-    if impulse_conflict and "RECENT_IMPULSE_VS_PRIOR_CONTEXT" not in conflicts:
+    horizons = [
+        signed_direction(slope5, 0.15),
+        signed_direction(slope10, 0.20),
+        signed_direction(slope20, 0.30),
+        signed_direction(slope40, 0.40),
+    ]
+    up_count = horizons.count("UP")
+    down_count = horizons.count("DOWN")
+    pressure = "UP" if up_count > down_count else "DOWN" if down_count > up_count else "BALANCED"
+    dominant_count = max(up_count, down_count)
+    directional_consensus = dominant_count / len(horizons)
+
+    aligned = 0
+    if pressure == "UP":
+        aligned = sum((slope5 >= 0.20, slope10 >= 0.25, slope20 >= 0.35, slope40 >= 0.45))
+    elif pressure == "DOWN":
+        aligned = sum((slope5 <= -0.20, slope10 <= -0.25, slope20 <= -0.35, slope40 <= -0.45))
+    persistence = aligned / 4.0
+
+    efficiency10 = _efficiency(closes, 10)
+    efficiency20 = _efficiency(closes, 20)
+    efficiency40 = _efficiency(closes, 40)
+
+    structure, structure_quality, pivot_counts = _pivot_structure(valid)
+    structure_direction = "UP" if structure == "BULLISH" else "DOWN" if structure == "BEARISH" else "NEUTRAL"
+
+    ema_ok = (
+        pressure in {"UP", "DOWN"}
+        and ema_relation == pressure
+        and (
+            (pressure == "UP" and ema20_slope >= -0.05 and ema50_slope >= -0.10)
+            or (pressure == "DOWN" and ema20_slope <= 0.05 and ema50_slope <= 0.10)
+        )
+    )
+    ema_conflict = pressure in {"UP", "DOWN"} and ema_relation in {"UP", "DOWN"} and ema_relation != pressure
+    structure_conflict = pressure in {"UP", "DOWN"} and structure_direction in {"UP", "DOWN"} and structure_direction != pressure
+    horizon_conflict = up_count > 0 and down_count > 0
+
+    conflicts: list[str] = []
+    if invalid_count:
+        conflicts.append("DATA_QUALITY_ANOMALIES")
+    if ema_conflict:
+        conflicts.append("EMA_VS_PRICE_PRESSURE")
+    if structure_conflict:
+        conflicts.append("STRUCTURE_VS_PRICE_PRESSURE")
+    if horizon_conflict:
+        conflicts.append("MULTI_HORIZON_DISAGREEMENT")
+    if pressure == "BALANCED":
+        conflicts.append("DIRECTIONAL_PRESSURE_BALANCED")
+
+    # Volatility is relative to the recent baseline. A single large candle is
+    # not enough to call expansion; the recent ATR regime must change.
+    volatility_ratio = atr14 / atr50
+    compression = volatility_ratio < 0.78
+    expansion = volatility_ratio > 1.18
+    volatility = "EXPANDING" if expansion else "CONTRACTING" if compression else "NORMAL"
+
+    # Professional trend test: direction, persistence, EMA context and market
+    # structure must agree. Momentum alone is never promoted to TREND.
+    trend_candidate = (
+        pressure in {"UP", "DOWN"}
+        and directional_consensus >= 0.75
+        and persistence >= 0.50
+        and ema_ok
+        and abs(ema_gap) >= 0.10
+        and efficiency20 >= 0.22
+        and not ema_conflict
+        and not structure_conflict
+        and (structure_direction == pressure or persistence >= 0.75)
+    )
+
+    # A transition requires evidence of a genuine conflict between persistent
+    # prior context and the current auction. It is not triggered by one candle.
+    prior_context = _slope(closes, atr14, 30)
+    recent_context = _slope(closes, atr14, 8)
+    impulse_reversal = (
+        abs(prior_context) >= 0.45
+        and abs(recent_context) >= 0.65
+        and (prior_context > 0) != (recent_context > 0)
+    )
+    transition = (
+        not trend_candidate
+        and (
+            impulse_reversal
+            or (ema_conflict and persistence >= 0.50)
+            or (structure_conflict and persistence >= 0.50)
+            or (horizon_conflict and efficiency20 < 0.45 and dominant_count <= 2)
+        )
+    )
+    if impulse_reversal:
         conflicts.append("RECENT_IMPULSE_VS_PRIOR_CONTEXT")
 
-    ar = _atr(valid, 14) / max(_atr(valid, 50), 1e-12)
-    compression, expansion = ar < .78, ar > 1.18
+    # Range requires both weak directional efficiency and lack of structural
+    # commitment. Compression is allowed to coexist with RANGE as a condition.
+    range_candidate = (
+        pressure == "BALANCED"
+        and efficiency20 < 0.35
+        and efficiency40 < 0.40
+        and abs(ema_gap) < 0.85
+    )
+
+    # Expansion describes volatility behaviour when directional displacement is
+    # present, but does not override a stronger TREND or TRANSITION conclusion.
+    expansion_candidate = (
+        expansion
+        and pressure in {"UP", "DOWN"}
+        and efficiency10 >= 0.25
+        and abs(slope5) >= 0.25
+    )
 
     if transition:
-        state, reason = "TRANSITION", "material conflict between persistent context and current auction"
-    elif compression and pressure == "BALANCED":
-        state, reason = "COMPRESSION", "volatility compression with balanced direction"
-    elif trend:
-        state, reason = ("TREND_UP" if pressure == "UP" else "TREND_DOWN"), "persistent multi-horizon direction with EMA and structure coherence"
-    elif expansion and pressure in ("UP", "DOWN") and e10 >= .25:
-        state, reason = "EXPANSION", "volatility expansion with directional displacement"
-    elif pressure == "BALANCED" and e20 < .35:
-        state, reason = "RANGE", "low directional efficiency and balanced pressure"
+        state = "TRANSITION"
+        reason = "persistent context and current auction materially disagree"
+    elif trend_candidate:
+        state = "TREND_UP" if pressure == "UP" else "TREND_DOWN"
+        reason = "multi-horizon direction, persistence, EMA context and structure are coherent"
+    elif compression and (pressure == "BALANCED" or efficiency20 < 0.30):
+        state = "COMPRESSION"
+        reason = "volatility is contracting and directional commitment is insufficient"
+    elif range_candidate:
+        state = "RANGE"
+        reason = "directional efficiency is low and market structure lacks commitment"
+    elif expansion_candidate:
+        state = "EXPANSION"
+        reason = "volatility is expanding with measurable directional displacement"
     else:
-        state, reason = "UNCLEAR", "directional evidence exists but regime confirmation is insufficient"
+        state = "UNCLEAR"
+        reason = "evidence is directional but insufficiently coherent for a stronger regime label"
 
-    maturity = "ESTABLISHED" if trend else "DIRECTIONAL_ONLY" if pressure in ("UP", "DOWN") else "NONE"
-    confidence = .45 + .25 * sq + .20 * persistence + .10 * min(1.0, e20/.7) + .10 * float(ema_ok) - .05 * len(conflicts)
+    maturity = "ESTABLISHED" if trend_candidate else "DEVELOPING" if pressure in {"UP", "DOWN"} else "NONE"
+    trend_confirmed = trend_candidate
+    range_state = "ACTIVE" if range_candidate else "INACTIVE"
+
+    # Confidence measures classification evidence only. Conflicts explicitly
+    # reduce confidence; it can never grant trading permission.
+    confidence = (
+        0.25
+        + 0.20 * structure_quality
+        + 0.20 * directional_consensus
+        + 0.15 * persistence
+        + 0.10 * min(1.0, efficiency20 / 0.65)
+        + 0.10 * float(ema_ok)
+        - 0.045 * len(conflicts)
+    )
+    if state == "UNCLEAR":
+        confidence -= 0.10
+    if state == "TRANSITION":
+        confidence -= 0.03
+
     evidence = [
-        f"ema20_vs_ema50={rel}", f"ema_gap_atr={gap:.3f}", f"ema20_slope_atr={es20:.3f}",
-        f"ema50_slope_atr={es50:.3f}", f"price_slope_atr={ss:.3f}", f"price_medium_slope_atr={ms:.3f}",
-        f"price_long_slope_atr={ls:.3f}", f"structure={structure}", f"structure_quality={sq:.3f}",
-        f"directional_pressure={'BULLISH' if pressure == 'UP' else 'BEARISH' if pressure == 'DOWN' else 'NEUTRAL'}",
-        f"price_consensus={max(up, down)}/3", f"trend_persistence={persistence:.3f}",
-        f"price_efficiency_10={e10:.3f}", f"price_efficiency_20={e20:.3f}", f"trend_maturity={maturity}",
-        f"prior_context_slope_atr={prior:.3f}", f"recent_impulse_slope_atr={recent:.3f}",
+        f"valid_candles={len(valid)}",
+        f"invalid_candles={invalid_count}",
+        f"ema20_vs_ema50={ema_relation}",
+        f"ema_gap_atr={ema_gap:.3f}",
+        f"ema20_slope_atr={ema20_slope:.3f}",
+        f"ema50_slope_atr={ema50_slope:.3f}",
+        f"price_slope_5_atr={slope5:.3f}",
+        f"price_slope_10_atr={slope10:.3f}",
+        f"price_slope_20_atr={slope20:.3f}",
+        f"price_slope_40_atr={slope40:.3f}",
+        f"multi_horizon={','.join(horizons)}",
+        f"directional_consensus={directional_consensus:.3f}",
+        f"trend_persistence={persistence:.3f}",
+        f"price_efficiency_10={efficiency10:.3f}",
+        f"price_efficiency_20={efficiency20:.3f}",
+        f"price_efficiency_40={efficiency40:.3f}",
+        f"structure={structure}",
+        f"structure_quality={structure_quality:.3f}",
+        f"pivot_counts={pivot_counts}",
+        f"volatility_ratio_atr14_atr50={volatility_ratio:.3f}",
+        f"prior_context_slope_atr={prior_context:.3f}",
+        f"recent_context_slope_atr={recent_context:.3f}",
+        f"trend_candidate={trend_candidate}",
+        f"range_candidate={range_candidate}",
+        f"expansion_candidate={expansion_candidate}",
     ]
-    return _result(base, state, pressure, "EXPANDING" if expansion else "CONTRACTING" if compression else "NORMAL",
-                   structure, sq, compression, expansion, transition, confidence, evidence, conflicts,
-                   reason, maturity, trend)
 
-
-__all__ = ["MARKET_STATES", "QUESTION", "OWNERSHIP", "analyze_e1"]
+    return _result(
+        base,
+        state=state,
+        pressure=pressure,
+        volatility=volatility,
+        structure=structure,
+        structure_quality=structure_quality,
+        compression=compression,
+        expansion=expansion,
+        transition=transition,
+        confidence=confidence,
+        evidence=evidence,
+        conflicts=conflicts,
+        reason=reason,
+        maturity=maturity,
+        trend_confirmed=trend_confirmed,
+        range_state=range_state,
+    )
