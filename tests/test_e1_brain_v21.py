@@ -1,3 +1,4 @@
+# E1 professional-state acceptance contract; intentionally independent of E2-E9.
 from production_v2.e1_brain import analyze_e1
 
 
@@ -37,7 +38,6 @@ def test_e1_requires_reliable_history_before_classification():
 
 
 def test_e1_balanced_market_is_not_forced_into_a_direction():
-    # Equal alternating moves ending where they started: no directional drift.
     closes = [100.0]
     for i in range(80):
         closes.append(closes[-1] + (0.20 if i % 2 == 0 else -0.20))
@@ -56,7 +56,6 @@ def test_e1_established_trend_requires_coherent_directional_evidence():
 
 
 def test_e1_short_impulse_is_not_the_same_as_established_trend():
-    # Long neutral base followed by only three directional candles.
     closes = [100.0]
     for _ in range(60):
         closes.append(closes[-1] + (0.08 if len(closes) % 2 else -0.08))
@@ -72,8 +71,6 @@ def test_e1_short_impulse_is_not_the_same_as_established_trend():
 def test_e1_one_counter_candle_does_not_reverse_established_regime():
     closes = [100 + 0.25 * i for i in range(78)] + [119.25, 117.0]
     out = analyze_e1(_bars_from_closes(closes, spread=0.10))
-    # The state must not flip to a bearish regime merely because the latest
-    # candle is a sharp counter move.
     assert out["trend_state"] in {"UP", "NONE"}
     assert out["market_state"] in {"TREND_UP", "TRANSITION", "UNCLEAR"}
 
