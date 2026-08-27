@@ -1,10 +1,10 @@
 """E1 Market-State Brain.
 
-Stable public contract. The professional classifier and reconciliation layers
-are isolated from E2-E9 so E1 can evolve without changing downstream ownership.
+Stable public contract. Professional classification, reconciliation, and
+transition protection are isolated from E2-E9.
 """
 from .e1_brain_v3 import MARKET_STATES, QUESTION, OWNERSHIP
-from .e1_reconciliation import analyze_e1
+from .e1_transition_guard_v2 import analyze_e1
 
 PROFESSIONAL_QUESTION = QUESTION
 E1_OWNERSHIP = OWNERSHIP
