@@ -83,7 +83,7 @@ def _e2_e1_context(permitted):
     return brain if isinstance(brain,dict) else {}
 
 def _e3_contract(brain):
-    output={"architecture":"E3_SINGLE_PROFESSIONAL_BRAIN_V1","specialists":{},"specialists_active":False,"specialists_status":"PAUSED",**brain,"decision":None,"gate":None,"trade_decision_authority":False,"reasoning_role":"MARKET_STRUCTURE_ANALYST"}
+    output={"architecture":"E3_SINGLE_PROFESSIONAL_BRAIN_V2","specialists":{},"specialists_active":False,"specialists_status":"PAUSED",**brain,"decision":None,"gate":None,"trade_decision_authority":False,"decision_authority":"E9_ONLY","reasoning_role":"MARKET_STRUCTURE_ANALYST"}
     return EngineResult("E3",ENGINE_NAMES["E3"],None,float(brain.get("confidence",0.0))*100.0,output,tuple(brain.get("reason_codes",())))
 
 def run_engine(engine_id,snapshot,evidence_bus=None):
