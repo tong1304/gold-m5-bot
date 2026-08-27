@@ -1,8 +1,7 @@
 from __future__ import annotations
 """Production-V2 engine dispatcher.
 
-E1-E5 are qualitative analysts. E5 is a single monolithic location/value
-brain. E9 remains the only trade-decision authority.
+E1-E5 are qualitative analysts. E9 remains the only trade-decision authority.
 """
 import importlib
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -13,7 +12,7 @@ from .e1_brain import analyze_e1
 from .e2_brain import analyze_e2
 from .e2_repricing import preserve_repricing_thesis
 from .e3_brain import analyze_e3
-from .e4_brain_v14 import analyze_e4, ARCHITECTURE as E4_ARCHITECTURE
+from .e4_brain import analyze_e4, ARCHITECTURE as E4_ARCHITECTURE
 from .e5_brain import analyze_e5, ARCHITECTURE as E5_ARCHITECTURE
 
 ENGINE_NAMES={"E1":"Market State Brain","E2":"Opportunity / Regime Brain","E3":"Market Structure Brain","E4":"Liquidity Brain","E5":"Location / Value Brain","E6":"Setup Brain","E7":"Confirmation Brain","E8":"Trade Economics Brain","E9":"Master Decision Brain"}
