@@ -17,7 +17,7 @@ def test_e3_is_single_brain_and_subengines_are_parked():
     assert SUB_ENGINE_CODES["E3"] == []
     result=run_engine("E3", {"bars":_bars()})
     assert result.engine_id == "E3"
-    assert result.output["architecture"] == "E3_SINGLE_PROFESSIONAL_BRAIN_V3"
+    assert result.output["architecture"] == "E3_SINGLE_PROFESSIONAL_BRAIN_V6"
     assert result.output["reasoning_role"] == "MARKET_STRUCTURE_ANALYST"
     assert result.output["question"] == "What is price structure communicating?"
     assert result.output["specialists_active"] is False
