@@ -13,6 +13,8 @@ def _bars(snapshot: dict[str, Any]) -> list[dict[str, Any]]:
 
 
 def _atr(bars: list[dict[str, Any]], period: int = 14) -> float:
+    if not bars:
+        return 0.0
     trs: list[float] = []
     prev = None
     for b in bars[-period:]:
@@ -33,10 +35,10 @@ def _ema(values: list[float], period: int) -> float:
 
 
 def _direction(value: Any) -> str:
-    value = str(value or "NEUTRAL").upper().strip()
-    if value in {"UP", "BULLISH", "BUY", "LONG", "TREND_UP"}:
+    v = str(value or "NEUTRAL").upper().strip()
+    if v in {"UP", "BULLISH", "BUY", "LONG", "TREND_UP"}:
         return "UP"
-    if value in {"DOWN", "BEARISH", "SELL", "SHORT", "TREND_DOWN"}:
+    if v in {"DOWN", "BEARISH", "SELL", "SHORT", "TREND_DOWN"}:
         return "DOWN"
     return "NEUTRAL"
 
@@ -87,13 +89,36 @@ def _base_unavailable() -> dict[str, Any]:
     }
 
 
-def analyze_e2(snapshot: dict[str, Any]) -> dict[str, Any]:
-    """Single-core professional opportunity analyst.
+def _candidate_quality(direction: str, regime: str, *, structure: bool, acceptance: bool,
+                       rejection: bool, displacement: bool, pullback: bool, location_good: bool,
+                       space_ok: bool, overextended: bool, efficiency: float, volatility: float) -> float:
+    """Quality of an opportunity, not probability of profit and not an entry score."""
+    if direction == "NEUTRAL":
+        return 0.0
+    value = 0.0
+    value += 0.18 if structure else 0.0
+    value += 0.18 if acceptance or displacement else 0.0
+    value += 0.14 if pullback and regime == "TREND" else 0.0
+    value += 0.12 if location_good else 0.0
+    value += 0.14 if space_ok else -0.12
+    value += 0.10 if efficiency >= 0.30 else 0.0
+    value += 0.08 if 0.75 <= volatility <= 1.55 else -0.04
+    value -= 0.18 if rejection else 0.0
+    value -= 0.18 if overextended else 0.0
+    return max(0.0, min(1.0, value))
 
-    E2 independently reconstructs the auction, identifies the best conditional
-    trade idea, tests location/space/timing, searches for counter-evidence, and
-    only then cross-checks E1. It never creates an entry, gate, or execution order.
-    No E2 sub-engine is called here.
+
+def analyze_e2(snapshot: dict[str, Any]) -> dict[str, Any]:
+    """Professional opportunity brain; single core, no E2 sub-engines.
+
+    The reasoning order is deliberately:
+      1) reconstruct price/auction state independently;
+      2) generate competing opportunity hypotheses;
+      3) compare them and reject weak/late/contradictory ideas;
+      4) define expected path, missing evidence and invalidation;
+      5) only then cross-check E1.
+
+    E2 never authorizes an entry, risk order or trade decision. E9 owns that.
     """
     bs = _bars(snapshot)
     if len(bs) < MIN_BARS:
@@ -136,11 +161,12 @@ def analyze_e2(snapshot: dict[str, Any]) -> dict[str, Any]:
     ll = len(pl) >= 2 and pl[-1] < pl[-2]
     bull_structure, bear_structure = hh and hl, lh and ll
 
-    up_score = sum((ema_gap > 0.35, ema20_slope > 0.08, ema50_slope > -0.05,
-                    slope5 > 0.20, slope20 > 0.45, bull_structure, efficiency12 >= 0.30))
-    down_score = sum((ema_gap < -0.35, ema20_slope < -0.08, ema50_slope < 0.05,
-                      slope5 < -0.20, slope20 < -0.45, bear_structure, efficiency12 >= 0.30))
-    compressed, expanding = vol_ratio < 0.72, vol_ratio > 1.28
+    up_evidence = sum((ema_gap > 0.35, ema20_slope > 0.08, ema50_slope > -0.05,
+                       slope5 > 0.20, slope20 > 0.45, bull_structure, efficiency12 >= 0.30))
+    down_evidence = sum((ema_gap < -0.35, ema20_slope < -0.08, ema50_slope < 0.05,
+                         slope5 < -0.20, slope20 < -0.45, bear_structure, efficiency12 >= 0.30))
+    compressed = vol_ratio < 0.72
+    expanding = vol_ratio > 1.28
     balanced = abs(slope20) < 0.65 and efficiency12 < 0.30 and width40 / atr < 8.5
 
     span = max(h[-1] - l[-1], 1e-12)
@@ -149,7 +175,8 @@ def analyze_e2(snapshot: dict[str, Any]) -> dict[str, Any]:
     upper_wick = (h[-1] - max(o[-1], last)) / span
     lower_wick = (min(o[-1], last) - l[-1]) / span
     broke_up, broke_down = last > hi20, last < lo20
-    swept_up, swept_down = h[-1] > hi20 and last <= hi20, l[-1] < lo20 and last >= lo20
+    swept_up = h[-1] > hi20 and last <= hi20
+    swept_down = l[-1] < lo20 and last >= lo20
     accepted_up = broke_up and close_pos >= 0.65 and body_ratio >= 0.45
     accepted_down = broke_down and close_pos <= 0.35 and body_ratio >= 0.45
     rejected_up = swept_up and close_pos <= 0.45 and upper_wick >= 0.20
@@ -162,7 +189,7 @@ def analyze_e2(snapshot: dict[str, Any]) -> dict[str, Any]:
     pullback_up = up_impulse and last < c[-6] and last > lo20 and ema20 >= ema50
     pullback_down = down_impulse and last > c[-6] and last < hi20 and ema20 <= ema50
 
-    # Independent auction thesis. E1 is deliberately absent from this section.
+    # Independent market auction classification. E1 is not consulted here.
     if accepted_up and accepted_down:
         regime, direction, auction_state = "TRANSITION", "NEUTRAL", "TWO_SIDED_ACCEPTANCE"
     elif accepted_up and not rejected_up:
@@ -173,33 +200,99 @@ def analyze_e2(snapshot: dict[str, Any]) -> dict[str, Any]:
         regime, direction, auction_state = "MEAN_REVERSION", "DOWN", "FAILED_AUCTION_HIGH"
     elif rejected_down and not rejected_up and pos40 <= 0.30:
         regime, direction, auction_state = "MEAN_REVERSION", "UP", "FAILED_AUCTION_LOW"
-    elif up_score >= 5 and up_score > down_score + 1:
+    elif up_evidence >= 5 and up_evidence > down_evidence + 1:
         regime, direction, auction_state = "TREND", "UP", "DIRECTIONAL_AUCTION_UP"
-    elif down_score >= 5 and down_score > up_score + 1:
+    elif down_evidence >= 5 and down_evidence > up_evidence + 1:
         regime, direction, auction_state = "TREND", "DOWN", "DIRECTIONAL_AUCTION_DOWN"
-    elif balanced or (compressed and abs(up_score - down_score) <= 2):
+    elif balanced or (compressed and abs(up_evidence - down_evidence) <= 2):
         regime, direction, auction_state = "RANGE", "NEUTRAL", "BALANCED_AUCTION"
-    elif abs(up_score - down_score) <= 1 or abs(ema_gap) < 0.30:
+    elif abs(up_evidence - down_evidence) <= 1 or abs(ema_gap) < 0.30:
         regime, direction, auction_state = "TRANSITION", "NEUTRAL", "UNCOMMITTED_AUCTION"
     else:
         regime, direction, auction_state = "RANGE", "NEUTRAL", "NO_EDGE"
 
-    if regime == "TREND" and direction == "UP":
-        opportunity, phase = ("TREND_PULLBACK_CONTINUATION", "PULLBACK") if pullback_up else (("TREND_CONTINUATION", "EXPANSION") if displacement_up else ("TREND_CONTINUATION", "DEVELOPING"))
-    elif regime == "TREND" and direction == "DOWN":
-        opportunity, phase = ("TREND_PULLBACK_CONTINUATION", "PULLBACK") if pullback_down else (("TREND_CONTINUATION", "EXPANSION") if displacement_down else ("TREND_CONTINUATION", "DEVELOPING"))
-    elif regime == "BREAKOUT":
-        opportunity, phase = "BREAKOUT_CONTINUATION", "ACCEPTANCE"
-    elif regime == "MEAN_REVERSION":
-        opportunity, phase = "LIQUIDITY_REVERSAL", "REJECTION"
-    elif regime == "RANGE" and pos40 <= 0.20 and rejected_down:
-        opportunity, direction, phase = "RANGE_ROTATION_UP", "UP", "EDGE_REJECTION"
-    elif regime == "RANGE" and pos40 >= 0.80 and rejected_up:
-        opportunity, direction, phase = "RANGE_ROTATION_DOWN", "DOWN", "EDGE_REJECTION"
-    elif regime == "RANGE":
-        opportunity, phase = "WAIT_FOR_RANGE_EDGE", "BALANCED"
+    # Build competing opportunity hypotheses rather than accepting the first pattern.
+    candidates: list[dict[str, Any]] = []
+    if up_evidence >= 4:
+        candidates.append({"name": "TREND_PULLBACK_CONTINUATION", "direction": "UP", "regime": "TREND",
+                           "structure": bull_structure, "acceptance": accepted_up, "rejection": rejected_up,
+                           "displacement": displacement_up, "pullback": pullback_up})
+        candidates.append({"name": "TREND_CONTINUATION", "direction": "UP", "regime": "TREND",
+                           "structure": bull_structure, "acceptance": accepted_up, "rejection": rejected_up,
+                           "displacement": displacement_up, "pullback": False})
+    if down_evidence >= 4:
+        candidates.append({"name": "TREND_PULLBACK_CONTINUATION", "direction": "DOWN", "regime": "TREND",
+                           "structure": bear_structure, "acceptance": accepted_down, "rejection": rejected_down,
+                           "displacement": displacement_down, "pullback": pullback_down})
+        candidates.append({"name": "TREND_CONTINUATION", "direction": "DOWN", "regime": "TREND",
+                           "structure": bear_structure, "acceptance": accepted_down, "rejection": rejected_down,
+                           "displacement": displacement_down, "pullback": False})
+    if accepted_up:
+        candidates.append({"name": "BREAKOUT_CONTINUATION", "direction": "UP", "regime": "BREAKOUT",
+                           "structure": bull_structure, "acceptance": True, "rejection": rejected_up,
+                           "displacement": displacement_up, "pullback": False})
+    if accepted_down:
+        candidates.append({"name": "BREAKOUT_CONTINUATION", "direction": "DOWN", "regime": "BREAKOUT",
+                           "structure": bear_structure, "acceptance": True, "rejection": rejected_down,
+                           "displacement": displacement_down, "pullback": False})
+    if rejected_down and pos40 <= 0.30:
+        candidates.append({"name": "LIQUIDITY_REVERSAL", "direction": "UP", "regime": "MEAN_REVERSION",
+                           "structure": bull_structure, "acceptance": False, "rejection": True,
+                           "displacement": displacement_up, "pullback": False})
+    if rejected_up and pos40 >= 0.70:
+        candidates.append({"name": "LIQUIDITY_REVERSAL", "direction": "DOWN", "regime": "MEAN_REVERSION",
+                           "structure": bear_structure, "acceptance": False, "rejection": True,
+                           "displacement": displacement_down, "pullback": False})
+
+    location_by_direction = {
+        "UP": pos40 <= 0.75 and pos40 >= 0.10,
+        "DOWN": pos40 >= 0.25 and pos40 <= 0.90,
+    }
+    scored: list[dict[str, Any]] = []
+    for item in candidates:
+        d = item["direction"]
+        space = max((hi40 - last) / atr, 0.0) if d == "UP" else max((last - lo40) / atr, 0.0)
+        invalidation_distance = max((last - lo40) / atr, 0.0) if d == "UP" else max((hi40 - last) / atr, 0.0)
+        space_ok = space >= 1.0
+        extended = (d == "UP" and pos40 >= 0.92) or (d == "DOWN" and pos40 <= 0.08)
+        q = _candidate_quality(d, item["regime"], structure=item["structure"], acceptance=item["acceptance"],
+                               rejection=item["rejection"], displacement=item["displacement"],
+                               pullback=item["pullback"], location_good=location_by_direction[d],
+                               space_ok=space_ok, overextended=extended, efficiency=efficiency12,
+                               volatility=vol_ratio)
+        item = dict(item, quality=q, space_atr=space, invalidation_atr=invalidation_distance,
+                    space_ok=space_ok, extended=extended)
+        scored.append(item)
+
+    scored.sort(key=lambda x: (x["quality"], x["space_atr"], x["structure"]), reverse=True)
+    best = scored[0] if scored else None
+    second = scored[1] if len(scored) > 1 else None
+
+    # A professional trader does not force a trade when two ideas are close.
+    ambiguity = bool(best and second and abs(float(best["quality"]) - float(second["quality"])) < 0.10
+                     and best["direction"] != second["direction"])
+    if best and ambiguity:
+        direction = "NEUTRAL"
+        regime = "TRANSITION"
+        opportunity = "WAIT_FOR_REPRICING"
+        phase = "AMBIGUOUS"
+        auction_state = "COMPETING_HYPOTHESES"
+    elif best:
+        direction = best["direction"]
+        opportunity = best["name"]
+        regime = best["regime"]
+        if opportunity == "TREND_PULLBACK_CONTINUATION":
+            phase = "PULLBACK" if best["pullback"] else "DEVELOPING"
+        elif opportunity == "BREAKOUT_CONTINUATION":
+            phase = "ACCEPTANCE"
+        elif opportunity == "LIQUIDITY_REVERSAL":
+            phase = "REJECTION"
+        else:
+            phase = "EXPANSION" if best["displacement"] else "DEVELOPING"
     else:
-        opportunity, phase = "WAIT_FOR_REPRICING", "TRANSITION"
+        direction = "NEUTRAL"
+        opportunity = "WAIT_FOR_REPRICING" if regime == "TRANSITION" else "WAIT_FOR_RANGE_EDGE"
+        phase = "TRANSITION" if regime == "TRANSITION" else "BALANCED"
 
     location = "EDGE_LOW" if pos40 <= 0.20 else "EDGE_HIGH" if pos40 >= 0.80 else "MID_RANGE"
     if direction == "UP":
@@ -216,31 +309,45 @@ def analyze_e2(snapshot: dict[str, Any]) -> dict[str, Any]:
     counter: list[str] = []
     missing: list[str] = []
     invalidation: list[str] = []
+    if ambiguity:
+        counter.append("opposing opportunity hypotheses are too close; directional edge is not decisive")
     if direction == "UP":
         if ema20 < ema50 and not pullback_up: counter.append("short-term structure opposes upside thesis")
-        if regime == "TREND" and not bull_structure: counter.append("swing structure does not fully confirm upside trend")
+        if not bull_structure and regime == "TREND": counter.append("swing structure does not fully confirm upside thesis")
         if rejected_up: counter.append("upside auction shows rejection")
         if not space_ok: counter.append("opposing liquidity is too close")
         if overextended: counter.append("price is materially extended from value")
     elif direction == "DOWN":
         if ema20 > ema50 and not pullback_down: counter.append("short-term structure opposes downside thesis")
-        if regime == "TREND" and not bear_structure: counter.append("swing structure does not fully confirm downside trend")
+        if not bear_structure and regime == "TREND": counter.append("swing structure does not fully confirm downside thesis")
         if rejected_down: counter.append("downside auction shows rejection")
         if not space_ok: counter.append("opposing liquidity is too close")
         if overextended: counter.append("price is materially extended from value")
 
-    if regime == "TREND" and phase == "PULLBACK": missing.append("follow-through after pullback")
-    if regime == "BREAKOUT" and not expanding: missing.append("volatility expansion after breakout")
-    if regime == "RANGE" and phase == "BALANCED": missing.append("meaningful range-edge interaction")
-    if regime == "TRANSITION": missing.append("directional repricing / commitment")
-    if regime == "MEAN_REVERSION" and not (rejected_up or rejected_down): missing.append("confirmed liquidity rejection")
+    if regime == "TREND" and opportunity == "TREND_PULLBACK_CONTINUATION":
+        if not (accepted_up or accepted_down or displacement_up or displacement_down):
+            missing.append("controlled pullback plus directional rejection/holding")
+        else:
+            missing.append("follow-through after pullback")
+    if opportunity == "BREAKOUT_CONTINUATION" and not expanding:
+        missing.append("volatility expansion and acceptance after breakout")
+    if opportunity == "LIQUIDITY_REVERSAL":
+        missing.append("rejection must hold and produce follow-through back into value")
+    if opportunity == "WAIT_FOR_RANGE_EDGE":
+        missing.append("meaningful range-edge interaction")
+    if opportunity == "WAIT_FOR_REPRICING" or ambiguity:
+        missing.append("clear directional commitment / repricing")
 
-    if direction == "UP" and rejected_up and pos40 >= 0.80: invalidation.append("upside acceptance failed at a high-value area")
-    if direction == "DOWN" and rejected_down and pos40 <= 0.20: invalidation.append("downside acceptance failed at a low-value area")
-    if direction == "UP" and down_score >= up_score + 2: invalidation.append("independent downside evidence dominates")
-    if direction == "DOWN" and up_score >= down_score + 2: invalidation.append("independent upside evidence dominates")
+    if direction == "UP" and rejected_up and pos40 >= 0.80:
+        invalidation.append("upside acceptance failed at a high-value area")
+    if direction == "DOWN" and rejected_down and pos40 <= 0.20:
+        invalidation.append("downside acceptance failed at a low-value area")
+    if direction == "UP" and down_evidence >= up_evidence + 2:
+        invalidation.append("independent downside evidence dominates")
+    if direction == "DOWN" and up_evidence >= down_evidence + 2:
+        invalidation.append("independent upside evidence dominates")
 
-    # E1 is a cross-check only, never an instruction source.
+    # E1 is deliberately a late cross-check, never a source of direction.
     e1 = _e1_context(snapshot)
     e1_direction = _direction(e1.get("directional_pressure") or e1.get("direction"))
     e1_state = str(e1.get("market_state") or e1.get("state") or "UNRESOLVED").upper()
@@ -253,24 +360,24 @@ def analyze_e2(snapshot: dict[str, Any]) -> dict[str, Any]:
         alignment = "CONFLICT"
         counter.append("E1 directional evidence conflicts with the independent E2 thesis")
 
-    directional_strength = max(up_score, down_score) / 7.0
-    auction_quality = 1.0 if auction_state not in {"NO_EDGE", "UNCOMMITTED_AUCTION"} else 0.45
-    evidence_penalty = min(0.45, 0.10 * len(counter))
-    missing_penalty = min(0.25, 0.08 * len(missing))
-    alignment_bonus = 0.10 if alignment == "ALIGNED" else -0.10 if alignment == "CONFLICT" else 0.0
-    confidence = max(0.0, min(1.0, 0.45 * directional_strength + 0.30 * auction_quality + 0.25 + alignment_bonus - evidence_penalty - missing_penalty))
-    opportunity_score = max(0.0, min(1.0, confidence * (0.85 if space_ok else 0.55) * (0.65 if overextended else 1.0)))
+    # Quality is evidence-weighted, not a disguised trade probability.
+    best_quality = float(best["quality"]) if best else 0.0
+    directional_strength = max(up_evidence, down_evidence) / 7.0
+    evidence_penalty = min(0.45, 0.08 * len(counter))
+    missing_penalty = min(0.25, 0.07 * len(missing))
+    alignment_adjustment = 0.04 if alignment == "ALIGNED" else -0.04 if alignment == "CONFLICT" else 0.0
+    confidence = max(0.0, min(1.0, 0.45 * best_quality + 0.30 * directional_strength + 0.25
+                              - evidence_penalty - missing_penalty + alignment_adjustment))
+    opportunity_score = max(0.0, min(1.0, 0.65 * best_quality + 0.35 * confidence))
 
     if invalidation:
         maturity, opportunity_state, quality = "INVALIDATED", "INVALIDATED", "REJECTED"
     elif direction == "NEUTRAL":
         maturity, opportunity_state, quality = "WAITING", "WAIT", "UNPROVEN"
-    elif opportunity in {"WAIT_FOR_REPRICING", "WAIT_FOR_RANGE_EDGE"}:
-        maturity, opportunity_state, quality = "WAITING", "WAIT", "WEAK" if confidence < 0.65 else "DEVELOPING"
     elif counter or missing:
-        maturity, opportunity_state, quality = "DEVELOPING", "DEVELOPING", "DEVELOPING" if confidence >= 0.60 else "WEAK"
+        maturity, opportunity_state, quality = "DEVELOPING", "DEVELOPING", "STRONG_CONTEXT" if opportunity_score >= 0.70 else "DEVELOPING"
     else:
-        maturity, opportunity_state, quality = "MATURE_CONTEXT", "CONTEXT_READY", "STRONG" if confidence >= 0.78 else "DEVELOPING"
+        maturity, opportunity_state, quality = "MATURE_CONTEXT", "CONTEXT_READY", "STRONG" if opportunity_score >= 0.78 else "DEVELOPING"
 
     if invalidation:
         timing_state = "MISSED"
@@ -279,8 +386,6 @@ def analyze_e2(snapshot: dict[str, Any]) -> dict[str, Any]:
     elif overextended:
         timing_state = "LATE"
     elif missing:
-        timing_state = "READY_FOR_CONFIRMATION" if not counter else "DEVELOPING"
-    elif opportunity in {"TREND_PULLBACK_CONTINUATION", "BREAKOUT_CONTINUATION", "LIQUIDITY_REVERSAL"}:
         timing_state = "READY_FOR_CONFIRMATION"
     else:
         timing_state = "DEVELOPING"
@@ -288,91 +393,87 @@ def analyze_e2(snapshot: dict[str, Any]) -> dict[str, Any]:
     opportunity_quality = "HIGH" if opportunity_score >= 0.78 and not counter else "MEDIUM" if opportunity_score >= 0.55 else "LOW"
     acceptance_quality = "CONFIRMED" if accepted_up or accepted_down else "STRONG" if displacement_up or displacement_down else "UNPROVEN"
 
-    if invalidation:
-        opportunity_decision = "NO_OPPORTUNITY"
-        edge_assessment = "NO_EDGE"
-    elif direction == "NEUTRAL":
-        opportunity_decision = "WAIT"
-        edge_assessment = "NO_EDGE"
-    elif overextended or not space_ok:
-        opportunity_decision = "WATCH"
-        edge_assessment = "EDGE_CONDITIONAL"
-    elif counter or missing:
-        opportunity_decision = "WATCH"
-        edge_assessment = "EDGE_CONDITIONAL"
+    if invalidation or direction == "NEUTRAL":
+        opportunity_decision, edge_assessment = ("NO_OPPORTUNITY", "NO_EDGE") if invalidation else ("WAIT", "NO_EDGE")
+    elif overextended or not space_ok or counter or missing:
+        opportunity_decision, edge_assessment = "WATCH", "EDGE_CONDITIONAL"
     elif opportunity_score >= 0.72:
-        opportunity_decision = "ACTIONABLE_BIAS"
-        edge_assessment = "EDGE_PRESENT"
+        opportunity_decision, edge_assessment = "ACTIONABLE_BIAS", "EDGE_PRESENT"
     else:
-        opportunity_decision = "WATCH"
-        edge_assessment = "EDGE_CONDITIONAL"
+        opportunity_decision, edge_assessment = "WATCH", "EDGE_CONDITIONAL"
 
     why_not_trade: list[str] = []
-    if direction == "NEUTRAL": why_not_trade.append("no directional edge is established")
+    if direction == "NEUTRAL": why_not_trade.append("no decisive directional opportunity is established")
+    if ambiguity: why_not_trade.append("competing hypotheses are too close to justify commitment")
     if overextended: why_not_trade.append("late location: price is too extended for immediate participation")
-    if not space_ok and direction != "NEUTRAL": why_not_trade.append("insufficient opposing space for a favorable path")
-    if missing: why_not_trade.extend(f"missing: {x}" for x in missing)
-    if counter: why_not_trade.extend(f"counter-evidence: {x}" for x in counter)
-    if invalidation: why_not_trade.extend(f"invalidated: {x}" for x in invalidation)
-    if not why_not_trade: why_not_trade.append("E2 has an idea, but E9 must still validate downstream confirmation and economics")
+    if direction != "NEUTRAL" and not space_ok: why_not_trade.append("insufficient opposing space for a favorable path")
+    why_not_trade.extend(f"missing: {x}" for x in missing)
+    why_not_trade.extend(f"counter-evidence: {x}" for x in counter)
+    why_not_trade.extend(f"invalidated: {x}" for x in invalidation)
+    if not why_not_trade:
+        why_not_trade.append("E2 has contextual edge only; E9 must still validate confirmation and economics")
 
-    counterfactual = []
     if direction == "UP":
-        counterfactual = ["if price loses the supporting structure and downside evidence dominates, abandon the upside thesis"]
+        counterfactual = ["if supporting structure fails and downside evidence dominates, abandon the upside thesis"]
     elif direction == "DOWN":
-        counterfactual = ["if price reclaims opposing structure and upside evidence dominates, abandon the downside thesis"]
+        counterfactual = ["if opposing structure is reclaimed and upside evidence dominates, abandon the downside thesis"]
     else:
         counterfactual = ["if one side gains sustained acceptance and follow-through, replace the neutral thesis with that directional thesis"]
     if overextended:
-        counterfactual.append("if price pulls back into a favorable location without losing structure, reassess the same directional idea")
+        counterfactual.append("if price returns to favorable location without losing structure, reassess the same directional idea")
+
+    expected_path = {
+        "TREND_PULLBACK_CONTINUATION": "impulse persists -> controlled pullback -> rejection/holding -> confirmation -> continuation",
+        "TREND_CONTINUATION": "directional pressure persists -> acceptance -> confirmation -> follow-through",
+        "BREAKOUT_CONTINUATION": "breakout holds -> acceptance beyond prior range -> expansion -> follow-through",
+        "LIQUIDITY_REVERSAL": "liquidity is swept -> rejection holds -> re-entry into value -> reversal follow-through",
+        "RANGE_ROTATION_UP": "lower-edge rejection holds -> rotation toward midpoint/high",
+        "RANGE_ROTATION_DOWN": "upper-edge rejection holds -> rotation toward midpoint/low",
+    }.get(opportunity, "market reprices and provides clear evidence before the opportunity can mature")
 
     reason_codes: list[str] = []
     if invalidation: reason_codes.append("THESIS_INVALIDATED")
     if alignment == "CONFLICT": reason_codes.append("E1_E2_DIRECTION_CONFLICT")
+    if ambiguity: reason_codes.append("COMPETING_HYPOTHESES")
     if missing: reason_codes.append("MISSING_OPPORTUNITY_CONFIRMATION")
     if counter: reason_codes.append("COUNTER_EVIDENCE_PRESENT")
-    if opportunity not in {"NONE", "WAIT_FOR_REPRICING", "WAIT_FOR_RANGE_EDGE"} and not invalidation:
+    if opportunity not in {"WAIT_FOR_REPRICING", "WAIT_FOR_RANGE_EDGE"} and not invalidation and direction != "NEUTRAL":
         reason_codes.append("OPPORTUNITY_THESIS_ESTABLISHED")
     if not reason_codes: reason_codes.append("NO_ACTIONABLE_OPPORTUNITY")
-
-    required = list(dict.fromkeys(missing))
-    if direction in {"UP", "DOWN"} and not required:
-        required.append("downstream setup, confirmation and trade-economics evidence")
-    invalidation_conditions = list(invalidation) or [
-        "opposing structure becomes dominant" if direction in {"UP", "DOWN"} else "directional commitment fails",
-        "auction invalidates the expected path",
-    ]
-    expected_path = {
-        "TREND_PULLBACK_CONTINUATION": "impulse persists -> controlled pullback -> rejection/holding -> continuation",
-        "TREND_CONTINUATION": "directional pressure persists -> price accepts continuation -> follow-through",
-        "BREAKOUT_CONTINUATION": "breakout holds -> acceptance beyond prior range -> expansion/follow-through",
-        "LIQUIDITY_REVERSAL": "liquidity is swept -> rejection holds -> price re-enters value -> reversal develops",
-        "RANGE_ROTATION_UP": "lower-edge rejection holds -> rotation toward range midpoint/high",
-        "RANGE_ROTATION_DOWN": "upper-edge rejection holds -> rotation toward range midpoint/low",
-    }.get(opportunity, "market reprices and provides new evidence before the thesis can mature")
 
     observations = [
         f"ema_gap_atr={ema_gap:.3f}", f"ema20_slope_atr={ema20_slope:.3f}", f"ema50_slope_atr={ema50_slope:.3f}",
         f"slope5_atr={slope5:.3f}", f"slope20_atr={slope20:.3f}", f"slope40_atr={slope40:.3f}",
-        f"volatility_ratio={vol_ratio:.3f}", f"efficiency12={efficiency12:.3f}", f"up_evidence={up_score}/7", f"down_evidence={down_score}/7",
+        f"volatility_ratio={vol_ratio:.3f}", f"efficiency12={efficiency12:.3f}",
+        f"up_evidence={up_evidence}/7", f"down_evidence={down_evidence}/7",
         f"position_40={pos40:.3f}", f"position_20={pos20:.3f}", f"opposing_space_atr={opposing_space_atr:.3f}",
         f"invalidation_distance_atr={invalidation_distance_atr:.3f}", f"accepted_up={accepted_up}", f"accepted_down={accepted_down}",
         f"rejected_up={rejected_up}", f"rejected_down={rejected_down}", f"displacement_up={displacement_up}", f"displacement_down={displacement_down}",
         f"pullback_up={pullback_up}", f"pullback_down={pullback_down}",
+        f"candidate_count={len(scored)}", f"best_candidate_quality={best_quality:.3f}", f"hypothesis_ambiguity={ambiguity}",
+    ]
+    candidate_summary = [
+        {"name": x["name"], "direction": x["direction"], "quality": round(float(x["quality"]), 4),
+         "space_atr": round(float(x["space_atr"]), 4), "space_ok": bool(x["space_ok"]), "extended": bool(x["extended"])}
+        for x in scored[:6]
     ]
     decision_factors = [
         f"independent_regime={regime}", f"independent_direction={direction}", f"auction_state={auction_state}",
-        f"opportunity={opportunity}", f"phase={phase}", f"location={location}", f"alignment_with_e1={alignment}",
-        f"opportunity_score={opportunity_score:.3f}", f"timing={timing_state}", f"decision={opportunity_decision}",
+        f"opportunity={opportunity}", f"phase={phase}", f"location={location}", f"best_candidate_quality={best_quality:.3f}",
+        f"candidate_count={len(scored)}", f"alignment_with_e1={alignment}", f"timing={timing_state}",
+        f"opportunity_score={opportunity_score:.3f}", f"decision={opportunity_decision}",
     ]
     thesis = f"Independent E2 thesis: {regime}/{direction} creates {opportunity} at {phase}; thesis is {maturity.lower()} and requires downstream confirmation."
     reasoning = {
-        "question": QUESTION, "conclusion": thesis, "why_now": f"{auction_state}; {location}; opposing space={opposing_space_atr:.2f} ATR",
-        "expected_path": expected_path, "required_evidence": required, "invalidation_conditions": invalidation_conditions,
-        "timing": timing_state, "opportunity_quality": opportunity_quality, "opportunity_decision": opportunity_decision,
-        "edge_assessment": edge_assessment, "counter_evidence_count": len(counter), "counter_evidence": counter,
-        "why_not_trade": why_not_trade, "counterfactual": counterfactual, "independent_thesis": True,
-        "e1_used_as": "CROSS_CHECK_ONLY", "entry_authorized": False,
+        "question": QUESTION, "conclusion": thesis,
+        "why_now": f"{auction_state}; {location}; opposing space={opposing_space_atr:.2f} ATR",
+        "expected_path": expected_path, "required_evidence": list(dict.fromkeys(missing)),
+        "invalidation_conditions": list(invalidation) or ["opposing structure becomes dominant", "auction invalidates the expected path"],
+        "timing": timing_state, "opportunity_quality": opportunity_quality,
+        "opportunity_decision": opportunity_decision, "edge_assessment": edge_assessment,
+        "candidate_comparison": candidate_summary, "counter_evidence_count": len(counter),
+        "counter_evidence": counter, "why_not_trade": why_not_trade, "counterfactual": counterfactual,
+        "independent_thesis": True, "e1_used_as": "CROSS_CHECK_ONLY", "entry_authorized": False,
     }
 
     return {
@@ -383,22 +484,26 @@ def analyze_e2(snapshot: dict[str, Any]) -> dict[str, Any]:
         "opportunity_decision": opportunity_decision, "edge_assessment": edge_assessment,
         "alignment_with_e1": alignment, "independence": "E2_FIRST_E1_CROSS_CHECK", "auction_state": auction_state,
         "auction_phase": "ACCEPTANCE" if "ACCEPTANCE" in auction_state else "REJECTION" if "FAILED_AUCTION" in auction_state else "BALANCE" if "BALANCED" in auction_state else "REPRICING" if direction != "NEUTRAL" else "TRANSITION",
-        "acceptance_quality": acceptance_quality, "location_context": location, "regime_confidence": round(directional_strength, 4),
-        "confidence": round(confidence, 4), "timing_state": timing_state, "decision_factors": decision_factors,
+        "acceptance_quality": acceptance_quality, "location_context": location,
+        "regime_confidence": round(directional_strength, 4), "confidence": round(confidence, 4),
+        "timing_state": timing_state, "decision_factors": decision_factors,
         "observations": observations,
-        "evidence": [f"UP_EVIDENCE={up_score}/7", f"DOWN_EVIDENCE={down_score}/7", f"STRUCTURE_BULL={bull_structure}", f"STRUCTURE_BEAR={bear_structure}",
-                     f"ACCEPTANCE_UP={accepted_up}", f"ACCEPTANCE_DOWN={accepted_down}", f"REJECTION_UP={rejected_up}", f"REJECTION_DOWN={rejected_down}",
-                     f"EXPANSION={expanding}", f"COMPRESSION={compressed}", f"SPACE_OK={space_ok}", f"E1_STATE={e1_state}", f"E1_STRUCTURE={e1_structure}"],
+        "evidence": [
+            f"UP_EVIDENCE={up_evidence}/7", f"DOWN_EVIDENCE={down_evidence}/7",
+            f"STRUCTURE_BULL={bull_structure}", f"STRUCTURE_BEAR={bear_structure}",
+            f"ACCEPTANCE_UP={accepted_up}", f"ACCEPTANCE_DOWN={accepted_down}",
+            f"REJECTION_UP={rejected_up}", f"REJECTION_DOWN={rejected_down}",
+            f"EXPANSION={expanding}", f"COMPRESSION={compressed}", f"SPACE_OK={space_ok}",
+            f"E1_STATE={e1_state}", f"E1_STRUCTURE={e1_structure}",
+        ],
+        "candidate_comparison": candidate_summary,
         "evidence_map": {
-            "directional_pressure": direction,
-            "location": location,
-            "regime": regime,
-            "auction_state": auction_state,
-            "space_ok": space_ok,
-            "overextended": overextended,
-            "alignment_with_e1": alignment,
+            "directional_pressure": direction, "location": location, "regime": regime,
+            "auction_state": auction_state, "space_ok": space_ok, "overextended": overextended,
+            "alignment_with_e1": alignment, "hypothesis_ambiguity": ambiguity,
         },
-        "counter_evidence": counter, "counter_evidence_severity": "THESIS_INVALIDATION" if invalidation else "MATERIAL" if counter else "NONE",
+        "counter_evidence": counter,
+        "counter_evidence_severity": "THESIS_INVALIDATION" if invalidation else "MATERIAL" if counter else "NONE",
         "missing_evidence": missing, "invalidation_evidence": invalidation,
         "why_not_trade": why_not_trade, "counterfactual": counterfactual,
         "opposing_space_atr": round(opposing_space_atr, 4), "invalidation_distance_atr": round(invalidation_distance_atr, 4),
