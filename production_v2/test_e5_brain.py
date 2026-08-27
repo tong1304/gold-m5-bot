@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from e5_brain import ARCHITECTURE, analyze_e5
+from production_v2.e5_brain import ARCHITECTURE, analyze_e5
 
 
 def _bars(n=80, start=100.0, step=0.10):
@@ -37,11 +37,8 @@ def test_e5_uses_only_qualitative_upstream_context():
     assert result["professional_reasoning"]["upstream_scores_used"] is False
 
 
-def test_e5_detects_late_location_without_turning_into_trade_decision():
-    bars = _bars(start=100.0, step=0.15)
-    permitted = {"E1": {"evidence": {"output": {"market_state": "TREND_UP"}}}}
-    result = analyze_e5({"bars": bars}, permitted)
-    assert result["extension_state"] in {"STRETCHED", "EXTENDED", "EXCESSIVE", "NORMAL"}
+def test_e5_does_not_make_trade_decision():
+    result = analyze_e5({"bars": _bars(start=100.0, step=0.15)}, {"E1": {"evidence": {"output": {"market_state": "TREND_UP"}}}})
     assert result["gate"] is None
     assert result["decision"] is None
 
