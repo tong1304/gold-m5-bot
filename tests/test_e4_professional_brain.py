@@ -1,4 +1,4 @@
-from production_v2.professional_e4_brain import _follow_through
+from production_v2.professional_e4_brain import _find_recent_event, _follow_through
 from production_v2.engines import run_engine
 
 
@@ -26,6 +26,24 @@ def test_e4_failed_break_reclaim_requires_follow_through_confirmation():
     assert result["reason"] == "FOLLOW_THROUGH_OBSERVED"
 
 
+def test_e4_ignores_liquidity_zone_already_consumed_before_current_event():
+    bars = _bars([100 + i * 0.1 for i in range(40)])
+    consumed_zone = {
+        "side": "HIGH",
+        "price": 103.0,
+        "lower": 102.9,
+        "upper": 103.0,
+        "last_touch_index": 20,
+        "consumed": True,
+        "liquidity_taken": True,
+        "taken_index": 25,
+        "state": "CONSUMED",
+    }
+    event = _find_recent_event(bars, [consumed_zone], [], atr=0.5)
+    assert event["zone"] is None
+    assert event["type"] == "NO_CONFIRMED_LIQUIDITY_EVENT"
+
+
 def test_e4_remains_analysis_only_and_uses_no_upstream_decision_or_gate():
     bars = _bars([100 + i * 0.1 for i in range(60)])
     result = run_engine("E4", {"bars": bars}, {"E1": {"engine_id": "E1", "evidence": {"output": {"score": 99, "gate": True, "direction": "UP"}}}})
@@ -41,9 +59,10 @@ def test_e4_remains_analysis_only_and_uses_no_upstream_decision_or_gate():
     assert result.output["evidence"]["scores_used"] is False
 
 
-def test_e4_exposes_auction_confirmation_state():
+def test_e4_exposes_auction_confirmation_state_and_question():
     bars = _bars([100 + i * 0.05 for i in range(60)])
     result = run_engine("E4", {"bars": bars}, None).output
+    assert result["question"] == "Where is liquidity, who took it, and did price accept or reject the auction?"
     assert "auction_state" in result
     assert "follow_through" in result
     assert "follow_through_bars" in result
