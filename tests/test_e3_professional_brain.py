@@ -21,7 +21,8 @@ def test_e3_always_returns_structural_answer_with_professional_contract():
     assert result["analysis_status"] == "COMPLETE"
     assert result["question"] == "What is price structure communicating?"
     assert result["finding"] != "UNRESOLVED"
-    assert result["swing_map"]["highs"] or result["swing_map"]["lows"]
+    assert result["structure_state"] == "DIRECTIONAL_CONTEXT_UNCONFIRMED"
+    assert "NO_CONFIRMED_EXTERNAL_BOS" in result["reason_codes"]
     assert result["trade_decision_authority"] is False
     assert result["gate"] is None
     assert result["upstream_direction_used"] is False
