@@ -46,3 +46,22 @@ def test_e1_e2_e3_direction_is_context_not_execution_authority():
     assert result["direction"] == "NEUTRAL"
     assert result["decision"] is None
     assert result["gate"] is None
+
+
+def test_e4_exposes_recency_confirmation_and_quality_components():
+    result = analyze_e4({"bars": _bars(_base())})
+    assert "age_bars" in result["event"]
+    assert result["event"]["confirmation_state"] in {"CONFIRMED", "UNCONFIRMED", "NONE"}
+    assert "event_recency" in result["quality_components"]
+    assert "liquidity_quality" in result["quality_components"]
+    assert "auction_quality" in result["quality_components"]
+
+
+def test_e4_current_event_must_be_on_latest_closed_candle():
+    s = _base()
+    s[30] = (100, 106, 99, 100.2)
+    s[-2] = (100, 101, 99.5, 100.2)
+    s[-1] = (100.2, 101.0, 99.8, 100.3)
+    result = analyze_e4({"bars": _bars(s)})
+    assert result["event"]["age_bars"] == 0
+    assert result["event"]["type"] == "NO_CONFIRMED_LIQUIDITY_EVENT"
