@@ -15,7 +15,7 @@ from typing import Any
 
 PROFESSIONAL_QUESTION = "Where is liquidity, who took it, and did price accept or reject the auction?"
 E4_ROLE = "LIQUIDITY_AUCTION_ANALYST"
-ARCHITECTURE = "E4_SINGLE_PROFESSIONAL_BRAIN_V13"
+ARCHITECTURE = "E4_SINGLE_PROFESSIONAL_BRAIN_V14"
 EVIDENCE_HIERARCHY = "DATA_QUALITY -> LIQUIDITY_MAP -> LIQUIDITY_FRESHNESS -> LIQUIDITY_TAKING -> AUCTION_RESPONSE -> DIRECTIONAL_IMPLICATION -> CONFIDENCE"
 
 
@@ -146,21 +146,21 @@ def _event_for_zone(bars: list[dict[str, Any]], zone: dict[str, Any], atr: float
         failed = previous["close"] > zone["upper"] + extension and bar["close"] <= zone["upper"]
         accepted = bar["close"] > zone["upper"] + extension and _body_ratio(bar) >= 0.55
         if failed:
-            return {"type": "HIGH_FAILED_BREAK_RECLAIM", "auction_state": "FAILED_BREAK_RECLAIM", "directional_implication": "DOWN", "liquidity_state": "RECLAIMED", "strength": 0.92, "zone": zone, "index": index}
+            return {"type": "HIGH_FAILED_BREAK_RECLAIM", "auction_state": "FAILED_BREAK_RECLAIM", "directional_implication": "DOWN", "liquidity_state": "RECLAIMED", "liquidity_taker": "BUYERS", "response_actor": "SELLERS", "strength": 0.92, "zone": zone, "index": index}
         if swept and upper_wick >= 0.30:
-            return {"type": "HIGH_SWEEP_REJECTION", "auction_state": "REJECTION", "directional_implication": "DOWN", "liquidity_state": "TAKEN", "strength": 0.94, "zone": zone, "index": index}
+            return {"type": "HIGH_SWEEP_REJECTION", "auction_state": "REJECTION", "directional_implication": "DOWN", "liquidity_state": "TAKEN", "liquidity_taker": "BUYERS", "response_actor": "SELLERS", "strength": 0.94, "zone": zone, "index": index}
         if accepted:
-            return {"type": "HIGH_ACCEPTANCE", "auction_state": "ACCEPTANCE", "directional_implication": "UP", "liquidity_state": "ACCEPTED", "strength": 0.88, "zone": zone, "index": index}
+            return {"type": "HIGH_ACCEPTANCE", "auction_state": "ACCEPTANCE", "directional_implication": "UP", "liquidity_state": "ACCEPTED", "liquidity_taker": "BUYERS", "response_actor": "BUYERS", "strength": 0.88, "zone": zone, "index": index}
     else:
         swept = bar["low"] < zone["lower"] - band and bar["close"] >= zone["lower"] - band
         failed = previous["close"] < zone["lower"] - extension and bar["close"] >= zone["lower"]
         accepted = bar["close"] < zone["lower"] - extension and _body_ratio(bar) >= 0.55
         if failed:
-            return {"type": "LOW_FAILED_BREAK_RECLAIM", "auction_state": "FAILED_BREAK_RECLAIM", "directional_implication": "UP", "liquidity_state": "RECLAIMED", "strength": 0.92, "zone": zone, "index": index}
+            return {"type": "LOW_FAILED_BREAK_RECLAIM", "auction_state": "FAILED_BREAK_RECLAIM", "directional_implication": "UP", "liquidity_state": "RECLAIMED", "liquidity_taker": "SELLERS", "response_actor": "BUYERS", "strength": 0.92, "zone": zone, "index": index}
         if swept and lower_wick >= 0.30:
-            return {"type": "LOW_SWEEP_REJECTION", "auction_state": "REJECTION", "directional_implication": "UP", "liquidity_state": "TAKEN", "strength": 0.94, "zone": zone, "index": index}
+            return {"type": "LOW_SWEEP_REJECTION", "auction_state": "REJECTION", "directional_implication": "UP", "liquidity_state": "TAKEN", "liquidity_taker": "SELLERS", "response_actor": "BUYERS", "strength": 0.94, "zone": zone, "index": index}
         if accepted:
-            return {"type": "LOW_ACCEPTANCE", "auction_state": "ACCEPTANCE", "directional_implication": "DOWN", "liquidity_state": "ACCEPTED", "strength": 0.88, "zone": zone, "index": index}
+            return {"type": "LOW_ACCEPTANCE", "auction_state": "ACCEPTANCE", "directional_implication": "DOWN", "liquidity_state": "ACCEPTED", "liquidity_taker": "SELLERS", "response_actor": "SELLERS", "strength": 0.88, "zone": zone, "index": index}
     return None
 
 
@@ -176,7 +176,7 @@ def _detect_event(bars: list[dict[str, Any]], high_zones: list[dict[str, Any]], 
                 event = _event_for_zone(bars, zone, atr, index)
                 if event:
                     return event
-    return {"type": "NO_CONFIRMED_LIQUIDITY_EVENT", "auction_state": "UNRESOLVED", "directional_implication": "NEUTRAL", "liquidity_state": "UNRESOLVED", "strength": 0.30, "zone": None, "index": current}
+    return {"type": "NO_CONFIRMED_LIQUIDITY_EVENT", "auction_state": "UNRESOLVED", "directional_implication": "NEUTRAL", "liquidity_state": "UNRESOLVED", "liquidity_taker": "NONE", "response_actor": "NONE", "strength": 0.30, "zone": None, "index": current}
 
 
 def _context_hint(evidence_bus: dict[str, Any] | None) -> tuple[str, dict[str, bool]]:
@@ -198,18 +198,15 @@ def _context_hint(evidence_bus: dict[str, Any] | None) -> tuple[str, dict[str, b
 
 def _incomplete(reason: str, problems: list[str] | None = None) -> dict[str, Any]:
     return {
-        "architecture": ARCHITECTURE, "question": PROFESSIONAL_QUESTION, "finding": "LIQUIDITY_DATA_INSUFFICIENT",
-        "auction_state": "UNRESOLVED", "directional_implication": "NEUTRAL", "liquidity_state": "UNRESOLVED",
-        "confidence": 0.0, "evidence_strength": 0.0, "analysis_status": "INCOMPLETE", "reasoning_role": E4_ROLE,
-        "evidence": {"raw_market_data_used": False, "decisions_used": False, "gates_used": False, "scores_used": False},
-        "missing_evidence": ["CLOSED_CANDLE_HISTORY"], "observations": list(problems or []), "conflicts": [], "reasons": [reason],
+        "architecture": ARCHITECTURE, "question": PROFESSIONAL_QUESTION, "finding": "LIQUIDITY_DATA_INSUFFICIENT", "auction_state": "UNRESOLVED", "directional_implication": "NEUTRAL", "liquidity_state": "UNRESOLVED", "confidence": 0.0, "evidence_strength": 0.0, "analysis_status": "INCOMPLETE", "reasoning_role": E4_ROLE,
+        "evidence": {"raw_market_data_used": False, "decisions_used": False, "gates_used": False, "scores_used": False}, "missing_evidence": ["CLOSED_CANDLE_HISTORY"], "observations": list(problems or []), "conflicts": [], "reasons": [reason],
         "professional_reasoning": {"question": PROFESSIONAL_QUESTION, "task": "MAP_LIQUIDITY_AND_CLASSIFY_AUCTION_ONLY", "primary_state": "UNRESOLVED", "direction": "NEUTRAL", "thesis": reason, "evidence_hierarchy": EVIDENCE_HIERARCHY, "independent_evidence": {}, "context_used": False, "context_corrobation_only": True, "decisions_used": False, "gates_used": False, "scores_used": False},
         "trade_decision_authority": False, "decision_authority": "E9_ONLY", "decision": None, "gate": None, "score": None,
     }
 
 
 def analyze_e4(bars: Any, evidence_bus: dict[str, Any] | None = None) -> dict[str, Any]:
-    """Analyze closed M5 candles independently; accepts either list or market snapshot."""
+    """Analyze closed M5 candles independently; accepts list or market snapshot."""
     valid, problems = _clean_bars(bars)
     if len(valid) < 60:
         return _incomplete("insufficient reliable closed candles; liquidity analysis withheld", problems[:6])
@@ -253,18 +250,19 @@ def analyze_e4(bars: Any, evidence_bus: dict[str, Any] | None = None) -> dict[st
         "fresh_below": sum(z["state"] in {"FRESH", "TAKEN"} for z in low_zones),
         "recently_taken_above": sum(bool(z["recently_taken"]) for z in high_zones),
         "recently_taken_below": sum(bool(z["recently_taken"]) for z in low_zones),
-        "current_event": event["type"], "auction_state": event["auction_state"], "event_direction": event_direction, "event_strength": event["strength"],
+        "current_event": event["type"], "auction_state": event["auction_state"], "event_direction": event_direction,
+        "liquidity_taker": event["liquidity_taker"], "response_actor": event["response_actor"], "event_strength": event["strength"],
     }
     return {
-        "architecture": ARCHITECTURE, "question": PROFESSIONAL_QUESTION, "finding": event["type"], "auction_state": event["auction_state"],
-        "directional_implication": event_direction, "liquidity_state": event["liquidity_state"], "confidence": confidence,
+        "architecture": ARCHITECTURE, "question": PROFESSIONAL_QUESTION, "finding": event["type"], "auction_state": event["auction_state"], "directional_implication": event_direction,
+        "liquidity_state": event["liquidity_state"], "liquidity_taker": event["liquidity_taker"], "response_actor": event["response_actor"], "confidence": confidence,
         "evidence_strength": round(float(event["strength"]), 3), "analysis_status": "COMPLETE", "reasoning_role": E4_ROLE,
-        "observations": [f"closed_candles={len(valid)}", f"atr14={atr:.6f}", f"high_liquidity_zones={len(high_zones)}", f"low_liquidity_zones={len(low_zones)}", f"event={event['type']}", f"liquidity_state={event['liquidity_state']}", f"auction_state={event['auction_state']}", f"event_direction={event_direction}", f"context_direction={context}"],
+        "observations": [f"closed_candles={len(valid)}", f"atr14={atr:.6f}", f"high_liquidity_zones={len(high_zones)}", f"low_liquidity_zones={len(low_zones)}", f"event={event['type']}", f"liquidity_state={event['liquidity_state']}", f"liquidity_taker={event['liquidity_taker']}", f"response_actor={event['response_actor']}", f"auction_state={event['auction_state']}", f"event_direction={event_direction}", f"context_direction={context}"],
         "liquidity_map": {"high_zones": high_zones, "low_zones": low_zones}, "event": event, "independent_evidence": independent,
         "evidence": {"raw_market_data_used": True, "closed_candles_only": True, "decisions_used": False, "gates_used": False, "scores_used": False, "context_used": context_used, "context_corrobation_only": True},
         "missing_evidence": ["CONFIRMED_AUCTION_EVENT"] if event["type"] == "NO_CONFIRMED_LIQUIDITY_EVENT" else [],
         "conflicts": ["EVENT_VS_CONTEXT_DIVERGENCE"] if context_conflict else [], "reasons": reasons,
-        "reasoning_trace": [f"QUESTION -> {PROFESSIONAL_QUESTION}", f"LIQUIDITY_MAP -> high_zones={len(high_zones)}, low_zones={len(low_zones)}", f"LIQUIDITY_TAKING -> {event['liquidity_state']}", f"AUCTION_RESPONSE -> {event['auction_state']}", f"DIRECTIONAL_IMPLICATION -> {event_direction}"],
+        "reasoning_trace": [f"QUESTION -> {PROFESSIONAL_QUESTION}", f"LIQUIDITY_MAP -> high_zones={len(high_zones)}, low_zones={len(low_zones)}", f"LIQUIDITY_TAKING -> {event['liquidity_state']} by {event['liquidity_taker']}", f"AUCTION_RESPONSE -> {event['auction_state']}", f"DIRECTIONAL_IMPLICATION -> {event_direction}"],
         "professional_reasoning": {"question": PROFESSIONAL_QUESTION, "task": "MAP_LIQUIDITY_AND_CLASSIFY_AUCTION_ONLY", "primary_state": event["auction_state"], "direction": event_direction, "thesis": event["type"], "evidence_hierarchy": EVIDENCE_HIERARCHY, "independent_evidence": independent, "context_used": any(context_used.values()), "context_corrobation_only": True, "decisions_used": False, "gates_used": False, "scores_used": False, "conflict_detected": context_conflict, "conflict_count": int(context_conflict), "classification_reason": ";".join(reasons)},
         "trade_decision_authority": False, "decision_authority": "E9_ONLY", "decision": None, "gate": None, "score": None,
     }
