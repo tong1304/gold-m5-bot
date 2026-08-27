@@ -1,369 +1,196 @@
 from __future__ import annotations
 
-"""E3 — Professional Market Structure Brain.
+"""E3 — Professional Market Structure Brain V3.
 
-Independent structural analyst for CLOSED M5 OHLC. E3 produces auditable
-structure evidence for E9 and never consumes upstream direction, decisions,
-gates or scores and never authorizes a trade.
+Price-only structural analyst. It uses closed OHLC, confirmed pivots,
+internal/external structure, BOS/CHOCH and failed breaks. It never consumes
+upstream direction, decisions, gates or scores and never authorizes trades.
 """
-
 from statistics import mean
 from typing import Any
 
 QUESTION = "What is price structure communicating?"
-ARCHITECTURE = "E3_SINGLE_PROFESSIONAL_BRAIN_V2"
+ARCHITECTURE = "E3_SINGLE_PROFESSIONAL_BRAIN_V3"
+UP, DOWN, NEUTRAL, MIXED = "UP", "DOWN", "NEUTRAL", "MIXED"
 
 
-def _num(value: Any) -> float | None:
+def _num(v: Any) -> float | None:
     try:
-        value = float(value)
-        return value if value == value and abs(value) != float("inf") else None
+        x = float(v)
+        return x if x == x and abs(x) != float("inf") else None
     except (TypeError, ValueError):
         return None
 
 
-def _clean_bars(bars: list[dict[str, Any]] | None) -> tuple[list[dict[str, float]], list[str]]:
-    valid: list[dict[str, float]] = []
-    reasons: list[str] = []
-    for i, bar in enumerate(bars or []):
-        if not isinstance(bar, dict):
-            reasons.append(f"bar_{i}_not_mapping")
-            continue
-        values = {k: _num(bar.get(k)) for k in ("open", "high", "low", "close")}
-        if any(v is None for v in values.values()):
-            reasons.append(f"bar_{i}_ohlc_invalid")
-            continue
-        o, h, l, c = (float(values[k]) for k in ("open", "high", "low", "close"))
+def _clean_bars(bars: list[dict[str, Any]] | None):
+    out, reasons = [], []
+    for i, b in enumerate(bars or []):
+        if not isinstance(b, dict):
+            reasons.append(f"bar_{i}_not_mapping"); continue
+        v = {k: _num(b.get(k)) for k in ("open", "high", "low", "close")}
+        if any(x is None for x in v.values()):
+            reasons.append(f"bar_{i}_ohlc_invalid"); continue
+        o, h, l, c = (float(v[k]) for k in ("open", "high", "low", "close"))
         if h < max(o, c) or l > min(o, c) or h < l:
-            reasons.append(f"bar_{i}_ohlc_inconsistent")
-            continue
-        valid.append({"open": o, "high": h, "low": l, "close": c})
-    return valid, reasons
+            reasons.append(f"bar_{i}_ohlc_inconsistent"); continue
+        out.append({"open": o, "high": h, "low": l, "close": c})
+    return out, reasons
 
 
-def _atr(bars: list[dict[str, float]], period: int = 14) -> float:
-    if not bars:
-        return 0.0
-    trs: list[float] = []
-    previous: float | None = None
-    for bar in bars[-max(period + 1, 2):]:
-        h, l, c = bar["high"], bar["low"], bar["close"]
-        trs.append(h - l if previous is None else max(h - l, abs(h - previous), abs(l - previous)))
-        previous = c
+def _atr(bars, period=14):
+    if len(bars) < 2: return 0.0
+    prev, trs = bars[0]["close"], []
+    for b in bars[1:]:
+        trs.append(max(b["high"]-b["low"], abs(b["high"]-prev), abs(b["low"]-prev)))
+        prev = b["close"]
     return mean(trs[-period:]) if trs else 0.0
 
 
-def _pivots(bars: list[dict[str, float]], side: str, radius: int = 2) -> list[tuple[int, float]]:
-    points: list[tuple[int, float]] = []
-    if len(bars) < radius * 2 + 1:
-        return points
-    for i in range(radius, len(bars) - radius):
-        value = bars[i][side]
-        left = [bars[j][side] for j in range(i - radius, i)]
-        right = [bars[j][side] for j in range(i + 1, i + radius + 1)]
-        if side == "high" and value >= max(left) and value > max(right):
-            points.append((i, value))
-        elif side == "low" and value <= min(left) and value < min(right):
-            points.append((i, value))
-    return points
+def _pivots(bars, side, radius=2):
+    if len(bars) < 2 * radius + 1: return []
+    pts = []
+    for i in range(radius, len(bars)-radius):
+        x = bars[i][side]
+        left = [bars[j][side] for j in range(i-radius, i)]
+        right = [bars[j][side] for j in range(i+1, i+radius+1)]
+        if side == "high" and x >= max(left) and x > max(right): pts.append((i, x))
+        if side == "low" and x <= min(left) and x < min(right): pts.append((i, x))
+    return pts
 
 
-def _compress(points: list[tuple[int, float]], atr: float, spacing: int = 2, side: str | None = None) -> list[tuple[int, float]]:
-    """Collapse clustered pivots while preserving the correct extreme.
+def _compress(points, atr, side, spacing=2):
+    out, tol = [], max(atr * 0.10, 1e-12)
+    for p in points:
+        if not out or p[0] - out[-1][0] >= spacing:
+            out.append(p); continue
+        if abs(p[1] - out[-1][1]) <= tol: continue
+        if side == "high" and p[1] > out[-1][1]: out[-1] = p
+        if side == "low" and p[1] < out[-1][1]: out[-1] = p
+    return out
 
-    The previous implementation compared every point as if it were a high and
-    contained a dead conditional. That could discard the most important low.
-    """
-    if not points:
-        return []
-    result: list[tuple[int, float]] = []
-    tolerance = max(atr * 0.10, 1e-12)
-    for point in points:
-        if not result:
-            result.append(point)
-            continue
-        prev = result[-1]
-        if point[0] - prev[0] >= spacing:
-            result.append(point)
-            continue
-        if abs(point[1] - prev[1]) <= tolerance:
-            continue
-        if side == "low":
-            if point[1] < prev[1]:
-                result[-1] = point
-        elif side == "high":
-            if point[1] > prev[1]:
-                result[-1] = point
+
+def _label(points, kind, atr):
+    out, tol = [], max(atr * 0.10, 1e-12)
+    for i, (idx, price) in enumerate(points):
+        if i == 0: label = "SWING_HIGH" if kind == "HIGH" else "SWING_LOW"
         else:
-            # Preserve backward compatibility for callers without a side.
-            result[-1] = point
-    return result
+            d = price - points[i-1][1]
+            if abs(d) <= tol: label = "EQH" if kind == "HIGH" else "EQL"
+            elif kind == "HIGH": label = "HH" if d > 0 else "LH"
+            else: label = "HL" if d > 0 else "LL"
+        out.append({"index": idx, "price": round(price, 8), "label": label})
+    return out
 
 
-def _label(points: list[tuple[int, float]], kind: str, atr: float) -> list[dict[str, Any]]:
-    result: list[dict[str, Any]] = []
-    tolerance = max(atr * 0.10, 1e-12)
-    for i, (idx, value) in enumerate(points):
-        if i == 0:
-            name = "SWING_HIGH" if kind == "HIGH" else "SWING_LOW"
-        else:
-            delta = value - points[i - 1][1]
-            if abs(delta) <= tolerance:
-                name = "EQH" if kind == "HIGH" else "EQL"
-            elif kind == "HIGH":
-                name = "HH" if delta > 0 else "LH"
-            else:
-                name = "HL" if delta > 0 else "LL"
-        result.append({"index": idx, "price": round(value, 8), "label": name})
-    return result
+def _structure_direction(highs, lows):
+    hd = next((x["label"] for x in reversed(highs) if x["label"] in {"HH", "LH"}), None)
+    ld = next((x["label"] for x in reversed(lows) if x["label"] in {"HL", "LL"}), None)
+    if hd == "HH" and ld == "HL": return UP
+    if hd == "LH" and ld == "LL": return DOWN
+    return MIXED if hd and ld else NEUTRAL
 
 
-def _pair_direction(highs: list[dict[str, Any]], lows: list[dict[str, Any]]) -> str:
-    hs = [x for x in highs if x["label"] in {"HH", "LH"}]
-    ls = [x for x in lows if x["label"] in {"HL", "LL"}]
-    if not hs or not ls:
-        return "NEUTRAL"
-    high_dir = hs[-1]["label"]
-    low_dir = ls[-1]["label"]
-    if high_dir == "HH" and low_dir == "HL":
-        return "UP"
-    if high_dir == "LH" and low_dir == "LL":
-        return "DOWN"
-    return "MIXED"
+def _latest_break_candidates(highs, lows, latest_index):
+    h = next((x for x in reversed(highs) if x["index"] < latest_index), None)
+    l = next((x for x in reversed(lows) if x["index"] < latest_index), None)
+    out = []
+    if h: out.append((float(h["price"]), int(h["index"]), UP))
+    if l: out.append((float(l["price"]), int(l["index"]), DOWN))
+    return out
 
 
-def _slope_direction(bars: list[dict[str, float]], lookback: int = 20) -> tuple[str, float]:
-    closes = [b["close"] for b in bars[-lookback:]]
-    if len(closes) < 5:
-        return "NEUTRAL", 0.0
-    delta = closes[-1] - closes[0]
-    atr = max(_atr(bars), 1e-12)
-    normalized = delta / (atr * max(len(closes) - 1, 1))
-    quality = min(1.0, abs(normalized) * 8.0)
-    if normalized > 0.035:
-        return "UP", quality
-    if normalized < -0.035:
-        return "DOWN", quality
-    return "NEUTRAL", quality
-
-
-def _latest_break_candidate(highs: list[dict[str, Any]], lows: list[dict[str, Any]], latest_index: int) -> tuple[float, int, str] | None:
-    candidates: list[tuple[int, float, str]] = []
-    for item in highs:
-        if item["index"] < latest_index:
-            candidates.append((int(item["index"]), float(item["price"]), "UP"))
-    for item in lows:
-        if item["index"] < latest_index:
-            candidates.append((int(item["index"]), float(item["price"]), "DOWN"))
-    if not candidates:
-        return None
-    candidates.sort(key=lambda x: x[0], reverse=True)
-    idx, level, direction = candidates[0]
-    return level, idx, direction
-
-
-def _bos(
-    bars: list[dict[str, float]],
-    highs: list[dict[str, Any]],
-    lows: list[dict[str, Any]],
-    atr: float,
-    prior_structure: str,
-) -> dict[str, Any]:
+def _bos(bars, highs, lows, atr, prior_structure, scope="EXTERNAL"):
     if atr <= 0 or len(bars) < 2:
-        return {"event": "NO_BOS", "direction": "NEUTRAL", "confirmed": False}
-    latest = bars[-1]
-    latest_index = len(bars) - 1
-    # BOS is confirmed by a CLOSED candle close beyond the most recent eligible
-    # swing. We do not search older swings after rejecting the newest one.
-    candidate = _latest_break_candidate(highs, lows, latest_index)
-    if candidate is None:
-        return {"event": "NO_BOS", "direction": "NEUTRAL", "confirmed": False}
-    level, swing_index, direction = candidate
-    distance = latest["close"] - level if direction == "UP" else level - latest["close"]
-    body = abs(latest["close"] - latest["open"])
-    close_quality = body / atr
-    if distance < atr * 0.10:
-        return {"event": "NO_BOS", "direction": "NEUTRAL", "confirmed": False, "candidate_level": round(level, 8)}
-    event = "CONFIRMED_CHOCH" if prior_structure in {"UP", "DOWN"} and direction != prior_structure else "CONFIRMED_BOS"
-    return {
-        "event": event,
-        "direction": direction,
-        "confirmed": True,
-        "level": round(level, 8),
-        "swing_index": swing_index,
-        "break_candle_index": latest_index,
-        "break_distance_atr": round(distance / atr, 4),
-        "break_body_atr": round(close_quality, 4),
-        "close_beyond_level": True,
-    }
+        return {"event":"NO_BOS", "direction":NEUTRAL, "confirmed":False, "scope":scope}
+    latest, candidates = bars[-1], []
+    for level, idx, direction in _latest_break_candidates(highs, lows, len(bars)-1):
+        distance = latest["close"] - level if direction == UP else level - latest["close"]
+        if distance >= atr * 0.10:
+            body_atr = abs(latest["close"]-latest["open"]) / atr
+            event = "CONFIRMED_CHOCH" if prior_structure in {UP, DOWN} and direction != prior_structure else "CONFIRMED_BOS"
+            candidates.append({"event":event,"direction":direction,"confirmed":True,"scope":scope,"level":round(level,8),"swing_index":idx,"break_candle_index":len(bars)-1,"break_distance_atr":round(distance/atr,4),"break_body_atr":round(body_atr,4),"close_beyond_level":True})
+    if len(candidates) == 1: return candidates[0]
+    if len(candidates) > 1: return {"event":"CONFLICTING_BREAKS","direction":MIXED,"confirmed":False,"scope":scope,"candidates":candidates}
+    return {"event":"NO_BOS","direction":NEUTRAL,"confirmed":False,"scope":scope}
 
 
-def _failure(bars: list[dict[str, float]], bos: dict[str, Any], atr: float) -> dict[str, Any]:
-    if not bos.get("confirmed") or atr <= 0:
-        return {"event": "NO_FAILURE", "direction": "NEUTRAL", "confirmed": False}
-    level = float(bos["level"])
-    direction = bos["direction"]
-    close = bars[-1]["close"]
-    reclaimed = close < level - atr * 0.05 if direction == "UP" else close > level + atr * 0.05
-    if reclaimed:
-        return {
-            "event": "FAILED_BOS",
-            "direction": "DOWN" if direction == "UP" else "UP",
-            "confirmed": True,
-            "level": level,
-            "failure_candle_index": len(bars) - 1,
-        }
-    return {"event": "NO_FAILURE", "direction": "NEUTRAL", "confirmed": False}
+def _sweep_failure(bars, highs, lows):
+    if not bars: return {"event":"NO_FAILURE","direction":NEUTRAL,"confirmed":False}
+    b = bars[-1]; failures = []
+    for level, idx, direction in _latest_break_candidates(highs, lows, len(bars)-1):
+        if direction == UP and b["high"] > level and b["close"] < level:
+            failures.append({"event":"FAILED_BREAK","direction":DOWN,"confirmed":True,"level":round(level,8),"swing_index":idx,"failure_candle_index":len(bars)-1,"scope":"EXTERNAL"})
+        elif direction == DOWN and b["low"] < level and b["close"] > level:
+            failures.append({"event":"FAILED_BREAK","direction":UP,"confirmed":True,"level":round(level,8),"swing_index":idx,"failure_candle_index":len(bars)-1,"scope":"EXTERNAL"})
+    return failures[0] if len(failures) == 1 else ({"event":"CONFLICTING_FAILURES","direction":MIXED,"confirmed":False} if failures else {"event":"NO_FAILURE","direction":NEUTRAL,"confirmed":False})
 
 
-def _strength(pair: str, bos: dict[str, Any], failure: dict[str, Any], swing_count: int, slope_quality: float) -> float:
-    score = 0.20 + min(0.25, swing_count * 0.035)
-    if pair in {"UP", "DOWN"}:
-        score += 0.15
-    if bos.get("confirmed"):
-        score += min(0.30, 0.15 + float(bos.get("break_distance_atr", 0.0)) * 0.05)
-    if failure.get("confirmed"):
-        score += 0.05
-    score += min(0.15, slope_quality * 0.15)
-    return round(min(1.0, score), 4)
+def _failure(bars, bos, atr):
+    # Kept as a public-test-compatible helper. A confirmed break can be
+    # invalidated only when a later/current candle closes back through it.
+    if not bos.get("confirmed") or atr <= 0: return {"event":"NO_FAILURE","direction":NEUTRAL,"confirmed":False}
+    level, direction, b = float(bos["level"]), bos["direction"], bars[-1]
+    if direction == UP and b["high"] > level and b["close"] < level - atr*0.05:
+        return {"event":"FAILED_BOS","direction":DOWN,"confirmed":True,"level":level,"failure_candle_index":len(bars)-1}
+    if direction == DOWN and b["low"] < level and b["close"] > level + atr*0.05:
+        return {"event":"FAILED_BOS","direction":UP,"confirmed":True,"level":level,"failure_candle_index":len(bars)-1}
+    return {"event":"NO_FAILURE","direction":NEUTRAL,"confirmed":False}
 
 
-def analyze_e3(bars: list[dict[str, Any]]) -> dict[str, Any]:
-    """Return an independent, auditable E3 structural thesis from CLOSED M5 OHLC."""
+def _slope_direction(bars, lookback=20):
+    closes = [b["close"] for b in bars[-lookback:]]
+    if len(closes) < 5: return NEUTRAL, 0.0
+    n = (closes[-1]-closes[0]) / (max(_atr(bars),1e-12) * max(len(closes)-1,1))
+    q = min(1.0, abs(n)*8.0)
+    return (UP if n > 0.035 else DOWN if n < -0.035 else NEUTRAL), q
+
+
+def _strength(external, internal, bos, failure, swing_count, slope_quality):
+    s = 0.20 + (0.22 if external in {UP,DOWN} else 0) + (0.18 if internal == external and internal in {UP,DOWN} else 0.02 if internal == MIXED else 0)
+    if bos.get("confirmed"): s += min(0.28, 0.12 + float(bos.get("break_distance_atr",0))*0.05)
+    if failure.get("confirmed"): s += 0.04
+    return round(min(1.0, s + min(0.08,slope_quality*0.08) + min(0.06,swing_count*0.005)),4)
+
+
+def analyze_e3(bars):
     clean, data_reasons = _clean_bars(bars)
-    base = {
-        "architecture": ARCHITECTURE,
-        "reasoning_role": "MARKET_STRUCTURE_ANALYST",
-        "question": QUESTION,
-        "decision": None,
-        "trade_decision_authority": False,
-        "decision_authority": "E9_ONLY",
-        "gate": None,
-        "sub_engines_active": False,
-        "sub_engines_status": "PAUSED",
-        "specialists_active": False,
-        "specialists_status": "PAUSED",
-        "upstream_direction_used": False,
-        "upstream_decisions_used": False,
-        "upstream_gates_used": False,
-        "score_used": False,
-    }
+    base = {"architecture":ARCHITECTURE,"reasoning_role":"MARKET_STRUCTURE_ANALYST","question":QUESTION,"decision":None,"trade_decision_authority":False,"decision_authority":"E9_ONLY","gate":None,"sub_engines_active":False,"sub_engines_status":"PAUSED","specialists_active":False,"specialists_status":"PAUSED","upstream_direction_used":False,"upstream_decisions_used":False,"upstream_gates_used":False,"score_used":False}
     if len(clean) < 20:
-        return {
-            **base,
-            "analysis_status": "INSUFFICIENT_DATA",
-            "finding": "STRUCTURE_INSUFFICIENT_DATA",
-            "structure_state": "INSUFFICIENT_DATA",
-            "direction": "NEUTRAL",
-            "swing_map": {"highs": [], "lows": []},
-            "internal_structure": {},
-            "external_structure": {},
-            "bos": {"event": "NO_BOS", "direction": "NEUTRAL", "confirmed": False},
-            "failure": {"event": "NO_FAILURE", "direction": "NEUTRAL", "confirmed": False},
-            "structure_strength": 0.0,
-            "confidence": 0.0,
-            "evidence": [f"closed_candles={len(clean)}"],
-            "observations": [f"closed_candles={len(clean)}"],
-            "reason_codes": ["E3_INSUFFICIENT_DATA", *data_reasons[:4]],
-            "reasons": ["E3_INSUFFICIENT_DATA", *data_reasons[:4]],
-        }
-
+        return {**base,"analysis_status":"INSUFFICIENT_DATA","finding":"STRUCTURE_INSUFFICIENT_DATA","structure_state":"INSUFFICIENT_DATA","direction":NEUTRAL,"swing_map":{"highs":[],"lows":[]},"internal_structure":{},"external_structure":{},"bos":{"event":"NO_BOS","direction":NEUTRAL,"confirmed":False},"failure":{"event":"NO_FAILURE","direction":NEUTRAL,"confirmed":False},"structure_strength":0.0,"confidence":0.0,"evidence":[f"closed_candles={len(clean)}"],"observations":[f"closed_candles={len(clean)}"],"reason_codes":["E3_INSUFFICIENT_DATA",*data_reasons[:4]],"reasons":["E3_INSUFFICIENT_DATA",*data_reasons[:4]]}
     atr = _atr(clean)
-    highs = _compress(_pivots(clean, "high"), atr, side="high")
-    lows = _compress(_pivots(clean, "low"), atr, side="low")
-    high_labels = _label(highs, "HIGH", atr)
-    low_labels = _label(lows, "LOW", atr)
-    pair = _pair_direction(high_labels, low_labels)
-    slope, slope_quality = _slope_direction(clean)
-
-    # In a monotonic leg, use context anchors only as evidence; they are not
-    # promoted to HH/HL and therefore cannot manufacture a BOS by themselves.
-    if not high_labels and not low_labels:
-        anchor_index = len(clean) - 1
-        anchor = {"index": anchor_index, "price": round(clean[-1]["close"], 8), "label": "DIRECTIONAL_CONTEXT_ANCHOR"}
-        if slope == "UP":
-            high_labels = [anchor]
-            low_labels = [{"index": max(0, len(clean) - 20), "price": round(clean[-20]["close"], 8), "label": "DIRECTIONAL_CONTEXT_ANCHOR"}]
-        elif slope == "DOWN":
-            high_labels = [{"index": max(0, len(clean) - 20), "price": round(clean[-20]["close"], 8), "label": "DIRECTIONAL_CONTEXT_ANCHOR"}]
-            low_labels = [anchor]
-
-    bos = _bos(clean, high_labels, low_labels, atr, pair)
-    failure = _failure(clean, bos, atr)
-
-    if failure["confirmed"]:
-        direction, state, finding = failure["direction"], "STRUCTURE_FAILURE", "STRUCTURE_FAILURE"
-    elif bos["confirmed"]:
-        direction = bos["direction"]
-        state = "BREAKOUT_CONFIRMED" if bos["event"] == "CONFIRMED_BOS" else "CHANGE_OF_CHARACTER"
-        finding = "BULLISH_BOS" if direction == "UP" else "BEARISH_BOS"
-        if bos["event"] == "CONFIRMED_CHOCH":
-            finding = "BULLISH_CHOCH" if direction == "UP" else "BEARISH_CHOCH"
-    elif pair in {"UP", "DOWN"}:
-        direction, state = pair, "CONTINUATION"
-        finding = "BULLISH_STRUCTURE" if direction == "UP" else "BEARISH_STRUCTURE"
-    elif slope in {"UP", "DOWN"} and slope_quality >= 0.45:
-        direction, state = slope, "DIRECTIONAL_STRUCTURE"
-        finding = "BULLISH_STRUCTURE" if direction == "UP" else "BEARISH_STRUCTURE"
-    elif high_labels or low_labels:
-        direction, state, finding = "MIXED", "TRANSITION", "MIXED_STRUCTURE"
-    else:
-        direction, state, finding = "NEUTRAL", "RANGE_OR_INSUFFICIENT", "NO_CONFIRMED_STRUCTURE_EVENT"
-
-    internal = {"highs": high_labels[-4:], "lows": low_labels[-4:]}
-    external = {"highs": high_labels[-2:], "lows": low_labels[-2:]}
-    swing_count = len(high_labels) + len(low_labels)
-    strength = _strength(pair, bos, failure, swing_count, slope_quality)
-    confidence = round(min(1.0, 0.35 + strength * 0.40 + slope_quality * 0.15), 4)
-
-    reasons: list[str] = []
-    if not bos["confirmed"]:
-        reasons.append("NO_CONFIRMED_BOS")
-    if failure["confirmed"]:
-        reasons.append("STRUCTURE_FAILURE_DETECTED")
-    if bos.get("event") == "CONFIRMED_CHOCH":
-        reasons.append("CHANGE_OF_CHARACTER_DETECTED")
-    if pair == "MIXED":
-        reasons.append("STRUCTURE_CONFLICT")
-    if slope in {"UP", "DOWN"} and pair not in {slope, "NEUTRAL"}:
-        reasons.append("SWING_SLOPE_DISAGREEMENT")
-    if not high_labels or not low_labels:
-        reasons.append("LIMITED_SWING_SIDE")
-    reasons.extend(data_reasons[:2])
-
-    evidence = [
-        f"closed_candles={len(clean)}",
-        f"atr14={atr:.8f}",
-        f"swing_structure={pair}",
-        f"slope_context={slope}",
-        f"slope_quality={slope_quality:.4f}",
-        f"bos={bos['event']}",
-        f"failure={failure['event']}",
-        f"internal_swing_count={len(internal['highs']) + len(internal['lows'])}",
-        f"external_swing_count={len(external['highs']) + len(external['lows'])}",
-    ]
-    if bos.get("confirmed"):
-        evidence.extend([
-            f"bos_level={bos['level']}",
-            f"bos_break_distance_atr={bos['break_distance_atr']}",
-            f"bos_break_body_atr={bos['break_body_atr']}",
-        ])
-
-    return {
-        **base,
-        "analysis_status": "COMPLETE",
-        "finding": finding,
-        "structure_state": state,
-        "direction": direction,
-        "internal_structure": internal,
-        "external_structure": external,
-        "swing_map": {"highs": high_labels, "lows": low_labels},
-        "bos": bos,
-        "failure": failure,
-        "structure_strength": strength,
-        "confidence": confidence,
-        "evidence": evidence,
-        "observations": evidence,
-        "reason_codes": reasons,
-        "reasons": reasons,
-    }
+    ih, il = _label(_compress(_pivots(clean,"high",2),atr,"high"),"HIGH",atr), _label(_compress(_pivots(clean,"low",2),atr,"low"),"LOW",atr)
+    eh, el = _label(_compress(_pivots(clean,"high",5),atr,"high"),"HIGH",atr), _label(_compress(_pivots(clean,"low",5),atr,"low"),"LOW",atr)
+    idef, edef = _structure_direction(ih,il), _structure_direction(eh,el)
+    slope, slope_q = _slope_direction(clean)
+    bos = _bos(clean,eh,el,atr,edef,"EXTERNAL")
+    internal_bos = _bos(clean,ih,il,atr,idef,"INTERNAL")
+    failure = _sweep_failure(clean,eh,el)
+    if failure["confirmed"]: direction,state,finding=failure["direction"],"STRUCTURE_FAILURE","FAILED_BREAK"
+    elif bos.get("confirmed"):
+        direction=bos["direction"]; state="CHANGE_OF_CHARACTER" if bos["event"]=="CONFIRMED_CHOCH" else "BREAKOUT_CONFIRMED"; finding=("BULLISH_CHOCH" if direction==UP else "BEARISH_CHOCH") if bos["event"]=="CONFIRMED_CHOCH" else ("BULLISH_BOS" if direction==UP else "BEARISH_BOS")
+    elif edef in {UP,DOWN}:
+        direction=edef
+        if idef==edef: state,finding="CONTINUATION",("BULLISH_STRUCTURE" if direction==UP else "BEARISH_STRUCTURE")
+        elif idef==MIXED: state,finding="INTERNAL_CONFLICT",("BULLISH_EXTERNAL_MIXED_INTERNAL" if direction==UP else "BEARISH_EXTERNAL_MIXED_INTERNAL")
+        else: state,finding="INTERNAL_COUNTER_MOVE",("BULLISH_EXTERNAL_COUNTERMOVE" if direction==UP else "BEARISH_EXTERNAL_COUNTERMOVE")
+    elif idef in {UP,DOWN}: direction,state,finding=idef,"DEVELOPING_STRUCTURE",("BULLISH_DEVELOPING_STRUCTURE" if idef==UP else "BEARISH_DEVELOPING_STRUCTURE")
+    elif idef==MIXED or edef==MIXED: direction,state,finding=MIXED,"TRANSITION","MIXED_STRUCTURE"
+    elif slope in {UP,DOWN}: direction,state,finding=MIXED,"DIRECTIONAL_CONTEXT_UNCONFIRMED","DIRECTIONAL_CONTEXT_UNCONFIRMED"
+    else: direction,state,finding=NEUTRAL,"RANGE_OR_UNCLEAR","NO_CONFIRMED_STRUCTURE_EVENT"
+    reasons=[]
+    if not bos.get("confirmed"): reasons.append("NO_CONFIRMED_EXTERNAL_BOS")
+    if internal_bos.get("confirmed") and not bos.get("confirmed"): reasons.append("INTERNAL_BREAK_ONLY")
+    if failure.get("confirmed"): reasons.append("FAILED_BREAK_DETECTED")
+    if bos.get("event")=="CONFIRMED_CHOCH": reasons.append("CHANGE_OF_CHARACTER_DETECTED")
+    if bos.get("event")=="CONFLICTING_BREAKS": reasons.append("CONFLICTING_EXTERNAL_BREAKS")
+    if edef==MIXED or idef==MIXED: reasons.append("STRUCTURE_CONFLICT")
+    if edef in {UP,DOWN} and idef not in {edef,NEUTRAL}: reasons.append("INTERNAL_EXTERNAL_DISAGREEMENT")
+    if not eh or not el: reasons.append("LIMITED_EXTERNAL_SWINGS")
+    if not ih or not il: reasons.append("LIMITED_INTERNAL_SWINGS")
+    if slope in {UP,DOWN} and edef not in {slope,NEUTRAL}: reasons.append("SLOPE_NOT_STRUCTURAL_AUTHORITY")
+    reasons=list(dict.fromkeys(reasons+data_reasons[:2]))
+    evidence=[f"closed_candles={len(clean)}",f"atr14={atr:.8f}",f"external_structure={edef}",f"internal_structure={idef}",f"slope_context={slope}",f"slope_quality={slope_q:.4f}",f"external_bos={bos['event']}",f"internal_bos={internal_bos['event']}",f"failure={failure['event']}",f"internal_swing_count={len(ih)+len(il)}",f"external_swing_count={len(eh)+len(el)}"]
+    if bos.get("confirmed"): evidence += [f"bos_scope={bos['scope']}",f"bos_level={bos['level']}",f"bos_break_distance_atr={bos['break_distance_atr']}",f"bos_break_body_atr={bos['break_body_atr']}"]
+    strength=_strength(edef,idef,bos,failure,len(ih)+len(il)+len(eh)+len(el),slope_q)
+    confidence=round(min(1.0,0.30+strength*0.42+slope_q*0.10),4)
+    return {**base,"analysis_status":"COMPLETE","finding":finding,"structure_state":state,"direction":direction,"internal_structure":{"highs":ih[-6:],"lows":il[-6:],"direction":idef},"external_structure":{"highs":eh[-4:],"lows":el[-4:],"direction":edef},"swing_map":{"highs":eh,"lows":el},"bos":bos,"internal_bos":internal_bos,"failure":failure,"structure_strength":strength,"confidence":confidence,"evidence":evidence,"observations":evidence,"reason_codes":reasons,"reasons":reasons}
