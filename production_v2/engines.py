@@ -1,8 +1,8 @@
 from __future__ import annotations
 """Production-V2 engine dispatcher.
 
-E1-E4 are qualitative analysts. E4 now uses a standalone professional liquidity
-brain while its legacy 4A-4F specialists remain paused. E9 remains the only
+E1-E4 are qualitative analysts. E4 uses a standalone professional liquidity
+brain while legacy 4A-4F specialists remain paused. E9 remains the only
 trade-decision authority.
 """
 import importlib
@@ -93,16 +93,22 @@ def _e3_contract(brain):
     return EngineResult("E3",ENGINE_NAMES["E3"],None,float(brain.get("confidence",0.0))*100.0,output,tuple(brain.get("reason_codes",())))
 
 def _e4_contract(brain):
-    output={"architecture":"E4_PROFESSIONAL_LIQUIDITY_BRAIN_V1","specialists":{},"specialists_active":False,"specialists_status":"PAUSED",**brain,"decision":None,"gate":None,"trade_decision_authority":False,"decision_authority":"E9_ONLY","reasoning_role":"LIQUIDITY_ANALYST"}
+    output={"architecture":"E4_SINGLE_PROFESSIONAL_BRAIN_V9","specialists":{},"specialists_active":False,"specialists_status":"PAUSED",**brain,"decision":None,"gate":None,"trade_decision_authority":False,"decision_authority":"E9_ONLY","reasoning_role":"LIQUIDITY_ANALYST","upstream_decisions_used":False,"upstream_gates_used":False,"score_used":False}
     output["score"] = None
-    return EngineResult("E4",ENGINE_NAMES["E4"],None,float(brain.get("liquidity_strength",0.0)),output,tuple(brain.get("reason_codes",())))
+    return EngineResult("E4",ENGINE_NAMES["E4"],None,float(brain.get("evidence_strength",brain.get("confidence",0.0)))*100.0,output,tuple(brain.get("reasons",())))
 
 def run_engine(engine_id,snapshot,evidence_bus=None):
     allowed=set(EVIDENCE_INPUTS.get(engine_id,())); permitted={k:evidence_bus[k] for k in allowed if evidence_bus and k in evidence_bus}
     if engine_id=="E2":
         local=dict(snapshot); local["E1_result"]=_e2_e1_context(permitted); brain=preserve_repricing_thesis(analyze_e2(local)); output={"architecture":"E2_PROFESSIONAL_CORE_ONLY","sub_engines_active":False,"sub_engines_status":"PAUSED","specialists":{},**brain,"decision":None,"entry":None,"trigger":None,"risk":None,"gate":None,"trade_decision_authority":"E9_ONLY","reasoning_role":"OPPORTUNITY_REGIME_ANALYST","upstream_decisions_used":False,"upstream_gates_used":False,"score_used":False}; return EngineResult("E2",ENGINE_NAMES["E2"],None,float(brain.get("confidence",0.0))*100.0,output,tuple(brain.get("reason_codes",())))
     if engine_id=="E3": return _e3_contract(analyze_e3(list(snapshot.get("bars") or [])))
-    if engine_id=="E4": return _e4_contract(analyze_e4(snapshot.get("bars") or [], permitted))
+    if engine_id=="E4":
+        # E4 V9 expects a snapshot mapping with bars, not a bare bar list.
+        # Keep E4 independent: only qualitative E1-E3 evidence is supplied.
+        e4_snapshot=dict(snapshot)
+        e4_snapshot["bars"]=list(snapshot.get("bars") or [])
+        brain=analyze_e4(e4_snapshot, permitted)
+        return _e4_contract(brain)
     codes=SUB_ENGINE_CODES[engine_id]; results=[]
     with ThreadPoolExecutor(max_workers=max(1,len(codes))) as pool:
         fs={pool.submit(_run,c,snapshot,permitted):c for c in codes}
