@@ -1,10 +1,8 @@
-"""Compatibility entrypoint for E3 V6.
+"""Production E3 entrypoint — V7 professional market-structure brain.
 
-The implementation lives in e3_brain_v6.py so the V6 brain can evolve
-without mixing its structural contract with the legacy V5 implementation.
-E3 remains a single brain; E1/E2 and E4-E9 are untouched.
+E3 remains analysis-only. E1/E2 and E4-E9 are not modified.
 """
 
-from .e3_brain_v6 import analyze_e3, _compress, _bos, _sweep_failure
+from .e3_brain_v7 import analyze_e3
 
-__all__ = ["analyze_e3", "_compress", "_bos", "_sweep_failure"]
+__all__ = ["analyze_e3"]
