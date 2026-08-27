@@ -1,4 +1,4 @@
-from production_v2.e3_brain import _bos, _failure, analyze_e3
+from production_v2.e3_brain import _bos, _sweep_failure, analyze_e3
 from production_v2.engines import run_engine
 
 
@@ -38,11 +38,8 @@ def test_e3_does_not_consume_upstream_direction_or_decision():
     assert result.output["finding"] != "UNRESOLVED"
 
 
-def test_bos_evaluates_latest_high_and_low_candidates_independently():
-    bars = [_bar(111.0, open_=108.0)]
-    highs = [{"index": 10, "price": 110.0, "label": "HH"}]
-    lows = [{"index": 11, "price": 90.0, "label": "HL"}]
-    result = _bos(bars, highs, lows, atr=2.0, prior_structure="UP")
+def test_bos_confirms_close_beyond_structural_level():
+    result = _bos([_bar(111.0, open_=108.0)], [{"index": 10, "price": 110.0, "label": "HH"}], [{"index": 11, "price": 90.0, "label": "HL"}], atr=2.0, prior_structure="UP")
     assert result["confirmed"] is True
     assert result["direction"] == "UP"
     assert result["event"] == "CONFIRMED_BOS"
@@ -50,37 +47,41 @@ def test_bos_evaluates_latest_high_and_low_candidates_independently():
 
 
 def test_wick_through_level_without_close_is_not_bos():
-    bars = [_bar(109.0, open_=108.0, high=112.0, low=107.5)]
-    highs = [{"index": 10, "price": 110.0, "label": "HH"}]
-    lows = [{"index": 8, "price": 100.0, "label": "HL"}]
-    result = _bos(bars, highs, lows, atr=2.0, prior_structure="UP")
+    result = _bos([_bar(109.0, open_=108.0, high=112.0, low=107.5)], [{"index": 10, "price": 110.0, "label": "HH"}], [{"index": 8, "price": 100.0, "label": "HL"}], atr=2.0, prior_structure="UP")
     assert result["confirmed"] is False
     assert result["event"] == "NO_BOS"
 
 
 def test_failed_break_detects_sweep_and_close_back_inside_level():
-    bars = [_bar(109.0, open_=108.0, high=112.0, low=107.5)]
-    bos = {"event": "CONFIRMED_BOS", "direction": "UP", "confirmed": True, "level": 110.0}
-    result = _failure(bars, bos, atr=2.0)
+    result = _sweep_failure([_bar(109.0, open_=108.0, high=112.0, low=107.5)], [{"index": 10, "price": 110.0, "label": "HH"}], [{"index": 8, "price": 100.0, "label": "HL"}])
     assert result["confirmed"] is True
-    assert result["event"] == "FAILED_BOS"
+    assert result["event"] == "FAILED_BREAK"
     assert result["direction"] == "DOWN"
 
 
 def test_choch_is_used_when_breaking_against_established_structure():
-    bars = [_bar(111.0, open_=108.0)]
-    highs = [{"index": 10, "price": 110.0, "label": "HH"}]
-    lows = [{"index": 11, "price": 90.0, "label": "LL"}]
-    result = _bos(bars, highs, lows, atr=2.0, prior_structure="DOWN")
+    result = _bos([_bar(111.0, open_=108.0)], [{"index": 10, "price": 110.0, "label": "HH"}], [{"index": 11, "price": 90.0, "label": "LL"}], atr=2.0, prior_structure="DOWN")
     assert result["confirmed"] is True
     assert result["direction"] == "UP"
     assert result["event"] == "CONFIRMED_CHOCH"
 
 
 def test_bos_requires_meaningful_close_distance():
-    bars = [_bar(110.05, open_=109.0, high=110.2, low=108.8)]
-    highs = [{"index": 10, "price": 110.0, "label": "HH"}]
-    lows = [{"index": 8, "price": 100.0, "label": "HL"}]
-    result = _bos(bars, highs, lows, atr=2.0, prior_structure="UP")
+    result = _bos([_bar(110.05, open_=109.0, high=110.2, low=108.8)], [{"index": 10, "price": 110.0, "label": "HH"}], [{"index": 8, "price": 100.0, "label": "HL"}], atr=2.0, prior_structure="UP")
     assert result["confirmed"] is False
     assert result["event"] == "NO_BOS"
+
+
+def test_failed_break_requires_meaningful_close_back_inside_level():
+    result = _sweep_failure([_bar(109.95, open_=110.10, high=110.30, low=109.70)], [{"index": 10, "price": 110.0, "label": "HH"}], [{"index": 8, "price": 100.0, "label": "HL"}], atr=2.0)
+    assert result["confirmed"] is False
+    assert result["event"] == "NO_FAILURE"
+
+
+def test_e3_preserves_internal_external_divergence_and_never_becomes_a_gate():
+    result = analyze_e3(_bars([100 + i * 0.4 for i in range(90)] + [135, 134, 133, 132, 131, 130]))
+    assert result["trade_decision_authority"] is False
+    assert result["gate"] is None
+    assert result["upstream_decisions_used"] is False
+    assert result["score_used"] is False
+    assert isinstance(result["conflicts"], list)
