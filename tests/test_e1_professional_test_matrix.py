@@ -1,6 +1,6 @@
 """Professional E1 acceptance matrix.
 
-E1 is tested as a market-state analyst only.  The matrix deliberately tests
+E1 is tested as a market-state analyst only. The matrix deliberately tests
 classification, evidence hierarchy, conflict handling, uncertainty, and
 ownership boundaries without asserting any trade decision.
 """
@@ -18,14 +18,7 @@ def _bars_from_closes(closes, spread=0.08):
     for i, close in enumerate(closes):
         high = max(previous, close) + spread
         low = min(previous, close) - spread
-        bars.append({
-            "open": previous,
-            "high": high,
-            "low": low,
-            "close": close,
-            "volume": 1000,
-            "timestamp": i,
-        })
+        bars.append({"open": previous, "high": high, "low": low, "close": close, "volume": 1000, "timestamp": i})
         previous = close
     return bars
 
@@ -47,10 +40,15 @@ def _range():
 
 def _compression():
     closes = [100.0]
-    for i in range(100):
-        step = 0.025 if i % 2 == 0 else -0.025
-        closes.append(closes[-1] + step)
-    return _bars_from_closes(closes, spread=0.012)
+    for i in range(70):
+        closes.append(closes[-1] + (0.20 if i % 2 == 0 else -0.20))
+    for i in range(30):
+        closes.append(closes[-1] + (0.025 if i % 2 == 0 else -0.025))
+    bars = _bars_from_closes(closes, spread=0.08)
+    for bar in bars[-30:]:
+        bar["high"] = max(bar["open"], bar["close"]) + 0.012
+        bar["low"] = min(bar["open"], bar["close"]) - 0.012
+    return bars
 
 
 def _expanding_directional_move():
@@ -137,13 +135,12 @@ def test_matrix_structure_pressure_conflict_cannot_be_promoted_to_confirmed_tren
 
 
 def test_matrix_long_horizon_conflict_is_transition():
-    out = analyze_e1(_clean_bear_trend())
-    assert out["market_state"] == "TREND_DOWN"
-    conflict = _transition()
-    out2 = analyze_e1(conflict)
-    assert out2["market_state"] == "TRANSITION"
-    assert out2["transition"] == "PRESENT"
-    assert out2["professional_reasoning"]["trend_confirmed"] is False
+    result = analyze_e1(_clean_bear_trend())
+    assert result["market_state"] == "TREND_DOWN"
+    result = analyze_e1(_transition())
+    assert result["market_state"] == "TRANSITION"
+    assert result["transition"] == "PRESENT"
+    assert result["professional_reasoning"]["trend_confirmed"] is False
 
 
 def test_matrix_transition_is_not_a_reversal_signal():
@@ -172,7 +169,8 @@ def test_matrix_evidence_hierarchy_is_preserved():
     reasoning = out["professional_reasoning"]
     assert reasoning["task"] == "DESCRIBE_MARKET_STATE_ONLY"
     assert out["reasoning_role"] == "MARKET_STATE_ANALYST"
-    assert "DATA_QUALITY" in out.get("reasoning_trace", [])[0] or True
+    assert out["reasoning_trace"]
+    assert "QUESTION -> What is the market doing right now?" in out["reasoning_trace"][0]
     assert reasoning["ownership_boundaries"]["owns"]
 
 
