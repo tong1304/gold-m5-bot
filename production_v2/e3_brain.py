@@ -1,16 +1,20 @@
 from __future__ import annotations
 
-"""E3 — Professional Market Structure Brain.
+"""E3 — Professional Market Structure Brain V4.
 
-Structure analysis only. E3 never consumes E1/E2 decisions, gates or scores and
-never authorizes a trade; E9 remains the sole trade-decision authority.
+E3 is isolated from E1/E2 and E4-E9. It answers one question only:
+"What is price structure communicating?"
+
+Confirmed swing structure is authoritative. Slope is context only. HH/HL/LH/LL
+counts are evidence, not a trade signal. BOS/CHOCH requires a closed candle
+beyond a meaningful structural level; a wick alone is a liquidity event.
 """
 
 from statistics import mean
 from typing import Any
 
 QUESTION = "What is price structure communicating?"
-ARCHITECTURE = "E3_SINGLE_PROFESSIONAL_BRAIN_V3"
+ARCHITECTURE = "E3_SINGLE_PROFESSIONAL_BRAIN_V4"
 UP, DOWN, NEUTRAL, MIXED = "UP", "DOWN", "NEUTRAL", "MIXED"
 MIN_CANDLES = 40
 INTERNAL_RADIUS, EXTERNAL_RADIUS = 2, 5
@@ -76,19 +80,18 @@ def _pivot_points(b, side, radius):
         left = [b[j][side] for j in range(i - radius, i)]
         right = [b[j][side] for j in range(i + 1, i + radius + 1)]
         prominence = PROMINENCE_ATR * max(_atr_at(b, i), 1e-12)
-        if side == "high" and x >= max(left) and x > max(right) and min(x - max(left), x - max(right)) >= prominence:
-            out.append((i, x))
-        elif side == "low" and x <= min(left) and x < min(right) and min(min(left) - x, min(right) - x) >= prominence:
-            out.append((i, x))
+        if side == "high":
+            if x >= max(left) and x > max(right) and min(x - max(left), x - max(right)) >= prominence:
+                out.append((i, x))
+        else:
+            if x <= min(left) and x < min(right) and min(min(left) - x, min(right) - x) >= prominence:
+                out.append((i, x))
     return out
 
 
 def _compress(points, atr, side=None, spacing=2):
-    """Compress clustered pivots; keep the most extreme member of a cluster."""
     points = list(points or [])
     if side is None:
-        # Legacy helper API: infer side from the direction of the supplied
-        # extremes. Runtime E3 always passes side explicitly.
         side = "high" if len(points) < 2 or points[-1][1] >= points[0][1] else "low"
     out = []
     tol = max(float(atr) * EQ_TOLERANCE_ATR, 1e-12)
@@ -98,14 +101,10 @@ def _compress(points, atr, side=None, spacing=2):
             continue
         old = out[-1]
         if abs(p[1] - old[1]) <= tol:
-            if side == "high" and p[1] > old[1]:
-                out[-1] = p
-            elif side == "low" and p[1] < old[1]:
-                out[-1] = p
-        elif side == "high" and p[1] > old[1]:
-            out[-1] = p
-        elif side == "low" and p[1] < old[1]:
-            out[-1] = p
+            if side == "high" and p[1] > old[1]: out[-1] = p
+            elif side == "low" and p[1] < old[1]: out[-1] = p
+        elif side == "high" and p[1] > old[1]: out[-1] = p
+        elif side == "low" and p[1] < old[1]: out[-1] = p
     return out
 
 
@@ -113,13 +112,13 @@ def _label(hp, lp, atr):
     tol = max(atr * EQ_TOLERANCE_ATR, 1e-12)
     highs, prev = [], None
     for i, p in hp:
-        d = 0 if prev is None else p - prev[1]
+        d = 0.0 if prev is None else p - prev[1]
         label = "SWING_HIGH" if prev is None else ("EQH" if abs(d) <= tol else ("HH" if d > 0 else "LH"))
         highs.append({"index": int(i), "price": round(float(p), 8), "label": label})
         prev = (i, p)
     lows, prev = [], None
     for i, p in lp:
-        d = 0 if prev is None else p - prev[1]
+        d = 0.0 if prev is None else p - prev[1]
         label = "SWING_LOW" if prev is None else ("EQL" if abs(d) <= tol else ("HL" if d > 0 else "LL"))
         lows.append({"index": int(i), "price": round(float(p), 8), "label": label})
         prev = (i, p)
@@ -135,40 +134,29 @@ def _recent(xs, labels, n=2):
 
 
 def _classify(highs, lows):
-    """Classify from confirmed swing evidence, not from slope."""
     hh, lh = _recent(highs, {"HH"}, 2), _recent(highs, {"LH"}, 2)
     hl, ll = _recent(lows, {"HL"}, 2), _recent(lows, {"LL"}, 2)
-    if hh and hl and not (lh and ll):
-        return UP
-    if lh and ll and not (hh and hl):
-        return DOWN
-    bull = 2 * bool(hh) + 2 * bool(hl)
-    bear = 2 * bool(lh) + 2 * bool(ll)
-    if bull >= bear + 2:
-        return UP
-    if bear >= bull + 2:
-        return DOWN
-    return MIXED if (bull or bear) else NEUTRAL
+    bull = int(bool(hh)) + int(bool(hl))
+    bear = int(bool(lh)) + int(bool(ll))
+    if bull == 2 and bear == 0: return UP
+    if bear == 2 and bull == 0: return DOWN
+    return MIXED if bull or bear else NEUTRAL
 
 
 def _count_state(highs, lows, n=8):
     items = highs[-n:] + lows[-n:]
     bull = sum(x["label"] in {"HH", "HL"} for x in items)
     bear = sum(x["label"] in {"LH", "LL"} for x in items)
-    if bull == bear == 0:
-        return NEUTRAL
-    if bull >= bear + 2:
-        return UP
-    if bear >= bull + 2:
-        return DOWN
+    if bull == bear == 0: return NEUTRAL
+    if bull >= bear + 2: return UP
+    if bear >= bull + 2: return DOWN
     return MIXED
 
 
 def _counts(highs, lows, n=8):
     c = {k: 0 for k in ("HH", "HL", "LH", "LL", "EQH", "EQL")}
     for x in highs[-n:] + lows[-n:]:
-        if x["label"] in c:
-            c[x["label"]] += 1
+        if x["label"] in c: c[x["label"]] += 1
     return c
 
 
@@ -205,7 +193,6 @@ def _event(bar, point, direction, atr, event, scope="EXTERNAL", idx=0):
 
 
 def _bos(bars, highs, lows, atr, prior_structure, scope="EXTERNAL"):
-    """Detect both bullish and bearish BOS/CHOCH from confirmed levels."""
     if not bars or atr <= 0:
         return {"event": "NO_BOS", "direction": NEUTRAL, "confirmed": False, "scope": scope}
     last, candidates = bars[-1], []
@@ -214,178 +201,114 @@ def _bos(bars, highs, lows, atr, prior_structure, scope="EXTERNAL"):
         q = _quality(last, high["price"], UP, atr)
         if q["confirmed"]:
             event = "CONFIRMED_CHOCH" if prior_structure == DOWN else "CONFIRMED_BOS"
-            candidates.append((q["distance_atr"], _event(last, high, UP, atr, event, scope, len(bars) - 1)))
+            candidates.append((q["distance_atr"], _event(last, high, UP, atr, event, scope, len(bars)-1)))
     if low:
         q = _quality(last, low["price"], DOWN, atr)
         if q["confirmed"]:
             event = "CONFIRMED_CHOCH" if prior_structure == UP else "CONFIRMED_BOS"
-            candidates.append((q["distance_atr"], _event(last, low, DOWN, atr, event, scope, len(bars) - 1)))
+            candidates.append((q["distance_atr"], _event(last, low, DOWN, atr, event, scope, len(bars)-1)))
     return max(candidates, key=lambda x: x[0])[1] if candidates else {"event": "NO_BOS", "direction": NEUTRAL, "confirmed": False, "scope": scope}
 
 
 def _sweep_failure(bars, highs, lows, atr=None, prior_structure="UP"):
-    """Detect sweep + meaningful close back inside a protected level."""
-    if not bars:
-        return {"event": "NO_FAILURE", "direction": NEUTRAL, "confirmed": False}
+    if not bars: return {"event": "NO_FAILURE", "direction": NEUTRAL, "confirmed": False}
     if atr is None or atr <= 0:
         atr = _atr(bars)
-        if atr <= 0:
-            # Important edge case for direct unit calls with a single candle.
-            atr = max(bars[-1]["high"] - bars[-1]["low"], 1e-12)
+        if atr <= 0: atr = max(bars[-1]["high"] - bars[-1]["low"], 1e-12)
     b = bars[-1]
     p = _protected(prior_structure, highs, lows)
     candidates = []
-    high = p.get("protected_high")
+    high, low = p.get("protected_high"), p.get("protected_low")
     if high:
-        sweep = (b["high"] - high["price"]) / atr
-        reclaim = (high["price"] - b["close"]) / atr
+        sweep = (b["high"] - high["price"]) / atr; reclaim = (high["price"] - b["close"]) / atr
         if sweep >= FAILURE_SWEEP_ATR and reclaim >= FAILURE_RECLAIM_ATR:
-            candidates.append({"event": "FAILED_BREAK", "direction": DOWN, "confirmed": True, "level": high["price"], "swing_index": high["index"], "swing_label": high["label"], "failure_candle_index": len(bars) - 1, "scope": "EXTERNAL", "sweep_distance_atr": round(sweep, 4), "reclaim_distance_atr": round(reclaim, 4)})
-    low = p.get("protected_low")
+            candidates.append({"event":"FAILED_BREAK","direction":DOWN,"confirmed":True,"level":high["price"],"swing_index":high["index"],"swing_label":high["label"],"failure_candle_index":len(bars)-1,"scope":"EXTERNAL","sweep_distance_atr":round(sweep,4),"reclaim_distance_atr":round(reclaim,4)})
     if low:
-        sweep = (low["price"] - b["low"]) / atr
-        reclaim = (b["close"] - low["price"]) / atr
+        sweep = (low["price"] - b["low"]) / atr; reclaim = (b["close"] - low["price"]) / atr
         if sweep >= FAILURE_SWEEP_ATR and reclaim >= FAILURE_RECLAIM_ATR:
-            candidates.append({"event": "FAILED_BREAK", "direction": UP, "confirmed": True, "level": low["price"], "swing_index": low["index"], "swing_label": low["label"], "failure_candle_index": len(bars) - 1, "scope": "EXTERNAL", "sweep_distance_atr": round(sweep, 4), "reclaim_distance_atr": round(reclaim, 4)})
-    return max(candidates, key=lambda x: x["sweep_distance_atr"] + x["reclaim_distance_atr"]) if candidates else {"event": "NO_FAILURE", "direction": NEUTRAL, "confirmed": False}
+            candidates.append({"event":"FAILED_BREAK","direction":UP,"confirmed":True,"level":low["price"],"swing_index":low["index"],"swing_label":low["label"],"failure_candle_index":len(bars)-1,"scope":"EXTERNAL","sweep_distance_atr":round(sweep,4),"reclaim_distance_atr":round(reclaim,4)})
+    return max(candidates,key=lambda x:x["sweep_distance_atr"]+x["reclaim_distance_atr"]) if candidates else {"event":"NO_FAILURE","direction":NEUTRAL,"confirmed":False}
 
 
-def _failure(bars, highs, lows, structure, atr):
-    return _sweep_failure(bars, highs, lows, atr, structure)
+def _failure(bars, highs, lows, structure, atr): return _sweep_failure(bars, highs, lows, atr, structure)
 
 
 def _choch(bars, highs, lows, structure, atr):
-    if structure not in {UP, DOWN} or not bars:
-        return {"event": "NO_CHOCH", "direction": NEUTRAL, "confirmed": False}
+    if structure not in {UP, DOWN} or not bars: return {"event":"NO_CHOCH","direction":NEUTRAL,"confirmed":False}
     p = _protected(structure, highs, lows)
     point = p.get("protected_low") if structure == UP else p.get("protected_high")
     direction = DOWN if structure == UP else UP
-    if not point:
-        return {"event": "NO_CHOCH", "direction": NEUTRAL, "confirmed": False}
-    return _event(bars[-1], point, direction, atr, "CONFIRMED_CHOCH", "EXTERNAL", len(bars) - 1)
+    if not point: return {"event":"NO_CHOCH","direction":NEUTRAL,"confirmed":False}
+    return _event(bars[-1], point, direction, atr, "CONFIRMED_CHOCH", "EXTERNAL", len(bars)-1)
 
 
 def _slope(bars, n=20):
-    if len(bars) < 5:
-        return NEUTRAL, 0.0
+    if len(bars) < 5: return NEUTRAL, 0.0
     closes = [x["close"] for x in bars[-n:]]
-    z = (closes[-1] - closes[0]) / (max(_atr(bars), 1e-12) * max(1, len(closes) - 1))
-    return (UP if z > 0.035 else DOWN if z < -0.035 else NEUTRAL), round(min(1.0, abs(z) * 8.0), 4)
+    z = (closes[-1]-closes[0])/(max(_atr(bars),1e-12)*max(1,len(closes)-1))
+    return (UP if z > .035 else DOWN if z < -.035 else NEUTRAL), round(min(1.0,abs(z)*8.0),4)
+
+
+def _authority(external, internal, ext_bos, int_bos, failure):
+    reasons=[]
+    if external in {UP,DOWN} and internal == external: authority=1.0
+    elif external in {UP,DOWN} and internal == MIXED: authority=.68; reasons.append("INTERNAL_STRUCTURE_NOT_ALIGNED")
+    elif external == MIXED and internal in {UP,DOWN}: authority=.48; reasons.append("EXTERNAL_STRUCTURE_NOT_CONFIRMED")
+    else: authority=.25 if external == MIXED or internal == MIXED else .10; reasons.append("STRUCTURE_UNRESOLVED")
+    if ext_bos.get("confirmed"): authority=min(1.0,authority+.18)
+    if int_bos.get("confirmed") and not ext_bos.get("confirmed"):
+        authority=min(.72,authority+.04); reasons.append("INTERNAL_BREAK_NOT_EXTERNAL_AUTHORITY")
+    if failure.get("confirmed"): authority=min(authority,.60); reasons.append("LIQUIDITY_FAILURE_REQUIRES_REASSESSMENT")
+    if external != internal: reasons.append("EXTERNAL_INTERNAL_DIVERGENCE")
+    return round(authority,4), list(dict.fromkeys(reasons))
+
+
+def _finding(external, internal, ext_bos, int_bos, failure):
+    if failure.get("confirmed"): return "FAILED_BREAK_REQUIRES_REASSESSMENT"
+    if ext_bos.get("confirmed"): return "BULLISH_EXTERNAL_BOS" if ext_bos["direction"] == UP else "BEARISH_EXTERNAL_BOS"
+    if external == UP and internal == UP: return "BULLISH_CONFIRMED_STRUCTURE"
+    if external == DOWN and internal == DOWN: return "BEARISH_CONFIRMED_STRUCTURE"
+    if external in {UP,DOWN} and internal == MIXED: return f"{external}_EXTERNAL_MIXED_INTERNAL"
+    if external == MIXED and internal in {UP,DOWN}: return f"{internal}_INTERNAL_NOT_EXTERNAL_AUTHORITY"
+    return "MIXED_STRUCTURE"
 
 
 def analyze_e3(bars):
     clean, data_errors = _clean_bars(bars)
-    base = {"architecture": ARCHITECTURE, "reasoning_role": "MARKET_STRUCTURE_ANALYST", "question": QUESTION, "decision": None, "trade_decision_authority": False, "decision_authority": "E9_ONLY", "gate": None, "sub_engines_active": False, "sub_engines_status": "PAUSED", "specialists_active": False, "specialists_status": "PAUSED", "upstream_direction_used": False, "upstream_decisions_used": False, "upstream_gates_used": False, "score_used": False}
+    base={"architecture":ARCHITECTURE,"question":QUESTION,"reasoning_role":"MARKET_STRUCTURE_ANALYST","decision":None,"gate":None,"trade_decision_authority":False,"decision_authority":"E9_ONLY","upstream_decisions_used":False,"upstream_gates_used":False,"score_used":False,"data_errors":data_errors}
     if len(clean) < MIN_CANDLES:
-        reasons = ["E3_INSUFFICIENT_DATA", *data_errors[:4]]
-        return {**base, "analysis_status": "INSUFFICIENT_DATA", "finding": "STRUCTURE_INSUFFICIENT_DATA", "structure": "UNKNOWN", "structure_state": "INSUFFICIENT_DATA", "direction": NEUTRAL, "directional_bias": NEUTRAL, "structural_bias": NEUTRAL, "swing_map": {"highs": [], "lows": []}, "internal_structure": {}, "external_structure": {}, "BOS": "NONE", "BOS_type": "NONE", "bos": {"event": "NO_BOS", "confirmed": False}, "structural_failure": "NONE", "failure_type": "NONE", "failure": {"event": "NO_FAILURE", "confirmed": False}, "strength": 0.0, "structure_strength": 0.0, "confidence": 0.0, "evidence": [], "observations": [], "conflicts": [], "reason_codes": reasons, "reasons": reasons, "reasoning_trace": {"closed_candles": len(clean), "pivot_windows": {"internal": INTERNAL_RADIUS, "external": EXTERNAL_RADIUS}}}
+        return {**base,"finding":"INSUFFICIENT_STRUCTURE_DATA","external_structure":NEUTRAL,"internal_structure":NEUTRAL,"external_count_state":NEUTRAL,"internal_count_state":NEUTRAL,"external_counts":{},"internal_counts":{},"external_sequence":[],"internal_sequence":[],"external_bos":{"event":"NO_BOS","direction":NEUTRAL,"confirmed":False,"scope":"EXTERNAL"},"internal_bos":{"event":"NO_BOS","direction":NEUTRAL,"confirmed":False,"scope":"INTERNAL"},"failure":{"event":"NO_FAILURE","direction":NEUTRAL,"confirmed":False},"choch":{"event":"NO_CHOCH","direction":NEUTRAL,"confirmed":False},"protected_levels":{"protected_low":None,"protected_high":None},"slope_context":NEUTRAL,"slope_quality":0.0,"structure_authority":0.0,"confidence":0.0,"reasons":["INSUFFICIENT_CANDLES"]}
+    atr=_atr(clean)
+    ihp=_compress(_pivot_points(clean,"high",INTERNAL_RADIUS),atr,"high"); ilp=_compress(_pivot_points(clean,"low",INTERNAL_RADIUS),atr,"low")
+    ehp=_compress(_pivot_points(clean,"high",EXTERNAL_RADIUS),atr,"high"); elp=_compress(_pivot_points(clean,"low",EXTERNAL_RADIUS),atr,"low")
+    ih,il=_label(ihp,ilp,atr); eh,el=_label(ehp,elp,atr)
+    external,internal=_classify(eh,el),_classify(ih,il)
+    external_count,internal_count=_count_state(eh,el),_count_state(ih,il)
+    ext_counts,int_counts=_counts(eh,el),_counts(ih,il)
+    ext_seq,int_seq=_sequence(eh,el),_sequence(ih,il)
+    ext_bos=_bos(clean,eh,el,atr,external,"EXTERNAL"); int_bos=_bos(clean,ih,il,atr,internal,"INTERNAL")
+    failure=_failure(clean,eh,el,external,atr); choch=_choch(clean,eh,el,external,atr)
+    slope_context,slope_quality=_slope(clean)
+    authority,reason_codes=_authority(external,internal,ext_bos,int_bos,failure)
+    finding=_finding(external,internal,ext_bos,int_bos,failure)
+    reasons=list(reason_codes)
+    if external_count != external: reasons.append("EXTERNAL_COUNT_STATE_DIVERGENCE")
+    if internal_count != internal: reasons.append("INTERNAL_COUNT_STATE_DIVERGENCE")
+    if not ext_bos.get("confirmed"): reasons.append("NO_CONFIRMED_EXTERNAL_BOS")
+    if external in {UP,DOWN} and choch.get("confirmed") and choch.get("direction") != external: reasons.append("STRUCTURAL_REVERSAL_EVIDENCE")
+    if slope_context != external and external in {UP,DOWN}: reasons.append("SLOPE_DISAGREES_WITH_STRUCTURE")
+    if failure.get("confirmed"): reasons.append("LIQUIDITY_SWEEP_FAILURE_PRESENT")
+    confidence=authority
+    if ext_bos.get("confirmed"): confidence=min(1.0,confidence+.10)
+    if external == internal and external in {UP,DOWN}: confidence=min(1.0,confidence+.05)
+    if external == MIXED: confidence=min(confidence,.55)
+    confidence=round(confidence,4)
+    protected=_protected(external,eh,el)
+    observations=[f"closed_candles={len(clean)}",f"atr14={round(atr,8)}",f"external_structure={external}",f"internal_structure={internal}",f"external_count_state={external_count}",f"internal_count_state={internal_count}",f"external_counts={ext_counts}",f"internal_counts={int_counts}",f"external_bos={ext_bos.get('event')}",f"internal_bos={int_bos.get('event')}",f"protected_high={protected.get('protected_high',{}).get('price') if protected.get('protected_high') else None}",f"protected_low={protected.get('protected_low',{}).get('price') if protected.get('protected_low') else None}"]
+    return {**base,"finding":finding,"external_structure":external,"internal_structure":internal,"external_count_state":external_count,"internal_count_state":internal_count,"external_counts":ext_counts,"internal_counts":int_counts,"external_sequence":[x["label"] for x in ext_seq],"internal_sequence":[x["label"] for x in int_seq],"external_sequence_detail":ext_seq,"internal_sequence_detail":int_seq,"external_bos":ext_bos,"internal_bos":int_bos,"failure":failure,"choch":choch,"protected_levels":protected,"slope_context":slope_context,"slope_quality":slope_quality,"structure_authority":authority,"confidence":confidence,"observations":observations,"reasons":list(dict.fromkeys(reasons))}
 
-    atr = _atr(clean)
-    ih, il = _label(_compress(_pivot_points(clean, "high", INTERNAL_RADIUS), atr, "high"), _compress(_pivot_points(clean, "low", INTERNAL_RADIUS), atr, "low"), atr)
-    eh, el = _label(_compress(_pivot_points(clean, "high", EXTERNAL_RADIUS), atr, "high"), _compress(_pivot_points(clean, "low", EXTERNAL_RADIUS), atr, "low"), atr)
-    internal_state, external_state = _classify(ih, il), _classify(eh, el)
-    internal_count, external_count = _count_state(ih, il), _count_state(eh, el)
-    internal_counts, external_counts = _counts(ih, il), _counts(eh, el)
-    external_bos = _bos(clean, eh, el, atr, external_state, "EXTERNAL")
-    internal_bos = _bos(clean, ih, il, atr, internal_state, "INTERNAL")
-    failure = _failure(clean, eh, el, external_state, atr)
-    choch = _choch(clean, eh, el, external_state, atr)
-    slope_context, slope_quality = _slope(clean)
-    protected = _protected(external_state, eh, el)
 
-    conflicts = []
-    if external_state in {UP, DOWN} and internal_state in {UP, DOWN} and external_state != internal_state:
-        conflicts.append("INTERNAL_EXTERNAL_DIVERGENCE")
-    if external_count != NEUTRAL and external_count != external_state:
-        conflicts.append("EXTERNAL_COUNT_STATE_DIVERGENCE")
-    if internal_count != NEUTRAL and internal_count != internal_state:
-        conflicts.append("INTERNAL_COUNT_STATE_DIVERGENCE")
-    if external_state == MIXED or internal_state == MIXED:
-        conflicts.append("STRUCTURE_CONFLICT")
-    if not external_bos.get("confirmed"):
-        conflicts.append("NO_CONFIRMED_EXTERNAL_BOS")
-    if failure.get("confirmed"):
-        conflicts.append("FAILED_BREAK_DETECTED")
-    if choch.get("confirmed"):
-        conflicts.append("CHANGE_OF_CHARACTER_DETECTED")
-    if external_state in {UP, DOWN} and slope_context in {UP, DOWN} and slope_context != external_state:
-        conflicts.append("SLOPE_DISAGREES_WITH_STRUCTURE")
-    conflicts = list(dict.fromkeys(conflicts))
-
-    if failure.get("confirmed"):
-        direction, state, finding = failure["direction"], "STRUCTURE_FAILURE", "FAILED_BREAK"
-    elif choch.get("confirmed"):
-        direction, state = choch["direction"], "CHANGE_OF_CHARACTER"
-        finding = "BULLISH_CHOCH" if direction == UP else "BEARISH_CHOCH"
-    elif external_bos.get("confirmed"):
-        direction, state = external_bos["direction"], "BREAKOUT_CONFIRMED"
-        finding = "BULLISH_BOS" if direction == UP else "BEARISH_BOS"
-    elif external_state in {UP, DOWN}:
-        direction, state = external_state, "DIRECTIONAL_CONTEXT_UNCONFIRMED"
-        finding = "BULLISH_EXTERNAL_STRUCTURE" if direction == UP else "BEARISH_EXTERNAL_STRUCTURE"
-    elif slope_context in {UP, DOWN} and not eh and not el:
-        direction, state, finding = slope_context, "DIRECTIONAL_CONTEXT_UNCONFIRMED", "DEVELOPING_DIRECTIONAL_CONTEXT"
-    else:
-        direction, state = NEUTRAL, "RANGE_OR_UNCLEAR"
-        finding = "STRUCTURE_NEUTRAL" if external_state == NEUTRAL else "MIXED_STRUCTURE"
-
-    evidence_count = len(eh) + len(el)
-    strength = 0.0
-    strength += 0.25 if external_state in {UP, DOWN} else 0.10 if external_state == MIXED else 0.0
-    strength += 0.20 if internal_state == external_state and external_state in {UP, DOWN} else 0.0
-    strength += 0.15 if external_count == external_state and external_state in {UP, DOWN} else 0.0
-    strength += 0.15 if external_bos.get("confirmed") else 0.0
-    strength += 0.10 if failure.get("confirmed") or choch.get("confirmed") else 0.0
-    strength += min(0.15, evidence_count / 80.0)
-    if "INTERNAL_EXTERNAL_DIVERGENCE" in conflicts:
-        strength -= 0.12
-    if "STRUCTURE_CONFLICT" in conflicts:
-        strength -= 0.08
-    structure_strength = round(max(0.0, min(1.0, strength)), 4)
-
-    observations = [f"closed_candles={len(clean)}", f"atr14={round(atr, 8)}", f"internal_structure={internal_state}", f"external_structure={external_state}", f"internal_count_state={internal_count}", f"external_count_state={external_count}", f"internal_counts={internal_counts}", f"external_counts={external_counts}", f"external_sequence={'→'.join(x['label'] for x in _sequence(eh, el)) or 'NONE'}", f"internal_sequence={'→'.join(x['label'] for x in _sequence(ih, il)) or 'NONE'}", f"external_bos={external_bos.get('event')}", f"internal_bos={internal_bos.get('event')}", f"structural_failure={failure.get('event')}", f"choch={choch.get('event')}", f"protected_high={protected.get('protected_high')}", f"protected_low={protected.get('protected_low')}", f"slope_context={slope_context}", f"slope_quality={slope_quality}", "slope_is_context_only=True", f"structure_strength={structure_strength}"]
-
-    reason_codes = []
-    if not external_bos.get("confirmed"):
-        reason_codes.append("NO_CONFIRMED_EXTERNAL_BOS")
-    if internal_state != external_state and internal_state in {UP, DOWN} and external_state in {UP, DOWN}:
-        reason_codes.append("INTERNAL_EXTERNAL_DIVERGENCE")
-    if external_state == MIXED or internal_state == MIXED:
-        reason_codes.append("STRUCTURE_CONFLICT")
-    if external_state in {UP, DOWN} and slope_context != external_state:
-        reason_codes.append("SLOPE_DISAGREES_WITH_STRUCTURE")
-    if failure.get("confirmed"):
-        reason_codes.append("FAILED_BREAK_DETECTED")
-    if choch.get("confirmed"):
-        reason_codes.append("CHANGE_OF_CHARACTER_DETECTED")
-    reason_codes = list(dict.fromkeys(reason_codes))
-
-    failure_output = dict(failure)
-    if failure_output.get("event") == "FAILED_BREAK":
-        failure_output["event"] = "FAILED_BOS"
-
-    def compact(x):
-        return {"event": x.get("event"), "direction": x.get("direction"), "confirmed": bool(x.get("confirmed")), "level": x.get("level"), "swing_index": x.get("swing_index"), "swing_label": x.get("swing_label"), "break_candle_index": x.get("break_candle_index"), "break_distance_atr": x.get("break_distance_atr"), "break_body_atr": x.get("break_body_atr"), "close_location": x.get("close_location"), "displacement_ok": x.get("displacement_ok"), "close_beyond_level": x.get("close_beyond_level"), "scope": x.get("scope")}
-
-    return {
-        **base, "analysis_status": "COMPLETE", "finding": finding, "structure": external_state, "structure_state": state, "direction": direction, "directional_bias": direction, "structural_bias": external_state,
-        "swing_map": {"highs": eh, "lows": el},
-        "internal_structure": {"state": internal_state, "count_state": internal_count, "counts": internal_counts, "highs": ih, "lows": il, "bos": compact(internal_bos)},
-        "external_structure": {"state": external_state, "count_state": external_count, "counts": external_counts, "highs": eh, "lows": el, "bos": compact(external_bos), "protected_high": protected.get("protected_high"), "protected_low": protected.get("protected_low")},
-        "HH": external_counts["HH"], "HL": external_counts["HL"], "LH": external_counts["LH"], "LL": external_counts["LL"],
-        "BOS": external_bos.get("event", "NO_BOS"), "bos": compact(external_bos), "BOS_type": external_bos.get("event", "NONE"), "bos_level": external_bos.get("level"), "BOS_candle_index": external_bos.get("break_candle_index"),
-        "structural_failure": failure_output.get("event", "NONE"), "failure": failure_output, "failure_type": failure_output.get("event", "NONE"), "failure_level": failure_output.get("level"),
-        "strength": structure_strength, "structure_strength": structure_strength, "confidence": structure_strength, "atr": round(atr, 8), "recent_high": eh[-1] if eh else None, "recent_low": el[-1] if el else None, "prior_high": eh[-2] if len(eh) >= 2 else None, "prior_low": el[-2] if len(el) >= 2 else None,
-        "evidence": [{"type": "EXTERNAL_STRUCTURE", "state": external_state, "counts": external_counts}, {"type": "INTERNAL_STRUCTURE", "state": internal_state, "counts": internal_counts}, {"type": "EXTERNAL_BOS", **compact(external_bos)}, {"type": "INTERNAL_BOS", **compact(internal_bos)}, {"type": "STRUCTURAL_FAILURE", **failure_output}],
-        "observations": observations, "conflicts": conflicts, "reason_codes": reason_codes, "reasons": reason_codes,
-        "reasoning_trace": {
-            "closed_candles": len(clean), "pivot_windows": {"internal": INTERNAL_RADIUS, "external": EXTERNAL_RADIUS},
-            "atr_normalization": {"atr_period": 14, "pivot_prominence_atr": PROMINENCE_ATR, "equal_swing_tolerance_atr": EQ_TOLERANCE_ATR, "bos_close_distance_atr": BOS_CLOSE_ATR, "bos_body_atr": BOS_BODY_ATR},
-            "swing_references": {"external_high_count": len(eh), "external_low_count": len(el), "internal_high_count": len(ih), "internal_low_count": len(il)},
-            "structural_levels": {"protected_high": protected.get("protected_high"), "protected_low": protected.get("protected_low"), "recent_high": eh[-1] if eh else None, "recent_low": el[-1] if el else None},
-            "events": {"external_bos": compact(external_bos), "internal_bos": compact(internal_bos), "failure": failure_output, "choch": compact(choch)},
-            "external_state": external_state, "internal_state": internal_state, "external_count_state": external_count, "internal_count_state": internal_count,
-            "states": {"external": external_state, "internal": internal_state, "external_count": external_count, "internal_count": internal_count, "slope_context": slope_context},
-            "slope_is_structural_authority": False, "upstream_context": "E1_E2_NOT_CONSUMED", "decision_boundary": "E9_ONLY", "gate": None, "score": None,
-        },
-    }
+class SubEngine:
+    """Compatibility wrapper for the production dispatcher."""
+    sub_engine_id="E3"
+    def run(self,snapshot): return analyze_e3(list(snapshot.get("bars") or []))
