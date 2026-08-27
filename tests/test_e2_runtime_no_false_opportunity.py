@@ -1,10 +1,10 @@
-from production_v2.e2_brain import analyze_e2
+from production_v2.engines import run_engine
 
 
 def _monotonic_down_snapshot(n=200):
     bars = []
     price = 3000.0
-    for i in range(n):
+    for _ in range(n):
         close = price - 2.0
         bars.append({
             "open": price,
@@ -16,13 +16,13 @@ def _monotonic_down_snapshot(n=200):
     return {"bars": bars}
 
 
-def test_e2_does_not_call_a_bare_trend_into_a_pullback_opportunity():
-    result = analyze_e2(_monotonic_down_snapshot())
+def test_e2_logical_thesis_matches_guarded_wait_state():
+    result = run_engine("E2", _monotonic_down_snapshot(), {})
+    output = result.output
 
-    assert result["direction"] == "DOWN"
-    assert result["opportunity"] == "WAIT_FOR_REPRICING"
-    assert result["phase"] == "TRANSITION"
-    assert result["opportunity_state"] == "WAIT"
-    assert result["opportunity_decision"] == "WAIT"
-    assert result["opportunity_score"] == 0.0
-    assert result["entry"] is None
+    assert output["opportunity"] == "WAIT_FOR_REPRICING"
+    assert output["phase"] == "TRANSITION"
+    assert output["opportunity_state"] == "WAIT"
+    assert output["opportunity_decision"] == "WAIT"
+    assert output["opportunity_score"] == 0.0
+    assert output["thesis"].startswith("Trend context detected")
