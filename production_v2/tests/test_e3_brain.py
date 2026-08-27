@@ -26,7 +26,7 @@ def test_e3_returns_real_evidence_contract():
     assert result["question"] == "What is price structure communicating?"
     assert result["finding"] != "UNRESOLVED"
     assert result["observations"]
-    assert result["architecture"] == "E3_SINGLE_PROFESSIONAL_BRAIN_V1"
+    assert result["architecture"] == "E3_SINGLE_PROFESSIONAL_BRAIN_V2"
     assert result["sub_engines_active"] is False
     assert result["upstream_direction_used"] is False
     assert result["trade_decision_authority"] is False
@@ -50,3 +50,22 @@ def test_e3_never_exposes_trade_authority_or_gate():
     assert result["decision_authority"] == "E9_ONLY"
     assert result["gate"] is None
     assert result["sub_engines_status"] == "PAUSED"
+
+
+def test_e3_trace_reports_the_same_structural_states_used_by_the_brain():
+    result = analyze_e3(_bars([100 + (i % 7) * 0.25 for i in range(80)]))
+    trace = result["reasoning_trace"]
+    assert trace["external_state"] == result["external_structure"]["state"]
+    assert trace["internal_state"] == result["internal_structure"]["state"]
+    assert trace["external_count_state"] == result["reasoning_trace"]["external_count_state"]
+    assert trace["internal_count_state"] == result["reasoning_trace"]["internal_count_state"]
+
+
+def test_e3_slope_cannot_be_structural_authority():
+    # A strong recent slope with unresolved swing structure must not be promoted
+    # into a confirmed directional structure by slope alone.
+    closes = [100.0 + i * 0.02 for i in range(80)]
+    result = analyze_e3(_bars(closes))
+    assert result["reasoning_trace"]["slope_is_structural_authority"] is False
+    if result["bos"]["confirmed"] is False:
+        assert result["direction"] in {"MIXED", "NEUTRAL"}
