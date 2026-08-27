@@ -115,22 +115,28 @@ def analyze_e1(bars: list[dict[str, Any]] | None) -> dict[str, Any]:
     structure_break_proxy = structure_conflict and persistence >= .75 and structure_quality >= .52
     persistent_horizon_flip = horizon_conflict and consensus >= .75 and persistence >= .75
     ema_context_flip = ema_conflict and context_flip and persistence >= .50
-    transition_evidence = [x for x, ok in (("CONTEXT_FLIP", context_flip), ("STRUCTURE_BREAK_PROXY", structure_break_proxy), ("PERSISTENT_HORIZON_FLIP", persistent_horizon_flip), ("EMA_CONTEXT_FLIP", ema_context_flip)) if ok]
-    hard_anchor = context_flip or structure_break_proxy; corroboration = persistent_horizon_flip or ema_context_flip or structure_break_proxy
-    transition = not trend_candidate and hard_anchor and corroboration
+    # EMA lag is itself meaningful transition evidence when price pressure is
+    # persistent and multi-horizon. A slow EMA can legitimately remain on the
+    # old side while price has already repriced; do not mislabel that as range
+    # or compression merely because volatility is contracting.
+    ema_lag_transition = ema_conflict and consensus >= .75 and persistence >= .75 and (abs(slopes[1]) >= .20 or abs(slopes[2]) >= .30)
+    transition_evidence = [x for x, ok in (("CONTEXT_FLIP", context_flip), ("STRUCTURE_BREAK_PROXY", structure_break_proxy), ("PERSISTENT_HORIZON_FLIP", persistent_horizon_flip), ("EMA_CONTEXT_FLIP", ema_context_flip), ("EMA_LAG_WITH_PERSISTENT_PRESSURE", ema_lag_transition)) if ok]
+    hard_anchor = context_flip or structure_break_proxy
+    corroboration = persistent_horizon_flip or ema_context_flip or structure_break_proxy
+    transition = not trend_candidate and ((hard_anchor and corroboration) or ema_lag_transition)
     regime_stress = not transition and not trend_candidate and pressure in {"UP", "DOWN"} and (ema_conflict or structure_conflict or horizon_conflict) and (consensus >= .50 or persistence >= .50)
     if context_flip: conflicts.append("RECENT_IMPULSE_VS_PRIOR_CONTEXT")
 
     range_candidate = pressure == "BALANCED" and eff20 < .35 and eff40 < .40 and abs(ema_gap) < .85
     expansion_candidate = expansion and pressure in {"UP", "DOWN"} and eff10 >= .25 and abs(slopes[0]) >= .25
-    if transition: state, reason, maturity = "TRANSITION", "prior regime is demonstrably breaking with corroborating evidence", "TRANSITION"
+    if transition: state, reason, maturity = "TRANSITION", "persistent directional repricing conflicts with slower EMA context", "TRANSITION"
     elif trend_candidate: state, reason, maturity = ("TREND_UP" if pressure == "UP" else "TREND_DOWN"), "direction, persistence, EMA context and structure are coherent", "ESTABLISHED"
     elif compression and (pressure == "BALANCED" or eff20 < .30): state, reason, maturity = "COMPRESSION", "volatility contraction dominates directional evidence", "CONTRACTING"
     elif expansion_candidate: state, reason, maturity = "EXPANSION", "volatility is expanding with directional impulse", "EXPANDING"
     elif range_candidate: state, reason, maturity = "RANGE", "two-sided non-directional behavior dominates", "RANGE"
     elif pressure in {"UP", "DOWN"} and (persistence >= .25 or consensus >= .50): state, reason, maturity = "UNCLEAR", "directional pressure exists but regime confirmation is insufficient", "DEVELOPING"
     else: state, reason, maturity = "UNCLEAR", "evidence does not establish a dominant regime", "UNRESOLVED"
-    evidence = [f"valid_candles={len(valid)}", f"invalid_candles={invalid_count}", f"ema20_vs_ema50={ema_relation}", f"ema_gap_atr={ema_gap:.3f}", f"ema20_slope_atr={ema20_slope:.3f}", f"ema50_slope_atr={ema50_slope:.3f}", *(f"price_slope_{n}_atr={s:.3f}" for n, s in zip((5,10,20,40), slopes)), f"multi_horizon={','.join(horizons)}", f"directional_consensus={consensus:.3f}", f"persistence={persistence:.3f}", f"efficiency20={eff20:.3f}", f"structure_counts={pivot_counts}", f"context_flip={context_flip}", f"transition_evidence={transition_evidence}", f"trend_candidate={trend_candidate}", f"regime_stress={regime_stress}"]
+    evidence = [f"valid_candles={len(valid)}", f"invalid_candles={invalid_count}", f"ema20_vs_ema50={ema_relation}", f"ema_gap_atr={ema_gap:.3f}", f"ema20_slope_atr={ema20_slope:.3f}", f"ema50_slope_atr={ema50_slope:.3f}", *(f"price_slope_{n}_atr={s:.3f}" for n, s in zip((5,10,20,40), slopes)), f"multi_horizon={','.join(horizons)}", f"directional_consensus={consensus:.3f}", f"persistence={persistence:.3f}", f"efficiency20={eff20:.3f}", f"structure_counts={pivot_counts}", f"context_flip={context_flip}", f"transition_evidence={transition_evidence}", f"trend_candidate={trend_candidate}", f"regime_stress={regime_stress}", f"ema_lag_transition={ema_lag_transition}"]
     confidence = .35 + .25 * structure_quality + .20 * consensus + .20 * persistence
     if state == "UNCLEAR": confidence = min(confidence, .65)
     return _result(base, state=state, pressure=pressure, volatility=volatility, structure=structure, structure_quality=structure_quality, compression=compression, expansion=expansion, transition=transition, regime_stress=regime_stress, confidence=confidence, evidence=evidence, conflicts=conflicts, reason=reason, maturity=maturity, trend_confirmed=state in {"TREND_UP", "TREND_DOWN"}, range_state="RANGE" if range_candidate else "NOT_RANGE")
