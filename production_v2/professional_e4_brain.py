@@ -20,49 +20,47 @@ MIN_BARS = 30
 
 
 def _num(value: Any) -> float | None:
-    try:
-        result = float(value)
-    except (TypeError, ValueError):
-        return None
+    try: result=float(value)
+    except (TypeError,ValueError): return None
     return result if isfinite(result) else None
 
 
 def _bars(source: Any) -> list[dict[str, Any]]:
-    if isinstance(source, dict): source = source.get("bars") or []
-    result = []
-    for raw in source if isinstance(source, (list, tuple)) else []:
-        if not isinstance(raw, dict): continue
-        values = {k: _num(raw.get(k)) for k in ("open", "high", "low", "close")}
+    if isinstance(source,dict): source=source.get("bars") or []
+    result=[]
+    for raw in source if isinstance(source,(list,tuple)) else []:
+        if not isinstance(raw,dict): continue
+        values={k:_num(raw.get(k)) for k in ("open","high","low","close")}
         if any(v is None for v in values.values()): continue
-        if values["high"] < max(values["open"], values["close"]): continue
-        if values["low"] > min(values["open"], values["close"]): continue
+        if values["high"] < max(values["open"],values["close"]): continue
+        if values["low"] > min(values["open"],values["close"]): continue
         if values["high"] < values["low"]: continue
-        result.append({**raw, **values})
+        result.append({**raw,**values})
     return result
 
 
-def _atr(bars: list[dict[str, Any]], period: int = 14) -> float:
-    if len(bars) < 2: return 0.0
-    trs = []
-    for i in range(1, len(bars)):
-        h, l, pc = float(bars[i]["high"]), float(bars[i]["low"]), float(bars[i-1]["close"])
-        trs.append(max(h-l, abs(h-pc), abs(l-pc)))
+def _atr(bars,period=14):
+    if len(bars)<2: return 0.0
+    trs=[]
+    for i in range(1,len(bars)):
+        h,l,pc=float(bars[i]["high"]),float(bars[i]["low"]),float(bars[i-1]["close"])
+        trs.append(max(h-l,abs(h-pc),abs(l-pc)))
     return mean(trs[-period:]) if trs else 0.0
 
 
-def _pivots(bars, wing=2):
-    highs, lows = [], []
-    for i in range(wing, len(bars)-wing):
-        w = bars[i-wing:i+wing+1]
-        if bars[i]["high"] >= max(x["high"] for x in w): highs.append((i, float(bars[i]["high"])))
-        if bars[i]["low"] <= min(x["low"] for x in w): lows.append((i, float(bars[i]["low"])))
-    return highs, lows
+def _pivots(bars,wing=2):
+    highs,lows=[],[]
+    for i in range(wing,len(bars)-wing):
+        w=bars[i-wing:i+wing+1]
+        if bars[i]["high"]>=max(x["high"] for x in w): highs.append((i,float(bars[i]["high"])))
+        if bars[i]["low"]<=min(x["low"] for x in w): lows.append((i,float(bars[i]["low"])))
+    return highs,lows
 
 
-def _cluster(levels, tolerance, side, current):
-    groups = []
-    for item in sorted(levels, key=lambda x:x[1]):
-        if not groups or abs(item[1]-mean(p for _,p in groups[-1])) > tolerance: groups.append([item])
+def _cluster(levels,tolerance,side,current):
+    groups=[]
+    for item in sorted(levels,key=lambda x:x[1]):
+        if not groups or abs(item[1]-mean(p for _,p in groups[-1]))>tolerance: groups.append([item])
         else: groups[-1].append(item)
     zones=[]
     for group in groups:
@@ -71,13 +69,12 @@ def _cluster(levels, tolerance, side, current):
     return zones
 
 
-def _liquidity_consumption(zones, bars, atr):
+def _liquidity_consumption(zones,bars,atr):
     threshold=max(atr*0.05,1e-9); current=len(bars)-1; result=[]
     for zone in zones:
         z=dict(zone); takes=[]
         for i in range(zone["last_touch_index"]+1,len(bars)):
-            b=bars[i]
-            crossed=b["high"]>zone["upper"]+threshold if zone["side"]=="HIGH" else b["low"]<zone["lower"]-threshold
+            b=bars[i]; crossed=b["high"]>zone["upper"]+threshold if zone["side"]=="HIGH" else b["low"]<zone["lower"]-threshold
             if crossed: takes.append(i)
         latest=takes[-1] if takes else None
         z.update({"liquidity_taken":latest is not None,"taken_index":latest,"take_count":len(takes),"recently_taken":latest is not None and current-latest<=FOLLOW_WINDOW,"state":"TAKEN" if latest is not None and current-latest<=FOLLOW_WINDOW else "CONSUMED" if latest is not None else zone["freshness"]})
@@ -90,33 +87,30 @@ def _body_ratio(bar):
     return abs(float(bar["close"])-float(bar["open"]))/span
 
 
-def _event_for_zone(bars, zone, atr, index):
+def _event_for_zone(bars,zone,atr,index):
     if index<=0: return None
-    bar, prev=bars[index],bars[index-1]; span=max(bar["high"]-bar["low"],1e-12)
+    bar,prev=bars[index],bars[index-1]; span=max(bar["high"]-bar["low"],1e-12)
     upper_wick=(bar["high"]-max(bar["open"],bar["close"]))/span; lower_wick=(min(bar["open"],bar["close"])-bar["low"])/span
     band=max(atr*0.10,1e-9); extension=max(atr*0.15,1e-9); level=zone["upper"] if zone["side"]=="HIGH" else zone["lower"]
     if zone["side"]=="HIGH":
-        failed=prev["close"]>level+extension and bar["close"]<=level
-        swept=bar["high"]>level+band and bar["close"]<=level+band
-        accepted=bar["close"]>level+extension and _body_ratio(bar)>=0.55
+        failed=prev["close"]>level+extension and bar["close"]<=level; swept=bar["high"]>level+band and bar["close"]<=level+band; accepted=bar["close"]>level+extension and _body_ratio(bar)>=0.55
         if failed: kind,direction,taker,state,strength="HIGH_FAILED_BREAK_RECLAIM","DOWN","BUYERS","RECLAIMED",0.92
         elif swept and upper_wick>=0.30: kind,direction,taker,state,strength="HIGH_SWEEP_REJECTION","DOWN","BUYERS","TAKEN",0.94
         elif accepted: kind,direction,taker,state,strength="HIGH_ACCEPTANCE","UP","BUYERS","ACCEPTANCE",0.88
         elif swept: kind,direction,taker,state,strength="HIGH_LIQUIDITY_INTERACTION","NEUTRAL","BUYERS","TAKEN",0.55
         else: return None
     else:
-        failed=prev["close"]<level-extension and bar["close"]>=level
-        swept=bar["low"]<level-band and bar["close"]>=level-band
-        accepted=bar["close"]<level-extension and _body_ratio(bar)>=0.55
+        failed=prev["close"]<level-extension and bar["close"]>=level; swept=bar["low"]<level-band and bar["close"]>=level-band; accepted=bar["close"]<level-extension and _body_ratio(bar)>=0.55
         if failed: kind,direction,taker,state,strength="LOW_FAILED_BREAK_RECLAIM","UP","SELLERS","RECLAIMED",0.92
         elif swept and lower_wick>=0.30: kind,direction,taker,state,strength="LOW_SWEEP_REJECTION","UP","SELLERS","TAKEN",0.94
         elif accepted: kind,direction,taker,state,strength="LOW_ACCEPTANCE","DOWN","SELLERS","ACCEPTANCE",0.88
         elif swept: kind,direction,taker,state,strength="LOW_LIQUIDITY_INTERACTION","NEUTRAL","SELLERS","TAKEN",0.55
         else: return None
-    return {"type":kind,"auction_state":state if state in {"REJECTION","ACCEPTANCE"} else "FAILED_BREAK_RECLAIM" if "FAILED" in kind else "UNRESOLVED","directional_implication":direction,"liquidity_state":state,"liquidity_taker":taker,"response_actor":"SELLERS" if direction=="DOWN" else "BUYERS" if direction=="UP" else "UNCLEAR","strength":strength,"zone":zone,"index":index}
+    auction_state="FAILED_BREAK_RECLAIM" if "FAILED" in kind else state if state in {"REJECTION","ACCEPTANCE"} else "UNRESOLVED"
+    return {"type":kind,"auction_state":auction_state,"directional_implication":direction,"liquidity_state":state,"liquidity_taker":taker,"response_actor":"SELLERS" if direction=="DOWN" else "BUYERS" if direction=="UP" else "UNCLEAR","strength":strength,"zone":zone,"index":index}
 
 
-def _find_recent_event(bars, high_zones, low_zones, atr):
+def _find_recent_event(bars,high_zones,low_zones,atr):
     current=len(bars)-1; zones=high_zones+low_zones
     for index in range(current,max(0,current-3),-1):
         for zone in sorted(zones,key=lambda z:abs(z["price"]-bars[index]["close"])):
@@ -127,7 +121,7 @@ def _find_recent_event(bars, high_zones, low_zones, atr):
     return {"type":"NO_CONFIRMED_LIQUIDITY_EVENT","auction_state":"UNRESOLVED","directional_implication":"NEUTRAL","liquidity_state":"UNRESOLVED","liquidity_taker":"NONE","response_actor":"NONE","strength":0.30,"zone":None,"index":current}
 
 
-def _follow_through(event, bars, atr):
+def _follow_through(event,bars,atr):
     index=int(event.get("index",-1)); zone=event.get("zone") or {}
     if index<0 or index>=len(bars)-1 or not zone: return {"present":False,"bars":0,"reason":"NO_POST_EVENT_CANDLE","invalidated":False}
     direction=str(event.get("directional_implication") or "NEUTRAL").upper(); event_close=float(bars[index]["close"]); upper=float(zone.get("upper",event_close)); lower=float(zone.get("lower",event_close)); distance=max(atr*0.05,1e-9)
@@ -147,6 +141,11 @@ def _follow_through(event, bars, atr):
 def _auction_confirmation(event,bars,atr):
     if not event or not event.get("zone"): return {"state":"UNRESOLVED","confirmed":False,"follow_through":False,"follow_through_bars":0,"reason":"NO_EVENT"}
     follow=_follow_through(event,bars,atr); state=str(event.get("auction_state") or "UNRESOLVED")
+    if state=="UNRESOLVED":
+        kind=str(event.get("type") or "")
+        if "REJECTION" in kind: state="REJECTION"
+        elif "ACCEPTANCE" in kind: state="ACCEPTANCE"
+        elif "FAILED_BREAK" in kind: state="FAILED_BREAK_RECLAIM"
     if follow["invalidated"]: return {"state":"INVALIDATED","confirmed":False,"follow_through":False,"follow_through_bars":follow["bars"],"reason":"POST_EVENT_RECLAMATION","detail":follow}
     if follow["present"]:
         final="REJECTION_CONFIRMED" if state in {"REJECTION","FAILED_BREAK_RECLAIM"} else "ACCEPTANCE_CONFIRMED" if state=="ACCEPTANCE" else "UNRESOLVED"
@@ -182,20 +181,18 @@ def analyze_e4(snapshot=None,evidence_bus=None):
 
 
 def _classify_auction_response(event,bars,atr,event_index=None):
-    if event_index is not None: event={**event,"index":event_index}
+    event={**event}
+    if event_index is not None: event["index"]=event_index
     result=_auction_confirmation(event,bars,atr)
     return {"response":result["state"],"confirmed":result["confirmed"],"follow_through_bars":result["follow_through_bars"],"quality":"CONFIRMED" if result["confirmed"] else "PENDING" if result["state"]!="UNRESOLVED" else "UNRESOLVED","reason":result["reason"]}
 
 
 class SubEngine:
-    def run(self, snapshot):
+    def run(self,snapshot):
         evidence_bus=snapshot.get("evidence_bus") if isinstance(snapshot,dict) else None
         output=analyze_e4(snapshot,evidence_bus)
-        try:
-            from .contracts import EngineResult
-            return EngineResult("E4", "Liquidity Brain", None, float(output.get("evidence_strength",0.0))*100.0, output, tuple(output.get("reasons",())))
-        except Exception:
-            return output
+        from .contracts import EngineResult
+        return EngineResult("E4","Liquidity Brain",None,float(output.get("evidence_strength",0.0))*100.0,output,tuple(output.get("reasons",())))
 
 
 __all__=["SubEngine","analyze_e4","_follow_through","_classify_auction_response"]
