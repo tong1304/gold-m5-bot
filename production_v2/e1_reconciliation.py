@@ -16,8 +16,9 @@ def analyze_e1(bars: list[dict[str, Any]] | None) -> dict[str, Any]:
 
     It prevents a coherent, persistent regime from being downgraded merely
     because one quality metric is modest, while preserving genuine long-horizon
-    conflict as TRANSITION. No setup, entry, risk, liquidity or execution logic
-    is introduced here.
+    conflict as TRANSITION. It also prevents low-efficiency chop with negligible
+    EMA separation from being mislabeled as directional pressure.
+    No setup, entry, risk, liquidity or execution logic is introduced here.
     """
     result = _base_analyze_e1(bars)
     if result.get("analysis_status") != "COMPLETE":
@@ -32,6 +33,43 @@ def analyze_e1(bars: list[dict[str, Any]] | None) -> dict[str, Any]:
     if persistence is None:
         trace = " ".join(result.get("reasoning_trace", []))
         persistence = 1.0 if "PERSISTENCE -> 1.00" in trace else 0.0
+
+    # Professional market-state rule: directional pressure requires actual
+    # directional efficiency. Alternating/choppy price action near the EMA
+    # equilibrium is NEUTRAL even when one short lookback happens to lean UP/DOWN.
+    efficiency20 = float(ev.get("efficiency_20", 1.0) or 0.0)
+    ema_gap_abs = abs(float(ev.get("ema_gap_atr", 0.0) or 0.0))
+    if direction in ("UP", "DOWN") and pressure in ("BULLISH", "BEARISH") and efficiency20 < 0.20 and ema_gap_abs < 0.15:
+        pressure = "NEUTRAL"
+        direction = None
+        result["directional_pressure"] = "NEUTRAL"
+        result["trend_state"] = "NONE"
+        result["transition"] = "ABSENT"
+        if result.get("market_state") not in {"COMPRESSION", "RANGE"}:
+            result["market_state"] = "RANGE"
+        reasons = list(result.get("reasons", []))
+        if "LOW_EFFICIENCY_BALANCED_PRESSURE" not in reasons:
+            reasons.append("LOW_EFFICIENCY_BALANCED_PRESSURE")
+        result["reasons"] = reasons
+        pr["primary_state"] = result["market_state"]
+        pr["market_state"] = result["market_state"]
+        pr["direction"] = "NEUTRAL"
+        pr["directional_pressure"] = "NEUTRAL"
+        pr["trend_confirmed"] = False
+        pr["trend_maturity"] = "NONE"
+        pr["classification_reason"] = "low_directional_efficiency_near_ema_equilibrium"
+        pr["directional_consensus"] = {
+            "ema": consensus.get("ema"),
+            "short": consensus.get("short"),
+            "medium": consensus.get("medium"),
+            "long": consensus.get("long"),
+            "confirmed": False,
+            "count": 0,
+            "required_count": 2,
+        }
+        result["reasoning_trace"].append(
+            f"RECONCILIATION -> low efficiency ({efficiency20:.3f}) + near-zero EMA separation ({ema_gap_abs:.3f}); pressure neutralized"
+        )
 
     # A professional state claim may be ESTABLISHED when independent evidence
     # is strongly coherent. Efficiency is quality evidence, not a veto.
