@@ -1,5 +1,11 @@
-from production_v2.e3_brain import analyze_e3
+from production_v2.e3_brain import _bos, _failure, analyze_e3
 from production_v2.engines import run_engine
+
+
+def _bar(close, open_=100.0, high=None, low=None):
+    high = max(open_, close) if high is None else high
+    low = min(open_, close) if low is None else low
+    return {"open": open_, "high": high, "low": low, "close": close}
 
 
 def _bars(values):
@@ -31,9 +37,49 @@ def test_e3_does_not_consume_upstream_direction_or_decision():
     assert result.output["finding"] != "UNRESOLVED"
 
 
-def test_e3_distinguishes_structure_failure_from_unconfirmed_break():
-    values = [100, 101, 102, 101, 103, 104, 103, 105, 106, 105, 107, 108, 107, 109, 110, 109, 111, 112, 111, 113, 114, 113, 115, 116, 115, 117, 118, 117, 119, 120, 119, 121, 122, 121, 123, 124, 123, 125, 126, 125, 127, 128, 127, 129, 130, 129, 131, 132, 131, 133, 134, 133, 135, 136, 135, 137, 138, 137, 139, 140]
-    result = analyze_e3(_bars(values))
-    assert result["structure_state"] in {"CONTINUATION", "BREAKOUT_CONFIRMED"}
-    assert result["bos"]["event"] in {"NO_BOS", "CONFIRMED_BOS"}
-    assert "NO_CONFIRMED_BOS" in result["reason_codes"] or result["bos"]["confirmed"] is True
+def test_bos_evaluates_latest_high_and_low_candidates_independently():
+    bars = [_bar(111.0, open_=108.0)]
+    highs = [{"index": 10, "price": 110.0, "label": "HH"}]
+    lows = [{"index": 11, "price": 90.0, "label": "HL"}]
+    result = _bos(bars, highs, lows, atr=2.0, prior_structure="UP")
+    assert result["confirmed"] is True
+    assert result["direction"] == "UP"
+    assert result["event"] == "CONFIRMED_BOS"
+    assert result["level"] == 110.0
+
+
+def test_wick_through_level_without_close_is_not_bos():
+    bars = [_bar(109.0, open_=108.0, high=112.0, low=107.5)]
+    highs = [{"index": 10, "price": 110.0, "label": "HH"}]
+    lows = [{"index": 8, "price": 100.0, "label": "HL"}]
+    result = _bos(bars, highs, lows, atr=2.0, prior_structure="UP")
+    assert result["confirmed"] is False
+    assert result["event"] == "NO_BOS"
+
+
+def test_failed_break_detects_sweep_and_close_back_inside_level():
+    bars = [_bar(109.0, open_=108.0, high=112.0, low=107.5)]
+    bos = {"event": "CONFIRMED_BOS", "direction": "UP", "confirmed": True, "level": 110.0}
+    result = _failure(bars, bos, atr=2.0)
+    assert result["confirmed"] is True
+    assert result["event"] == "FAILED_BOS"
+    assert result["direction"] == "DOWN"
+
+
+def test_choch_is_used_when_breaking_against_established_structure():
+    bars = [_bar(111.0, open_=108.0)]
+    highs = [{"index": 10, "price": 110.0, "label": "HH"}]
+    lows = [{"index": 11, "price": 90.0, "label": "LL"}]
+    result = _bos(bars, highs, lows, atr=2.0, prior_structure="DOWN")
+    assert result["confirmed"] is True
+    assert result["direction"] == "UP"
+    assert result["event"] == "CONFIRMED_CHOCH"
+
+
+def test_bos_requires_meaningful_close_distance():
+    bars = [_bar(110.05, open_=109.0, high=110.2, low=108.8)]
+    highs = [{"index": 10, "price": 110.0, "label": "HH"}]
+    lows = [{"index": 8, "price": 100.0, "label": "HL"}]
+    result = _bos(bars, highs, lows, atr=2.0, prior_structure="UP")
+    assert result["confirmed"] is False
+    assert result["event"] == "NO_BOS"
