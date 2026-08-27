@@ -75,3 +75,28 @@ def test_e4_context_is_only_a_hint():
     assert result["direction_confirmed"] is False or result["direction"] in {"UP","DOWN","NEUTRAL"}
     assert result["evidence"]["scores_used"] is False
     assert result["evidence"]["gates_used"] is False
+
+
+def test_e4_acceptance_candidate_cannot_be_reported_as_confirmed_without_follow_through():
+    bars = _bars([100 + i * 0.1 for i in range(35)])
+    event = {
+        "type":"HIGH_ACCEPTANCE_CANDIDATE",
+        "directional_implication":"UP",
+        "index":34,
+        "zone":{"side":"HIGH","upper":103.0,"lower":102.9},
+        "liquidity_taker":"BUYERS",
+    }
+    result = _follow_through(event, bars, atr=1.0)
+    assert result["present"] is False
+
+
+def test_e4_finding_and_auction_state_must_share_confirmation_state():
+    bars = _bars([100 + i * 0.05 for i in range(60)])
+    result = analyze_e4(bars)
+    state = result["auction_state"]
+    finding = result["finding"]
+    if "ACCEPTANCE_CONFIRMED" in state:
+        assert "ACCEPTANCE_CONFIRMED" in finding
+    if "REJECTION_CONFIRMED" in state:
+        assert "REJECTION_CONFIRMED" in finding
+    assert not ("ACCEPTANCE" in finding and "ACCEPTANCE_PENDING" not in state and not result["direction_confirmed"])
