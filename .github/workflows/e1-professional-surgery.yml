@@ -1,0 +1,26 @@
+name: E1 professional surgery validation
+on:
+  push:
+    branches: [production-v2]
+  pull_request:
+    branches: [production-v2]
+
+env:
+  PRODUCTION_V2_DISABLE_LIVE: "1"
+
+jobs:
+  e1:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.11'
+      - name: Install test dependencies
+        run: python -m pip install --upgrade pip pytest pandas numpy flask requests lse-data
+      - name: Compile E1
+        run: python -m py_compile production_v2/e1_brain.py
+      - name: Run E1 v2.1 contract
+        run: python -m pytest -q tests/test_e1_brain_v21.py
+      - name: Run E1 professional regression
+        run: python -m pytest -q tests/test_e1_professional_brain.py
