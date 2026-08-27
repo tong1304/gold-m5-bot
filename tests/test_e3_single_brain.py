@@ -14,10 +14,10 @@ def _bars(n=80):
 
 
 def test_e3_is_single_brain_and_subengines_are_parked():
-    assert SUB_ENGINE_CODES["E3"] == []
     result=run_engine("E3", {"bars":_bars()})
+    assert SUB_ENGINE_CODES["E3"] == []
     assert result.engine_id == "E3"
-    assert result.output["architecture"] == "E3_SINGLE_PROFESSIONAL_BRAIN_V6"
+    assert result.output["architecture"] == "E3_SINGLE_PROFESSIONAL_BRAIN_V7"
     assert result.output["reasoning_role"] == "MARKET_STRUCTURE_ANALYST"
     assert result.output["question"] == "What is price structure communicating?"
     assert result.output["specialists_active"] is False
@@ -40,11 +40,12 @@ def test_e3_never_consumes_upstream_direction():
 
 def test_e3_exposes_structural_evidence_contract():
     result=analyze_e3(_bars())
-    for key in ("swing_map","internal_structure","external_structure","bos","failure","structure_strength","confidence","evidence"):
+    for key in ("swing_map","internal_structure","external_structure","bos","failure","structural_failure","BOS_type","BOS_level","BOS_candle_index","recent_high","recent_low","prior_high","prior_low","structure_strength","confidence","evidence"):
         assert key in result
     assert result["analysis_status"] == "COMPLETE"
-    assert result["bos"]["event"] in {"NO_BOS","CONFIRMED_BOS","CONFIRMED_CHOCH"}
+    assert result["bos"]["event"] in {"NO_BOS","CONFIRMED_BOS","CONFIRMED_CHOCH","STRUCTURE_CONFLICT"}
     assert result["failure"]["event"] in {"NO_FAILURE","FAILED_BOS"}
+    assert result["trade_decision_authority"] is False
 
 
 def test_e3_compress_keeps_correct_extreme_for_clustered_pivots():
@@ -78,3 +79,18 @@ def test_e3_trace_structural_state_is_not_conflated_with_count_state():
 def test_e3_slope_is_context_only_not_structural_authority():
     result=analyze_e3(_bars())
     assert result["reasoning_trace"]["slope_is_structural_authority"] is False
+
+
+def test_e3_internal_break_cannot_flip_external_direction():
+    result=analyze_e3(_bars())
+    if result["external_structure"]["state"] in {"UP", "DOWN"}:
+        assert result["direction"] == result["structural_bias"] or result["protected_level_break"]["confirmed"]
+        assert result["reasoning_trace"]["internal_bos_has_market_authority"] is False
+
+
+def test_e3_structure_output_distinguishes_invalidation_from_reversal():
+    result=analyze_e3(_bars())
+    assert result["reasoning_trace"]["protected_level_break_is_not_automatic_reversal"] is True
+    if result["protected_level_break"]["confirmed"]:
+        assert result["direction"] == "NEUTRAL"
+        assert result["reasoning_trace"]["protected_level_break_invalidates_current_external_thesis"] is True
