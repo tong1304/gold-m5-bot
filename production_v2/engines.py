@@ -1,9 +1,8 @@
 from __future__ import annotations
 """Production-V2 engine dispatcher.
 
-E1-E4 are qualitative analysts. E4 uses the canonical professional liquidity
-brain while legacy 4A-4F specialists remain paused. E9 remains the only
-trade-decision authority.
+E1-E5 are qualitative analysts. E5 is a single monolithic location/value
+brain. E9 remains the only trade-decision authority.
 """
 import importlib
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -15,9 +14,10 @@ from .e2_brain import analyze_e2
 from .e2_repricing import preserve_repricing_thesis
 from .e3_brain import analyze_e3
 from .e4_brain_v14 import analyze_e4, ARCHITECTURE as E4_ARCHITECTURE
+from .e5_brain import analyze_e5, ARCHITECTURE as E5_ARCHITECTURE
 
 ENGINE_NAMES={"E1":"Market State Brain","E2":"Opportunity / Regime Brain","E3":"Market Structure Brain","E4":"Liquidity Brain","E5":"Location / Value Brain","E6":"Setup Brain","E7":"Confirmation Brain","E8":"Trade Economics Brain","E9":"Master Decision Brain"}
-SUB_ENGINE_CODES={"E1":["1A","1B","1C","1D","1E","1F","1G"],"E2":[],"E3":[],"E4":["4A","4B","4C","4D","4E","4F"],"E5":["5A","5B","5C","5D","5E","5F"],"E6":["6A","6B","6C","6D","6E","6F"],"E7":["7A","7B","7C","7D","7E","7F"],"E8":["8A","8B","8C","8D","8E","8F","8G"]}
+SUB_ENGINE_CODES={"E1":["1A","1B","1C","1D","1E","1F","1G"],"E2":[],"E3":[],"E4":["4A","4B","4C","4D","4E","4F"],"E5":[],"E6":["6A","6B","6C","6D","6E","6F"],"E7":["7A","7B","7C","7D","7E","7F"],"E8":["8A","8B","8C","8D","8E","8F","8G"]}
 SUFFIX={"1A":"a_data_quality","1B":"b_volatility_state","1C":"c_trend_state","1D":"d_range_state","1E":"e_compression","1F":"f_expansion","1G":"g_transition","2A":"a_trend_regime","2B":"b_range_regime","2C":"c_mean_reversion_behavior","2D":"d_breakout_regime","2E":"e_regime_phase","2F":"f_regime_transition","3A":"a_swing_detection","3B":"b_structure_classification","3C":"c_break_of_structure","3D":"d_structural_failure","3E":"e_structure_strength","3F":"f_internal_external_structure","4A":"a_liquidity_zone_detection","4B":"b_sweep_detection","4C":"c_reaction_rejection","4D":"d_acceptance","4E":"e_reclaim_failed_break","4F":"f_liquidity_strength_quality","5A":"a_equilibrium_value","5B":"b_structural_location","5C":"c_liquidity_location","5D":"d_extension","5E":"e_available_space","5F":"f_location_quality","6A":"a_setup_context","6B":"b_setup_archetype","6C":"c_setup_formation_state_machine","6D":"d_setup_invalidation","6E":"e_setup_quality","6F":"f_setup_maturity","7A":"a_trigger_detection","7B":"b_trigger_quality","7C":"c_follow_through","7D":"d_failure_invalidation","7E":"e_execution_conditions","7F":"f_confirmation_quality","8A":"a_invalidation_model","8B":"b_stop_placement","8C":"c_target_liquidity_objective","8D":"d_r_multiple","8E":"e_position_size","8F":"f_exposure_limits","8G":"g_risk_gate"}
 ENGINE_IDS=tuple(SUB_ENGINE_CODES)
 EVIDENCE_INPUTS={engine_id: tuple(other for other in ENGINE_IDS if other != engine_id) for engine_id in ENGINE_IDS}
@@ -101,6 +101,11 @@ def _e4_contract(brain):
     output["auction_confirmation"] = brain.get("auction",{}).get("confirmed",False)
     return EngineResult("E4",ENGINE_NAMES["E4"],None,float(brain.get("evidence_strength",brain.get("confidence",0.0)))*100.0,output,tuple(brain.get("reasons",())))
 
+def _e5_contract(brain):
+    output={"architecture":E5_ARCHITECTURE,"professional_brain":True,"specialists":{},"specialists_active":False,"specialists_status":"NOT_USED",**brain,"decision":None,"gate":None,"trade_decision_authority":False,"decision_authority":"E9_ONLY","reasoning_role":"LOCATION_VALUE_ANALYST","upstream_decisions_used":False,"upstream_gates_used":False,"score_used":False}
+    output["score"] = None
+    return EngineResult("E5",ENGINE_NAMES["E5"],None,float(brain.get("confidence",0.0))*100.0,output,tuple(brain.get("reason_codes",())))
+
 def run_engine(engine_id,snapshot,evidence_bus=None):
     allowed=set(EVIDENCE_INPUTS.get(engine_id,())); permitted={k:evidence_bus[k] for k in allowed if evidence_bus and k in allowed}
     if engine_id=="E2":
@@ -109,6 +114,9 @@ def run_engine(engine_id,snapshot,evidence_bus=None):
     if engine_id=="E4":
         brain=analyze_e4({**snapshot,"bars":list(snapshot.get("bars") or [])}, permitted)
         return _e4_contract(brain)
+    if engine_id=="E5":
+        brain=analyze_e5(dict(snapshot), permitted)
+        return _e5_contract(brain)
     codes=SUB_ENGINE_CODES[engine_id]; results=[]
     with ThreadPoolExecutor(max_workers=max(1,len(codes))) as pool:
         fs={pool.submit(_run,c,snapshot,permitted):c for c in codes}
