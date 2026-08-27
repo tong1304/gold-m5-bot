@@ -34,7 +34,7 @@ def test_e4_is_analysis_only_and_uses_no_upstream_decision_gate_or_score():
     result = run_engine("E4", {"bars":bars}, evidence)
     assert result.engine_id == "E4"
     assert result.gate_passed is None
-    assert result.output["architecture"] == "E4_SINGLE_PROFESSIONAL_BRAIN_V16"
+    assert result.output["architecture"] == "E4_SINGLE_PROFESSIONAL_BRAIN_V17"
     assert result.output["professional_brain"] is True
     assert result.output["specialists_active"] is False
     assert result.output["specialists_status"] == "PAUSED"
