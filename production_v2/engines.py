@@ -1,8 +1,8 @@
 from __future__ import annotations
 """Production-V2 engine dispatcher.
 
-E1-E4 are qualitative analysts. E4 uses a standalone professional liquidity
-brain while legacy 4A-4F specialists remain paused. E9 remains the only
+E1-E4 are qualitative analysts. E4 uses the canonical professional E4 brain
+entrypoint while legacy 4A-4F specialists remain paused. E9 remains the only
 trade-decision authority.
 """
 import importlib
@@ -14,7 +14,7 @@ from .e1_brain import analyze_e1
 from .e2_brain import analyze_e2
 from .e2_repricing import preserve_repricing_thesis
 from .e3_brain import analyze_e3
-from .e4_brain import analyze_e4
+from .professional_e4_brain import analyze_e4
 
 ENGINE_NAMES={"E1":"Market State Brain","E2":"Opportunity / Regime Brain","E3":"Market Structure Brain","E4":"Liquidity Brain","E5":"Location / Value Brain","E6":"Setup Brain","E7":"Confirmation Brain","E8":"Trade Economics Brain","E9":"Master Decision Brain"}
 SUB_ENGINE_CODES={"E1":["1A","1B","1C","1D","1E","1F","1G"],"E2":[],"E3":[],"E4":["4A","4B","4C","4D","4E","4F"],"E5":["5A","5B","5C","5D","5E","5F"],"E6":["6A","6B","6C","6D","6E","6F"],"E7":["7A","7B","7C","7D","7E","7F"],"E8":["8A","8B","8C","8D","8E","8F","8G"]}
@@ -93,7 +93,7 @@ def _e3_contract(brain):
     return EngineResult("E3",ENGINE_NAMES["E3"],None,float(brain.get("confidence",0.0))*100.0,output,tuple(brain.get("reason_codes",())))
 
 def _e4_contract(brain):
-    output={"architecture":"E4_SINGLE_PROFESSIONAL_BRAIN_V10","specialists":{},"specialists_active":False,"specialists_status":"PAUSED",**brain,"decision":None,"gate":None,"trade_decision_authority":False,"decision_authority":"E9_ONLY","reasoning_role":"LIQUIDITY_ANALYST","upstream_decisions_used":False,"upstream_gates_used":False,"score_used":False}
+    output={"architecture":"E4_SINGLE_PROFESSIONAL_BRAIN_V12","professional_brain":True,"specialists":{},"specialists_active":False,"specialists_status":"PAUSED",**brain,"decision":None,"gate":None,"trade_decision_authority":False,"decision_authority":"E9_ONLY","reasoning_role":"LIQUIDITY_EVENT_ANALYST","upstream_decisions_used":False,"upstream_gates_used":False,"score_used":False}
     output["score"] = None
     return EngineResult("E4",ENGINE_NAMES["E4"],None,float(brain.get("evidence_strength",brain.get("confidence",0.0)))*100.0,output,tuple(brain.get("reasons",())))
 
@@ -103,7 +103,6 @@ def run_engine(engine_id,snapshot,evidence_bus=None):
         local=dict(snapshot); local["E1_result"]=_e2_e1_context(permitted); brain=preserve_repricing_thesis(analyze_e2(local)); output={"architecture":"E2_PROFESSIONAL_CORE_ONLY","sub_engines_active":False,"sub_engines_status":"PAUSED","specialists":{},**brain,"decision":None,"entry":None,"trigger":None,"risk":None,"gate":None,"trade_decision_authority":"E9_ONLY","reasoning_role":"OPPORTUNITY_REGIME_ANALYST","upstream_decisions_used":False,"upstream_gates_used":False,"score_used":False}; return EngineResult("E2",ENGINE_NAMES["E2"],None,float(brain.get("confidence",0.0))*100.0,output,tuple(brain.get("reason_codes",())))
     if engine_id=="E3": return _e3_contract(analyze_e3(list(snapshot.get("bars") or [])))
     if engine_id=="E4":
-        # E4 V10 expects a snapshot mapping with bars and only qualitative peer evidence.
         e4_snapshot=dict(snapshot)
         e4_snapshot["bars"]=list(snapshot.get("bars") or [])
         brain=analyze_e4(e4_snapshot, permitted)
