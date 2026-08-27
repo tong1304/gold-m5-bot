@@ -19,7 +19,7 @@ from statistics import mean
 from typing import Any
 
 ARCHITECTURE = "E5_SINGLE_PROFESSIONAL_LOCATION_BRAIN_V2"
-VERSION = "2.0"
+VERSION = "2.1"
 QUESTION = "Is current location advantageous?"
 MIN_BARS = 60
 ATR_PERIOD = 14
@@ -27,7 +27,6 @@ VALUE_LOOKBACK = 20
 STRUCTURE_LOOKBACK = 50
 LIQUIDITY_LOOKBACK = 30
 EXTENSION_LOOKBACK = 20
-
 
 _FORBIDDEN_UPSTREAM_KEYS = {
     "decision", "trade_decision", "score", "decision_score", "gate",
@@ -78,7 +77,6 @@ def _atr(bars: list[dict[str, float]], period: int = ATR_PERIOD) -> float:
 
 
 def _value_price(bars: list[dict[str, float]], lookback: int = VALUE_LOOKBACK) -> tuple[float, str]:
-    """Return volume-weighted typical price when volume exists; otherwise a transparent proxy."""
     sample = bars[-lookback:]
     if not sample:
         return 0.0, "UNAVAILABLE"
@@ -191,6 +189,7 @@ def _quality_label(direction: str, value_position: float, extension_atr: float, 
 
 
 def _incomplete(reason: str, problems: list[str]) -> dict[str, Any]:
+    evidence = problems or ["NO_RELIABLE_EVIDENCE"]
     return {
         "architecture": ARCHITECTURE, "version": VERSION, "question": QUESTION,
         "task": "ASSESS_PRICE_LOCATION_ONLY", "location_state": "UNRESOLVED",
@@ -198,7 +197,7 @@ def _incomplete(reason: str, problems: list[str]) -> dict[str, Any]:
         "value_state": "UNKNOWN", "structural_location": "UNKNOWN",
         "liquidity_location": "UNKNOWN", "extension_state": "UNKNOWN",
         "available_space": "UNKNOWN", "confidence": 0.0,
-        "evidence": problems, "counter_evidence": [], "conflicts": problems,
+        "evidence": evidence, "observations": evidence, "counter_evidence": [], "conflicts": problems,
         "reason_codes": ["E5_DATA_INCOMPLETE"],
         "reasoning_trace": [f"QUESTION -> {QUESTION}", f"DATA_QUALITY -> {reason}"],
         "professional_reasoning": {
@@ -213,7 +212,6 @@ def _incomplete(reason: str, problems: list[str]) -> dict[str, Any]:
 
 
 def analyze_e5(snapshot: dict[str, Any], permitted: dict[str, Any] | None = None) -> dict[str, Any]:
-    """Analyze location independently as a single professional specialist brain."""
     bars, problems = _bars(snapshot)
     if len(bars) < MIN_BARS:
         return _incomplete(f"reliable candles below minimum {MIN_BARS}", problems[:8])
@@ -251,10 +249,8 @@ def analyze_e5(snapshot: dict[str, Any], permitted: dict[str, Any] | None = None
     sweep_high = bars[-1]["high"] > recent_high and price < recent_high
     sweep_low = bars[-1]["low"] < recent_low and price > recent_low
     e4_text = str(context.get("E4", {})).upper()
-    e4_sweep_high = "SWEEP_HIGH" in e4_text or "HIGH_SWEEP" in e4_text
-    e4_sweep_low = "SWEEP_LOW" in e4_text or "LOW_SWEEP" in e4_text
-    sweep_high = sweep_high or e4_sweep_high
-    sweep_low = sweep_low or e4_sweep_low
+    sweep_high = sweep_high or "SWEEP_HIGH" in e4_text or "HIGH_SWEEP" in e4_text
+    sweep_low = sweep_low or "SWEEP_LOW" in e4_text or "LOW_SWEEP" in e4_text
     liquidity_location = (
         "SELL_SIDE_LIQUIDITY_SWEPT" if sweep_low else
         "BUY_SIDE_LIQUIDITY_SWEPT" if sweep_high else
@@ -280,8 +276,6 @@ def analyze_e5(snapshot: dict[str, Any], permitted: dict[str, Any] | None = None
         space_atr = min(candidates) if candidates else None
     space_state = "OPEN" if space_atr is None or space_atr >= 2.0 else "MODERATE" if space_atr >= 1.0 else "TIGHT"
 
-    # A liquidity sweep is evidence of a location event, not permission to chase.
-    # It can improve location only when value and structural conditions also agree.
     long_location = (
         direction in ("UP", "NEUTRAL") and value_position <= 0.45 and
         not near_high and extension_atr < 1.75 and (up_space_atr is None or up_space_atr >= 1.0)
@@ -384,7 +378,7 @@ def analyze_e5(snapshot: dict[str, Any], permitted: dict[str, Any] | None = None
         "down_space_atr": None if down_space_atr is None else round(down_space_atr, 4),
         "long_location_valid": long_location, "short_location_valid": short_location,
         "quality_components": {k: round(v, 4) for k, v in components.items()}, "confidence": confidence,
-        "evidence": evidence, "counter_evidence": counter, "conflicts": upstream_conflicts,
+        "evidence": evidence, "observations": evidence, "counter_evidence": counter, "conflicts": upstream_conflicts,
         "reason_codes": reasons,
         "reasoning_trace": [
             f"QUESTION -> {QUESTION}",
