@@ -1,4 +1,4 @@
-from production_v2.e3_brain import analyze_e3
+from production_v2.e3_brain import analyze_e3, _compress
 from production_v2.engines import run_engine, SUB_ENGINE_CODES
 
 
@@ -17,10 +17,14 @@ def test_e3_is_single_brain_and_subengines_are_parked():
     assert SUB_ENGINE_CODES["E3"] == []
     result=run_engine("E3", {"bars":_bars()})
     assert result.engine_id == "E3"
+    assert result.output["architecture"] == "E3_SINGLE_PROFESSIONAL_BRAIN_V2"
+    assert result.output["reasoning_role"] == "MARKET_STRUCTURE_ANALYST"
+    assert result.output["question"] == "What is price structure communicating?"
     assert result.output["specialists_active"] is False
     assert result.output["specialists_status"] == "PAUSED"
     assert result.output["trade_decision_authority"] is False
     assert result.output["gate"] is None
+    assert result.output["decision"] is None
 
 
 def test_e3_never_consumes_upstream_direction():
@@ -29,11 +33,34 @@ def test_e3_never_consumes_upstream_direction():
     second=run_engine("E3", {"bars":bars, "E1_result":{"direction":"DOWN"}, "E2_result":{"direction":"DOWN"}})
     assert first["direction"] == second.output["direction"]
     assert second.output["upstream_direction_used"] is False
+    assert second.output["upstream_decisions_used"] is False
+    assert second.output["upstream_gates_used"] is False
+    assert second.output["score_used"] is False
 
 
 def test_e3_exposes_structural_evidence_contract():
     result=analyze_e3(_bars())
     for key in ("swing_map","internal_structure","external_structure","bos","failure","structure_strength","confidence","evidence"):
         assert key in result
-    assert result["bos"]["event"] in {"NO_BOS","CONFIRMED_BOS"}
+    assert result["analysis_status"] == "COMPLETE"
+    assert result["bos"]["event"] in {"NO_BOS","CONFIRMED_BOS","CONFIRMED_CHOCH"}
     assert result["failure"]["event"] in {"NO_FAILURE","FAILED_BOS"}
+
+
+def test_e3_compress_keeps_correct_extreme_for_clustered_pivots():
+    highs=[(10,100.0),(11,101.0),(14,102.0)]
+    lows=[(10,100.0),(11,99.0),(14,98.0)]
+    assert _compress(highs, 10.0, spacing=2)[0] == (11,101.0)
+    assert _compress(lows, 10.0, spacing=2)[0] == (11,99.0)
+
+
+def test_e3_reports_conflict_when_structure_and_slope_disagree():
+    bars=[]
+    price=100.0
+    for i in range(50):
+        close=price + (0.8 if i >= 35 else -0.2)
+        bars.append({"open":price,"high":max(price,close)+0.2,"low":min(price,close)-0.2,"close":close})
+        price=close
+    result=analyze_e3(bars)
+    assert "reason_codes" in result
+    assert result["analysis_status"] == "COMPLETE"
