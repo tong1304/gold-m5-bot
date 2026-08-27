@@ -21,12 +21,11 @@ def _high_liquidity_sweep_bars():
     for idx in (50, 54):
         bars[idx]["high"] = 112.0
         bars[idx]["close"] = 111.4
-    # Final candle raids the equal highs and closes back below them.
-    prev_close = bars[-2]["close"]
+    # Final candle raids the equal highs and closes back below them with a clear upper wick.
     bars[-1] = {
-        "open": prev_close,
+        "open": 111.8,
         "high": 112.9,
-        "low": prev_close - 0.2,
+        "low": 111.0,
         "close": 111.5,
     }
     return bars
