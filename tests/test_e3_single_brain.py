@@ -17,7 +17,7 @@ def test_e3_is_single_brain_and_subengines_are_parked():
     assert SUB_ENGINE_CODES["E3"] == []
     result=run_engine("E3", {"bars":_bars()})
     assert result.engine_id == "E3"
-    assert result.output["architecture"] == "E3_SINGLE_PROFESSIONAL_BRAIN_V2"
+    assert result.output["architecture"] == "E3_SINGLE_PROFESSIONAL_BRAIN_V3"
     assert result.output["reasoning_role"] == "MARKET_STRUCTURE_ANALYST"
     assert result.output["question"] == "What is price structure communicating?"
     assert result.output["specialists_active"] is False
@@ -64,3 +64,17 @@ def test_e3_reports_conflict_when_structure_and_slope_disagree():
     result=analyze_e3(bars)
     assert "reason_codes" in result
     assert result["analysis_status"] == "COMPLETE"
+
+
+def test_e3_trace_structural_state_is_not_conflated_with_count_state():
+    result=analyze_e3(_bars())
+    trace=result["reasoning_trace"]
+    assert trace["external_state"] == result["external_structure"]["state"]
+    assert trace["internal_state"] == result["internal_structure"]["state"]
+    assert trace["external_count_state"] == result["external_structure"]["count_state"]
+    assert trace["internal_count_state"] == result["internal_structure"]["count_state"]
+
+
+def test_e3_slope_is_context_only_not_structural_authority():
+    result=analyze_e3(_bars())
+    assert result["reasoning_trace"]["slope_is_structural_authority"] is False
