@@ -1,4 +1,4 @@
-from production_v2.professional_e4_brain import _find_recent_event, _follow_through
+from production_v2.professional_e4_brain_v15 import _find_recent_event, _follow_through
 from production_v2.engines import run_engine
 
 
@@ -49,7 +49,7 @@ def test_e4_remains_analysis_only_and_uses_no_upstream_decision_or_gate():
     result = run_engine("E4", {"bars": bars}, {"E1": {"engine_id": "E1", "evidence": {"output": {"score": 99, "gate": True, "direction": "UP"}}}})
     assert result.engine_id == "E4"
     assert result.gate_passed is None
-    assert result.output["architecture"] == "E4_SINGLE_PROFESSIONAL_BRAIN_V14"
+    assert result.output["architecture"] == "E4_SINGLE_PROFESSIONAL_BRAIN_V15"
     assert result.output["specialists_active"] is False
     assert result.output["specialists_status"] == "PAUSED"
     assert result.output["decision"] is None
