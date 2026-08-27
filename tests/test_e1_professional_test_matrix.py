@@ -40,14 +40,14 @@ def _range():
 
 def _compression():
     closes = [100.0]
-    for i in range(70):
-        closes.append(closes[-1] + (0.20 if i % 2 == 0 else -0.20))
-    for i in range(30):
-        closes.append(closes[-1] + (0.025 if i % 2 == 0 else -0.025))
-    bars = _bars_from_closes(closes, spread=0.08)
-    for bar in bars[-30:]:
-        bar["high"] = max(bar["open"], bar["close"]) + 0.012
-        bar["low"] = min(bar["open"], bar["close"]) - 0.012
+    for i in range(50):
+        closes.append(closes[-1] + (0.50 if i % 2 == 0 else -0.50))
+    for i in range(50):
+        closes.append(closes[-1] + (0.005 if i % 2 == 0 else -0.005))
+    bars = _bars_from_closes(closes, spread=0.50)
+    for bar in bars[-50:]:
+        bar["high"] = max(bar["open"], bar["close"]) + 0.002
+        bar["low"] = min(bar["open"], bar["close"]) - 0.002
     return bars
 
 
@@ -60,12 +60,9 @@ def _expanding_directional_move():
 
 
 def _transition():
-    closes = []
-    price = 100.0
-    for i in range(100):
-        price += 0.25 if i < 65 else -0.85
-        closes.append(price)
-    return _bars_from_closes(closes, spread=0.10)
+    closes = [100.0 + 0.35 * i for i in range(50)]
+    closes.extend([117.0 - 0.65 * (i - 49) for i in range(30)])
+    return _bars_from_closes(closes)
 
 
 def _clean_bear_trend():
@@ -117,10 +114,10 @@ def test_matrix_invalid_data_is_not_silently_accepted():
 
 
 def test_matrix_ema_price_pressure_conflict_is_explicit():
-    closes = [100.0 + 0.28 * i for i in range(65)]
-    closes.extend([closes[-1] - 0.75 * i for i in range(1, 36)])
+    closes = [100.0 + 0.35 * i for i in range(50)]
+    closes.extend([117.0 - 0.65 * (i - 49) for i in range(30)])
     out = analyze_e1(_bars_from_closes(closes))
-    assert "EMA_VS_PRICE_PRESSURE" in out["conflicts"] or out["market_state"] == "TRANSITION"
+    assert out["market_state"] == "TRANSITION"
     assert out["professional_reasoning"]["conflict_detected"] is True
     assert out["professional_reasoning"]["trend_confirmed"] is False
 
@@ -129,6 +126,7 @@ def test_matrix_structure_pressure_conflict_cannot_be_promoted_to_confirmed_tren
     closes = [100.0 + 0.35 * i for i in range(60)]
     closes.extend([closes[-1] - 0.50 * i for i in range(1, 41)])
     out = analyze_e1(_bars_from_closes(closes))
+    assert out["market_state"] in MARKET_STATES
     if "STRUCTURE_VS_PRICE_PRESSURE" in out["conflicts"]:
         assert out["professional_reasoning"]["trend_confirmed"] is False
         assert out["market_state"] != "TREND_UP"
