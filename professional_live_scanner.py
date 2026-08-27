@@ -3,9 +3,15 @@ import os, threading
 from datetime import datetime, timezone, timedelta
 import pandas as pd
 from lse import LSE
+import professional_engine_core as _core
 from professional_engine_core import analyze, ENGINE_VERSION
+from professional_e3_brain import e3_structure as _professional_e3_structure
 from signal_history import history
 from production_v2_telegram import send_telegram
+
+# E3 is intentionally implemented as one professional brain for now.
+# Its future 3A-3F decomposition is parked and not part of runtime execution.
+_core.e3_structure = _professional_e3_structure
 
 SUPPORTED_SYMBOLS=("BTC","GOLD"); _LOCK=threading.Lock()
 
