@@ -15,8 +15,8 @@ from typing import Any
 
 PROFESSIONAL_QUESTION = "Where is liquidity, who took it, and did price accept or reject the auction?"
 E4_ROLE = "LIQUIDITY_AUCTION_ANALYST"
-ARCHITECTURE = "E4_SINGLE_PROFESSIONAL_BRAIN_V14"
-EVIDENCE_HIERARCHY = "DATA_QUALITY -> LIQUIDITY_MAP -> LIQUIDITY_FRESHNESS -> LIQUIDITY_TAKING -> AUCTION_RESPONSE -> DIRECTIONAL_IMPLICATION -> CONFIDENCE"
+ARCHITECTURE = "E4_SINGLE_PROFESSIONAL_BRAIN_V15"
+EVIDENCE_HIERARCHY = "DATA_QUALITY -> LIQUIDITY_MAP -> LIQUIDITY_FRESHNESS -> LIQUIDITY_TAKING -> AUCTION_RESPONSE -> FOLLOW_THROUGH -> DIRECTIONAL_IMPLICATION -> CONFIDENCE"
 
 
 def _num(value: Any) -> float | None:
@@ -179,6 +179,74 @@ def _detect_event(bars: list[dict[str, Any]], high_zones: list[dict[str, Any]], 
     return {"type": "NO_CONFIRMED_LIQUIDITY_EVENT", "auction_state": "UNRESOLVED", "directional_implication": "NEUTRAL", "liquidity_state": "UNRESOLVED", "liquidity_taker": "NONE", "response_actor": "NONE", "strength": 0.30, "zone": None, "index": current}
 
 
+def _follow_through(event: dict[str, Any], bars: list[dict[str, Any]], atr: float) -> dict[str, Any]:
+    """Confirm that the auction response persisted after the event candle.
+
+    A single wick/close is an event, not proof of acceptance or rejection.
+    E4 requires at least one subsequent closed candle to confirm the response.
+    A second candle strengthens the evidence but is not required for the
+    qualitative confirmation contract. Immediate reclamation invalidates the
+    response for that observation window.
+    """
+    index = int(event.get("index", -1))
+    zone = event.get("zone") or {}
+    if index < 0 or index >= len(bars) - 1 or not zone:
+        return {"present": False, "bars": 0, "reason": "NO_POST_EVENT_CANDLE", "invalidated": False}
+
+    direction = str(event.get("directional_implication") or "NEUTRAL").upper()
+    event_close = float(bars[index]["close"])
+    upper = float(zone.get("upper", event_close))
+    lower = float(zone.get("lower", event_close))
+    distance = max(atr * 0.05, 1e-9)
+    checks: list[dict[str, Any]] = []
+    confirmed_bars = 0
+    invalidated = False
+
+    for j in range(index + 1, min(len(bars), index + 3)):
+        close = float(bars[j]["close"])
+        if direction == "DOWN":
+            away = close < event_close - distance
+            held_rejection = close < upper - distance
+            reclaim = close > upper + distance
+        elif direction == "UP":
+            away = close > event_close + distance
+            held_rejection = close > lower + distance
+            reclaim = close < lower - distance
+        else:
+            away = False
+            held_rejection = False
+            reclaim = False
+
+        if reclaim:
+            invalidated = True
+        confirmed = away and held_rejection and not reclaim
+        if confirmed:
+            confirmed_bars += 1
+        checks.append({"index": j, "close": close, "confirmed": confirmed, "reclaimed": reclaim})
+
+    return {
+        "present": confirmed_bars >= 1 and not invalidated,
+        "bars": confirmed_bars,
+        "reason": "FOLLOW_THROUGH_OBSERVED" if confirmed_bars >= 1 and not invalidated else "FOLLOW_THROUGH_ABSENT",
+        "invalidated": invalidated,
+        "checks": checks,
+    }
+
+
+def _auction_confirmation(event: dict[str, Any], bars: list[dict[str, Any]], atr: float) -> dict[str, Any]:
+    if not event or not event.get("zone"):
+        return {"state": "UNRESOLVED", "confirmed": False, "follow_through": False, "follow_through_bars": 0, "reason": "NO_EVENT"}
+    follow = _follow_through(event, bars, atr)
+    state = str(event.get("auction_state") or "UNRESOLVED")
+    if follow["invalidated"]:
+        return {"state": "INVALIDATED", "confirmed": False, "follow_through": False, "follow_through_bars": follow["bars"], "reason": "POST_EVENT_RECLAMATION", "detail": follow}
+    if follow["present"]:
+        confirmed_state = "REJECTION_CONFIRMED" if state in {"REJECTION", "FAILED_BREAK_RECLAIM"} else "ACCEPTANCE_CONFIRMED" if state == "ACCEPTANCE" else state
+        return {"state": confirmed_state, "confirmed": True, "follow_through": True, "follow_through_bars": follow["bars"], "reason": "FOLLOW_THROUGH_OBSERVED", "detail": follow}
+    pending_state = "REJECTION_PENDING" if state in {"REJECTION", "FAILED_BREAK_RECLAIM"} else "ACCEPTANCE_PENDING" if state == "ACCEPTANCE" else "UNRESOLVED"
+    return {"state": pending_state, "confirmed": False, "follow_through": False, "follow_through_bars": follow["bars"], "reason": follow["reason"], "detail": follow}
+
+
 def _context_hint(evidence_bus: dict[str, Any] | None) -> tuple[str, dict[str, bool]]:
     votes: list[str] = []
     used: dict[str, bool] = {}
@@ -220,8 +288,11 @@ def analyze_e4(bars: Any, evidence_bus: dict[str, Any] | None = None) -> dict[st
     low_zones = _liquidity_consumption(_cluster(low_levels[-60:], tolerance, "LOW", len(valid) - 1), valid, atr)
     event = _detect_event(valid, high_zones, low_zones, atr)
     context, context_used = _context_hint(evidence_bus)
-    event_direction = event["directional_implication"]
-    context_conflict = event_direction in {"UP", "DOWN"} and context in {"UP", "DOWN"} and event_direction != context
+    raw_event_direction = event["directional_implication"]
+    auction = _auction_confirmation(event, valid, atr)
+    confirmed = bool(auction["confirmed"])
+    event_direction = raw_event_direction if confirmed else "NEUTRAL"
+    context_conflict = confirmed and event_direction in {"UP", "DOWN"} and context in {"UP", "DOWN"} and event_direction != context
 
     if "SWEEP" in event["type"]:
         reasons = ["LIQUIDITY_TAKEN", "REJECTION_AFTER_SWEEP"]
@@ -231,13 +302,16 @@ def analyze_e4(bars: Any, evidence_bus: dict[str, Any] | None = None) -> dict[st
         reasons = ["ACCEPTANCE_BEYOND_LIQUIDITY"]
     else:
         reasons = ["NO_CONFIRMED_EVENT"]
+    if not confirmed and event["zone"] is not None:
+        reasons.append("AUCTION_RESPONSE_NOT_CONFIRMED")
     if context_conflict:
         reasons.append("EVENT_VS_CONTEXT_DIVERGENCE")
 
     all_zones = high_zones + low_zones
     fresh_count = sum(z["state"] in {"FRESH", "TAKEN"} for z in all_zones)
     zone_quality = min(1.0, fresh_count / max(1, min(len(all_zones), 8)))
-    confidence = event["strength"] * 0.78 + zone_quality * 0.18 + (0.04 if event_direction == context and context != "NEUTRAL" else 0.0)
+    base_strength = float(event["strength"]) if confirmed else min(float(event["strength"]), 0.45)
+    confidence = base_strength * 0.78 + zone_quality * 0.18 + (0.04 if event_direction == context and context != "NEUTRAL" else 0.0)
     confidence = round(max(0.0, min(0.99, confidence)), 3)
 
     price = float(valid[-1]["close"])
@@ -250,22 +324,24 @@ def analyze_e4(bars: Any, evidence_bus: dict[str, Any] | None = None) -> dict[st
         "fresh_below": sum(z["state"] in {"FRESH", "TAKEN"} for z in low_zones),
         "recently_taken_above": sum(bool(z["recently_taken"]) for z in high_zones),
         "recently_taken_below": sum(bool(z["recently_taken"]) for z in low_zones),
-        "current_event": event["type"], "auction_state": event["auction_state"], "event_direction": event_direction,
-        "liquidity_taker": event["liquidity_taker"], "response_actor": event["response_actor"], "event_strength": event["strength"],
+        "current_event": event["type"], "raw_auction_state": event["auction_state"], "auction_confirmation": auction["state"], "event_direction": event_direction,
+        "raw_event_direction": raw_event_direction, "liquidity_taker": event["liquidity_taker"], "response_actor": event["response_actor"], "event_strength": event["strength"],
     }
     return {
-        "architecture": ARCHITECTURE, "question": PROFESSIONAL_QUESTION, "finding": event["type"], "auction_state": event["auction_state"], "directional_implication": event_direction,
+        "architecture": ARCHITECTURE, "question": PROFESSIONAL_QUESTION, "finding": event["type"], "auction_state": auction["state"], "directional_implication": event_direction,
         "liquidity_state": event["liquidity_state"], "liquidity_taker": event["liquidity_taker"], "response_actor": event["response_actor"], "confidence": confidence,
         "evidence_strength": round(float(event["strength"]), 3), "analysis_status": "COMPLETE", "reasoning_role": E4_ROLE,
-        "observations": [f"closed_candles={len(valid)}", f"atr14={atr:.6f}", f"high_liquidity_zones={len(high_zones)}", f"low_liquidity_zones={len(low_zones)}", f"event={event['type']}", f"liquidity_state={event['liquidity_state']}", f"liquidity_taker={event['liquidity_taker']}", f"response_actor={event['response_actor']}", f"auction_state={event['auction_state']}", f"event_direction={event_direction}", f"context_direction={context}"],
-        "liquidity_map": {"high_zones": high_zones, "low_zones": low_zones}, "event": event, "independent_evidence": independent,
+        "observations": [f"closed_candles={len(valid)}", f"atr14={atr:.6f}", f"high_liquidity_zones={len(high_zones)}", f"low_liquidity_zones={len(low_zones)}", f"event={event['type']}", f"liquidity_state={event['liquidity_state']}", f"liquidity_taker={event['liquidity_taker']}", f"response_actor={event['response_actor']}", f"raw_auction_state={event['auction_state']}", f"auction_confirmation={auction['state']}", f"follow_through={auction['follow_through']}", f"follow_through_bars={auction['follow_through_bars']}", f"event_direction={event_direction}", f"context_direction={context}"],
+        "liquidity_map": {"high_zones": high_zones, "low_zones": low_zones, "fresh_high_zones": sum(z["state"] in {"FRESH", "TAKEN"} for z in high_zones), "fresh_low_zones": sum(z["state"] in {"FRESH", "TAKEN"} for z in low_zones), "consumed_high_zones": sum(z["state"] == "CONSUMED" for z in high_zones), "consumed_low_zones": sum(z["state"] == "CONSUMED" for z in low_zones)},
+        "event": event, "independent_evidence": independent,
+        "follow_through": auction["follow_through"], "follow_through_bars": auction["follow_through_bars"], "auction_confirmation": auction,
         "evidence": {"raw_market_data_used": True, "closed_candles_only": True, "decisions_used": False, "gates_used": False, "scores_used": False, "context_used": context_used, "context_corrobation_only": True},
-        "missing_evidence": ["CONFIRMED_AUCTION_EVENT"] if event["type"] == "NO_CONFIRMED_LIQUIDITY_EVENT" else [],
+        "missing_evidence": (["FOLLOW_THROUGH_CONFIRMATION"] if not auction["follow_through"] and event["zone"] is not None else []),
         "conflicts": ["EVENT_VS_CONTEXT_DIVERGENCE"] if context_conflict else [], "reasons": reasons,
-        "reasoning_trace": [f"QUESTION -> {PROFESSIONAL_QUESTION}", f"LIQUIDITY_MAP -> high_zones={len(high_zones)}, low_zones={len(low_zones)}", f"LIQUIDITY_TAKING -> {event['liquidity_state']} by {event['liquidity_taker']}", f"AUCTION_RESPONSE -> {event['auction_state']}", f"DIRECTIONAL_IMPLICATION -> {event_direction}"],
-        "professional_reasoning": {"question": PROFESSIONAL_QUESTION, "task": "MAP_LIQUIDITY_AND_CLASSIFY_AUCTION_ONLY", "primary_state": event["auction_state"], "direction": event_direction, "thesis": event["type"], "evidence_hierarchy": EVIDENCE_HIERARCHY, "independent_evidence": independent, "context_used": any(context_used.values()), "context_corrobation_only": True, "decisions_used": False, "gates_used": False, "scores_used": False, "conflict_detected": context_conflict, "conflict_count": int(context_conflict), "classification_reason": ";".join(reasons)},
+        "reasoning_trace": [f"QUESTION -> {PROFESSIONAL_QUESTION}", f"LIQUIDITY_MAP -> high_zones={len(high_zones)}, low_zones={len(low_zones)}", f"LIQUIDITY_TAKING -> {event['liquidity_state']} by {event['liquidity_taker']}", f"AUCTION_RESPONSE -> {auction['state']}", f"FOLLOW_THROUGH -> {auction['follow_through']}", f"DIRECTIONAL_IMPLICATION -> {event_direction}"],
+        "professional_reasoning": {"question": PROFESSIONAL_QUESTION, "task": "MAP_LIQUIDITY_AND_CLASSIFY_AUCTION_ONLY", "primary_state": auction["state"], "direction": event_direction, "thesis": event["type"], "evidence_hierarchy": EVIDENCE_HIERARCHY, "independent_evidence": independent, "context_used": any(context_used.values()), "context_corrobation_only": True, "decisions_used": False, "gates_used": False, "scores_used": False, "conflict_detected": context_conflict, "conflict_count": int(context_conflict), "classification_reason": ";".join(reasons)},
         "trade_decision_authority": False, "decision_authority": "E9_ONLY", "decision": None, "gate": None, "score": None,
     }
 
 
-__all__ = ["ARCHITECTURE", "E4_ROLE", "EVIDENCE_HIERARCHY", "PROFESSIONAL_QUESTION", "analyze_e4"]
+__all__ = ["ARCHITECTURE", "E4_ROLE", "EVIDENCE_HIERARCHY", "PROFESSIONAL_QUESTION", "analyze_e4", "_follow_through"]
