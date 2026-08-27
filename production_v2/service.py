@@ -75,7 +75,7 @@ class LiveService:
 
     @staticmethod
     def _reasoning(engine) -> dict:
-        """Expose each engine's own reasoning; E2 has no sub-engines, so its core output is the source."""
+        """Expose each engine's own reasoning. E1/E2/E3 are core brains; no child specialist is consulted for E3."""
         output = engine.output or {}
         reasoning = output.get("professional_reasoning") or {}
         specialists = output.get("specialists") or {}
@@ -87,38 +87,22 @@ class LiveService:
             transition = reasoning.get("transition") or output.get("transition") or "UNKNOWN"
             pressure = reasoning.get("directional_pressure") or output.get("directional_pressure") or "BALANCED"
             trend_state = reasoning.get("trend_state") or output.get("trend_state") or "NONE"
-            conclusion = (
-                f"MARKET_STATE={market_state}; VOLATILITY={volatility}; "
-                f"STRUCTURE={structure}; PRESSURE={pressure}; "
-                f"TREND_STATE={trend_state}; TRANSITION={transition}"
-            )
+            conclusion = f"MARKET_STATE={market_state}; VOLATILITY={volatility}; STRUCTURE={structure}; PRESSURE={pressure}; TREND_STATE={trend_state}; TRANSITION={transition}"
             observations = []
             brain_evidence = output.get("evidence") or reasoning.get("evidence") or []
-            if isinstance(brain_evidence, (list, tuple)):
-                observations.extend(str(x) for x in brain_evidence if x)
+            if isinstance(brain_evidence, (list, tuple)): observations.extend(str(x) for x in brain_evidence if x)
             trace = output.get("reasoning_trace") or []
-            if isinstance(trace, (list, tuple)):
-                observations.extend(str(x) for x in trace if x)
+            if isinstance(trace, (list, tuple)): observations.extend(str(x) for x in trace if x)
             for key in ("directional_pressure", "trend_state", "volatility_state", "structure_state", "compression", "expansion", "transition"):
                 value = reasoning.get(key) or output.get(key)
-                if value is not None:
-                    observations.append(f"{key}={value}")
+                if value is not None: observations.append(f"{key}={value}")
             if isinstance(specialists, dict):
                 for item in specialists.values():
                     if not isinstance(item, dict): continue
                     observations.extend(str(x) for x in (item.get("observations") or []) if x)
-            return {
-                "question": reasoning.get("question") or output.get("question") or output.get("specialist_question"),
-                "conclusion": str(conclusion),
-                "observations": list(dict.fromkeys(observations))[:12],
-                "reasons": sorted(set(str(x) for x in (engine.reason_codes or [])))[:16],
-                "role": "MARKET_STATE_ANALYST",
-            }
+            return {"question": reasoning.get("question") or output.get("question") or output.get("specialist_question"), "conclusion": str(conclusion), "observations": list(dict.fromkeys(observations))[:12], "reasons": sorted(set(str(x) for x in (engine.reason_codes or [])))[:16], "role": "MARKET_STATE_ANALYST"}
 
         if engine.engine_id == "E2":
-            # E2 is a single professional core. Its observations/evidence are
-            # already the result of its independent market reconstruction; do
-            # not look for specialist children because E2 intentionally has none.
             core_observations = output.get("observations") or []
             evidence = output.get("evidence") or []
             decision_factors = output.get("decision_factors") or []
@@ -131,15 +115,22 @@ class LiveService:
             observations.extend(str(x) for x in decision_factors if x)
             observations.extend(f"counter_evidence={x}" for x in counter if x)
             observations.extend(f"missing_evidence={x}" for x in missing if x)
-            if not reasons and output.get("opportunity_decision"):
-                reasons.append(str(output["opportunity_decision"]))
-            return {
-                "question": reasoning.get("question") or output.get("question") or "What opportunity is the market offering right now?",
-                "conclusion": str(reasoning.get("conclusion") or output.get("thesis") or "UNRESOLVED"),
-                "observations": list(dict.fromkeys(observations))[:12],
-                "reasons": sorted(set(str(x) for x in reasons if str(x).strip()))[:16],
-                "role": output.get("reasoning_role", "OPPORTUNITY_REGIME_ANALYST"),
-            }
+            if not reasons and output.get("opportunity_decision"): reasons.append(str(output["opportunity_decision"]))
+            return {"question": reasoning.get("question") or output.get("question") or "What opportunity is the market offering right now?", "conclusion": str(reasoning.get("conclusion") or output.get("thesis") or "UNRESOLVED"), "observations": list(dict.fromkeys(observations))[:12], "reasons": sorted(set(str(x) for x in reasons if str(x).strip()))[:16], "role": output.get("reasoning_role", "OPPORTUNITY_REGIME_ANALYST")}
+
+        if engine.engine_id == "E3":
+            # E3 is a single professional brain, exactly like E1/E2. Its own
+            # core output is authoritative for structural analysis. The parked
+            # 3A-3F modules are deliberately ignored.
+            e3_question = reasoning.get("question") or output.get("question") or "What is price structure communicating?"
+            e3_finding = reasoning.get("finding") or reasoning.get("conclusion") or output.get("finding") or "STRUCTURE_UNRESOLVED"
+            observations = []
+            for source in (output.get("observations"), output.get("evidence"), reasoning.get("evidence")):
+                if isinstance(source, (list, tuple)): observations.extend(str(x) for x in source if x)
+            reasons = list(engine.reason_codes or [])
+            reasons.extend(reasoning.get("reason_codes") or [])
+            reasons.extend(output.get("reasons") or [])
+            return {"question": e3_question, "conclusion": str(e3_finding), "observations": list(dict.fromkeys(observations))[:12], "reasons": sorted(set(str(x) for x in reasons if str(x).strip()))[:16], "role": "MARKET_STRUCTURE_ANALYST"}
 
         conclusion = reasoning.get("conclusion") or output.get("analyst_conclusion") or "UNRESOLVED"
         observations = []
@@ -155,13 +146,7 @@ class LiveService:
                         value = nested.get(key)
                         if isinstance(value, (list, tuple)): observations.extend(value)
                         elif value: observations.append(value)
-        return {
-            "question": reasoning.get("question") or output.get("specialist_question"),
-            "conclusion": str(conclusion),
-            "observations": [str(x) for x in observations[:12]],
-            "reasons": sorted(set(str(x) for x in reasons))[:16],
-            "role": output.get("reasoning_role", "SPECIALIST_EVIDENCE"),
-        }
+        return {"question": reasoning.get("question") or output.get("specialist_question"), "conclusion": str(conclusion), "observations": [str(x) for x in observations[:12]], "reasons": sorted(set(str(x) for x in reasons))[:16], "role": output.get("reasoning_role", "SPECIALIST_EVIDENCE")}
 
     def _trace_result(self, alias: str, result) -> None:
         state = result.risk.get("engine_state"); blocked_by = result.risk.get("blocked_by")
@@ -169,27 +154,10 @@ class LiveService:
         for engine in result.engines:
             if engine.engine_id == "E9":
                 reasoning = engine.output.get("professional_reasoning") or {}
-                print(
-                    f"[PRODUCTION V2] {alias} E9 MASTER "
-                    f"decision={engine.output.get('decision', result.decision)} "
-                    f"reason={engine.output.get('decision_reasons', list(engine.reason_codes))} "
-                    f"thesis={reasoning.get('primary_thesis', 'UNRESOLVED')} "
-                    f"setup={((reasoning.get('independent_setup') or reasoning.get('setup') or {}).get('state', reasoning.get('setup_state', 'UNKNOWN')))} "
-                    f"execution={((reasoning.get('execution') or {}).get('state', reasoning.get('execution_state', 'UNKNOWN')))} "
-                    f"conflicts={reasoning.get('conflicts', [])} "
-                    f"invalidations={reasoning.get('hard_invalidations', [])}",
-                    flush=True,
-                )
+                print(f"[PRODUCTION V2] {alias} E9 MASTER decision={engine.output.get('decision', result.decision)} reason={engine.output.get('decision_reasons', list(engine.reason_codes))} thesis={reasoning.get('primary_thesis', 'UNRESOLVED')} setup={((reasoning.get('independent_setup') or reasoning.get('setup') or {}).get('state', reasoning.get('setup_state', 'UNKNOWN')))} execution={((reasoning.get('execution') or {}).get('state', reasoning.get('execution_state', 'UNKNOWN')))} conflicts={reasoning.get('conflicts', [])} invalidations={reasoning.get('hard_invalidations', [])}", flush=True)
                 continue
             why = self._reasoning(engine)
-            print(
-                f"[PRODUCTION V2] {alias} {engine.engine_id} "
-                f"ROLE={why['role']} question={why['question']} "
-                f"finding={why['conclusion']} "
-                f"observations={why['observations']} "
-                f"reasons={why['reasons']}",
-                flush=True,
-            )
+            print(f"[PRODUCTION V2] {alias} {engine.engine_id} ROLE={why['role']} question={why['question']} finding={why['conclusion']} observations={why['observations']} reasons={why['reasons']}", flush=True)
 
     def _loop(self) -> None:
         while True:
@@ -223,3 +191,4 @@ def start_live_service() -> None:
     global _service
     if _service is None: _service = LiveService()
     _service.start()
+    
