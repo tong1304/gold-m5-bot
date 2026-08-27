@@ -2,15 +2,16 @@ from __future__ import annotations
 
 """E3 — Professional Market Structure Brain.
 
-E3 is an independent structural analyst. It reads CLOSED M5 OHLC only and
-returns structural evidence for E9. It never consumes upstream direction,
-decisions, scores or gates and never authorizes a trade.
+Independent structural analyst for CLOSED M5 OHLC. E3 produces auditable
+structure evidence for E9 and never consumes upstream direction, decisions,
+gates or scores and never authorizes a trade.
 """
 
 from statistics import mean
 from typing import Any
 
 QUESTION = "What is price structure communicating?"
+ARCHITECTURE = "E3_SINGLE_PROFESSIONAL_BRAIN_V2"
 
 
 def _num(value: Any) -> float | None:
@@ -41,6 +42,8 @@ def _clean_bars(bars: list[dict[str, Any]] | None) -> tuple[list[dict[str, float
 
 
 def _atr(bars: list[dict[str, float]], period: int = 14) -> float:
+    if not bars:
+        return 0.0
     trs: list[float] = []
     previous: float | None = None
     for bar in bars[-max(period + 1, 2):]:
@@ -65,7 +68,14 @@ def _pivots(bars: list[dict[str, float]], side: str, radius: int = 2) -> list[tu
     return points
 
 
-def _compress(points: list[tuple[int, float]], atr: float, spacing: int = 2) -> list[tuple[int, float]]:
+def _compress(points: list[tuple[int, float]], atr: float, spacing: int = 2, side: str | None = None) -> list[tuple[int, float]]:
+    """Collapse clustered pivots while preserving the correct extreme.
+
+    The previous implementation compared every point as if it were a high and
+    contained a dead conditional. That could discard the most important low.
+    """
+    if not points:
+        return []
     result: list[tuple[int, float]] = []
     tolerance = max(atr * 0.10, 1e-12)
     for point in points:
@@ -75,10 +85,18 @@ def _compress(points: list[tuple[int, float]], atr: float, spacing: int = 2) -> 
         prev = result[-1]
         if point[0] - prev[0] >= spacing:
             result.append(point)
-        elif abs(point[1] - prev[1]) > tolerance:
-            # Keep the more informative extreme inside a clustered region.
-            if point[1] > prev[1] if point in points else False:
+            continue
+        if abs(point[1] - prev[1]) <= tolerance:
+            continue
+        if side == "low":
+            if point[1] < prev[1]:
                 result[-1] = point
+        elif side == "high":
+            if point[1] > prev[1]:
+                result[-1] = point
+        else:
+            # Preserve backward compatibility for callers without a side.
+            result[-1] = point
     return result
 
 
@@ -101,15 +119,17 @@ def _label(points: list[tuple[int, float]], kind: str, atr: float) -> list[dict[
 
 
 def _pair_direction(highs: list[dict[str, Any]], lows: list[dict[str, Any]]) -> str:
-    hs = [x["label"] for x in highs if x["label"] in {"HH", "LH"}]
-    ls = [x["label"] for x in lows if x["label"] in {"HL", "LL"}]
-    if hs and ls:
-        if hs[-1] == "HH" and ls[-1] == "HL":
-            return "UP"
-        if hs[-1] == "LH" and ls[-1] == "LL":
-            return "DOWN"
-        return "MIXED"
-    return "NEUTRAL"
+    hs = [x for x in highs if x["label"] in {"HH", "LH"}]
+    ls = [x for x in lows if x["label"] in {"HL", "LL"}]
+    if not hs or not ls:
+        return "NEUTRAL"
+    high_dir = hs[-1]["label"]
+    low_dir = ls[-1]["label"]
+    if high_dir == "HH" and low_dir == "HL":
+        return "UP"
+    if high_dir == "LH" and low_dir == "LL":
+        return "DOWN"
+    return "MIXED"
 
 
 def _slope_direction(bars: list[dict[str, float]], lookback: int = 20) -> tuple[str, float]:
@@ -119,64 +139,92 @@ def _slope_direction(bars: list[dict[str, float]], lookback: int = 20) -> tuple[
     delta = closes[-1] - closes[0]
     atr = max(_atr(bars), 1e-12)
     normalized = delta / (atr * max(len(closes) - 1, 1))
+    quality = min(1.0, abs(normalized) * 8.0)
     if normalized > 0.035:
-        return "UP", min(1.0, abs(normalized) * 8.0)
+        return "UP", quality
     if normalized < -0.035:
-        return "DOWN", min(1.0, abs(normalized) * 8.0)
-    return "NEUTRAL", min(1.0, abs(normalized) * 8.0)
+        return "DOWN", quality
+    return "NEUTRAL", quality
 
 
-def _bos(bars: list[dict[str, float]], highs: list[dict[str, Any]], lows: list[dict[str, Any]], atr: float) -> dict[str, Any]:
-    if atr <= 0:
-        return {"event": "NO_BOS", "direction": "NEUTRAL", "confirmed": False}
-    latest_close_index = len(bars) - 1
-    close = bars[-1]["close"]
-    candidates: list[tuple[int, float, str, str]] = []
+def _latest_break_candidate(highs: list[dict[str, Any]], lows: list[dict[str, Any]], latest_index: int) -> tuple[float, int, str] | None:
+    candidates: list[tuple[int, float, str]] = []
     for item in highs:
-        if item["index"] < latest_close_index:
-            candidates.append((item["index"], float(item["price"]), "UP", "HIGH"))
+        if item["index"] < latest_index:
+            candidates.append((int(item["index"]), float(item["price"]), "UP"))
     for item in lows:
-        if item["index"] < latest_close_index:
-            candidates.append((item["index"], float(item["price"]), "DOWN", "LOW"))
+        if item["index"] < latest_index:
+            candidates.append((int(item["index"]), float(item["price"]), "DOWN"))
+    if not candidates:
+        return None
     candidates.sort(key=lambda x: x[0], reverse=True)
-    # Only the latest confirmed swing is eligible; this prevents stale BOS events.
-    for swing_index, level, direction, swing_type in candidates[:4]:
-        distance = close - level if direction == "UP" else level - close
-        if distance >= atr * 0.10:
-            return {
-                "event": "CONFIRMED_BOS",
-                "direction": direction,
-                "confirmed": True,
-                "level": round(level, 8),
-                "swing_index": swing_index,
-                "swing_type": swing_type,
-                "break_candle_index": latest_close_index,
-                "break_distance_atr": round(distance / atr, 4),
-            }
-    return {"event": "NO_BOS", "direction": "NEUTRAL", "confirmed": False}
+    idx, level, direction = candidates[0]
+    return level, idx, direction
+
+
+def _bos(
+    bars: list[dict[str, float]],
+    highs: list[dict[str, Any]],
+    lows: list[dict[str, Any]],
+    atr: float,
+    prior_structure: str,
+) -> dict[str, Any]:
+    if atr <= 0 or len(bars) < 2:
+        return {"event": "NO_BOS", "direction": "NEUTRAL", "confirmed": False}
+    latest = bars[-1]
+    latest_index = len(bars) - 1
+    # BOS is confirmed by a CLOSED candle close beyond the most recent eligible
+    # swing. We do not search older swings after rejecting the newest one.
+    candidate = _latest_break_candidate(highs, lows, latest_index)
+    if candidate is None:
+        return {"event": "NO_BOS", "direction": "NEUTRAL", "confirmed": False}
+    level, swing_index, direction = candidate
+    distance = latest["close"] - level if direction == "UP" else level - latest["close"]
+    body = abs(latest["close"] - latest["open"])
+    close_quality = body / atr
+    if distance < atr * 0.10:
+        return {"event": "NO_BOS", "direction": "NEUTRAL", "confirmed": False, "candidate_level": round(level, 8)}
+    event = "CONFIRMED_CHOCH" if prior_structure in {"UP", "DOWN"} and direction != prior_structure else "CONFIRMED_BOS"
+    return {
+        "event": event,
+        "direction": direction,
+        "confirmed": True,
+        "level": round(level, 8),
+        "swing_index": swing_index,
+        "break_candle_index": latest_index,
+        "break_distance_atr": round(distance / atr, 4),
+        "break_body_atr": round(close_quality, 4),
+        "close_beyond_level": True,
+    }
 
 
 def _failure(bars: list[dict[str, float]], bos: dict[str, Any], atr: float) -> dict[str, Any]:
-    if not bos.get("confirmed"):
+    if not bos.get("confirmed") or atr <= 0:
         return {"event": "NO_FAILURE", "direction": "NEUTRAL", "confirmed": False}
     level = float(bos["level"])
     direction = bos["direction"]
     close = bars[-1]["close"]
-    # Failure is only declared when the latest CLOSED candle has reclaimed the broken level.
     reclaimed = close < level - atr * 0.05 if direction == "UP" else close > level + atr * 0.05
     if reclaimed:
-        return {"event": "FAILED_BOS", "direction": "DOWN" if direction == "UP" else "UP", "confirmed": True, "level": level}
+        return {
+            "event": "FAILED_BOS",
+            "direction": "DOWN" if direction == "UP" else "UP",
+            "confirmed": True,
+            "level": level,
+            "failure_candle_index": len(bars) - 1,
+        }
     return {"event": "NO_FAILURE", "direction": "NEUTRAL", "confirmed": False}
 
 
-def _strength(pair: str, bos: dict[str, Any], failure: dict[str, Any], swing_count: int) -> float:
-    score = 0.30 + min(0.40, swing_count * 0.05)
+def _strength(pair: str, bos: dict[str, Any], failure: dict[str, Any], swing_count: int, slope_quality: float) -> float:
+    score = 0.20 + min(0.25, swing_count * 0.035)
     if pair in {"UP", "DOWN"}:
         score += 0.15
     if bos.get("confirmed"):
-        score += 0.20
+        score += min(0.30, 0.15 + float(bos.get("break_distance_atr", 0.0)) * 0.05)
     if failure.get("confirmed"):
         score += 0.05
+    score += min(0.15, slope_quality * 0.15)
     return round(min(1.0, score), 4)
 
 
@@ -184,14 +232,17 @@ def analyze_e3(bars: list[dict[str, Any]]) -> dict[str, Any]:
     """Return an independent, auditable E3 structural thesis from CLOSED M5 OHLC."""
     clean, data_reasons = _clean_bars(bars)
     base = {
-        "architecture": "E3_SINGLE_PROFESSIONAL_BRAIN_V2",
+        "architecture": ARCHITECTURE,
         "reasoning_role": "MARKET_STRUCTURE_ANALYST",
         "question": QUESTION,
         "decision": None,
         "trade_decision_authority": False,
+        "decision_authority": "E9_ONLY",
         "gate": None,
         "sub_engines_active": False,
         "sub_engines_status": "PAUSED",
+        "specialists_active": False,
+        "specialists_status": "PAUSED",
         "upstream_direction_used": False,
         "upstream_decisions_used": False,
         "upstream_gates_used": False,
@@ -218,15 +269,15 @@ def analyze_e3(bars: list[dict[str, Any]]) -> dict[str, Any]:
         }
 
     atr = _atr(clean)
-    highs = _compress(_pivots(clean, "high"), atr)
-    lows = _compress(_pivots(clean, "low"), atr)
+    highs = _compress(_pivots(clean, "high"), atr, side="high")
+    lows = _compress(_pivots(clean, "low"), atr, side="low")
     high_labels = _label(highs, "HIGH", atr)
     low_labels = _label(lows, "LOW", atr)
     pair = _pair_direction(high_labels, low_labels)
     slope, slope_quality = _slope_direction(clean)
 
-    # A professional analyst does not invent HH/HL when pivots are absent. In a clean
-    # monotonic leg it records a directional context anchor instead.
+    # In a monotonic leg, use context anchors only as evidence; they are not
+    # promoted to HH/HL and therefore cannot manufacture a BOS by themselves.
     if not high_labels and not low_labels:
         anchor_index = len(clean) - 1
         anchor = {"index": anchor_index, "price": round(clean[-1]["close"], 8), "label": "DIRECTIONAL_CONTEXT_ANCHOR"}
@@ -237,14 +288,17 @@ def analyze_e3(bars: list[dict[str, Any]]) -> dict[str, Any]:
             high_labels = [{"index": max(0, len(clean) - 20), "price": round(clean[-20]["close"], 8), "label": "DIRECTIONAL_CONTEXT_ANCHOR"}]
             low_labels = [anchor]
 
-    bos = _bos(clean, high_labels, low_labels, atr)
+    bos = _bos(clean, high_labels, low_labels, atr, pair)
     failure = _failure(clean, bos, atr)
 
     if failure["confirmed"]:
         direction, state, finding = failure["direction"], "STRUCTURE_FAILURE", "STRUCTURE_FAILURE"
     elif bos["confirmed"]:
-        direction, state = bos["direction"], "BREAKOUT_CONFIRMED"
+        direction = bos["direction"]
+        state = "BREAKOUT_CONFIRMED" if bos["event"] == "CONFIRMED_BOS" else "CHANGE_OF_CHARACTER"
         finding = "BULLISH_BOS" if direction == "UP" else "BEARISH_BOS"
+        if bos["event"] == "CONFIRMED_CHOCH":
+            finding = "BULLISH_CHOCH" if direction == "UP" else "BEARISH_CHOCH"
     elif pair in {"UP", "DOWN"}:
         direction, state = pair, "CONTINUATION"
         finding = "BULLISH_STRUCTURE" if direction == "UP" else "BEARISH_STRUCTURE"
@@ -259,14 +313,16 @@ def analyze_e3(bars: list[dict[str, Any]]) -> dict[str, Any]:
     internal = {"highs": high_labels[-4:], "lows": low_labels[-4:]}
     external = {"highs": high_labels[-2:], "lows": low_labels[-2:]}
     swing_count = len(high_labels) + len(low_labels)
-    strength = _strength(pair, bos, failure, swing_count)
-    confidence = round(min(1.0, 0.45 + strength * 0.35 + slope_quality * 0.20), 4)
+    strength = _strength(pair, bos, failure, swing_count, slope_quality)
+    confidence = round(min(1.0, 0.35 + strength * 0.40 + slope_quality * 0.15), 4)
 
     reasons: list[str] = []
     if not bos["confirmed"]:
         reasons.append("NO_CONFIRMED_BOS")
     if failure["confirmed"]:
         reasons.append("STRUCTURE_FAILURE_DETECTED")
+    if bos.get("event") == "CONFIRMED_CHOCH":
+        reasons.append("CHANGE_OF_CHARACTER_DETECTED")
     if pair == "MIXED":
         reasons.append("STRUCTURE_CONFLICT")
     if slope in {"UP", "DOWN"} and pair not in {slope, "NEUTRAL"}:
@@ -287,8 +343,11 @@ def analyze_e3(bars: list[dict[str, Any]]) -> dict[str, Any]:
         f"external_swing_count={len(external['highs']) + len(external['lows'])}",
     ]
     if bos.get("confirmed"):
-        evidence.append(f"bos_level={bos['level']}")
-        evidence.append(f"bos_break_distance_atr={bos['break_distance_atr']}")
+        evidence.extend([
+            f"bos_level={bos['level']}",
+            f"bos_break_distance_atr={bos['break_distance_atr']}",
+            f"bos_break_body_atr={bos['break_body_atr']}",
+        ])
 
     return {
         **base,
