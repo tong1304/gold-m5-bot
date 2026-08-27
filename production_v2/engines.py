@@ -12,6 +12,7 @@ from typing import Any
 from .contracts import EngineResult
 from .e1_brain import analyze_e1
 from .e2_brain import analyze_e2
+from .e2_repricing import preserve_repricing_thesis
 
 ENGINE_NAMES={"E1":"Market State Brain","E2":"Opportunity / Regime Brain","E3":"Market Structure Brain","E4":"Liquidity Brain","E5":"Location / Value Brain","E6":"Setup Brain","E7":"Confirmation Brain","E8":"Trade Economics Brain","E9":"Master Decision Brain"}
 SUB_ENGINE_CODES={"E1":["1A","1B","1C","1D","1E","1F","1G"],"E2":[],"E3":["3A","3B","3C","3D","3E","3F"],"E4":["4A","4B","4C","4D","4E","4F"],"E5":["5A","5B","5C","5D","5E","5F"],"E6":["6A","6B","6C","6D","6E","6F"],"E7":["7A","7B","7C","7D","7E","7F"],"E8":["8A","8B","8C","8D","8E","8F","8G"]}
@@ -95,7 +96,7 @@ def _e2_e1_context(permitted:dict[str,Any])->dict[str,Any]:
 def run_engine(engine_id:str,snapshot:dict[str,Any],evidence_bus:dict[str,Any]|None=None)->EngineResult:
     allowed=set(EVIDENCE_INPUTS.get(engine_id,())); permitted={k:evidence_bus[k] for k in allowed if evidence_bus and k in evidence_bus}
     if engine_id=="E2":
-        local=dict(snapshot); local["E1_result"]=_e2_e1_context(permitted); brain=analyze_e2(local)
+        local=dict(snapshot); local["E1_result"]=_e2_e1_context(permitted); brain=analyze_e2(local); brain=preserve_repricing_thesis(brain)
         output={"architecture":"E2_PROFESSIONAL_CORE_ONLY","sub_engines_active":False,"sub_engines_status":"PAUSED","specialists":{},**brain,"decision":None,"entry":None,"trigger":None,"risk":None,"gate":None,"trade_decision_authority":"E9_ONLY","reasoning_role":"OPPORTUNITY_REGIME_ANALYST","upstream_decisions_used":False,"upstream_gates_used":False,"score_used":False}
         return EngineResult("E2",ENGINE_NAMES["E2"],None,float(brain.get("confidence",0.0))*100.0,output,tuple(brain.get("reason_codes",())))
     codes=SUB_ENGINE_CODES[engine_id]; results=[]
