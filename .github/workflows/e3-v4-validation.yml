@@ -1,4 +1,4 @@
-name: E3 V6 validation
+name: E3 single-brain validation
 
 on:
   push:
@@ -21,7 +21,7 @@ jobs:
           python-version: '3.11'
       - name: Install test dependencies
         run: python -m pip install --upgrade pip pytest
-      - name: Compile E3
-        run: python -m py_compile production_v2/e3_brain.py production_v2/e3_brain_v6.py
-      - name: Run E3 V6 regression suite
+      - name: Compile E3 single brain
+        run: python -m py_compile production_v2/e3_brain.py
+      - name: Run E3 professional regression suite
         run: python -m pytest -q tests/test_e3_professional_brain.py tests/test_e3_single_brain.py tests/test_e3_professional_v4_regressions.py tests/test_e3_v6_contract.py
