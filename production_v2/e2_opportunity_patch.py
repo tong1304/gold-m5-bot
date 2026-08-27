@@ -5,106 +5,82 @@ from typing import Any
 from . import e2_brain as _e2_brain
 
 
-_SETUP_FLAGS = (
-    "accepted_up=True",
-    "accepted_down=True",
-    "displacement_up=True",
-    "displacement_down=True",
-    "pullback_up=True",
-    "pullback_down=True",
-)
+def _promote_directional_context(output: dict[str, Any]) -> dict[str, Any]:
+    """Keep a directional opportunity hypothesis alive until confirmation.
 
-
-def _has_real_setup(output: dict[str, Any] | list[Any]) -> bool:
-    """Return True only when E2 exposes concrete setup evidence."""
-    if isinstance(output, dict):
-        opportunity = str(output.get("opportunity") or "").upper()
-        phase = str(output.get("phase") or "").upper()
-
-        if opportunity in {"TREND_PULLBACK_CONTINUATION", "TREND_CONTINUATION"} and phase in {
-            "PULLBACK", "ACCEPTANCE", "EXPANSION"
-        }:
-            return True
-
-        if any(output.get(flag.split("=")[0]) is True for flag in _SETUP_FLAGS):
-            return True
-
-        candidates = output.get("candidate_summary")
-        if isinstance(candidates, list):
-            for candidate in candidates:
-                if not isinstance(candidate, dict):
-                    continue
-                if str(candidate.get("name") or "").upper() != opportunity:
-                    continue
-                if candidate.get("pullback") is True:
-                    return True
-                if candidate.get("acceptance") is True:
-                    return True
-                if candidate.get("displacement") is True:
-                    return True
-
-        observations = output.get("observations") or []
-    else:
-        observations = output
-
-    text = " ".join(str(x) for x in observations)
-    return any(flag in text for flag in _SETUP_FLAGS)
-
-
-def analyze_e2(snapshot: dict[str, Any]) -> dict[str, Any]:
-    """Keep E2 directional context separate from an actual opportunity.
-
-    A trend is not itself a tradable opportunity. E2 may name a trend
-    continuation only when the base brain has observed a concrete setup path:
-    controlled pullback, range acceptance, or displacement. Entry/trigger/risk
-    authority remains E9-only.
+    E2 owns opportunity formation, not entry confirmation. When the core has
+    independently identified a directional TREND but has not yet observed a
+    mature pullback/continuation event, expose the best opportunity hypothesis
+    as DEVELOPING instead of collapsing it into WAIT_FOR_REPRICING. E7 remains
+    responsible for confirmation and E9 remains the only trade authority.
     """
-    out = _e2_brain._ORIGINAL_ANALYZE_E2(snapshot) if hasattr(_e2_brain, "_ORIGINAL_ANALYZE_E2") else _e2_brain.analyze_e2(snapshot)
-    opportunity = str(out.get("opportunity") or "")
-    if opportunity not in {"TREND_PULLBACK_CONTINUATION", "TREND_CONTINUATION"}:
-        return out
-    if _has_real_setup(out):
-        return out
+    if not isinstance(output, dict):
+        return output
 
-    out = dict(out)
-    out["opportunity"] = "WAIT_FOR_REPRICING"
-    out["phase"] = "TRANSITION"
-    out["opportunity_state"] = "WAIT"
-    out["opportunity_maturity"] = "WAITING"
-    out["quality"] = "UNPROVEN"
-    out["opportunity_quality"] = "LOW"
-    out["opportunity_score"] = 0.0
-    out["opportunity_decision"] = "WAIT"
-    out["edge_assessment"] = "NO_EDGE"
-    out["timing_state"] = "WAIT"
-    out["thesis"] = "Trend context detected, but no concrete opportunity setup is present; wait for repricing."
-    out["missing_evidence"] = ["clear directional commitment / repricing"]
-    out["counter_evidence"] = list(out.get("counter_evidence") or [])
-    out["counter_evidence"].append("trend context exists, but no concrete opportunity setup is present")
-    out["counter_evidence_severity"] = "MATERIAL"
+    regime = str(output.get("regime") or "").upper()
+    direction = str(output.get("direction") or "").upper()
+    opportunity = str(output.get("opportunity") or "").upper()
+
+    if regime != "TREND" or direction not in {"UP", "DOWN"}:
+        return output
+    if opportunity not in {"WAIT_FOR_REPRICING", "WAIT_FOR_RANGE_EDGE"}:
+        return output
+
+    out = dict(output)
+    out["opportunity"] = "TREND_PULLBACK_CONTINUATION"
+    out["phase"] = "DEVELOPING"
+    out["opportunity_state"] = "DEVELOPING"
+    out["opportunity_maturity"] = "DEVELOPING"
+    out["quality"] = "DEVELOPING"
+    out["opportunity_quality"] = "MEDIUM"
+    out["opportunity_decision"] = "WATCH"
+    out["edge_assessment"] = "EDGE_CONDITIONAL"
+    out["timing_state"] = "READY_FOR_CONFIRMATION"
+
+    missing = list(out.get("missing_evidence") or [])
+    missing = [x for x in missing if "clear directional commitment / repricing" not in str(x).lower()]
+    for item in ("controlled pullback with directional holding/rejection", "follow-through after pullback"):
+        if item not in missing:
+            missing.append(item)
+    out["missing_evidence"] = missing
+
+    counter = list(out.get("counter_evidence") or [])
+    counter = [x for x in counter if "no concrete opportunity setup" not in str(x).lower()]
+    out["counter_evidence"] = counter
+    out["counter_evidence_severity"] = "MATERIAL" if counter else "MINOR"
+    out["thesis"] = (
+        f"TREND/{direction} creates TREND_PULLBACK_CONTINUATION at DEVELOPING; "
+        "the opportunity thesis is valid context, but confirmation is still required downstream."
+    )
     out["why_not_trade"] = [
-        "directional trend alone is context, not an opportunity",
-        "missing: clear directional commitment / repricing",
+        "opportunity thesis is developing; the controlled pullback is not yet sufficiently established",
+        "entry confirmation belongs to E7; E2 does not infer it from context",
     ]
     out["professional_reasoning"] = dict(out.get("professional_reasoning") or {})
     out["professional_reasoning"].update({
-        "conclusion": "Trend context detected, but no concrete opportunity setup is present; wait for repricing.",
-        "timing": "WAIT",
-        "opportunity_quality": "LOW",
-        "opportunity_decision": "WAIT",
-        "edge_assessment": "NO_EDGE",
-        "required_evidence": ["clear directional commitment / repricing"],
+        "conclusion": out["thesis"],
+        "timing": "READY_FOR_CONFIRMATION",
+        "opportunity_quality": "MEDIUM",
+        "opportunity_decision": "WATCH",
+        "edge_assessment": "EDGE_CONDITIONAL",
+        "required_evidence": list(missing),
         "entry_authorized": False,
+        "confirmation_authority": "E7",
     })
-    codes = [c for c in list(out.get("reason_codes") or []) if c != "OPPORTUNITY_THESIS_ESTABLISHED"]
-    if "MISSING_OPPORTUNITY_CONFIRMATION" not in codes:
-        codes.append("MISSING_OPPORTUNITY_CONFIRMATION")
-    out["reason_codes"] = codes
+    codes = [c for c in list(out.get("reason_codes") or []) if c != "MISSING_OPPORTUNITY_CONFIRMATION"]
+    if "OPPORTUNITY_THESIS_ESTABLISHED" not in codes:
+        codes.append("OPPORTUNITY_THESIS_ESTABLISHED")
+    codes.append("CONFIRMATION_PENDING")
+    out["reason_codes"] = list(dict.fromkeys(codes))
     return out
 
 
-# Keep the original core intact; install this guard before production_v2.engines
-# imports analyze_e2. E2 remains a single professional core, not a new sub-engine.
+def analyze_e2(snapshot: dict[str, Any]) -> dict[str, Any]:
+    """E2 wrapper: opportunity thesis first, confirmation later."""
+    out = _e2_brain._ORIGINAL_ANALYZE_E2(snapshot) if hasattr(_e2_brain, "_ORIGINAL_ANALYZE_E2") else _e2_brain.analyze_e2(snapshot)
+    return _promote_directional_context(out)
+
+
 _ORIGINAL_ANALYZE_E2 = _e2_brain.analyze_e2
 _e2_brain._ORIGINAL_ANALYZE_E2 = _ORIGINAL_ANALYZE_E2
 _e2_brain.analyze_e2 = analyze_e2
