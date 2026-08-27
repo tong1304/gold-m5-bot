@@ -55,7 +55,7 @@ def test_wick_through_level_without_close_is_not_bos():
 def test_failed_break_detects_sweep_and_close_back_inside_level():
     result = _sweep_failure([_bar(109.0, open_=108.0, high=112.0, low=107.5)], [{"index": 10, "price": 110.0, "label": "HH"}], [{"index": 8, "price": 100.0, "label": "HL"}])
     assert result["confirmed"] is True
-    assert result["event"] == "FAILED_BREAK"
+    assert result["event"] == "FAILED_BOS"
     assert result["direction"] == "DOWN"
 
 
