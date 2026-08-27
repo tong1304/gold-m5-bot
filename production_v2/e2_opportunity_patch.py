@@ -15,7 +15,50 @@ _SETUP_FLAGS = (
 )
 
 
-def _has_real_setup(observations: list[Any]) -> bool:
+def _has_real_setup(output: dict[str, Any] | list[Any]) -> bool:
+    """Return True only when E2 exposes concrete setup evidence.
+
+    The previous guard searched only ``observations``.  E2's actual setup
+    booleans are not emitted there, so a valid pullback/acceptance/displacement
+    was incorrectly downgraded to WAIT_FOR_REPRICING on every cycle.
+    Prefer explicit structured evidence, then retain a narrow legacy fallback.
+    """
+    if isinstance(output, dict):
+        opportunity = str(output.get("opportunity") or "").upper()
+        phase = str(output.get("phase") or "").upper()
+
+        # The phase is derived by the E2 core from concrete setup evidence.
+        # Only these phases can make a trend-continuation opportunity concrete.
+        if opportunity in {"TREND_PULLBACK_CONTINUATION", "TREND_CONTINUATION"} and phase in {
+            "PULLBACK", "ACCEPTANCE", "EXPANSION"
+        }:
+            return True
+
+        # Explicit booleans are the strongest source of truth when present.
+        if any(output.get(flag.split("=")[0]) is True for flag in _SETUP_FLAGS):
+            return True
+
+        # Candidate-level evidence is retained for future/alternate E2 output
+        # shapes and prevents the guard from depending on log strings.
+        candidates = output.get("candidate_summary")
+        if isinstance(candidates, list):
+            for candidate in candidates:
+                if not isinstance(candidate, dict):
+                    continue
+                if str(candidate.get("name") or "").upper() != opportunity:
+                    continue
+                if candidate.get("pullback") is True:
+                    return True
+                if candidate.get("acceptance") is True:
+                    return True
+                if candidate.get("displacement") is True:
+                    return True
+
+        observations = output.get("observations") or []
+    else:
+        observations = output
+
+    # Narrow compatibility fallback for older output contracts.
     text = " ".join(str(x) for x in observations)
     return any(flag in text for flag in _SETUP_FLAGS)
 
@@ -23,16 +66,16 @@ def _has_real_setup(observations: list[Any]) -> bool:
 def analyze_e2(snapshot: dict[str, Any]) -> dict[str, Any]:
     """Keep E2 directional context separate from an actual opportunity.
 
-    A trend is not itself a tradable opportunity.  E2 may name a trend
+    A trend is not itself a tradable opportunity. E2 may name a trend
     continuation only when the base brain has observed a concrete setup path:
-    controlled pullback, range acceptance, or displacement.  Entry/trigger/risk
+    controlled pullback, range acceptance, or displacement. Entry/trigger/risk
     authority remains E9-only.
     """
     out = _e2_brain._ORIGINAL_ANALYZE_E2(snapshot) if hasattr(_e2_brain, "_ORIGINAL_ANALYZE_E2") else _e2_brain.analyze_e2(snapshot)
     opportunity = str(out.get("opportunity") or "")
     if opportunity not in {"TREND_PULLBACK_CONTINUATION", "TREND_CONTINUATION"}:
         return out
-    if _has_real_setup(list(out.get("observations") or [])):
+    if _has_real_setup(out):
         return out
 
     out = dict(out)
@@ -72,7 +115,7 @@ def analyze_e2(snapshot: dict[str, Any]) -> dict[str, Any]:
 
 
 # Keep the original core intact; install this guard before production_v2.engines
-# imports analyze_e2.  E2 remains a single professional core, not a new sub-engine.
+# imports analyze_e2. E2 remains a single professional core, not a new sub-engine.
 _ORIGINAL_ANALYZE_E2 = _e2_brain.analyze_e2
 _e2_brain._ORIGINAL_ANALYZE_E2 = _ORIGINAL_ANALYZE_E2
 _e2_brain.analyze_e2 = analyze_e2
