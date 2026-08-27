@@ -1,19 +1,17 @@
 """Production-V2 E4 — Professional Liquidity Brain.
 
-E4 is a standalone, analysis-only brain.  The legacy 4A-4F specialists remain
+E4 is a standalone, analysis-only brain. The legacy 4A-4F specialists remain
 present in the repository but are intentionally PAUSED and are not executed by
-this entrypoint.  E4 may reinterpret qualitative evidence from E1-E3, but it
+this entrypoint. E4 may reinterpret qualitative evidence from E1-E3, but it
 never consumes their score, gate, or trade decision.
 
-Decision boundary: liquidity interpretation only.  E9 remains the sole trade
+Decision boundary: liquidity interpretation only. E9 remains the sole trade
 decision authority.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
 from math import isfinite
 from typing import Any, Iterable
-
 
 _EPS = 1e-9
 
@@ -87,19 +85,17 @@ def _pivot_levels(bars: list[dict[str, float]], lookback: int = 3) -> tuple[list
 def _cluster(levels: list[float], tolerance: float) -> list[dict[str, Any]]:
     if not levels:
         return []
-    tolerance = max(tolerance, _EPS)
     groups: list[list[float]] = []
     for level in sorted(levels):
-        if not groups or abs(level - sum(groups[-1]) / len(groups[-1])) > tolerance:
+        if not groups or abs(level - sum(groups[-1]) / len(groups[-1])) > max(tolerance, _EPS):
             groups.append([level])
         else:
             groups[-1].append(level)
     zones = []
     for idx, group in enumerate(groups, 1):
-        center = sum(group) / len(group)
         zones.append({
             "zone_id": f"L{idx}",
-            "price": center,
+            "price": sum(group) / len(group),
             "lower": min(group),
             "upper": max(group),
             "touches": len(group),
@@ -110,6 +106,7 @@ def _cluster(levels: list[float], tolerance: float) -> list[dict[str, Any]]:
 
 def _evidence_values(evidence_bus: dict[str, Any] | None) -> dict[str, Any]:
     result: dict[str, Any] = {}
+    forbidden = {"decision", "trade_decision", "decision_score", "score", "gate", "gate_passed", "specialist_gate"}
     for engine_id in ("E1", "E2", "E3"):
         package = (evidence_bus or {}).get(engine_id)
         if not isinstance(package, dict):
@@ -117,18 +114,29 @@ def _evidence_values(evidence_bus: dict[str, Any] | None) -> dict[str, Any]:
         evidence = package.get("evidence") or package.get("output") or {}
         if isinstance(evidence, dict):
             output = evidence.get("output") if isinstance(evidence.get("output"), dict) else evidence
-            # Explicitly remove authority fields before interpretation.
-            result[engine_id] = {k: v for k, v in output.items() if str(k).lower() not in {
-                "decision", "trade_decision", "decision_score", "score", "gate", "gate_passed", "specialist_gate"
-            }}
+            result[engine_id] = {k: v for k, v in output.items() if str(k).lower() not in forbidden}
     return result
 
 
+def _iter_values(value: Any):
+    if isinstance(value, dict):
+        for item in value.values():
+            yield from _iter_values(item)
+    elif isinstance(value, (list, tuple, set)):
+        for item in value:
+            yield from _iter_values(item)
+    elif isinstance(value, str):
+        yield value.upper().strip()
+
+
 def _direction_hint(values: dict[str, Any]) -> str:
-    text = str(values).upper()
-    if any(token in text for token in ("BEARISH", "DOWN", "SELL", "SHORT")):
+    directional = {"BULLISH", "BEARISH", "UP", "DOWN", "BUY", "SELL", "LONG", "SHORT"}
+    found = {v for v in _iter_values(values) if v in directional}
+    if found & {"BEARISH", "DOWN", "SELL", "SHORT"} and found & {"BULLISH", "UP", "BUY", "LONG"}:
+        return "CONFLICTING"
+    if found & {"BEARISH", "DOWN", "SELL", "SHORT"}:
         return "DOWN"
-    if any(token in text for token in ("BULLISH", "UP", "BUY", "LONG")):
+    if found & {"BULLISH", "UP", "BUY", "LONG"}:
         return "UP"
     return "UNRESOLVED"
 
@@ -158,7 +166,6 @@ def analyze_e4(bars: Iterable[Any], evidence_bus: dict[str, Any] | None = None) 
     high_zones = _cluster(pivot_highs + [external_high], tol)
     low_zones = _cluster(pivot_lows + [external_low], tol)
 
-    # Evaluate the latest closed candle against nearby liquidity.
     prior_high = max(b["high"] for b in data[-21:-1]) if len(data) > 21 else max(b["high"] for b in data[:-1])
     prior_low = min(b["low"] for b in data[-21:-1]) if len(data) > 21 else min(b["low"] for b in data[:-1])
     swept_high = last["high"] > prior_high + _EPS
@@ -196,7 +203,7 @@ def analyze_e4(bars: Iterable[Any], evidence_bus: dict[str, Any] | None = None) 
     evidence = _evidence_values(evidence_bus)
     contextual_hint = _direction_hint(evidence)
     conflicts = []
-    if contextual_hint not in {"UNRESOLVED", implication} and implication != "UNRESOLVED":
+    if contextual_hint not in {"UNRESOLVED", "CONFLICTING", implication} and implication != "UNRESOLVED":
         conflicts.append("UPSTREAM_CONTEXT_DISAGREES_WITH_LIQUIDITY_EVENT")
 
     return {
