@@ -14,7 +14,7 @@ from .e1_brain import analyze_e1
 from .e2_brain import analyze_e2
 from .e2_repricing import preserve_repricing_thesis
 from .e3_brain import analyze_e3
-from .professional_e4_brain_v15 import analyze_e4, ARCHITECTURE as E4_ARCHITECTURE
+from .e4_brain_v14 import analyze_e4, ARCHITECTURE as E4_ARCHITECTURE
 
 ENGINE_NAMES={"E1":"Market State Brain","E2":"Opportunity / Regime Brain","E3":"Market Structure Brain","E4":"Liquidity Brain","E5":"Location / Value Brain","E6":"Setup Brain","E7":"Confirmation Brain","E8":"Trade Economics Brain","E9":"Master Decision Brain"}
 SUB_ENGINE_CODES={"E1":["1A","1B","1C","1D","1E","1F","1G"],"E2":[],"E3":[],"E4":["4A","4B","4C","4D","4E","4F"],"E5":["5A","5B","5C","5D","5E","5F"],"E6":["6A","6B","6C","6D","6E","6F"],"E7":["7A","7B","7C","7D","7E","7F"],"E8":["8A","8B","8C","8D","8E","8F","8G"]}
@@ -93,8 +93,12 @@ def _e3_contract(brain):
     return EngineResult("E3",ENGINE_NAMES["E3"],None,float(brain.get("confidence",0.0))*100.0,output,tuple(brain.get("reason_codes",())))
 
 def _e4_contract(brain):
-    output={"architecture":E4_ARCHITECTURE,"professional_brain":True,"specialists":{},"specialists_active":False,"specialists_status":"PAUSED",**brain,"decision":None,"gate":None,"trade_decision_authority":False,"decision_authority":"E9_ONLY","reasoning_role":E4_ROLE if False else "LIQUIDITY_AUCTION_ANALYST","upstream_decisions_used":False,"upstream_gates_used":False,"score_used":False}
+    output={"architecture":E4_ARCHITECTURE,"professional_brain":True,"specialists":{},"specialists_active":False,"specialists_status":"PAUSED",**brain,"decision":None,"gate":None,"trade_decision_authority":False,"decision_authority":"E9_ONLY","reasoning_role":"LIQUIDITY_AUCTION_ANALYST","upstream_decisions_used":False,"upstream_gates_used":False,"score_used":False}
     output["score"] = None
+    output["direction_confirmed"] = bool(brain.get("direction") in {"UP","DOWN"} and brain.get("auction",{}).get("confirmed"))
+    output["follow_through"] = brain.get("auction",{}).get("confirmed",False)
+    output["follow_through_bars"] = brain.get("auction",{}).get("follow_through_bars",0)
+    output["auction_confirmation"] = brain.get("auction",{}).get("confirmed",False)
     return EngineResult("E4",ENGINE_NAMES["E4"],None,float(brain.get("evidence_strength",brain.get("confidence",0.0)))*100.0,output,tuple(brain.get("reasons",())))
 
 def run_engine(engine_id,snapshot,evidence_bus=None):
