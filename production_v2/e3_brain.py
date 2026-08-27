@@ -10,7 +10,7 @@ from statistics import mean
 from typing import Any
 
 QUESTION = "What is price structure communicating?"
-ARCHITECTURE = "E3_SINGLE_PROFESSIONAL_BRAIN_V2"
+ARCHITECTURE = "E3_SINGLE_PROFESSIONAL_BRAIN_V3"
 UP, DOWN, NEUTRAL, MIXED = "UP", "DOWN", "NEUTRAL", "MIXED"
 MIN_CANDLES = 20
 INTERNAL_RADIUS = 2
@@ -120,8 +120,9 @@ def _structure_counts(highs, lows):
 
 
 def _latest_break_candidates(highs, lows, latest_index):
-    # Runtime pivots are historical. Synthetic unit fixtures may use arbitrary
-    # pivot indices, so index ordering is not part of this helper's contract.
+    # Only historical pivots can be break levels; the pivot detector itself
+    # excludes the live edge by its radius. latest_index is retained for API
+    # compatibility and fixture compatibility.
     out = []
     if highs: out.append((float(highs[-1]["price"]), int(highs[-1]["index"]), UP))
     if lows: out.append((float(lows[-1]["price"]), int(lows[-1]["index"]), DOWN))
@@ -164,14 +165,6 @@ def _sweep_failure(bars, highs, lows):
     return f[0] if len(f)==1 else {"event":"CONFLICTING_FAILURES","direction":MIXED,"confirmed":False} if f else {"event":"NO_FAILURE","direction":NEUTRAL,"confirmed":False}
 
 
-def _failure(bars, bos, atr):
-    if not bos.get("confirmed") or atr<=0 or not bars or bos.get("level") is None: return {"event":"NO_FAILURE","direction":NEUTRAL,"confirmed":False}
-    level,d,b= float(bos["level"]),bos["direction"],bars[-1]
-    if d==UP and b["high"]>level and b["close"]<level-atr*FAILURE_CLOSE_ATR: return {"event":"FAILED_BOS","direction":DOWN,"confirmed":True,"level":level,"failure_candle_index":len(bars)-1}
-    if d==DOWN and b["low"]<level and b["close"]>level+atr*FAILURE_CLOSE_ATR: return {"event":"FAILED_BOS","direction":UP,"confirmed":True,"level":level,"failure_candle_index":len(bars)-1}
-    return {"event":"NO_FAILURE","direction":NEUTRAL,"confirmed":False}
-
-
 def _slope_direction(bars, lookback=20):
     c=[b["close"] for b in bars[-lookback:]]
     if len(c)<5: return NEUTRAL,0.0
@@ -180,10 +173,18 @@ def _slope_direction(bars, lookback=20):
 
 
 def _strength(external, internal, bos, failure, swings, conflicts):
-    s=.25 + (.25 if external in {UP,DOWN} else 0) + (.22 if internal==external and internal in {UP,DOWN} else .03 if internal==MIXED else .08 if internal in {UP,DOWN} and external in {UP,DOWN} else 0)
-    if bos.get("confirmed"): s += min(.20,.08+float(bos.get("break_distance_atr",0))*.04)+(.05 if bos.get("displacement_ok") else 0)
+    # Confidence is based on structural agreement/events, not on the raw
+    # number of detected pivots. A noisy chart must not score higher merely
+    # because it contains more micro-swings.
+    s=.25 + (.25 if external in {UP,DOWN} else 0)
+    if internal==external and internal in {UP,DOWN}: s += .22
+    elif internal in {UP,DOWN} and external in {UP,DOWN}: s += .08
+    elif internal==MIXED: s += .02
+    if bos.get("confirmed"):
+        s += min(.20,.08+float(bos.get("break_distance_atr",0))*.04)
+        s += .05 if bos.get("displacement_ok") else 0
     if failure.get("confirmed"): s-=.18
-    return round(max(0,min(1,s+min(.08,swings*.003)-min(.20,len(conflicts)*.07))),4)
+    return round(max(0,min(1,s-min(.20,len(conflicts)*.07))),4)
 
 
 def analyze_e3(bars):
@@ -216,9 +217,9 @@ def analyze_e3(bars):
     conflicts=list(dict.fromkeys(conflicts))
     strength=_strength(edef,idef,eb,failure,len(ih)+len(il)+len(eh)+len(el),conflicts); confidence=round(min(1,.28+strength*.58+(.06 if edef==idef and edef in {UP,DOWN} else 0)),4)
     bias=direction if direction in {UP,DOWN} else NEUTRAL
-    obs=[f"closed_candles={len(clean)}",f"atr14={atr:.8f}",f"external_structure={edef}",f"internal_structure={idef}",f"external_state={est}",f"internal_state={ist}",f"slope_context={slope}",f"slope_quality={slope_q:.4f}",f"external_bos={eb['event']}",f"internal_bos={ib['event']}",f"failure={failure['event']}",f"internal_swing_count={len(ih)+len(il)}",f"external_swing_count={len(eh)+len(el)}",f"structure_strength={strength:.4f}"]
+    obs=[f"closed_candles={len(clean)}",f"atr14={atr:.8f}",f"external_structure={edef}",f"internal_structure={idef}",f"external_count_state={est}",f"internal_count_state={ist}",f"slope_context={slope}",f"slope_quality={slope_q:.4f}",f"external_bos={eb['event']}",f"internal_bos={ib['event']}",f"failure={failure['event']}",f"internal_swing_count={len(ih)+len(il)}",f"external_swing_count={len(eh)+len(el)}",f"structure_strength={strength:.4f}"]
     if eb.get("confirmed"): obs += [f"bos_level={eb['level']}",f"bos_break_distance_atr={eb['break_distance_atr']}",f"bos_break_body_atr={eb['break_body_atr']}",f"bos_displacement_ok={eb['displacement_ok']}"]
     recent_high=max(x["high"] for x in clean[-30:]); recent_low=min(x["low"] for x in clean[-30:]); prior=clean[-60:-30] if len(clean)>=60 else clean[:-30]
     prior_high=max((x["high"] for x in prior),default=recent_high); prior_low=min((x["low"] for x in prior),default=recent_low)
-    trace={"closed_candles":len(clean),"atr_period":14,"internal_pivot_window":INTERNAL_RADIUS,"external_pivot_window":EXTERNAL_RADIUS,"pivot_prominence_atr":PROMINENCE_ATR,"bos_close_distance_atr":BOS_DISTANCE_ATR,"bos_body_atr":BOS_BODY_ATR,"wick_only_break_is_bos":False,"external_structure_is_authority":True,"slope_is_structural_authority":False,"internal_structure":idef,"external_structure":edef,"internal_bos":ib,"external_bos":eb,"failure":failure,"upstream_data_consumed":False,"decision_authority":"E9_ONLY"}
-    return {**base,"analysis_status":"COMPLETE","finding":finding,"structure":direction if direction in {UP,DOWN} else MIXED if state=="TRANSITION" else NEUTRAL,"structure_state":state,"direction":direction,"directional_bias":bias,"structural_bias":bias,"internal_structure":{"state":idef,"counts":ic,"labels":ih[-8:]+il[-8:]},"external_structure":{"state":edef,"counts":ec,"labels":eh[-8:]+el[-8:]},"swing_map":{"highs":eh[-8:],"lows":el[-8:]},"HH":ec["HH"],"HL":ec["HL"],"LH":ec["LH"],"LL":ec["LL"],"BOS":finding if eb.get("confirmed") else "NONE","bos":eb,"BOS_type":eb.get("event","NO_BOS"),"bos_type":eb.get("event","NO_BOS"),"BOS_level":eb.get("level"),"bos_level":eb.get("level"),"BOS_candle_index":eb.get("break_candle_index"),"structural_failure":failure.get("event","NO_FAILURE"),"failure_type":failure.get("event","NO_FAILURE"),"failure_level":failure.get("level"),"failure":failure,"strength":strength,"structure_strength":strength,"confidence":confidence,"recent_high":round(recent_high,8),"recent_low":round(recent_low,8),"prior_high":round(prior_high,8),"prior_low":round(prior_low,8),"atr":round(atr,8),"protected_high":eh[-1] if eh else None,"protected_low":el[-1] if el else None,"conflicts":conflicts,"evidence":obs,"observations":obs,"reason_codes":conflicts,"reasons":conflicts,"reasoning_trace":trace}
+    trace={"closed_candles":len(clean),"atr_period":14,"internal_pivot_window":INTERNAL_RADIUS,"external_pivot_window":EXTERNAL_RADIUS,"pivot_prominence_atr":PROMINENCE_ATR,"bos_close_distance_atr":BOS_DISTANCE_ATR,"bos_body_atr":BOS_BODY_ATR,"wick_only_break_is_bos":False,"external_structure_is_authority":True,"slope_is_structural_authority":False,"internal_structure":idef,"external_structure":edef,"internal_state":idef,"external_state":edef,"internal_count_state":ist,"external_count_state":est,"internal_bos":ib,"external_bos":eb,"failure":failure,"upstream_data_consumed":False,"decision_authority":"E9_ONLY"}
+    return {**base,"analysis_status":"COMPLETE","finding":finding,"structure":direction if direction in {UP,DOWN} else MIXED if state=="TRANSITION" else NEUTRAL,"structure_state":state,"direction":direction,"directional_bias":bias,"structural_bias":bias,"internal_structure":{"state":idef,"count_state":ist,"counts":ic,"labels":ih[-8:]+il[-8:]},"external_structure":{"state":edef,"count_state":est,"counts":ec,"labels":eh[-8:]+el[-8:]},"swing_map":{"highs":eh[-8:],"lows":el[-8:]},"HH":ec["HH"],"HL":ec["HL"],"LH":ec["LH"],"LL":ec["LL"],"BOS":finding if eb.get("confirmed") else "NONE","bos":eb,"BOS_type":eb.get("event","NO_BOS"),"bos_type":eb.get("event","NO_BOS"),"BOS_level":eb.get("level"),"bos_level":eb.get("level"),"BOS_candle_index":eb.get("break_candle_index"),"structural_failure":failure.get("event","NO_FAILURE"),"failure_type":failure.get("event","NO_FAILURE"),"failure_level":failure.get("level"),"failure":failure,"strength":strength,"structure_strength":strength,"confidence":confidence,"recent_high":round(recent_high,8),"recent_low":round(recent_low,8),"prior_high":round(prior_high,8),"prior_low":round(prior_low,8),"atr":round(atr,8),"protected_high":eh[-1] if eh else None,"protected_low":el[-1] if el else None,"conflicts":conflicts,"evidence":obs,"observations":obs,"reason_codes":conflicts,"reasons":conflicts,"reasoning_trace":trace}
