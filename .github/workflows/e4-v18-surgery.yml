@@ -1,0 +1,48 @@
+name: e4-v18-surgery
+on:
+  push:
+    branches: [production-v2]
+
+permissions:
+  contents: write
+
+jobs:
+  surgery:
+    if: startsWith(github.event.head_commit.message, 'feat: harden E4 professional liquidity auction brain v18')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.11'
+      - name: Route production E4 to v18
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          p = Path('production_v2/engines.py')
+          s = p.read_text()
+          old = 'from .professional_e4_brain_v15 import analyze_e4, ARCHITECTURE as E4_ARCHITECTURE'
+          new = 'from .professional_e4_brain_v18 import analyze_e4, ARCHITECTURE as E4_ARCHITECTURE'
+          if old not in s:
+              raise SystemExit('E4 import boundary not found; aborting surgery')
+          p.write_text(s.replace(old, new, 1))
+
+          t = Path('tests/test_e4_professional_brain.py')
+          ts = t.read_text()
+          ts = ts.replace('E4_SINGLE_PROFESSIONAL_BRAIN_V17', 'E4_SINGLE_PROFESSIONAL_BRAIN_V18')
+          t.write_text(ts)
+          PY
+      - name: Compile
+        run: python -m compileall -q production_v2
+      - name: Run E4 regression tests
+        run: python -m pytest -q tests/test_e4_professional_brain.py
+      - name: Run E4 v18 contract tests
+        run: python -m pytest -q tests/test_e4_professional_v18.py
+      - name: Commit surgery
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add production_v2/engines.py tests/test_e4_professional_brain.py .github/workflows/e4-v18-surgery.yml
+          git rm -f .github/workflows/e4-v18-surgery.yml
+          git commit -m 'feat: route production E4 to professional brain v18'
+          git push
