@@ -10,6 +10,7 @@ def _bars(n=60):
         close=price-0.15 if i >= n-12 else price+0.05
         bars.append({"open": price, "high": max(price, close)+0.4, "low": min(price, close)-0.4, "close": close})
         price=close
+    bars[-1] = {"open": price, "high": price+0.25, "low": price-0.25, "close": price}
     return bars
 
 
