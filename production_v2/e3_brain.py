@@ -36,58 +36,51 @@ def _num(v: Any):
 def _clean_bars(bars):
     out, reasons = [], []
     for i, b in enumerate(bars or []):
-        if not isinstance(b, dict):
-            reasons.append(f"bar_{i}_not_mapping"); continue
-        vals = [_num(b.get(k)) for k in ("open", "high", "low", "close")]
-        if any(v is None for v in vals):
-            reasons.append(f"bar_{i}_ohlc_invalid"); continue
-        o, h, l, c = vals
-        if h < max(o, c) or l > min(o, c) or h < l:
-            reasons.append(f"bar_{i}_ohlc_inconsistent"); continue
-        out.append({"open": o, "high": h, "low": l, "close": c})
-    return out, reasons
+        if not isinstance(b, dict): reasons.append(f"bar_{i}_not_mapping"); continue
+        vals=[_num(b.get(k)) for k in ("open","high","low","close")]
+        if any(v is None for v in vals): reasons.append(f"bar_{i}_ohlc_invalid"); continue
+        o,h,l,c=vals
+        if h<max(o,c) or l>min(o,c) or h<l: reasons.append(f"bar_{i}_ohlc_inconsistent"); continue
+        out.append({"open":o,"high":h,"low":l,"close":c})
+    return out,reasons
 
 
-def _atr(bars, period=14):
-    if len(bars) < 2: return 0.0
-    prev, trs = bars[0]["close"], []
-    for b in bars[1:]:
-        trs.append(max(b["high"]-b["low"], abs(b["high"]-prev), abs(b["low"]-prev)))
-        prev = b["close"]
+def _atr(bars,period=14):
+    if len(bars)<2: return 0.0
+    prev=bars[0]["close"]; trs=[]
+    for b in bars[1:]: trs.append(max(b["high"]-b["low"],abs(b["high"]-prev),abs(b["low"]-prev))); prev=b["close"]
     return mean(trs[-period:]) if trs else 0.0
 
 
-def _atr_at(bars, i, period=14):
-    if i < 1: return 0.0
-    trs = []
-    for j in range(max(1, i-period+1), i+1):
-        b, p = bars[j], bars[j-1]["close"]
-        trs.append(max(b["high"]-b["low"], abs(b["high"]-p), abs(b["low"]-p)))
+def _atr_at(bars,i,period=14):
+    if i<1: return 0.0
+    trs=[]
+    for j in range(max(1,i-period+1),i+1):
+        b,p=bars[j],bars[j-1]["close"]; trs.append(max(b["high"]-b["low"],abs(b["high"]-p),abs(b["low"]-p)))
     return mean(trs) if trs else 0.0
 
 
-def _pivots(bars, side, radius):
+def _pivots(bars,side,radius):
     pts=[]
-    if len(bars) < 2*radius+1: return pts
-    for i in range(radius, len(bars)-radius):
-        x=bars[i][side]; left=[bars[j][side] for j in range(i-radius,i)]; right=[bars[j][side] for j in range(i+1,i+radius+1)]
-        a=max(_atr_at(bars,i),1e-12); p=PROMINENCE_ATR*a
+    if len(bars)<2*radius+1: return pts
+    for i in range(radius,len(bars)-radius):
+        x=bars[i][side]; left=[bars[j][side] for j in range(i-radius,i)]; right=[bars[j][side] for j in range(i+1,i+radius+1)]; p=PROMINENCE_ATR*max(_atr_at(bars,i),1e-12)
         if side=="high" and x>=max(left) and x>max(right) and min(x-max(left),x-max(right))>=p: pts.append((i,x))
         elif side=="low" and x<=min(left) and x<min(right) and min(min(left)-x,min(right)-x)>=p: pts.append((i,x))
     return pts
 
 
-def _compress(points, atr, side):
+def _compress(points,atr,side="high",spacing=2):
     out=[]; tol=max(atr*EQ_TOLERANCE_ATR,1e-12)
     for p in points:
-        if not out or p[0]-out[-1][0]>=2: out.append(p); continue
-        if abs(p[1]-out[-1][1])<=tol: continue
+        if not out or p[0]-out[-1][0]>=spacing: out.append(p); continue
+        if abs(p[1]-out[-1][1])<tol: continue
         if side=="high" and p[1]>out[-1][1]: out[-1]=p
         elif side=="low" and p[1]<out[-1][1]: out[-1]=p
     return out
 
 
-def _label(points, kind, atr):
+def _label(points,kind,atr):
     out=[]; tol=max(atr*EQ_TOLERANCE_ATR,1e-12)
     for i,(idx,price) in enumerate(points):
         if i==0: label="SWING_HIGH" if kind=="HIGH" else "SWING_LOW"
@@ -101,8 +94,7 @@ def _label(points, kind, atr):
 
 
 def _structure_direction(highs,lows):
-    h=next((x["label"] for x in reversed(highs) if x["label"] in {"HH","LH"}),None)
-    l=next((x["label"] for x in reversed(lows) if x["label"] in {"HL","LL"}),None)
+    h=next((x["label"] for x in reversed(highs) if x["label"] in {"HH","LH"}),None); l=next((x["label"] for x in reversed(lows) if x["label"] in {"HL","LL"}),None)
     if h=="HH" and l=="HL": return UP
     if h=="LH" and l=="LL": return DOWN
     return MIXED if h and l else NEUTRAL
@@ -125,9 +117,7 @@ def _latest_break_candidates(highs,lows,latest_index):
 
 def _candle_break_quality(bar,level,direction,atr):
     if atr<=0: return {"valid":False,"distance_atr":0.0,"body_atr":0.0,"close_location":0.5,"displacement_ok":False}
-    rng=max(bar["high"]-bar["low"],1e-12); body=abs(bar["close"]-bar["open"])/atr; loc=(bar["close"]-bar["low"])/rng
-    distance=(bar["close"]-level) if direction==UP else (level-bar["close"])
-    close_ok=distance>=BOS_DISTANCE_ATR*atr; directional_close=loc>=0.55 if direction==UP else loc<=0.45; displacement=body>=BOS_BODY_ATR or directional_close
+    rng=max(bar["high"]-bar["low"],1e-12); body=abs(bar["close"]-bar["open"])/atr; loc=(bar["close"]-bar["low"])/rng; distance=(bar["close"]-level) if direction==UP else (level-bar["close"]); close_ok=distance>=BOS_DISTANCE_ATR*atr; directional=loc>=0.55 if direction==UP else loc<=0.45; displacement=body>=BOS_BODY_ATR or directional
     return {"valid":bool(close_ok and displacement),"distance_atr":round(max(0,distance/atr),4),"body_atr":round(body,4),"close_location":round(loc,4),"close_beyond_level":bool(close_ok),"displacement_ok":bool(displacement)}
 
 
@@ -145,18 +135,15 @@ def _bos(bars,highs,lows,atr,prior_structure,scope="EXTERNAL"):
 
 
 def _sweep_failure(bars,highs,lows,atr=None):
-    """Require both a meaningful liquidity excursion and meaningful reclaim."""
     if not bars: return {"event":"NO_FAILURE","direction":NEUTRAL,"confirmed":False}
     atr=max(float(atr if atr is not None else _atr(bars)),1e-12); b=bars[-1]; failures=[]
     for level,idx,d in _latest_break_candidates(highs,lows,len(bars)-1):
         if d==UP and b["high"]>level and b["close"]<level:
             sweep=(b["high"]-level)/atr; reclaim=(level-b["close"])/atr
-            if sweep>=FAILURE_SWEEP_ATR and reclaim>=FAILURE_CLOSE_ATR:
-                failures.append({"event":"FAILED_BREAK","direction":DOWN,"confirmed":True,"level":round(level,8),"swing_index":idx,"failure_candle_index":len(bars)-1,"scope":"EXTERNAL","sweep_distance_atr":round(sweep,4),"reclaim_distance_atr":round(reclaim,4)})
+            if sweep>=FAILURE_SWEEP_ATR and reclaim>=FAILURE_CLOSE_ATR: failures.append({"event":"FAILED_BREAK","direction":DOWN,"confirmed":True,"level":round(level,8),"swing_index":idx,"failure_candle_index":len(bars)-1,"scope":"EXTERNAL","sweep_distance_atr":round(sweep,4),"reclaim_distance_atr":round(reclaim,4)})
         elif d==DOWN and b["low"]<level and b["close"]>level:
             sweep=(level-b["low"])/atr; reclaim=(b["close"]-level)/atr
-            if sweep>=FAILURE_SWEEP_ATR and reclaim>=FAILURE_CLOSE_ATR:
-                failures.append({"event":"FAILED_BREAK","direction":UP,"confirmed":True,"level":round(level,8),"swing_index":idx,"failure_candle_index":len(bars)-1,"scope":"EXTERNAL","sweep_distance_atr":round(sweep,4),"reclaim_distance_atr":round(reclaim,4)})
+            if sweep>=FAILURE_SWEEP_ATR and reclaim>=FAILURE_CLOSE_ATR: failures.append({"event":"FAILED_BREAK","direction":UP,"confirmed":True,"level":round(level,8),"swing_index":idx,"failure_candle_index":len(bars)-1,"scope":"EXTERNAL","sweep_distance_atr":round(sweep,4),"reclaim_distance_atr":round(reclaim,4)})
     if len(failures)==1: return failures[0]
     if len(failures)>1: return {"event":"CONFLICTING_FAILURES","direction":MIXED,"confirmed":False}
     return {"event":"NO_FAILURE","direction":NEUTRAL,"confirmed":False}
@@ -174,7 +161,7 @@ def _strength(external,internal,bos,failure,conflicts):
     if internal==external and internal in {UP,DOWN}: s+=.22
     elif internal in {UP,DOWN} and external in {UP,DOWN}: s+=.08
     elif internal==MIXED: s+=.02
-    if bos.get("confirmed"): s+=min(.20,.08+float(bos.get("break_distance_atr",0))*0.04); s+=.05 if bos.get("displacement_ok") else 0
+    if bos.get("confirmed"): s+=min(.20,.08+float(bos.get("break_distance_atr",0))*.04); s+=.05 if bos.get("displacement_ok") else 0
     if failure.get("confirmed"): s-=.18
     return round(max(0,min(1,s-min(.20,len(conflicts)*.07))),4)
 
@@ -184,11 +171,8 @@ def analyze_e3(bars):
     base={"architecture":ARCHITECTURE,"reasoning_role":"MARKET_STRUCTURE_ANALYST","question":QUESTION,"decision":None,"trade_decision_authority":False,"decision_authority":"E9_ONLY","gate":None,"sub_engines_active":False,"sub_engines_status":"PAUSED","specialists_active":False,"specialists_status":"PAUSED","upstream_direction_used":False,"upstream_decisions_used":False,"upstream_gates_used":False,"score_used":False}
     if len(clean)<MIN_CANDLES:
         return {**base,"analysis_status":"INSUFFICIENT_DATA","finding":"STRUCTURE_INSUFFICIENT_DATA","structure":"UNKNOWN","structure_state":"INSUFFICIENT_DATA","direction":NEUTRAL,"directional_bias":NEUTRAL,"structural_bias":NEUTRAL,"swing_map":{"highs":[],"lows":[]},"internal_structure":{},"external_structure":{},"bos":{"event":"NO_BOS","direction":NEUTRAL,"confirmed":False},"failure":{"event":"NO_FAILURE","direction":NEUTRAL,"confirmed":False},"BOS":"NONE","BOS_type":"NONE","structural_failure":"NONE","failure_type":"NONE","strength":0.0,"structure_strength":0.0,"confidence":0.0,"evidence":[],"observations":[],"conflicts":[],"reason_codes":["E3_INSUFFICIENT_DATA",*data_reasons[:4]],"reasons":["E3_INSUFFICIENT_DATA",*data_reasons[:4]],"reasoning_trace":{"closed_candles":len(clean)}}
-    atr=_atr(clean)
-    ih=_label(_compress(_pivots(clean,"high",INTERNAL_RADIUS),atr,"high"),"HIGH",atr); il=_label(_compress(_pivots(clean,"low",INTERNAL_RADIUS),atr,"low"),"LOW",atr)
-    eh=_label(_compress(_pivots(clean,"high",EXTERNAL_RADIUS),atr,"high"),"HIGH",atr); el=_label(_compress(_pivots(clean,"low",EXTERNAL_RADIUS),atr,"low"),"LOW",atr)
-    idef=_structure_direction(ih,il); edef=_structure_direction(eh,el); ist,ic=_structure_counts(ih,il); est,ec=_structure_counts(eh,el)
-    slope,slope_q=_slope_direction(clean); eb=_bos(clean,eh,el,atr,edef,"EXTERNAL"); ib=_bos(clean,ih,il,atr,idef,"INTERNAL"); failure=_sweep_failure(clean,eh,el,atr)
+    atr=_atr(clean); ih=_label(_compress(_pivots(clean,"high",INTERNAL_RADIUS),atr,"high"),"HIGH",atr); il=_label(_compress(_pivots(clean,"low",INTERNAL_RADIUS),atr,"low"),"LOW",atr); eh=_label(_compress(_pivots(clean,"high",EXTERNAL_RADIUS),atr,"high"),"HIGH",atr); el=_label(_compress(_pivots(clean,"low",EXTERNAL_RADIUS),atr,"low"),"LOW",atr)
+    idef=_structure_direction(ih,il); edef=_structure_direction(eh,el); ist,ic=_structure_counts(ih,il); est,ec=_structure_counts(eh,el); slope,slope_q=_slope_direction(clean); eb=_bos(clean,eh,el,atr,edef,"EXTERNAL"); ib=_bos(clean,ih,il,atr,idef,"INTERNAL"); failure=_sweep_failure(clean,eh,el,atr)
     conflicts=[]
     if edef in {UP,DOWN} and idef in {UP,DOWN} and edef!=idef: conflicts.append("INTERNAL_EXTERNAL_DIVERGENCE")
     if slope in {UP,DOWN} and edef not in {slope,NEUTRAL}: conflicts.append("SLOPE_NOT_STRUCTURAL_AUTHORITY")
@@ -206,8 +190,7 @@ def analyze_e3(bars):
     if eb.get("event")=="CONFIRMED_CHOCH": conflicts.append("CHANGE_OF_CHARACTER_DETECTED")
     if edef==MIXED or idef==MIXED: conflicts.append("STRUCTURE_CONFLICT")
     if not eh or not el: conflicts.append("LIMITED_EXTERNAL_SWINGS")
-    conflicts=list(dict.fromkeys(conflicts))
-    strength=_strength(edef,idef,eb,failure,conflicts); confidence=round(min(1,.28+strength*.58+(.06 if edef==idef and edef in {UP,DOWN} else 0)),4); bias=direction if direction in {UP,DOWN} else NEUTRAL
+    conflicts=list(dict.fromkeys(conflicts)); strength=_strength(edef,idef,eb,failure,conflicts); confidence=round(min(1,.28+strength*.58+(.06 if edef==idef and edef in {UP,DOWN} else 0)),4); bias=direction if direction in {UP,DOWN} else NEUTRAL
     recent=clean[-30:]; prior=clean[-60:-30] if len(clean)>=60 else clean[:-30]; recent_high=max(x["high"] for x in recent); recent_low=min(x["low"] for x in recent); prior_high=max((x["high"] for x in prior),default=recent_high); prior_low=min((x["low"] for x in prior),default=recent_low)
     obs=[f"closed_candles={len(clean)}",f"atr14={atr:.8f}",f"external_structure={edef}",f"internal_structure={idef}",f"external_count_state={est}",f"internal_count_state={ist}",f"slope_context={slope}",f"slope_quality={slope_q:.4f}",f"external_bos={eb['event']}",f"internal_bos={ib['event']}",f"failure={failure['event']}",f"structure_strength={strength:.4f}"]
     if eb.get("confirmed"): obs += [f"bos_level={eb['level']}",f"bos_break_distance_atr={eb['break_distance_atr']}",f"bos_break_body_atr={eb['break_body_atr']}",f"bos_displacement_ok={eb['displacement_ok']}"]
