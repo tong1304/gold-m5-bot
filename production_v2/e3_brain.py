@@ -1,10 +1,14 @@
-"""Production E3 entrypoint — V8 professional market-structure brain.
+"""Production V2 E3 — single professional brain interface.
 
-E3 remains analysis-only. E1/E2 and E4-E9 are not modified.
-Legacy regression helpers remain exported for compatibility.
+The public E3 interface is intentionally identical in shape to E1/E2/E5:
+one specialist brain, analysis-only, no execution authority. The locked V8
+implementation remains the E3 calculation authority behind this stable module
+interface; no E1/E2/E4-E9 behavior is changed here.
 """
-
 from .e3_brain_v8 import analyze_e3
-from .e3_brain_v6 import _compress, _bos, _sweep_failure
 
-__all__ = ["analyze_e3", "_compress", "_bos", "_sweep_failure"]
+QUESTION = "What is price structure communicating?"
+ARCHITECTURE = "E3_PROFESSIONAL_CORE_ONLY"
+DECISION_AUTHORITY = "E9_ONLY"
+
+__all__ = ["analyze_e3", "QUESTION", "ARCHITECTURE", "DECISION_AUTHORITY"]
