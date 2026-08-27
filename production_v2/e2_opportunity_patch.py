@@ -16,30 +16,19 @@ _SETUP_FLAGS = (
 
 
 def _has_real_setup(output: dict[str, Any] | list[Any]) -> bool:
-    """Return True only when E2 exposes concrete setup evidence.
-
-    The previous guard searched only ``observations``.  E2's actual setup
-    booleans are not emitted there, so a valid pullback/acceptance/displacement
-    was incorrectly downgraded to WAIT_FOR_REPRICING on every cycle.
-    Prefer explicit structured evidence, then retain a narrow legacy fallback.
-    """
+    """Return True only when E2 exposes concrete setup evidence."""
     if isinstance(output, dict):
         opportunity = str(output.get("opportunity") or "").upper()
         phase = str(output.get("phase") or "").upper()
 
-        # The phase is derived by the E2 core from concrete setup evidence.
-        # Only these phases can make a trend-continuation opportunity concrete.
         if opportunity in {"TREND_PULLBACK_CONTINUATION", "TREND_CONTINUATION"} and phase in {
             "PULLBACK", "ACCEPTANCE", "EXPANSION"
         }:
             return True
 
-        # Explicit booleans are the strongest source of truth when present.
         if any(output.get(flag.split("=")[0]) is True for flag in _SETUP_FLAGS):
             return True
 
-        # Candidate-level evidence is retained for future/alternate E2 output
-        # shapes and prevents the guard from depending on log strings.
         candidates = output.get("candidate_summary")
         if isinstance(candidates, list):
             for candidate in candidates:
@@ -58,7 +47,6 @@ def _has_real_setup(output: dict[str, Any] | list[Any]) -> bool:
     else:
         observations = output
 
-    # Narrow compatibility fallback for older output contracts.
     text = " ".join(str(x) for x in observations)
     return any(flag in text for flag in _SETUP_FLAGS)
 
@@ -89,6 +77,7 @@ def analyze_e2(snapshot: dict[str, Any]) -> dict[str, Any]:
     out["opportunity_decision"] = "WAIT"
     out["edge_assessment"] = "NO_EDGE"
     out["timing_state"] = "WAIT"
+    out["thesis"] = "Trend context detected, but no concrete opportunity setup is present; wait for repricing."
     out["missing_evidence"] = ["clear directional commitment / repricing"]
     out["counter_evidence"] = list(out.get("counter_evidence") or [])
     out["counter_evidence"].append("trend context exists, but no concrete opportunity setup is present")
