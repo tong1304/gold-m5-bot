@@ -11,7 +11,7 @@ def test_e4_is_standalone_and_pauses_legacy_specialists():
     result = run_engine("E4", {"bars": bars}, {"E1": {"engine_id": "E1", "evidence": {"output": {"score": 99, "gate": True, "direction": "UP"}}}})
     assert result.engine_id == "E4"
     assert result.gate_passed is None
-    assert result.output["architecture"] == "E4_PROFESSIONAL_LIQUIDITY_BRAIN_V1"
+    assert result.output["architecture"] == "E4_SINGLE_PROFESSIONAL_BRAIN_V10"
     assert result.output["specialists_active"] is False
     assert result.output["specialists_status"] == "PAUSED"
     assert result.output["decision"] is None
@@ -29,7 +29,8 @@ def test_e4_detects_closed_candle_high_sweep_rejection():
     ])
     result = analyze_e4(bars)
     assert result["analysis_status"] == "COMPLETE"
-    assert result["event"] == "HIGH_SWEEP_REJECTION"
+    assert result["event"]["type"] == "HIGH_SWEEP_REJECTION"
+    assert result["event"]["liquidity_state"] == "TAKEN"
     assert result["directional_implication"] == "DOWN"
     assert result["evidence"]["raw_market_data_used"] is True
 
@@ -42,3 +43,16 @@ def test_e4_does_not_turn_context_direction_into_a_trade_decision():
     assert result.get("decision") is None
     assert result["evidence"]["scores_used"] is False
     assert result["evidence"]["gates_used"] is False
+
+
+def test_e4_emits_freshness_and_auction_evidence():
+    bars = _bars([100 + i * 0.05 for i in range(60)])
+    result = analyze_e4(bars)
+    liquidity = result["liquidity_map"]
+    assert "fresh_high_zones" in liquidity
+    assert "fresh_low_zones" in liquidity
+    assert "consumed_high_zones" in liquidity
+    assert "consumed_low_zones" in liquidity
+    assert result["auction_state"] in {"REJECTION", "ACCEPTANCE", "BALANCED", "UNRESOLVED"}
+    assert "missing_evidence" in result
+    assert "conflicts" in result
