@@ -1,57 +1,92 @@
-from production_v2.engines import run_engine
+from production_v2.e1_brain import analyze_e1
 
 
-def _bars(direction="down", n=80):
-    bars=[]
-    price=100.0
-    for i in range(n):
-        step=-0.45 if direction == "down" else 0.45
-        close=price + step
-        high=max(price, close)+0.08
-        low=min(price, close)-0.08
-        bars.append({"open":price,"high":high,"low":low,"close":close,"volume":1000,"timestamp":i})
-        price=close
+def _bars_from_closes(closes, spread=0.08):
+    bars = []
+    previous = closes[0]
+    for i, close in enumerate(closes):
+        high = max(previous, close) + spread
+        low = min(previous, close) - spread
+        bars.append({
+            "open": previous,
+            "high": high,
+            "low": low,
+            "close": close,
+            "volume": 1000,
+            "timestamp": i,
+        })
+        previous = close
     return bars
 
 
-def test_e1_reports_market_state_without_trade_direction_or_authority():
-    result=run_engine("E1", {"symbol":"XAU/USD","timeframe":"M5","bars":_bars("down")})
-    out=result.output
-    assert out["decision_authority"] == "E9_ONLY"
-    assert out["market_state"] in {"TREND_DOWN", "EXPANSION", "TRANSITION", "UNCLEAR"}
-    assert out["directional_pressure"] in {"BEARISH", "BULLISH", "BALANCED"}
-    assert "decision" not in out
-    assert out["trade_decision_authority"] is False
-    assert isinstance(out["evidence"], list)
-    assert isinstance(out["conflicts"], list)
-    assert isinstance(out["reasoning_trace"], list)
-
-
-def test_e1_can_admit_unclear_instead_of_forcing_direction():
-    bars=[]
-    price=100.0
-    for i in range(80):
-        close=price + (0.2 if i % 2 else -0.2)
-        bars.append({"open":price,"high":max(price,close)+0.05,"low":min(price,close)-0.05,"close":close,"volume":1000,"timestamp":i})
-        price=close
-    result=run_engine("E1", {"symbol":"BTC/USD","timeframe":"M5","bars":bars})
-    out=result.output
-    assert out["directional_pressure"] == "BALANCED"
-    assert out["market_state"] in {"RANGE", "COMPRESSION", "TRANSITION", "UNCLEAR"}
-
-
-def test_e1_brain_exposes_professional_question_and_decision_independent_reasoning():
-    result=run_engine("E1", {"symbol":"XAU/USD","timeframe":"M5","bars":_bars("down")})
-    out=result.output
+def test_e1_is_market_state_only_and_never_authorizes_trade():
+    out = analyze_e1(_bars_from_closes([100 + 0.30 * i for i in range(80)]))
     assert out["question"] == "What is the market doing right now?"
     assert out["reasoning_role"] == "MARKET_STATE_ANALYST"
-    assert out["analysis_status"] == "COMPLETE"
+    assert out["trade_decision_authority"] is False
     assert out["decision_authority"] == "E9_ONLY"
-    assert out["professional_reasoning"]["directional_pressure"] == out["directional_pressure"]
-    assert out["professional_reasoning"]["market_state"] == out["market_state"]
-    assert out["professional_reasoning"]["confidence"] == out["confidence"]
-    assert out["professional_reasoning"]["next_question"] in {
-        "IS_THIS_STATE_STABLE_OR_TRANSITIONING?",
-        "IS_DIRECTIONAL_PRESSURE_STRONG_ENOUGH_TO_MATTER?",
-        "IS_MARKET_TOO_BALANCED_TO_CLASSIFY?",
-    }
+    assert "decision" not in out
+    assert out["analysis_status"] == "COMPLETE"
+
+
+def test_e1_requires_reliable_history_before_classification():
+    out = analyze_e1(_bars_from_closes([100 + i for i in range(20)]))
+    assert out["analysis_status"] == "INCOMPLETE"
+    assert out["market_state"] == "UNCLEAR"
+    assert out["confidence"] == 0.0
+
+
+def test_e1_balanced_market_is_not_forced_into_a_direction():
+    closes = [100.0]
+    for i in range(79):
+        closes.append(closes[-1] + (0.20 if i % 2 else -0.20))
+    out = analyze_e1(_bars_from_closes(closes))
+    assert out["directional_pressure"] == "NEUTRAL"
+    assert out["market_state"] in {"RANGE", "COMPRESSION", "UNCLEAR"}
+
+
+def test_e1_established_trend_requires_coherent_directional_evidence():
+    out = analyze_e1(_bars_from_closes([100 + 0.30 * i for i in range(80)]))
+    assert out["market_state"] == "TREND_UP"
+    assert out["trend_state"] == "UP"
+    assert out["directional_pressure"] == "BULLISH"
+    assert out["professional_reasoning"]["trend_maturity"] == "ESTABLISHED"
+    assert out["professional_reasoning"]["directional_consensus"]["confirmed"] is True
+
+
+def test_e1_short_impulse_is_not_the_same_as_established_trend():
+    # Long neutral base followed by a short impulse. A professional state brain
+    # must distinguish directional movement from an established regime.
+    closes = [100.0]
+    for _ in range(60):
+        closes.append(closes[-1] + (0.08 if len(closes) % 2 else -0.08))
+    for _ in range(8):
+        closes.append(closes[-1] + 0.55)
+    out = analyze_e1(_bars_from_closes(closes, spread=0.10))
+    assert out["professional_reasoning"]["trend_maturity"] != "ESTABLISHED"
+    assert out["market_state"] in {"EXPANSION", "TRANSITION", "UNCLEAR", "TREND_UP"}
+    if out["market_state"] == "TREND_UP":
+        assert out["professional_reasoning"]["trend_maturity"] == "DEVELOPING"
+
+
+def test_e1_one_counter_candle_does_not_reverse_established_regime():
+    closes = [100 + 0.25 * i for i in range(78)] + [119.25, 117.0]
+    out = analyze_e1(_bars_from_closes(closes, spread=0.10))
+    assert out["trend_state"] in {"UP", "NONE"}
+    assert out["professional_reasoning"]["single_counter_candle"] is True
+
+
+def test_e1_conflict_becomes_transition_not_forced_trend():
+    closes = [100 + 0.35 * i for i in range(50)] + [117 - 0.65 * (i - 49) for i in range(30)]
+    out = analyze_e1(_bars_from_closes(closes))
+    assert out["market_state"] == "TRANSITION"
+    assert out["transition"] == "PRESENT"
+    assert out["professional_reasoning"]["conflict_detected"] is True
+    assert out["conflicts"]
+
+
+def test_e1_keeps_liquidity_analysis_out_of_market_state_ownership():
+    out = analyze_e1(_bars_from_closes([100 + 0.25 * i for i in range(80)]))
+    evidence = out["professional_reasoning"]["independent_evidence"]
+    assert "liquidity_event" not in evidence
+    assert "liquidity" not in out["professional_reasoning"]["ownership_boundaries"]
