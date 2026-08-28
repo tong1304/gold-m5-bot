@@ -1,4 +1,9 @@
-from production_v2.e3_brain import _sweep_reclaim, _sweep_failure, analyze_e3
+from production_v2.e3_brain import (
+    _sweep_reclaim,
+    _sweep_failure,
+    _state,
+    analyze_e3,
+)
 
 
 def bar(open_, high, low, close):
@@ -66,3 +71,39 @@ def test_e3_never_has_trade_decision_authority():
     assert result["gate"] is None
     assert result["upstream_direction_used"] is False
     assert result["upstream_decisions_used"] is False
+
+
+def test_structure_conflict_is_explicit_when_external_and_internal_directions_disagree():
+    no_event = {"confirmed": False, "event": "NO_BOS"}
+    no_failure = {"confirmed": False}
+    no_sweep = {"confirmed": False}
+    no_invalidation = {"confirmed": False}
+    assert _state("DOWN", "UP", no_event, no_failure, no_sweep, no_invalidation) == "STRUCTURE_CONFLICT"
+
+
+def test_authority_contract_exposes_primary_structure_and_invalidation_anchor():
+    result = analyze_e3(series([100 + i * 0.5 for i in range(80)]))
+    protected = result["protected_structure"]
+    assert "primary_direction" in protected
+    assert "primary_level" in protected
+    assert "invalidation_level" in protected
+    assert "why_primary" in protected
+
+
+def test_break_lifecycle_exposes_age_and_follow_through_state():
+    result = analyze_e3(series([100 + i * 0.3 for i in range(100)]))
+    lifecycle = result["break_lifecycle"]
+    assert "age_bars" in lifecycle
+    assert "follow_through_bars" in lifecycle
+    assert "terminal" in lifecycle
+
+
+def test_sweep_reclaim_is_closed_candle_event_with_reclaim_quality():
+    bars = [bar(100, 101, 99, 100), bar(100, 101, 99, 100), bar(100, 112, 99, 109.7)]
+    highs = [{"index": 1, "price": 110.0, "label": "HH", "confirmation_index": 1}]
+    lows = [{"index": 0, "price": 99.0, "label": "HL", "confirmation_index": 0}]
+    result = _sweep_reclaim(bars, highs, lows, atr=2.0, structure="UP")
+    assert result["confirmed"] is True
+    assert result["closed_candle_confirmed"] is True
+    assert result["sweep_distance_atr"] >= 0.05
+    assert result["reclaim_distance_atr"] >= 0.05
