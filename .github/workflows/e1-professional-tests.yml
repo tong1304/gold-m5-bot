@@ -13,8 +13,10 @@ on:
       - 'production_v2/e1_professional_layer_v8.py'
       - 'production_v2/e1_professional_layer_v9.py'
       - 'production_v2/e1_professional_layer_v10.py'
+      - 'production_v2/e1_professional_core_v11.py'
       - 'production_v2/pipeline.py'
       - 'tests/test_e1_professional_v10.py'
+      - 'tests/test_e1_professional_v11.py'
       - 'tests/test_e1_professional_reasoning.py'
       - 'tests/test_e1_professional_v5.py'
       - 'tests/test_e1_professional_v7.py'
@@ -42,10 +44,12 @@ jobs:
           python -m py_compile production_v2/e1_professional_layer_v8.py
           python -m py_compile production_v2/e1_professional_layer_v9.py
           python -m py_compile production_v2/e1_professional_layer_v10.py
+          python -m py_compile production_v2/e1_professional_core_v11.py
           python -m py_compile production_v2/pipeline.py
       - name: Run E1 professional tests
         run: |
           python -m pytest -q tests/test_e1_professional_v10.py
+          python -m pytest -q tests/test_e1_professional_v11.py
           python -m pytest -q tests/test_e1_professional_reasoning.py
           python -m pytest -q production_v2/tests/test_e1_professional_reconciliation_v2.py
           python -m pytest -q tests/test_e1_professional_v5.py
