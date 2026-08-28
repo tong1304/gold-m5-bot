@@ -4,7 +4,7 @@ from statistics import mean
 from typing import Any
 
 QUESTION = "What is price structure communicating?"
-ARCHITECTURE = "E3_SINGLE_PROFESSIONAL_BRAIN_V50"
+ARCHITECTURE = "E3_SINGLE_PROFESSIONAL_BRAIN_V60_CAUSAL"
 UP, DOWN, NEUTRAL, MIXED = "UP", "DOWN", "NEUTRAL", "MIXED"
 MIN_CANDLES = 40
 IR, ER = 2, 5
@@ -22,41 +22,60 @@ def _num(v: Any):
     try:
         x = float(v)
         return x if x == x and abs(x) != float("inf") else None
-    except (TypeError, ValueError): return None
+    except (TypeError, ValueError):
+        return None
 
 
 def _clean(bars):
     out, reasons = [], []
     for i, bar in enumerate(bars or []):
-        if not isinstance(bar, dict): reasons.append(f"bar_{i}_not_mapping"); continue
-        o,h,l,c=[_num(bar.get(k)) for k in ("open","high","low","close")]
-        if any(x is None for x in (o,h,l,c)): reasons.append(f"bar_{i}_ohlc_invalid"); continue
-        if h < max(o,c) or l > min(o,c) or h < l: reasons.append(f"bar_{i}_ohlc_inconsistent"); continue
-        out.append({"open":o,"high":h,"low":l,"close":c})
-    return out,reasons
+        if not isinstance(bar, dict):
+            reasons.append(f"bar_{i}_not_mapping"); continue
+        vals = [_num(bar.get(k)) for k in ("open", "high", "low", "close")]
+        if any(x is None for x in vals):
+            reasons.append(f"bar_{i}_ohlc_invalid"); continue
+        o, h, l, c = vals
+        if h < max(o, c) or l > min(o, c) or h < l:
+            reasons.append(f"bar_{i}_ohlc_inconsistent"); continue
+        out.append({"open": o, "high": h, "low": l, "close": c})
+    return out, reasons
 
 
-def _tr(b,i):
-    if i<=0:return 0.0
-    x,prev=b[i],b[i-1]["close"]
-    return max(x["high"]-x["low"],abs(x["high"]-prev),abs(x["low"]-prev))
+def _tr(b, i):
+    if i <= 0:
+        return b[i]["high"] - b[i]["low"] if b else 0.0
+    x, prev = b[i], b[i - 1]["close"]
+    return max(x["high"] - x["low"], abs(x["high"] - prev), abs(x["low"] - prev))
 
 
-def _atr(b,p=14): return mean(_tr(b,i) for i in range(max(1,len(b)-p),len(b))) if len(b)>1 else 0.0
+def _atr(b, p=14, end=None):
+    if not b: return 0.0
+    end = len(b) - 1 if end is None else min(end, len(b) - 1)
+    if end < 0: return 0.0
+    start = max(1, end - p + 1)
+    vals = [_tr(b, i) for i in range(start, end + 1)]
+    return mean(vals) if vals else 0.0
 
-def _atr_at(b,i,p=14): return mean(_tr(b,j) for j in range(max(1,i-p+1),i+1)) if i>0 else 0.0
+
+def _atr_at(b, i, p=14): return _atr(b, p, i)
 
 
-def _pivots(b,side,radius):
-    out=[]
-    for i in range(radius,len(b)-radius):
-        x=b[i][side]; left=[b[j][side] for j in range(i-radius,i)]; right=[b[j][side] for j in range(i+1,i+radius+1)]; prom=PROMINENCE_ATR*max(_atr_at(b,i),1e-12)
-        ok=(x>=max(left) and x>max(right) and min(x-max(left),x-max(right))>=prom) if side=="high" else (x<=min(left) and x<min(right) and min(min(left)-x,min(right)-x)>=prom)
-        if ok: out.append((i,x,i+radius))
+def _pivots(b, side, radius):
+    out = []
+    for i in range(radius, len(b) - radius):
+        x = b[i][side]
+        left = [b[j][side] for j in range(i-radius, i)]
+        right = [b[j][side] for j in range(i+1, i+radius+1)]
+        prom = PROMINENCE_ATR * max(_atr_at(b, i), 1e-12)
+        if side == "high":
+            ok = x >= max(left) and x > max(right) and min(x-max(left), x-max(right)) >= prom
+        else:
+            ok = x <= min(left) and x < min(right) and min(min(left)-x, min(right)-x) >= prom
+        if ok: out.append((i, x, i + radius))
     return out
 
 
-def _compress(points,atr,side=None,spacing=2):
+def _compress(points, atr, side=None, spacing=2):
     out=[]; tol=max(atr*EQ_TOLERANCE_ATR,1e-12)
     for p in points:
         if not out or p[0]-out[-1][0]>=spacing: out.append(p); continue
@@ -65,19 +84,25 @@ def _compress(points,atr,side=None,spacing=2):
     return out
 
 
-def _label(hp,lp,atr):
+def _label(hp, lp, atr):
     tol=max(atr*EQ_TOLERANCE_ATR,1e-12); highs=[]; lows=[]; prev=None
     for i,p,ci in hp:
-        label="SWING_HIGH" if prev is None else "EQH" if abs(p-prev[1])<=tol else "HH" if p>prev[1] else "LH"; highs.append({"index":i,"price":round(p,8),"label":label,"confirmation_index":ci}); prev=(i,p)
+        label="SWING_HIGH" if prev is None else "EQH" if abs(p-prev[1])<=tol else "HH" if p>prev[1] else "LH"
+        highs.append({"index":i,"price":round(p,8),"label":label,"confirmation_index":ci}); prev=(i,p)
     prev=None
     for i,p,ci in lp:
-        label="SWING_LOW" if prev is None else "EQL" if abs(p-prev[1])<=tol else "HL" if p>prev[1] else "LL"; lows.append({"index":i,"price":round(p,8),"label":label,"confirmation_index":ci}); prev=(i,p)
+        label="SWING_LOW" if prev is None else "EQL" if abs(p-prev[1])<=tol else "HL" if p>prev[1] else "LL"
+        lows.append({"index":i,"price":round(p,8),"label":label,"confirmation_index":ci}); prev=(i,p)
     return highs,lows
 
 
-def _latest(xs,labels,max_confirm=None):
+def _causal(xs, current_index):
+    return [x for x in xs if x.get("confirmation_index", x.get("index", 0)) <= current_index]
+
+
+def _latest(xs, labels, max_confirm=None):
     for x in reversed(sorted(xs,key=lambda z:z["index"])):
-        if x["label"] in labels and (max_confirm is None or x["confirmation_index"]<=max_confirm): return x
+        if x["label"] in labels and (max_confirm is None or x.get("confirmation_index",x["index"])<=max_confirm): return x
     return None
 
 
@@ -97,7 +122,8 @@ def _count(h,l,n=8):
 
 
 def _semantic_structure_state(highs,lows):
-    events=sorted([x for x in highs+lows if x["label"] in {"HH","HL","LH","LL"}],key=lambda x:(x["index"],0 if x["label"] in {"HH","LH"} else 1)); state=NEUTRAL; last_high=last_low=None; transitions=[]
+    events=sorted([x for x in highs+lows if x["label"] in {"HH","HL","LH","LL"}],key=lambda x:(x["index"],0 if x["label"] in {"HH","LH"} else 1))
+    state=NEUTRAL; last_high=last_low=None; transitions=[]
     for x in events:
         label=x["label"]
         if label in {"HH","LH"}:
@@ -113,7 +139,7 @@ def _semantic_structure_state(highs,lows):
                 elif label=="LL" and last_high["label"]=="LH":state=DOWN
                 else:state=MIXED
         transitions.append({"index":x["index"],"label":label,"state_after":state})
-    return {"state":state,"basis":"ORDERED_SWING_RELATIONSHIPS","counts_used_as_authority":False,"latest_directional_event":events[-1] if events else None,"latest_hh":_latest(highs,{"HH"}),"latest_hl":_latest(lows,{"HL"}),"latest_lh":_latest(highs,{"LH"}),"latest_ll":_latest(lows,{"LL"}),"bullish_pair":bool(last_high and last_low and last_high["label"]=="HH" and last_low["label"]=="HL"),"bearish_pair":bool(last_high and last_low and last_high["label"]=="LH" and last_low["label"]=="LL"),"structural_sequence":"→".join(x["label"] for x in events[-12:]),"transitions":transitions[-12:],"semantic_rule":"ORDERED_SWINGS_ONLY;_COUNTS_DESCRIPTIVE_ONLY;_STALE_PAIRS_CANNOT_OVERRIDE_NEWER_LEG"}
+    return {"state":state,"basis":"ORDERED_CAUSAL_SWING_RELATIONSHIPS","counts_used_as_authority":False,"latest_directional_event":events[-1] if events else None,"latest_hh":_latest(highs,{"HH"}),"latest_hl":_latest(lows,{"HL"}),"latest_lh":_latest(highs,{"LH"}),"latest_ll":_latest(lows,{"LL"}),"bullish_pair":bool(last_high and last_low and last_high["label"]=="HH" and last_low["label"]=="HL"),"bearish_pair":bool(last_high and last_low and last_high["label"]=="LH" and last_low["label"]=="LL"),"structural_sequence":"→".join(x["label"] for x in events[-12:]),"transitions":transitions[-12:],"semantic_rule":"ORDERED_SWINGS_ONLY;CONFIRMED_PIVOTS_ONLY;COUNTS_DESCRIPTIVE_ONLY;NEWER_CONFIRMED_LEG_HAS_AUTHORITY"}
 
 
 def _semantic_pair(h,l):return _semantic_structure_state(h,l)["state"]
@@ -163,7 +189,6 @@ def _current_break(bars,highs,lows,atr,structure,scope="EXTERNAL",idx=None):
 
 def _bos(bars,highs,lows,atr,prior_structure,scope="EXTERNAL"):return _current_break(bars,highs,lows,atr,prior_structure,scope)
 def _structure_at(highs,lows,idx):return _resolve_structure([x for x in highs if x["confirmation_index"]<=idx],[x for x in lows if x["confirmation_index"]<=idx])
-
 def _scan_breaks(bars,highs,lows,atr,scope="EXTERNAL"):
     return [e for i in range(1,len(bars)) if (e:=_current_break(bars,highs,lows,atr,_structure_at(highs,lows,i-1),scope,i)).get("confirmed")]
 
@@ -183,17 +208,12 @@ def _break_event_lifecycle(history,last_index):
     x=history[-1];failed=x.get("status")=="FAILED_BREAK_RECLAIMED";accepted=x.get("status")=="ACCEPTED_BREAK_WITH_FOLLOW_THROUGH";return {"stage":"FAILED" if failed else "ACCEPTED" if accepted else "HISTORICAL","current":False,"accepted":accepted,"terminal":True,"age_bars":max(0,last_index-x.get("break_candle_index",last_index)),**x}
 
 
-def _failure(bars,active,atr,current_index=None):
-    if not active or active.get("status")!="FAILED_BREAK_RECLAIMED":return {"event":"NO_FAILURE","direction":NEUTRAL,"confirmed":False,"current":False}
-    i=len(bars)-1 if current_index is None else current_index;d=active["direction"];current=active.get("failure_candle_index")==i;return {"event":"FAILED_BOS" if current else "HISTORICAL_FAILED_BOS","direction":DOWN if d==UP else UP,"confirmed":True,"current":current,"closed_candle_confirmed":True,"level":active["level"],"break_candle_index":active["break_candle_index"],"failure_candle_index":active.get("failure_candle_index"),"scope":"EXTERNAL"}
-
-
 def _sweep_reclaim(bars,highs,lows,atr,structure):
     if not bars or atr<=0:return {"event":"NO_SWEEP_RECLAIM","direction":NEUTRAL,"confirmed":False,"lifecycle":"NONE","current":False}
     i=len(bars)-1;found=[]
     for p,d,side in [(_latest(highs,{"HH","LH","EQH"},i-1),DOWN,"high"),(_latest(lows,{"HL","LL","EQL"},i-1),UP,"low")]:
         if not p:continue
-        sweep=(bars[i]["high"]-p["price"])/atr if side=="high" else (p["price"]-bars[i]["low"])/atr;reclaim=(p["price"]-bars[i]["close"])/atr if side=="high" else (bars[i]["close"]-p["price"])/atr
+        sweep=(bars[i]["high"]-p["price"])/atr if side=="high" else (p["price"]-bars[i]["low"])/atr; reclaim=(p["price"]-bars[i]["close"])/atr if side=="high" else (bars[i]["close"]-p["price"])/atr
         if sweep>=SWEEP_MIN_ATR:
             stage="RECLAIM" if reclaim>=RECLAIM_MIN_ATR else "SWEEP";found.append((reclaim,{"event":"SWEEP_RECLAIM" if stage=="RECLAIM" else "SWEEP","direction":d,"confirmed":True,"closed_candle_confirmed":True,"current":True,"level":p["price"],"swing_index":p["index"],"sweep_candle_index":i,"sweep_distance_atr":round(sweep,4),"reclaim_distance_atr":round(max(0.0,reclaim),4),"scope":"EXTERNAL","liquidity_type":"EQUAL_HIGH" if p["label"]=="EQH" else "EQUAL_LOW" if p["label"]=="EQL" else "STRUCTURAL_SWING","lifecycle":stage}))
     return max(found,key=lambda x:x[0])[1] if found else {"event":"NO_SWEEP_RECLAIM","direction":NEUTRAL,"confirmed":False,"lifecycle":"NONE","current":False}
@@ -201,11 +221,11 @@ def _sweep_reclaim(bars,highs,lows,atr,structure):
 
 def _sweep_history(bars,highs,lows,atr):
     events=[]
-    for i in range(1,len(bars)-1):
+    for i in range(1,len(bars)):
         for p,d,side in [(_latest(highs,{"HH","LH","EQH"},i-1),DOWN,"high"),(_latest(lows,{"HL","LL","EQL"},i-1),UP,"low")]:
             if not p:continue
-            sweep=(bars[i]["high"]-p["price"])/atr if side=="high" else (p["price"]-bars[i]["low"])/atr;reclaim=(p["price"]-bars[i]["close"])/atr if side=="high" else (bars[i]["close"]-p["price"])/atr
-            if sweep>=SWEEP_MIN_ATR and reclaim>=RECLAIM_MIN_ATR:events.append({"event":"SWEEP_RECLAIM","direction":d,"confirmed":True,"closed_candle_confirmed":True,"current":False,"level":p["price"],"swing_index":p["index"],"sweep_candle_index":i,"sweep_distance_atr":round(sweep,4),"reclaim_distance_atr":round(reclaim,4),"lifecycle":"SWEEP_RECLAIM"})
+            a=max(_atr_at(bars,i),1e-12); sweep=(bars[i]["high"]-p["price"])/a if side=="high" else (p["price"]-bars[i]["low"])/a; reclaim=(p["price"]-bars[i]["close"])/a if side=="high" else (bars[i]["close"]-p["price"])/a
+            if sweep>=SWEEP_MIN_ATR and reclaim>=RECLAIM_MIN_ATR:events.append({"event":"SWEEP_RECLAIM","direction":d,"confirmed":True,"closed_candle_confirmed":True,"current":i==len(bars)-1,"level":p["price"],"swing_index":p["index"],"sweep_candle_index":i,"sweep_distance_atr":round(sweep,4),"reclaim_distance_atr":round(reclaim,4),"lifecycle":"SWEEP_RECLAIM"})
     return events
 
 
@@ -222,14 +242,11 @@ def _sweep_failure(bars,highs,lows,atr,prior_structure=NEUTRAL):
 
 
 def _lifecycle(current,failure,history,active,last_index):
-    if failure.get("confirmed"):
-        return {"stage":"FAILED","current":bool(failure.get("current")),"active":False,"accepted":False,"follow_through":False,"failure":True,"terminal":True,"age_bars":0 if failure.get("current") else max(0,last_index-failure.get("failure_candle_index",last_index)),"follow_through_bars":0,"level":failure.get("level"),"break_candle_index":failure.get("break_candle_index"),"failure_candle_index":failure.get("failure_candle_index")}
+    if failure.get("confirmed"):return {"stage":"FAILED","current":bool(failure.get("current",True)),"active":False,"accepted":False,"follow_through":False,"failure":True,"terminal":True,"age_bars":0,"follow_through_bars":0,"level":failure.get("level"),"break_candle_index":failure.get("break_candle_index"),"failure_candle_index":failure.get("failure_candle_index")}
     if current.get("confirmed"):return {"stage":"CONFIRMED","current":True,"active":True,"accepted":False,"follow_through":False,"failure":False,"terminal":False,"age_bars":0,"follow_through_bars":0,"level":current["level"],"break_candle_index":current["break_candle_index"],"event":current["event"]}
     if active:
-        accepted=bool(active.get("accepted"));return {"stage":"ACCEPTED" if accepted else "CONFIRMED","current":True,"active":True,"accepted":accepted,"follow_through":accepted,"failure":False,"terminal":False,"age_bars":last_index-active["break_candle_index"],"follow_through_bars":active.get("follow_through_bars",0),"level":active["level"],"break_candle_index":active["break_candle_index"],"acceptance_candle_index":active.get("acceptance_candle_index"),"event":active.get("event")}
-    if history:
-        x=history[-1];failed=x.get("status")=="FAILED_BREAK_RECLAIMED";accepted=x.get("status")=="ACCEPTED_BREAK_WITH_FOLLOW_THROUGH";return {"stage":"FAILED" if failed else "ACCEPTED" if accepted else "HISTORICAL","current":False,"active":False,"accepted":accepted,"follow_through":accepted,"failure":failed,"terminal":True,"age_bars":last_index-x["break_candle_index"],"follow_through_bars":x.get("follow_through_bars",0),"level":x["level"],"break_candle_index":x["break_candle_index"],"failure_candle_index":x.get("failure_candle_index"),"acceptance_candle_index":x.get("acceptance_candle_index"),"event":x.get("event")}
-    return {"stage":"NONE","current":False,"active":False,"accepted":False,"follow_through":False,"failure":False,"terminal":False,"age_bars":None,"follow_through_bars":0,"level":None,"break_candle_index":None}
+        accepted=bool(active.get("accepted"));return {"stage":"ACCEPTED" if accepted else "CONFIRMED","current":True,"active":True,"accepted":accepted,"follow_through":accepted,"failure":False,"terminal":False,"age_bars":last_index-active["break_candle_index"],"follow_through_bars":active.get("follow_through_bars",0),"level":active["level"],"break_candle_index":active["break_candle_index"],"event":active.get("event")}
+    return _break_event_lifecycle(history,last_index)
 
 
 def _invalidation(bars,structure,protected):
@@ -250,7 +267,7 @@ def _authority(ext,inte,ec,ic,bos,failure,protected,sweep,invalidation,slope=NEU
 
 def _state(ext,inte,bos,failure,sweep,invalidation,life):
     if invalidation.get("confirmed"):return "STRUCTURE_INVALIDATED"
-    if failure.get("confirmed") and failure.get("current"):return "STRUCTURE_FAILURE"
+    if failure.get("confirmed") and failure.get("current",False):return "STRUCTURE_FAILURE"
     if bos.get("confirmed"):return "CHANGE_OF_CHARACTER" if bos.get("event")=="CONFIRMED_CHOCH" else "BREAKOUT_CONFIRMED"
     if ext in {UP,DOWN} and inte==ext:return "CONTINUATION"
     if ext in {UP,DOWN} and inte in {UP,DOWN} and ext!=inte:return "STRUCTURE_CONFLICT"
@@ -260,20 +277,24 @@ def _state(ext,inte,bos,failure,sweep,invalidation,life):
 
 
 def _empty(status,reasons):
-    p=_protected_structure(NEUTRAL,[],[]);return {"architecture":ARCHITECTURE,"reasoning_role":"MARKET_STRUCTURE_ANALYST","question":QUESTION,"analysis_status":status,"finding":"INSUFFICIENT_DATA","direction":NEUTRAL,"structural_bias":NEUTRAL,"structure_state":"RANGE_STRUCTURE","current_structure":{"external":NEUTRAL,"internal":NEUTRAL,"final":"RANGE_STRUCTURE"},"internal_structure":{"state":NEUTRAL,"count_state":NEUTRAL},"external_structure":{"state":NEUTRAL,"count_state":NEUTRAL},"internal_count_state":NEUTRAL,"external_count_state":NEUTRAL,"swing_map":{"internal_highs":[],"internal_lows":[],"external_highs":[],"external_lows":[]},"bos":{"event":"NO_BOS","direction":NEUTRAL,"confirmed":False},"failure":{"event":"NO_FAILURE","direction":NEUTRAL,"confirmed":False},"current_break":{"stage":"NONE","current":False},"historical_break":{"stage":"NONE","current":False},"current_liquidity":{"stage":"NONE","current":False},"historical_liquidity":{"stage":"NONE","current":False},"sweep_reclaim":{"event":"NO_SWEEP_RECLAIM","direction":NEUTRAL,"confirmed":False,"lifecycle":"NONE"},"break_lifecycle":{"stage":"NONE"},"protected_structure":p,"structural_invalidation":{"confirmed":False,"level":None,"type":"NO_DIRECTIONAL_INVALIDATION_LEVEL"},"protected_level_break":{"confirmed":False},"structure_authority":0.0,"authority_detail":{"authority":"NONE","score":0.0,"reason":"INSUFFICIENT_DATA"},"structure_strength":0.0,"confidence":0.0,"evidence":[],"conflicts":reasons,"reason_codes":reasons,"observations":reasons,"reasoning_trace":{"external_is_authority":False,"closed_candle_only":True,"upstream_inputs_used":False,"current_state":"INCOMPLETE","historical_context":"NONE","count_is_authority":False,"slope_is_structural_authority":False,"structure_narrative":"Insufficient confirmed structure."},"trade_decision_authority":False,"decision_authority":"E9_ONLY","decision":None,"gate":None,"specialists_active":False,"specialists_status":"PAUSED","sub_engines_active":False,"sub_engines_status":"PAUSED","specialists":{}}
+    p=_protected_structure(NEUTRAL,[],[])
+    return {"architecture":ARCHITECTURE,"reasoning_role":"MARKET_STRUCTURE_ANALYST","question":QUESTION,"analysis_status":status,"finding":"INSUFFICIENT_DATA","direction":NEUTRAL,"structural_bias":NEUTRAL,"structure_state":"RANGE_STRUCTURE","current_structure":{"external":NEUTRAL,"internal":NEUTRAL,"final":"RANGE_STRUCTURE"},"internal_structure":{"state":NEUTRAL,"count_state":NEUTRAL},"external_structure":{"state":NEUTRAL,"count_state":NEUTRAL},"internal_count_state":NEUTRAL,"external_count_state":NEUTRAL,"swing_map":{"internal_highs":[],"internal_lows":[],"external_highs":[],"external_lows":[]},"bos":{"event":"NO_BOS","direction":NEUTRAL,"confirmed":False},"failure":{"event":"NO_FAILURE","direction":NEUTRAL,"confirmed":False},"current_break":{"stage":"NONE","current":False},"historical_break":{"stage":"NONE","current":False},"current_liquidity":{"stage":"NONE","current":False},"historical_liquidity":{"stage":"NONE","current":False},"sweep_reclaim":{"event":"NO_SWEEP_RECLAIM","direction":NEUTRAL,"confirmed":False,"lifecycle":"NONE"},"break_lifecycle":{"stage":"NONE"},"protected_structure":p,"structural_invalidation":{"confirmed":False,"level":None,"type":"NO_DIRECTIONAL_INVALIDATION_LEVEL"},"protected_level_break":{"confirmed":False},"structure_authority":0.0,"authority_detail":{"authority":"NONE","score":0.0,"reason":"INSUFFICIENT_DATA"},"structure_strength":0.0,"confidence":0.0,"evidence":[],"conflicts":reasons,"reason_codes":reasons,"observations":reasons,"reasoning_trace":{"external_is_authority":False,"closed_candle_only":True,"upstream_inputs_used":False,"current_state":"INCOMPLETE","count_is_authority":False,"slope_is_structural_authority":False,"causal_pivot_filter":True},"trade_decision_authority":False,"decision_authority":"E9_ONLY","decision":None,"gate":None,"specialists_active":False,"specialists_status":"PAUSED","sub_engines_active":False,"sub_engines_status":"PAUSED","specialists":{}}
 
 
 def analyze_e3(bars):
     b,data=_clean(bars)
     if len(b)<MIN_CANDLES:return _empty("INCOMPLETE",["INSUFFICIENT_CANDLES"]+data[:8])
-    atr=_atr(b);ih,il=_compress(_pivots(b,"high",IR),atr,"high"),_compress(_pivots(b,"low",IR),atr,"low");eh,el=_compress(_pivots(b,"high",ER),atr,"high"),_compress(_pivots(b,"low",ER),atr,"low");ihl,ill=_label(ih,il,atr);ehl,ell=_label(eh,el,atr);int_sem,ext_sem=_semantic_structure_state(ihl,ill),_semantic_structure_state(ehl,ell);inte,ext=int_sem["state"],ext_sem["state"];ic,ec=_count(ihl,ill),_count(ehl,ell);ics,ecs=_counts(ihl,ill),_counts(ehl,ell)
-    protected=_protected_structure(ext,ehl,ell);eb=_current_break(b,ehl,ell,atr,ext,"EXTERNAL");ib=_current_break(b,ihl,ill,atr,inte,"INTERNAL");all_breaks=_scan_breaks(b,ehl,ell,atr);hist_breaks=[e for e in all_breaks if e["break_candle_index"]<len(b)-1];current_break={"stage":"CONFIRMED" if eb.get("confirmed") else "NONE","current":bool(eb.get("confirmed")),"event":eb.get("event"),"direction":eb.get("direction"),"level":eb.get("level"),"break_candle_index":eb.get("break_candle_index")};historical_break={"stage":"NONE","current":False}
+    atr=_atr(b);ih=_compress(_pivots(b,"high",IR),atr,"high");il=_compress(_pivots(b,"low",IR),atr,"low");eh=_compress(_pivots(b,"high",ER),atr,"high");el=_compress(_pivots(b,"low",ER),atr,"low")
+    last=len(b)-1;ih,il,eh,el=_causal(ih,last),_causal(il,last),_causal(eh,last),_causal(el,last)
+    ihl,ill=_label(ih,il,atr);ehl,ell=_label(eh,el,atr);int_sem,ext_sem=_semantic_structure_state(ihl,ill),_semantic_structure_state(ehl,ell);inte,ext=int_sem["state"],ext_sem["state"];ic,ec=_count(ihl,ill),_count(ehl,ell);ics,ecs=_counts(ihl,ill),_counts(ehl,ell)
+    protected=_protected_structure(ext,ehl,ell);eb=_current_break(b,ehl,ell,atr,ext,"EXTERNAL");ib=_current_break(b,ihl,ill,atr,inte,"INTERNAL");all_breaks=_scan_breaks(b,ehl,ell,atr);hist_breaks=[e for e in all_breaks if e["break_candle_index"]<last]
+    historical_break={"stage":"NONE","current":False}
     if hist_breaks:
-        x=hist_breaks[-1];d,level=x["direction"],x["level"];fail=next((j for j in range(x["break_candle_index"]+1,len(b)) if (d==UP and b[j]["close"]<=level-RECLAIM_MIN_ATR*atr) or (d==DOWN and b[j]["close"]>=level+RECLAIM_MIN_ATR*atr)),None);end=min(len(b),x["break_candle_index"]+1+FOLLOW_THROUGH_BARS);accepted=fail is None and end>x["break_candle_index"]+1 and all((b[j]["close"]>=level+RECLAIM_MIN_ATR*atr) if d==UP else (b[j]["close"]<=level-RECLAIM_MIN_ATR*atr) for j in range(x["break_candle_index"]+1,end));historical_break={"stage":"FAILED" if fail is not None else "ACCEPTED" if accepted else "NONE","current":False,"event":x.get("event"),"direction":d,"level":level,"break_candle_index":x["break_candle_index"],"failure_candle_index":fail}
-    current_liq_raw=_sweep_reclaim(b,ehl,ell,atr,ext);current_liq_stage="RECLAIM" if current_liq_raw.get("event")=="SWEEP_RECLAIM" else "SWEEP" if current_liq_raw.get("confirmed") else "NONE";current_liquidity={"stage":current_liq_stage,"current":current_liq_stage!="NONE","event":current_liq_raw.get("event"),"direction":current_liq_raw.get("direction"),"level":current_liq_raw.get("level")};sh=_sweep_history(b,ehl,ell,atr);last_hist=next((x for x in reversed(sh) if x.get("event")=="SWEEP_RECLAIM"),None);historical_liquidity={"stage":"SWEEP_RECLAIM" if last_hist else "NONE","current":False,"event":"SWEEP_RECLAIM" if last_hist else "NONE","direction":last_hist.get("direction") if last_hist else NEUTRAL,"level":last_hist.get("level") if last_hist else None}
+        x=hist_breaks[-1];d,level=x["direction"],x["level"];a=max(_atr_at(b,x["break_candle_index"]),1e-12);fail=next((j for j in range(x["break_candle_index"]+1,len(b)) if (d==UP and b[j]["close"]<=level-RECLAIM_MIN_ATR*a) or (d==DOWN and b[j]["close"]>=level+RECLAIM_MIN_ATR*a)),None);end=min(len(b),x["break_candle_index"]+1+FOLLOW_THROUGH_BARS);accepted=fail is None and end>x["break_candle_index"]+1 and all((b[j]["close"]>=level+RECLAIM_MIN_ATR*a) if d==UP else (b[j]["close"]<=level-RECLAIM_MIN_ATR*a) for j in range(x["break_candle_index"]+1,end));historical_break={"stage":"FAILED" if fail is not None else "ACCEPTED" if accepted else "NONE","current":False,"event":x.get("event"),"direction":d,"level":level,"break_candle_index":x["break_candle_index"],"failure_candle_index":fail}
+    current_liq_raw=_sweep_reclaim(b,ehl,ell,atr,ext);current_liq_stage="RECLAIM" if current_liq_raw.get("event")=="SWEEP_RECLAIM" else "SWEEP" if current_liq_raw.get("confirmed") else "NONE";current_liquidity={"stage":current_liq_stage,"current":current_liq_stage!="NONE","event":current_liq_raw.get("event"),"direction":current_liq_raw.get("direction"),"level":current_liq_raw.get("level")};sh=_sweep_history(b,ehl,ell,atr);last_hist=next((x for x in reversed(sh) if x.get("event")=="SWEEP_RECLAIM" and not x.get("current")),None);historical_liquidity={"stage":"SWEEP_RECLAIM" if last_hist else "NONE","current":False,"event":"SWEEP_RECLAIM" if last_hist else "NONE","direction":last_hist.get("direction") if last_hist else NEUTRAL,"level":last_hist.get("level") if last_hist else None}
     failure={"event":"NO_FAILURE","direction":NEUTRAL,"confirmed":False,"current":False}
     if historical_break["stage"]=="FAILED":failure={"event":"HISTORICAL_FAILED_BOS","direction":DOWN if historical_break["direction"]==UP else UP,"confirmed":True,"current":False,"closed_candle_confirmed":True,"level":historical_break["level"],"break_candle_index":historical_break["break_candle_index"],"failure_candle_index":historical_break.get("failure_candle_index"),"scope":"EXTERNAL"}
-    invalidation=_invalidation(b,ext,protected);life=_lifecycle(eb,failure,[],None,len(b)-1);auth=_structure_authority(ext_sem,int_sem,protected,eb,invalidation);state=_state(ext,inte,eb,failure,current_liq_raw,invalidation,life);reasons=[];conflicts=[]
+    invalidation=_invalidation(b,ext,protected);life=_lifecycle(eb,failure,[],None,last);auth=_structure_authority(ext_sem,int_sem,protected,eb,invalidation);state=_state(ext,inte,eb,failure,current_liq_raw,invalidation,life);reasons=[];conflicts=[]
     if ext!=ec:reasons.append("EXTERNAL_COUNT_STATE_DIVERGENCE_DESCRIPTIVE_ONLY");conflicts.append("EXTERNAL_COUNT_STATE_IS_NOT_AUTHORITY")
     if inte!=ic:reasons.append("INTERNAL_COUNT_STATE_DIVERGENCE_DESCRIPTIVE_ONLY");conflicts.append("INTERNAL_COUNT_STATE_IS_NOT_AUTHORITY")
     if ib.get("confirmed") and not eb.get("confirmed"):reasons.append("INTERNAL_BREAK_NOT_EXTERNAL_AUTHORITY");conflicts.append("INTERNAL_BREAK_VS_EXTERNAL_AUTHORITY")
@@ -296,9 +317,9 @@ def analyze_e3(bars):
     elif ext==MIXED or inte==MIXED:finding,direction="MIXED_STRUCTURE",NEUTRAL
     else:finding,direction="RANGE_STRUCTURE",NEUTRAL
     confidence=min(1.0,0.30+0.65*auth["score"]+(0.08 if eb.get("confirmed") else 0.0));confidence=min(confidence,0.55) if ext in {MIXED,NEUTRAL} else confidence;confidence=min(confidence,0.60) if invalidation.get("confirmed") else confidence
-    evidence=[f"external_structure={ext}",f"internal_structure={inte}",f"external_count_state={ec}",f"internal_count_state={ic}",f"external_bos={eb.get('event')}",f"internal_bos={ib.get('event')}",f"current_break={current_break['stage']}",f"historical_break={historical_break['stage']}",f"current_liquidity={current_liquidity['stage']}",f"historical_liquidity={historical_liquidity['stage']}",f"protected_primary_level={protected.get('primary_level')}",f"protected_anchor_quality={protected.get('anchor_quality')}",f"structure_authority={auth['score']}","count_state_role=DESCRIPTIVE_NOT_AUTHORITY","historical_events_do_not_override_current_state","semantic_basis=ORDERED_SWING_RELATIONSHIPS"]
-    trace={"external_state":ext,"internal_state":inte,"external_semantics":ext_sem,"internal_semantics":int_sem,"external_count_state":ec,"internal_count_state":ic,"external_bos_confirmed":eb.get("confirmed",False),"internal_bos_confirmed":ib.get("confirmed",False),"internal_bos_has_market_authority":False,"external_is_authority":auth["authority"]=="EXTERNAL","external_authority_is_actionable":auth["authority_is_actionable"],"closed_candle_only":True,"protected_structure_is_invalidation_anchor":protected.get("anchor_is_ideal",False),"protected_level_break_invalidates_current_external_thesis":invalidation.get("confirmed",False),"current_break_stage":current_break["stage"],"historical_break_stage":historical_break["stage"],"current_liquidity_stage":current_liquidity["stage"],"historical_liquidity_stage":historical_liquidity["stage"],"authority_explanation":auth["reason"],"authority_basis":auth["authority"],"authority_direction":auth["direction"],"upstream_inputs_used":False,"upstream_direction_used":False,"upstream_decisions_used":False,"upstream_gates_used":False,"count_is_authority":False,"slope_is_structural_authority":False,"current_state":state,"historical_context":{"break":historical_break["stage"],"liquidity":historical_liquidity["stage"]},"invalidation_rule":protected.get("invalidation_type"),"structure_narrative":f"External={ext}; Internal={inte}; current_break={current_break['stage']}; historical_break={historical_break['stage']}; current_liquidity={current_liquidity['stage']}; historical_liquidity={historical_liquidity['stage']}; authority={auth['authority']}; invalidation={'CONFIRMED' if invalidation.get('confirmed') else 'NOT_CONFIRMED'}."}
-    return {"architecture":ARCHITECTURE,"reasoning_role":"MARKET_STRUCTURE_ANALYST","question":QUESTION,"analysis_status":"COMPLETE","finding":finding,"direction":direction,"structural_bias":ext if ext in {UP,DOWN} else NEUTRAL,"structure_state":state,"current_structure":{"external":ext,"internal":inte,"final":finding},"internal_structure":{"state":inte,"count_state":ic,"counts":ics,"semantic":int_sem},"external_structure":{"state":ext,"count_state":ec,"counts":ecs,"semantic":ext_sem},"internal_count_state":ic,"external_count_state":ec,"internal_counts":ics,"external_counts":ecs,"internal_sequence":"→".join(x["label"] for x in sorted(ihl+ill,key=lambda x:x["index"])[-12:]),"external_sequence":"→".join(x["label"] for x in sorted(ehl+ell,key=lambda x:x["index"])[-12:]),"swing_map":{"internal_highs":ihl,"internal_lows":ill,"external_highs":ehl,"external_lows":ell},"atr14":round(atr,8),"closed_candles":len(b),"bos":eb,"external_bos":eb.get("event"),"internal_bos":ib.get("event"),"external_bos_detail":eb,"internal_bos_detail":ib,"current_break":current_break,"historical_break":historical_break,"failure":failure,"structural_failure":failure,"current_liquidity":current_liquidity,"historical_liquidity":historical_liquidity,"sweep_reclaim":current_liq_raw,"sweep_history":sh[-5:],"break_lifecycle":life,"break_history":hist_breaks[-5:],"protected_structure":protected,"protected_high":protected["protected_high"]["price"] if protected.get("protected_high") else None,"protected_low":protected["protected_low"]["price"] if protected.get("protected_low") else None,"structural_invalidation":invalidation,"protected_level_break":invalidation,"BOS_type":eb.get("event"),"BOS_level":eb.get("level"),"BOS_candle_index":eb.get("break_candle_index"),"structure_strength":auth["score"],"structure_authority":auth["score"],"authority_detail":auth,"confidence":round(confidence,4),"evidence":evidence,"conflicts":conflicts,"reason_codes":reasons,"observations":[f"closed_candles={len(b)}",f"atr14={round(atr,8)}"]+evidence,"reasoning_trace":trace,"upstream_inputs_used":False,"upstream_direction_used":False,"upstream_decisions_used":False,"upstream_gates_used":False,"score_used":False,"trade_decision_authority":False,"decision_authority":"E9_ONLY","decision":None,"gate":None,"specialists_active":False,"specialists_status":"PAUSED","sub_engines_active":False,"sub_engines_status":"PAUSED","specialists":{}}
+    evidence=[f"external_structure={ext}",f"internal_structure={inte}",f"external_count_state={ec}",f"internal_count_state={ic}",f"external_bos={eb.get('event')}",f"internal_bos={ib.get('event')}",f"current_break={'CONFIRMED' if eb.get('confirmed') else 'NONE'}",f"historical_break={historical_break['stage']}",f"current_liquidity={current_liquidity['stage']}",f"historical_liquidity={historical_liquidity['stage']}",f"protected_primary_level={protected.get('primary_level')}",f"protected_anchor_quality={protected.get('anchor_quality')}",f"structure_authority={auth['score']}","causal_pivots_only=True","count_state_role=DESCRIPTIVE_NOT_AUTHORITY","historical_events_do_not_override_current_state","semantic_basis=ORDERED_CONFIRMED_SWING_RELATIONSHIPS"]
+    trace={"external_state":ext,"internal_state":inte,"external_semantics":ext_sem,"internal_semantics":int_sem,"external_count_state":ec,"internal_count_state":ic,"external_bos_confirmed":eb.get("confirmed",False),"internal_bos_confirmed":ib.get("confirmed",False),"internal_bos_has_market_authority":False,"external_is_authority":auth["authority"]=="EXTERNAL","external_authority_is_actionable":auth["authority_is_actionable"],"closed_candle_only":True,"protected_structure_is_invalidation_anchor":protected.get("anchor_is_ideal",False),"protected_level_break_invalidates_current_external_thesis":invalidation.get("confirmed",False),"current_break_stage":"CONFIRMED" if eb.get("confirmed") else "NONE","historical_break_stage":historical_break["stage"],"current_liquidity_stage":current_liquidity["stage"],"historical_liquidity_stage":historical_liquidity["stage"],"authority_explanation":auth["reason"],"authority_basis":auth["authority"],"authority_direction":auth["direction"],"upstream_inputs_used":False,"upstream_direction_used":False,"upstream_decisions_used":False,"upstream_gates_used":False,"count_is_authority":False,"slope_is_structural_authority":False,"causal_pivot_filter":True,"current_state":state,"historical_context":{"break":historical_break["stage"],"liquidity":historical_liquidity["stage"]},"invalidation_rule":protected.get("invalidation_type"),"structure_narrative":f"External={ext}; Internal={inte}; current_break={'CONFIRMED' if eb.get('confirmed') else 'NONE'}; historical_break={historical_break['stage']}; current_liquidity={current_liquidity['stage']}; authority={auth['authority']}; invalidation={'CONFIRMED' if invalidation.get('confirmed') else 'NOT_CONFIRMED'}."}
+    return {"architecture":ARCHITECTURE,"reasoning_role":"MARKET_STRUCTURE_ANALYST","question":QUESTION,"analysis_status":"COMPLETE","finding":finding,"direction":direction,"structural_bias":ext if ext in {UP,DOWN} else NEUTRAL,"structure_state":state,"current_structure":{"external":ext,"internal":inte,"final":finding},"internal_structure":{"state":inte,"count_state":ic,"counts":ics,"semantic":int_sem},"external_structure":{"state":ext,"count_state":ec,"counts":ecs,"semantic":ext_sem},"internal_count_state":ic,"external_count_state":ec,"internal_counts":ics,"external_counts":ecs,"internal_sequence":"→".join(x["label"] for x in sorted(ihl+ill,key=lambda x:x["index"])[-12:]),"external_sequence":"→".join(x["label"] for x in sorted(ehl+ell,key=lambda x:x["index"])[-12:]),"swing_map":{"internal_highs":ihl,"internal_lows":ill,"external_highs":ehl,"external_lows":ell},"atr14":round(atr,8),"closed_candles":len(b),"bos":eb,"external_bos":eb.get("event"),"internal_bos":ib.get("event"),"external_bos_detail":eb,"internal_bos_detail":ib,"current_break":{"stage":"CONFIRMED" if eb.get("confirmed") else "NONE","current":bool(eb.get("confirmed")),"event":eb.get("event"),"direction":eb.get("direction"),"level":eb.get("level"),"break_candle_index":eb.get("break_candle_index")},"historical_break":historical_break,"failure":failure,"structural_failure":failure,"current_liquidity":current_liquidity,"historical_liquidity":historical_liquidity,"sweep_reclaim":current_liq_raw,"sweep_history":sh[-5:],"break_lifecycle":life,"break_history":hist_breaks[-5:],"protected_structure":protected,"protected_high":protected["protected_high"]["price"] if protected.get("protected_high") else None,"protected_low":protected["protected_low"]["price"] if protected.get("protected_low") else None,"structural_invalidation":invalidation,"protected_level_break":invalidation,"BOS_type":eb.get("event"),"BOS_level":eb.get("level"),"BOS_candle_index":eb.get("break_candle_index"),"structure_strength":auth["score"],"structure_authority":auth["score"],"authority_detail":auth,"confidence":round(confidence,4),"evidence":evidence,"conflicts":conflicts,"reason_codes":reasons,"observations":[f"closed_candles={len(b)}",f"atr14={round(atr,8)}"]+evidence,"reasoning_trace":trace,"upstream_inputs_used":False,"upstream_direction_used":False,"upstream_decisions_used":False,"score_used":False,"trade_decision_authority":False,"decision_authority":"E9_ONLY","decision":None,"gate":None,"specialists_active":False,"specialists_status":"PAUSED","sub_engines_active":False,"sub_engines_status":"PAUSED","specialists":{}}
 
 
 __all__=["analyze_e3","_compress","_bos","_sweep_failure","_current_break","_break_history","_failure","_sweep_reclaim","_state","_resolve_external_state","_protected_structure","_authority","_lifecycle","_invalidation","_semantic_structure_state","_break_event_lifecycle","_structure_authority","_resolve_structure"]
