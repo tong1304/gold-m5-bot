@@ -19,3 +19,5 @@ jobs:
         run: python -m py_compile production_v2/e3_brain.py
       - name: Run E3 regression tests
         run: python -m pytest -q production_v2/test_e3_brain.py tests/test_e3_professional_structure.py
+      - name: Verification marker
+        run: echo E3_V51_LATEST_COMMIT_VERIFIED
