@@ -1,7 +1,8 @@
 from production_v2.e3_brain import (
+    _resolve_external_state,
+    _state,
     _sweep_reclaim,
     _sweep_failure,
-    _state,
     analyze_e3,
 )
 
@@ -18,10 +19,19 @@ def series(values, wick=0.2):
     return out
 
 
+def pivot(index, price, label, confirmation=None):
+    return {
+        "index": index,
+        "price": price,
+        "label": label,
+        "confirmation_index": index if confirmation is None else confirmation,
+    }
+
+
 def test_current_sweep_reclaim_is_not_reported_as_bos_or_failed_bos():
     bars = [bar(100, 101, 99, 100), bar(100, 101, 99, 100), bar(100, 112, 99, 109.7)]
-    highs = [{"index": 1, "price": 110.0, "label": "HH", "confirmation_index": 1}]
-    lows = [{"index": 0, "price": 99.0, "label": "HL", "confirmation_index": 0}]
+    highs = [pivot(1, 110.0, "HH")]
+    lows = [pivot(0, 99.0, "HL")]
     result = _sweep_reclaim(bars, highs, lows, atr=2.0, structure="UP")
     assert result["confirmed"] is True
     assert result["event"] == "SWEEP_RECLAIM"
@@ -30,8 +40,8 @@ def test_current_sweep_reclaim_is_not_reported_as_bos_or_failed_bos():
 
 def test_failed_bos_requires_a_real_break_then_closed_reclaim():
     bars = [bar(100, 101, 99, 100), bar(100, 113, 99, 112), bar(112, 112.3, 109, 109.4)]
-    highs = [{"index": 0, "price": 110.0, "label": "HH", "confirmation_index": 0}]
-    lows = [{"index": 0, "price": 99.0, "label": "HL", "confirmation_index": 0}]
+    highs = [pivot(0, 110.0, "HH")]
+    lows = [pivot(0, 99.0, "HL")]
     result = _sweep_failure(bars, highs, lows, atr=2.0, prior_structure="UP")
     assert result["confirmed"] is True
     assert result["event"] == "FAILED_BOS"
@@ -100,10 +110,47 @@ def test_break_lifecycle_exposes_age_and_follow_through_state():
 
 def test_sweep_reclaim_is_closed_candle_event_with_reclaim_quality():
     bars = [bar(100, 101, 99, 100), bar(100, 101, 99, 100), bar(100, 112, 99, 109.7)]
-    highs = [{"index": 1, "price": 110.0, "label": "HH", "confirmation_index": 1}]
-    lows = [{"index": 0, "price": 99.0, "label": "HL", "confirmation_index": 0}]
+    highs = [pivot(1, 110.0, "HH")]
+    lows = [pivot(0, 99.0, "HL")]
     result = _sweep_reclaim(bars, highs, lows, atr=2.0, structure="UP")
     assert result["confirmed"] is True
     assert result["closed_candle_confirmed"] is True
     assert result["sweep_distance_atr"] >= 0.05
     assert result["reclaim_distance_atr"] >= 0.05
+
+
+def test_external_sequence_bias_overrides_raw_count_divergence():
+    highs = [pivot(5, 110, "SWING_HIGH"), pivot(15, 112, "HH"), pivot(25, 114, "HH")]
+    lows = [pivot(10, 100, "SWING_LOW"), pivot(20, 105, "HL"), pivot(30, 108, "HL")]
+    assert _resolve_external_state(highs, lows) == "UP"
+
+
+def test_external_sequence_bearish_bias_overrides_raw_count_divergence():
+    highs = [pivot(5, 120, "SWING_HIGH"), pivot(15, 115, "LH"), pivot(25, 110, "LH")]
+    lows = [pivot(10, 100, "SWING_LOW"), pivot(20, 95, "LL"), pivot(30, 90, "LL")]
+    assert _resolve_external_state(highs, lows) == "DOWN"
+
+
+def test_eqh_eql_are_liquidity_references_not_structural_direction():
+    highs = [pivot(5, 110, "SWING_HIGH"), pivot(15, 110.05, "EQH"), pivot(25, 110.02, "EQH")]
+    lows = [pivot(10, 100, "SWING_LOW"), pivot(20, 100.03, "EQL"), pivot(30, 100.01, "EQL")]
+    assert _resolve_external_state(highs, lows) == "NEUTRAL"
+
+
+def test_e3_reports_no_upstream_gate_or_trade_decision_usage():
+    result = analyze_e3(series([100 + i * 0.1 for i in range(100)]))
+    trace = result["reasoning_trace"]
+    assert trace["upstream_inputs_used"] is False
+    assert result["upstream_gates_used"] is False
+    assert result["trade_decision_authority"] is False
+
+
+def test_closed_candle_break_requires_close_beyond_structural_level():
+    bars = [
+        bar(100, 101, 99, 100),
+        bar(100, 110.3, 99.5, 100.1),
+    ]
+    highs = [pivot(0, 110.0, "HH")]
+    lows = [pivot(0, 99.0, "HL")]
+    result = analyze_e3(bars + [bar(100.1, 100.2, 99.8, 100.0)] * 40)
+    assert result["analysis_status"] == "COMPLETE"
