@@ -3,6 +3,7 @@ from production_v2.e3_brain import (
     _state,
     _sweep_reclaim,
     _sweep_failure,
+    _lifecycle,
     analyze_e3,
 )
 
@@ -54,6 +55,24 @@ def test_break_lifecycle_does_not_promote_historical_break_to_current_break():
     lifecycle = result["break_lifecycle"]
     assert lifecycle["current"] is False
     assert lifecycle["stage"] in {"NO_CONFIRMED_BREAK", "HISTORICAL_ACCEPTED_BREAK", "HISTORICAL_FAILED_BREAK"}
+
+
+def test_lifecycle_never_calls_an_older_active_break_current():
+    active = {
+        "accepted": True,
+        "break_candle_index": 10,
+        "follow_through_bars": 2,
+        "level": 110.0,
+    }
+    result = _lifecycle(
+        current={"confirmed": False, "event": "NO_BOS"},
+        failure={"confirmed": False},
+        history=[],
+        active=active,
+        last_index=20,
+    )
+    assert result["current"] is False
+    assert result["stage"] == "HISTORICAL_ACCEPTED_BREAK"
 
 
 def test_structure_authority_explains_external_priority_and_internal_conflict():
