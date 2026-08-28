@@ -4,6 +4,10 @@ from production_v2.e3_brain import (
     _sweep_reclaim,
     _sweep_failure,
     _lifecycle,
+    _authority,
+    _protected_structure,
+    _invalidation,
+    _current_break,
     analyze_e3,
 )
 
@@ -21,12 +25,8 @@ def series(values, wick=0.2):
 
 
 def pivot(index, price, label, confirmation=None):
-    return {
-        "index": index,
-        "price": price,
-        "label": label,
-        "confirmation_index": index if confirmation is None else confirmation,
-    }
+    return {"index": index, "price": price, "label": label,
+            "confirmation_index": index if confirmation is None else confirmation}
 
 
 def test_current_sweep_reclaim_is_not_reported_as_bos_or_failed_bos():
@@ -50,34 +50,21 @@ def test_failed_bos_requires_a_real_break_then_closed_reclaim():
 
 
 def test_break_lifecycle_does_not_promote_historical_break_to_current_break():
-    bars = series([100 + i * 0.2 for i in range(60)])
-    result = analyze_e3(bars)
+    result = analyze_e3(series([100 + i * 0.2 for i in range(60)]))
     lifecycle = result["break_lifecycle"]
     assert lifecycle["current"] is False
     assert lifecycle["stage"] in {"NO_CONFIRMED_BREAK", "HISTORICAL_ACCEPTED_BREAK", "HISTORICAL_FAILED_BREAK"}
 
 
 def test_lifecycle_never_calls_an_older_active_break_current():
-    active = {
-        "accepted": True,
-        "break_candle_index": 10,
-        "follow_through_bars": 2,
-        "level": 110.0,
-    }
-    result = _lifecycle(
-        current={"confirmed": False, "event": "NO_BOS"},
-        failure={"confirmed": False},
-        history=[],
-        active=active,
-        last_index=20,
-    )
+    active = {"accepted": True, "break_candle_index": 10, "follow_through_bars": 2, "level": 110.0}
+    result = _lifecycle({"confirmed": False, "event": "NO_BOS"}, {"confirmed": False}, [], active, 20)
     assert result["current"] is False
     assert result["stage"] == "HISTORICAL_ACCEPTED_BREAK"
 
 
 def test_structure_authority_explains_external_priority_and_internal_conflict():
-    bars = series([100 + i * 0.5 for i in range(50)])
-    result = analyze_e3(bars)
+    result = analyze_e3(series([100 + i * 0.5 for i in range(50)]))
     detail = result["authority_detail"]
     assert "primary" in detail
     assert "external" in detail["primary"].lower()
@@ -86,8 +73,7 @@ def test_structure_authority_explains_external_priority_and_internal_conflict():
 
 
 def test_structural_invalidation_is_closed_candle_based():
-    bars = series([120 - i * 0.4 for i in range(55)])
-    result = analyze_e3(bars)
+    result = analyze_e3(series([120 - i * 0.4 for i in range(55)]))
     invalidation = result["structural_invalidation"]
     assert "CLOSED_CANDLE" in invalidation["type"] or invalidation["level"] is None
 
@@ -165,11 +151,51 @@ def test_e3_reports_no_upstream_gate_or_trade_decision_usage():
 
 
 def test_closed_candle_break_requires_close_beyond_structural_level():
-    bars = [
-        bar(100, 101, 99, 100),
-        bar(100, 110.3, 99.5, 100.1),
-    ]
+    bars = [bar(100, 101, 99, 100), bar(100, 110.3, 99.5, 100.1)]
     highs = [pivot(0, 110.0, "HH")]
     lows = [pivot(0, 99.0, "HL")]
     result = analyze_e3(bars + [bar(100.1, 100.2, 99.8, 100.0)] * 40)
     assert result["analysis_status"] == "COMPLETE"
+
+
+def test_choch_is_event_not_automatic_structure_reversal():
+    highs = [pivot(5, 110, "HH"), pivot(15, 108, "LH")]
+    lows = [pivot(10, 100, "HL"), pivot(20, 105, "HL")]
+    bars = [bar(100, 101, 99, 100) for _ in range(22)]
+    bars[-1] = bar(106, 109, 105, 108.5)
+    event = _current_break(bars, highs, lows, 2.0, "DOWN")
+    assert event["event"] in {"CONFIRMED_CHOCH", "NO_BOS"}
+    if event["confirmed"]:
+        assert event["event"] == "CONFIRMED_CHOCH"
+        assert event["closed_candle_confirmed"] is True
+
+
+def test_protected_anchor_has_explicit_lifecycle_fields():
+    highs = [pivot(5, 100, "SWING_HIGH"), pivot(15, 110, "HH")]
+    lows = [pivot(10, 95, "SWING_LOW"), pivot(14, 102, "HL")]
+    p = _protected_structure("UP", highs, lows)
+    assert p["anchor_status"] == "ACTIVE"
+    assert p["anchor_index"] == 14
+    assert p["anchor_price"] == 102
+    assert p["anchor_is_ideal"] is True
+
+
+def test_authority_explanation_contains_reason_and_current_state():
+    detail = _authority("UP", "DOWN", "UP", "DOWN", {"confirmed": False}, {"confirmed": False},
+                        {"primary_level": 100, "anchor_quality": "IDEAL"}, {"confirmed": False},
+                        {"confirmed": False}, "NEUTRAL", 0.0)
+    assert detail["authority_basis"] == "EXTERNAL_STRUCTURE"
+    assert detail["authority_direction"] == "UP"
+    assert detail["decision_rule"] == "EXTERNAL_FIRST_INTERNAL_CONTEXT_COUNT_DESCRIPTIVE"
+    assert detail["why"]
+
+
+def test_invalidation_is_current_only_and_reversal_requires_new_structure():
+    bars = [bar(100, 101, 99, 100) for _ in range(5)]
+    bars[-1] = bar(100, 101, 89, 89)
+    protected = {"invalidation_level": 95, "invalidation_type": "CLOSED_CANDLE_ACCEPTANCE_BELOW_PROTECTED_LOW",
+                 "protected_low": pivot(2, 95, "HL")}
+    result = _invalidation(bars, "UP", protected)
+    assert result["confirmed"] is True
+    assert result["invalidates_current_external_thesis"] is True
+    assert result["does_not_confirm_reversal"] is True
