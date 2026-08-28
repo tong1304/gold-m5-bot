@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 from .contracts import DecisionResult, EngineResult
-from .e1_professional_core_v19 import analyze_e1_professional_v19
+from .e1_professional_core_v20 import analyze_e1_professional_v20
 from .e2_brain import analyze_e2
 from .e3_brain import analyze_e3
 from .e4_brain import analyze_e4
@@ -38,7 +38,7 @@ class ProductionPipeline:
 
     def run(self, market_data: dict[str, Any], *, wait_bars=0, resume_state=None, historical_calibration=None):
         snapshot = dict(market_data); bars = list(snapshot.get("bars") or []); results: dict[str, EngineResult] = {}
-        e1 = _dict_result("E1", analyze_e1_professional_v19(bars)); results["E1"] = e1
+        e1 = _dict_result("E1", analyze_e1_professional_v20(bars)); results["E1"] = e1
         e2_snapshot = dict(snapshot); e2_snapshot["E1_result"] = e1.output
         results["E2"] = _dict_result("E2", analyze_e2(e2_snapshot))
         results["E3"] = _dict_result("E3", analyze_e3(bars)); results["E4"] = _dict_result("E4", analyze_e4(snapshot, results)); results["E5"] = _dict_result("E5", analyze_e5(snapshot, results)); results["E6"] = analyze_e6(snapshot, results); results["E7"] = analyze_e7(snapshot, results); results["E8"] = analyze_e8(snapshot, results); results["E9"] = analyze_e9(snapshot, results)
