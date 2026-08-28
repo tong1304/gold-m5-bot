@@ -16,14 +16,9 @@ def make_bars(closes):
     return bars
 
 
-def wave(*levels):
-    out = []
-    for level in levels:
-        start = out[-1] if out else level
-        step = (level - start) / 10.0
-        for j in range(10):
-            out.append(start + step * (j + 1))
-    return out
+def wave(start, end):
+    step = (end - start) / 10.0
+    return [start + step * (j + 1) for j in range(10)]
 
 
 def test_external_authority_uses_paired_structure_not_counts():
