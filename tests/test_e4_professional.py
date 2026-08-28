@@ -36,12 +36,12 @@ def test_equal_liquidity_requires_distinct_pivot_touches():
     assert any(z["kind"] == "EQUAL_LIQUIDITY" and z["touches"] == 2 for z in zones)
 
 
-def test_high_sweep_rejection_is_pending_until_follow_through():
+def test_high_sweep_rejection_requires_follow_through():
     s = _base()
     s[30] = (104.5, 105.0, 104.0, 104.7)
-    s[55] = (104.7, 106.5, 100.0, 100.8)
-    s[56] = (100.8, 101.5, 99.5, 101.2)
-    s[57] = (101.2, 102.0, 100.8, 101.6)
+    s[55] = (104.7, 106.5, 100.0, 104.0)
+    s[56] = (104.0, 104.5, 101.5, 102.0)
+    s[57] = (102.0, 103.0, 99.8, 100.5)
     result = analyze_e4({"bars": _bars(s)})
     assert result["event"]["type"] == "HIGH_SWEEP_REJECTION"
     assert result["direction"] == "DOWN"
@@ -53,7 +53,7 @@ def test_true_acceptance_requires_two_consecutive_post_break_closes():
     s[30] = (104.5, 105.0, 104.0, 104.7)
     s[55] = (104.8, 106.2, 104.7, 105.8)
     s[56] = (105.8, 106.4, 105.2, 106.0)
-    s[57] = (106.0, 106.2, 104.5, 104.8)  # loses acceptance
+    s[57] = (106.0, 106.2, 104.5, 104.8)
     s[58] = (104.8, 105.3, 104.2, 104.7)
     s[59] = (104.7, 105.1, 104.1, 104.6)
     result = analyze_e4({"bars": _bars(s)})
@@ -65,7 +65,7 @@ def test_true_acceptance_requires_two_consecutive_post_break_closes():
 def test_actor_is_explicitly_price_action_inference():
     s = _base()
     s[30] = (104.5, 105.0, 104.0, 104.7)
-    s[55] = (104.7, 106.5, 100.0, 100.8)
+    s[55] = (104.7, 106.5, 100.0, 104.0)
     result = analyze_e4({"bars": _bars(s)})
     event = result["event"]
     assert event["actor_evidence_type"] == "PRICE_ACTION_INFERENCE_ONLY"
