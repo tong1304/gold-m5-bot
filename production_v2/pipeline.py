@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 from .contracts import DecisionResult, EngineResult
-from .e1_brain import analyze_e1
+from .e1_professional_layer import analyze_e1_professional
 from .e2_brain import analyze_e2
 from .e3_brain import analyze_e3
 from .e4_brain import analyze_e4
@@ -57,9 +57,9 @@ class ProductionPipeline:
         bars = list(snapshot.get("bars") or [])
         results: dict[str, EngineResult] = {}
 
-        # One public analyzer per engine. The pipeline only orchestrates calls;
-        # no brain imports or invokes another brain.
-        e1 = _dict_result("E1", analyze_e1(bars))
+        # E1 is the sole market-state brain. The professional reconciliation
+        # layer remains inside E1 ownership and never creates trade decisions.
+        e1 = _dict_result("E1", analyze_e1_professional(bars))
         results["E1"] = e1
 
         e2_snapshot = dict(snapshot)
