@@ -129,10 +129,22 @@ class LiveService:
             reasons.extend(output.get("reasons") or [])
             return {"question": e3_question, "conclusion": str(e3_finding), "observations": list(dict.fromkeys(observations))[:12], "reasons": sorted(set(str(x) for x in reasons if str(x).strip()))[:16], "role": "MARKET_STRUCTURE_ANALYST"}
 
+        if engine.engine_id == "E4":
+            # E4 is a standalone auction brain. Its observations must be
+            # emitted directly; it intentionally has no peer specialist.
+            e4_question = reasoning.get("question") or output.get("question") or "Where is liquidity, who took it, and did price accept or reject the auction?"
+            e4_finding = reasoning.get("conclusion") or output.get("analyst_conclusion") or output.get("finding") or "UNRESOLVED"
+            observations = []
+            for source in (output.get("observations"), reasoning.get("evidence")):
+                if isinstance(source, (list, tuple)): observations.extend(str(x) for x in source if x)
+            audit = output.get("audit") or {}
+            for key in ("closed_candle_only", "no_lookahead", "liquidity_side", "liquidity_kind", "touches", "freshness", "event", "event_age_bars", "actor_identification", "auction_state", "lifecycle", "follow_through_bars", "consecutive_confirmation_bars", "true_acceptance_gate", "contextual_hint_not_authority"):
+                if key in audit: observations.append(f"{key}={audit[key]}")
+            reasons = list(engine.reason_codes or [])
+            reasons.extend(output.get("reasons") or [])
+            return {"question": e4_question, "conclusion": str(e4_finding), "observations": list(dict.fromkeys(observations))[:20], "reasons": sorted(set(str(x) for x in reasons if str(x).strip()))[:20], "role": "LIQUIDITY_AUCTION_ANALYST"}
+
         if engine.engine_id == "E5":
-            # E5 has an explicit location_state. Do not fall back to generic
-            # "UNRESOLVED" telemetry merely because it does not expose a
-            # generic conclusion/finding field.
             e5_state = output.get("location_state") or reasoning.get("thesis") or "E5_DATA_UNRESOLVED"
             e5_direction = output.get("direction") or "NEUTRAL"
             e5_quality = output.get("location_quality") or "UNKNOWN"
@@ -147,7 +159,6 @@ class LiveService:
             reasons.extend(output.get("counter_evidence") or [])
             return {"question": question, "conclusion": str(e5_state), "observations": list(dict.fromkeys(str(x) for x in observations if str(x)))[:16], "reasons": sorted(set(str(x) for x in reasons if str(x).strip()))[:20], "role": "LOCATION_VALUE_ANALYST"}
 
-        # E4 and other qualitative engines expose their own top-level question.
         conclusion = reasoning.get("conclusion") or output.get("analyst_conclusion") or output.get("finding") or "UNRESOLVED"
         question = reasoning.get("question") or output.get("question") or output.get("specialist_question")
         observations = []
