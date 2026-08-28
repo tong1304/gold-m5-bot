@@ -15,7 +15,7 @@ def series(values, wick=0.2):
 
 def test_current_sweep_reclaim_is_not_reported_as_bos_or_failed_bos():
     bars = [bar(100, 101, 99, 100), bar(100, 101, 99, 100), bar(100, 112, 99, 109.7)]
-    highs = [{"index": 1, "price": 110.0, "label": "HH", "confirmation_index": 2}]
+    highs = [{"index": 1, "price": 110.0, "label": "HH", "confirmation_index": 1}]
     lows = [{"index": 0, "price": 99.0, "label": "HL", "confirmation_index": 0}]
     result = _sweep_reclaim(bars, highs, lows, atr=2.0, structure="UP")
     assert result["confirmed"] is True
