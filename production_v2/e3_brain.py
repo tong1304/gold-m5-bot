@@ -4,7 +4,7 @@ from statistics import mean
 from typing import Any
 
 QUESTION = "What is price structure communicating?"
-ARCHITECTURE = "E3_PROFESSIONAL_MARKET_STRUCTURE_CAUSAL_V4"
+ARCHITECTURE = "E3_PROFESSIONAL_MARKET_STRUCTURE_CAUSAL_V5"
 UP, DOWN, NEUTRAL, MIXED = "UP", "DOWN", "NEUTRAL", "MIXED"
 MIN_CANDLES = 40
 INTERNAL_RADIUS, EXTERNAL_RADIUS = 2, 5
@@ -77,8 +77,7 @@ def _raw_pivots(bars, side, radius):
 def _confirmed(raw, current_index):
     return [
         {"index": int(i), "price": round(float(p), 8), "confirmation_index": int(c), "status": "CONFIRMED"}
-        for i, p, c in raw
-        if int(c) <= current_index
+        for i, p, c in raw if int(c) <= current_index
     ]
 
 
@@ -118,7 +117,10 @@ def _latest(points, labels):
 
 
 def _semantic(highs, lows):
-    events = sorted([p for p in highs + lows if p.get("label") in {"HH", "HL", "LH", "LL"}], key=lambda p: (p["index"], 0 if p["label"] in {"HH", "LH"} else 1))
+    events = sorted(
+        [p for p in highs + lows if p.get("label") in {"HH", "HL", "LH", "LL"}],
+        key=lambda p: (p["index"], 0 if p["label"] in {"HH", "LH"} else 1),
+    )
     state, latest_high, latest_low = NEUTRAL, None, None
     transitions = []
     for event in events:
@@ -147,13 +149,6 @@ def _semantic(highs, lows):
 
 
 def _protected(highs, lows):
-    """Protected levels are causal, not merely the latest HH/LH/HL/LL.
-
-    Bullish protection = the latest HL that preceded the latest confirmed HH.
-    Bearish protection = the latest LH that preceded the latest confirmed LL.
-    A level becomes protected only after the opposing swing is confirmed; this
-    prevents future information from being used to label an older pivot.
-    """
     hh = _latest(highs, {"HH"})
     hl = _latest(lows, {"HL"})
     lh = _latest(highs, {"LH"})
@@ -177,19 +172,36 @@ def _protected(highs, lows):
     }
 
 
+def _crossed_up(bars, current, level):
+    return current > 0 and bars[current - 1]["close"] <= level < bars[current]["close"]
+
+
+def _crossed_down(bars, current, level):
+    return current > 0 and bars[current - 1]["close"] >= level > bars[current]["close"]
+
+
 def _break_event(bars, protected, external, current, atr):
     candidates = []
     ph, pl = protected.get("protected_high"), protected.get("protected_low")
-    if ph and bars[current]["close"] > ph["price"]:
+    if ph and _crossed_up(bars, current, ph["price"]):
         candidates.append((abs(bars[current]["close"] - ph["price"]), {"event": "BOS_UP", "direction": UP, "level": ph["price"], "structure_index": ph["index"], "broken_role": "PROTECTED_HIGH"}))
-    if pl and bars[current]["close"] < pl["price"]:
+    if pl and _crossed_down(bars, current, pl["price"]):
         candidates.append((abs(bars[current]["close"] - pl["price"]), {"event": "BOS_DOWN", "direction": DOWN, "level": pl["price"], "structure_index": pl["index"], "broken_role": "PROTECTED_LOW"}))
     if not candidates:
         return {"event": "NO_BREAK", "direction": NEUTRAL, "confirmed": False, "closed_candle_confirmed": True, "scope": "EXTERNAL"}
     _, event = max(candidates, key=lambda x: x[0])
     old = external["state"]
     choch = (old == DOWN and event["direction"] == UP) or (old == UP and event["direction"] == DOWN)
-    return {**event, "event": "CHOCH" if choch else event["event"], "confirmed": True, "closed_candle_confirmed": True, "break_candle_index": current, "distance_atr": round(abs(bars[current]["close"] - event["level"]) / max(atr, 1e-12), 4), "scope": "EXTERNAL", "previous_structure": old}
+    return {
+        **event,
+        "event": "CHOCH" if choch else event["event"],
+        "confirmed": True,
+        "closed_candle_confirmed": True,
+        "break_candle_index": current,
+        "distance_atr": round(abs(bars[current]["close"] - event["level"]) / max(atr, 1e-12), 4),
+        "scope": "EXTERNAL",
+        "previous_structure": old,
+    }
 
 
 def _failed_break(bars, highs, lows, current, atr):
@@ -197,9 +209,9 @@ def _failed_break(bars, highs, lows, current, atr):
         return {"event": "NO_FAILURE", "confirmed": False, "current": False}
     prev = current - 1
     candidates = []
-    for points, direction, side in ((highs, UP, "high"), (lows, DOWN, "low")):
+    for points, direction in ((highs, UP), (lows, DOWN)):
         for p in reversed(points):
-            if p["confirmation_index"] > prev - 1 or p.get("label") not in {"HH", "HL", "LH", "LL", "EQH", "EQL"}:
+            if p["confirmation_index"] > prev or p.get("label") not in {"HH", "HL", "LH", "LL", "EQH", "EQL"}:
                 continue
             level = p["price"]
             if direction == UP and bars[prev]["close"] > level and bars[current]["close"] < level:
@@ -237,12 +249,15 @@ def _sweep_reclaim(bars, highs, lows, atr):
 
 
 def _invalidation(bars, protected, state):
+    if len(bars) < 2:
+        return {"event": "NO_INVALIDATION", "invalidated": False, "direction": state, "level": None, "basis": "INSUFFICIENT_CLOSED_BARS"}
     close = bars[-1]["close"]
+    previous_close = bars[-2]["close"]
     ph, pl = protected.get("protected_high"), protected.get("protected_low")
-    if state == UP and pl and close < pl["price"]:
-        return {"event": "BULLISH_STRUCTURE_INVALIDATED", "invalidated": True, "direction": UP, "level": pl["price"], "basis": "CLOSED_CANDLE_BELOW_PROTECTED_LOW"}
-    if state == DOWN and ph and close > ph["price"]:
-        return {"event": "BEARISH_STRUCTURE_INVALIDATED", "invalidated": True, "direction": DOWN, "level": ph["price"], "basis": "CLOSED_CANDLE_ABOVE_PROTECTED_HIGH"}
+    if state == UP and pl and previous_close >= pl["price"] and close < pl["price"]:
+        return {"event": "BULLISH_STRUCTURE_INVALIDATED", "invalidated": True, "direction": UP, "level": pl["price"], "basis": "CLOSED_CANDLE_CROSSED_BELOW_PROTECTED_LOW"}
+    if state == DOWN and ph and previous_close <= ph["price"] and close > ph["price"]:
+        return {"event": "BEARISH_STRUCTURE_INVALIDATED", "invalidated": True, "direction": DOWN, "level": ph["price"], "basis": "CLOSED_CANDLE_CROSSED_ABOVE_PROTECTED_HIGH"}
     return {"event": "NO_INVALIDATION", "invalidated": False, "direction": state, "level": None, "basis": "PROTECTED_LEVEL_HOLDS" if state in {UP, DOWN} else "NO_DIRECTIONAL_STRUCTURE"}
 
 
@@ -309,9 +324,9 @@ def analyze_e3(bars):
         f"failed_break={failed['event']}", f"liquidity={sweep['event']}",
         f"lifecycle={lifecycle}", f"invalidation={invalidation['event']}",
     ]
-    reasons = ["CAUSAL_STRUCTURE_ANALYSIS", "CLOSED_CANDLE_ONLY", "CONFIRMED_PIVOTS_ONLY", "NO_LOOKAHEAD", "PROTECTED_LEVEL_CAUSALITY", "STRUCTURE_LIFECYCLE_EXPLICIT"]
+    reasons = ["CAUSAL_STRUCTURE_ANALYSIS", "CLOSED_CANDLE_ONLY", "CONFIRMED_PIVOTS_ONLY", "NO_LOOKAHEAD", "PROTECTED_LEVEL_CAUSALITY", "STRUCTURE_LIFECYCLE_EXPLICIT", "EVENT_MUST_OCCUR_ON_CURRENT_CLOSED_CANDLE"]
     if bos.get("confirmed"):
-        reasons.append("BREAK_REQUIRES_PROTECTED_LEVEL_CLOSE")
+        reasons.append("BREAK_REQUIRES_PROTECTED_LEVEL_CROSS")
     if sweep.get("confirmed"):
         reasons.append("SWEEP_REQUIRES_CLOSED_RECLAIM")
     if invalidation.get("invalidated"):
