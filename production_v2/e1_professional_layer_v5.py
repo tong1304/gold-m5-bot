@@ -70,12 +70,11 @@ def classify_recent_pressure(
     elif counter_count <= 1:
         classification = "PULLBACK_WITHIN_TREND" if counter_count else "TREND_CONTINUATION"
         integrity = "INTACT"
-    elif ratio < 0.80:
+    else:
+        # Persistence increases threat level, but does not become a reversal
+        # until the protected structure is actually broken/accepted.
         classification = "COUNTER_PRESSURE_THREAT"
         integrity = "INTACT"
-    else:
-        classification = "COUNTER_PRESSURE_THREAT"
-        integrity = "THREATENED"
 
     return {
         "classification": classification,
@@ -167,11 +166,13 @@ def analyze_e1_professional_v5(bars: list[dict[str, Any]] | None) -> dict[str, A
         previous_direction = current_direction
     protected_level = structure.get("recent_swing_high") if previous_direction == "DOWN" else structure.get("recent_swing_low") if previous_direction == "UP" else None
 
-    recent = _recent_context([b for b in (bars or []) if isinstance(b, dict)], previous_direction, protected_level, atr)
+    clean_bars = [b for b in (bars or []) if isinstance(b, dict)]
+    recent = _recent_context(clean_bars, previous_direction, protected_level, atr)
     candidate = bool(state_machine.get("transition_candidate") or output.get("transition") == "PRESENT")
     acceptance = dict(pr.get("closed_candle_acceptance") or {})
     acceptance_confirmed = bool(acceptance.get("confirmed"))
     persistence = float((pr.get("persistence") or {}).get("score", 0.0) or 0.0)
+    recent_closes = [float(b["close"]) for b in clean_bars[-ACCEPTANCE_BARS:] if "close" in b]
 
     arbitration = arbitrate_transition(
         previous_direction,
@@ -181,29 +182,18 @@ def analyze_e1_professional_v5(bars: list[dict[str, Any]] | None) -> dict[str, A
         acceptance_confirmed,
         persistence,
         protected_level,
-        recent.get("_closes", []),
-        atr,
-    ) if False else arbitrate_transition(
-        previous_direction,
-        current_direction,
-        str(state_machine.get("previous_regime") or "UNKNOWN"),
-        candidate,
-        acceptance_confirmed,
-        persistence,
-        protected_level,
-        [float(b["close"]) for b in [x for x in (bars or []) if isinstance(x, dict)][-ACCEPTANCE_BARS:] if "close" in b],
+        recent_closes,
         atr,
     )
 
-    # V5 rule: recent counter-pressure is not a regime reversal by itself.
-    if output.get("market_state") in {"TREND_UP", "TREND_DOWN"} and recent["classification"] in {"PULLBACK_WITHIN_TREND", "COUNTER_PRESSURE_THREAT"}:
-        if not recent["protected_level_broken"]:
-            output["transition"] = "ABSENT"
-            output["transition_status"] = "NONE"
-            output["transition_validated"] = False
-            output["transition_committed"] = False
+    # Recent counter-pressure is not a regime reversal by itself.
+    if output.get("market_state") in {"TREND_UP", "TREND_DOWN"} and recent["classification"] in {"PULLBACK_WITHIN_TREND", "COUNTER_PRESSURE_THREAT"} and not recent["protected_level_broken"]:
+        output["transition"] = "ABSENT"
+        output["transition_status"] = "NONE"
+        output["transition_validated"] = False
+        output["transition_committed"] = False
 
-    # A V4 transition is only retained as committed when V5 independently proves it.
+    # A V4 transition is retained only as committed when V5 independently proves it.
     if output.get("market_state") == "TRANSITION" and arbitration["status"] != "COMMITTED":
         output["transition"] = "PRESENT"
         output["transition_status"] = arbitration["status"]
@@ -211,7 +201,8 @@ def analyze_e1_professional_v5(bars: list[dict[str, Any]] | None) -> dict[str, A
         output["transition_committed"] = False
 
     thesis = dict(pr.get("primary_thesis") or {})
-    thesis["counter_evidence"] = list(dict.fromkeys(list(thesis.get("counter_evidence") or []) + ([recent["classification"]] if recent["classification"] != "TREND_CONTINUATION" else [])))
+    extra_counter = [] if recent["classification"] == "TREND_CONTINUATION" else [recent["classification"]]
+    thesis["counter_evidence"] = list(dict.fromkeys(list(thesis.get("counter_evidence") or []) + extra_counter))
     if recent["classification"] == "PULLBACK_WITHIN_TREND":
         thesis["status"] = "CONFIRMED" if output.get("market_state") in {"TREND_UP", "TREND_DOWN"} else thesis.get("status", "DEVELOPING")
 
