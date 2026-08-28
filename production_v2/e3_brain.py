@@ -4,7 +4,7 @@ from statistics import mean
 from typing import Any
 
 QUESTION = "What is price structure communicating?"
-ARCHITECTURE = "E3_PROFESSIONAL_MARKET_STRUCTURE_CAUSAL_V3"
+ARCHITECTURE = "E3_PROFESSIONAL_MARKET_STRUCTURE_CAUSAL_V4"
 UP, DOWN, NEUTRAL, MIXED = "UP", "DOWN", "NEUTRAL", "MIXED"
 MIN_CANDLES = 40
 INTERNAL_RADIUS, EXTERNAL_RADIUS = 2, 5
@@ -42,7 +42,7 @@ def _clean(bars):
 
 def _tr(bars, i):
     if i <= 0:
-        return bars[i]["high"] - bars[i]["low"]
+        return max(bars[i]["high"] - bars[i]["low"], 0.0)
     b, prev = bars[i], bars[i - 1]["close"]
     return max(b["high"] - b["low"], abs(b["high"] - prev), abs(b["low"] - prev))
 
@@ -75,17 +75,11 @@ def _raw_pivots(bars, side, radius):
 
 
 def _confirmed(raw, current_index):
-    out = []
-    for item in raw:
-        if not isinstance(item, (tuple, list)) or len(item) != 3:
-            continue
-        try:
-            idx, price, confirmation = int(item[0]), float(item[1]), int(item[2])
-        except (TypeError, ValueError):
-            continue
-        if confirmation <= current_index:
-            out.append({"index": idx, "price": round(price, 8), "confirmation_index": confirmation, "status": "CONFIRMED"})
-    return out
+    return [
+        {"index": int(i), "price": round(float(p), 8), "confirmation_index": int(c), "status": "CONFIRMED"}
+        for i, p, c in raw
+        if int(c) <= current_index
+    ]
 
 
 def _dedupe(points, atr):
@@ -102,7 +96,8 @@ def _dedupe(points, atr):
 
 def _label(highs, lows, atr):
     tol = max(atr * EQ_TOLERANCE_ATR, 1e-12)
-    H, L, previous = [], [], None
+    H, L = [], []
+    previous = None
     for p in highs:
         label = "SWING_HIGH" if previous is None else ("EQH" if abs(p["price"] - previous[1]) <= tol else "HH" if p["price"] > previous[1] else "LH")
         H.append({**p, "label": label})
@@ -144,8 +139,6 @@ def _semantic(highs, lows):
         "latest_directional_event": events[-1] if events else None,
         "latest_hh": _latest(highs, {"HH"}), "latest_hl": _latest(lows, {"HL"}),
         "latest_lh": _latest(highs, {"LH"}), "latest_ll": _latest(lows, {"LL"}),
-        "bullish_pair": bool(latest_high and latest_low and latest_high["label"] == "HH" and latest_low["label"] == "HL"),
-        "bearish_pair": bool(latest_high and latest_low and latest_high["label"] == "LH" and latest_low["label"] == "LL"),
         "structural_sequence": "→".join(x["label"] for x in events[-12:]),
         "transitions": transitions[-12:],
         "basis": "ORDERED_CONFIRMED_SWINGS",
@@ -153,22 +146,44 @@ def _semantic(highs, lows):
     }
 
 
-def _protected(highs, lows, state):
-    if state == UP:
-        return {"protected_high": _latest(highs, {"HH"}), "protected_low": _latest(lows, {"HL"}), "logic": "HL_protects_bullish_structure"}
-    if state == DOWN:
-        return {"protected_high": _latest(highs, {"LH"}), "protected_low": _latest(lows, {"LL"}), "logic": "LH_protects_bearish_structure"}
-    return {"protected_high": None, "protected_low": None, "logic": "NO_DIRECTIONAL_PROTECTED_PAIR"}
+def _protected(highs, lows):
+    """Protected levels are causal, not merely the latest HH/LH/HL/LL.
+
+    Bullish protection = the latest HL that preceded the latest confirmed HH.
+    Bearish protection = the latest LH that preceded the latest confirmed LL.
+    A level becomes protected only after the opposing swing is confirmed; this
+    prevents future information from being used to label an older pivot.
+    """
+    hh = _latest(highs, {"HH"})
+    hl = _latest(lows, {"HL"})
+    lh = _latest(highs, {"LH"})
+    ll = _latest(lows, {"LL"})
+
+    bullish_low = None
+    if hh:
+        candidates = [p for p in lows if p.get("label") == "HL" and p["index"] < hh["index"] and p["confirmation_index"] <= hh["confirmation_index"]]
+        bullish_low = candidates[-1] if candidates else None
+
+    bearish_high = None
+    if ll:
+        candidates = [p for p in highs if p.get("label") == "LH" and p["index"] < ll["index"] and p["confirmation_index"] <= ll["confirmation_index"]]
+        bearish_high = candidates[-1] if candidates else None
+
+    return {
+        "protected_high": bearish_high,
+        "protected_low": bullish_low,
+        "bullish_basis": "HL_PROTECTED_BY_CONFIRMED_HH" if bullish_low else "NONE",
+        "bearish_basis": "LH_PROTECTED_BY_CONFIRMED_LL" if bearish_high else "NONE",
+    }
 
 
-def _break_event(bars, highs, lows, atr, external, current):
-    usable_h = [p for p in highs if p["confirmation_index"] <= current - 1]
-    usable_l = [p for p in lows if p["confirmation_index"] <= current - 1]
-    high, low, candidates = _latest(usable_h, {"HH", "LH"}), _latest(usable_l, {"HL", "LL"}), []
-    if high and bars[current]["close"] > high["price"]:
-        candidates.append((abs(bars[current]["close"] - high["price"]), {"event": "BOS_UP", "direction": UP, "level": high["price"], "structure_index": high["index"]}))
-    if low and bars[current]["close"] < low["price"]:
-        candidates.append((abs(bars[current]["close"] - low["price"]), {"event": "BOS_DOWN", "direction": DOWN, "level": low["price"], "structure_index": low["index"]}))
+def _break_event(bars, protected, external, current, atr):
+    candidates = []
+    ph, pl = protected.get("protected_high"), protected.get("protected_low")
+    if ph and bars[current]["close"] > ph["price"]:
+        candidates.append((abs(bars[current]["close"] - ph["price"]), {"event": "BOS_UP", "direction": UP, "level": ph["price"], "structure_index": ph["index"], "broken_role": "PROTECTED_HIGH"}))
+    if pl and bars[current]["close"] < pl["price"]:
+        candidates.append((abs(bars[current]["close"] - pl["price"]), {"event": "BOS_DOWN", "direction": DOWN, "level": pl["price"], "structure_index": pl["index"], "broken_role": "PROTECTED_LOW"}))
     if not candidates:
         return {"event": "NO_BREAK", "direction": NEUTRAL, "confirmed": False, "closed_candle_confirmed": True, "scope": "EXTERNAL"}
     _, event = max(candidates, key=lambda x: x[0])
@@ -178,26 +193,25 @@ def _break_event(bars, highs, lows, atr, external, current):
 
 
 def _failed_break(bars, highs, lows, current, atr):
-    """Detect a break on the immediately preceding closed candle followed by a closed rejection now."""
     if current < 1:
         return {"event": "NO_FAILURE", "confirmed": False, "current": False}
     prev = current - 1
     candidates = []
     for points, direction, side in ((highs, UP, "high"), (lows, DOWN, "low")):
         for p in reversed(points):
-            if p["confirmation_index"] > prev - 1 or p.get("label") not in {"HH", "LH", "HL", "LL", "EQH", "EQL"}:
+            if p["confirmation_index"] > prev - 1 or p.get("label") not in {"HH", "HL", "LH", "LL", "EQH", "EQL"}:
                 continue
             level = p["price"]
             if direction == UP and bars[prev]["close"] > level and bars[current]["close"] < level:
-                candidates.append({"event": "FAILED_BOS", "direction": DOWN, "level": level, "break_candle_index": prev, "failure_candle_index": current, "current": True})
+                candidates.append({"event": "FAILED_BOS", "direction": DOWN, "level": level, "break_candle_index": prev, "failure_candle_index": current})
             elif direction == DOWN and bars[prev]["close"] < level and bars[current]["close"] > level:
-                candidates.append({"event": "FAILED_BOS", "direction": UP, "level": level, "break_candle_index": prev, "failure_candle_index": current, "current": True})
+                candidates.append({"event": "FAILED_BOS", "direction": UP, "level": level, "break_candle_index": prev, "failure_candle_index": current})
             if candidates:
                 break
     if not candidates:
         return {"event": "NO_FAILURE", "confirmed": False, "current": False}
     event = candidates[-1]
-    event.update({"confirmed": True, "closed_candle_confirmed": True, "distance_atr": round(abs(bars[current]["close"] - event["level"]) / max(atr, 1e-12), 4)})
+    event.update({"confirmed": True, "closed_candle_confirmed": True, "current": True, "distance_atr": round(abs(bars[current]["close"] - event["level"]) / max(atr, 1e-12), 4)})
     return event
 
 
@@ -217,7 +231,6 @@ def _sweep_reclaim(bars, highs, lows, atr):
             sweep = (pivot["price"] - bars[current]["low"]) / atr
             reclaimed = bars[current]["close"] > pivot["price"]
             reclaim_distance = (bars[current]["close"] - pivot["price"]) / atr
-        # A wick through a level is NOT a sweep until the closed candle reclaims the level.
         if sweep >= SWEEP_MIN_ATR and reclaimed and reclaim_distance >= RECLAIM_MIN_ATR:
             found.append((reclaim_distance, {"event": "SWEEP_RECLAIM", "direction": direction, "confirmed": True, "closed_candle_confirmed": True, "current": True, "level": pivot["price"], "swing_index": pivot["index"], "sweep_candle_index": current, "sweep_distance_atr": round(sweep, 4), "reclaim_distance_atr": round(reclaim_distance, 4), "liquidity_type": "EQUAL_HIGH" if pivot["label"] == "EQH" else "EQUAL_LOW" if pivot["label"] == "EQL" else "STRUCTURAL_SWING", "lifecycle": "RECLAIM"}))
     return max(found, key=lambda x: x[0])[1] if found else {"event": "NO_SWEEP_RECLAIM", "direction": NEUTRAL, "confirmed": False, "lifecycle": "NONE", "current": False}
@@ -233,6 +246,22 @@ def _invalidation(bars, protected, state):
     return {"event": "NO_INVALIDATION", "invalidated": False, "direction": state, "level": None, "basis": "PROTECTED_LEVEL_HOLDS" if state in {UP, DOWN} else "NO_DIRECTIONAL_STRUCTURE"}
 
 
+def _lifecycle(external, internal, bos, failed, sweep, invalidation):
+    if invalidation.get("invalidated"):
+        return "INVALIDATED"
+    if sweep.get("confirmed"):
+        return "SWEEP_RECLAIM"
+    if failed.get("confirmed"):
+        return "FAILED_BREAK"
+    if bos.get("confirmed"):
+        return "CHOCH" if bos.get("event") == "CHOCH" else bos.get("event")
+    if external["state"] in {UP, DOWN}:
+        return "ESTABLISHED"
+    if internal["state"] in {UP, DOWN}:
+        return "FORMING"
+    return "TRANSITION"
+
+
 def analyze_e3(bars):
     clean, rejected = _clean(bars)
     if len(clean) < MIN_CANDLES:
@@ -246,60 +275,58 @@ def analyze_e3(bars):
     external_h, external_l = _label(ext_h, ext_l, atr)
     internal_h, internal_l = _label(int_h, int_l, atr)
     external, internal = _semantic(external_h, external_l), _semantic(internal_h, internal_l)
-    protected = _protected(external_h, external_l, external["state"])
-    bos_choch = _break_event(clean, external_h, external_l, atr, external, current)
+    protected = _protected(external_h, external_l)
+    bos = _break_event(clean, protected, external, current, atr)
     failed = _failed_break(clean, external_h, external_l, current, atr)
-    liquidity = _sweep_reclaim(clean, external_h, external_l, atr)
+    sweep = _sweep_reclaim(clean, external_h, external_l, atr)
     invalidation = _invalidation(clean, protected, external["state"])
-    state = external["state"]
+    lifecycle = _lifecycle(external, internal, bos, failed, sweep, invalidation)
 
     if invalidation["invalidated"]:
-        lifecycle_state, finding = "INVALIDATED", invalidation["event"]
-    elif failed.get("confirmed"):
-        lifecycle_state, finding = "FAILED_BREAK", "FAILED_BOS"
-    elif bos_choch.get("event") == "CHOCH":
-        lifecycle_state, finding = "CHOCH_CONFIRMED", "CHOCH"
-    elif bos_choch.get("confirmed"):
-        lifecycle_state, finding = "BOS_CONFIRMED", bos_choch["event"]
-    elif liquidity.get("event") == "SWEEP_RECLAIM":
-        lifecycle_state, finding = "SWEEP_RECLAIM", "SWEEP_RECLAIM"
-    elif state == UP:
-        lifecycle_state, finding = "STRUCTURE_ACTIVE", "BULLISH_STRUCTURE"
-    elif state == DOWN:
-        lifecycle_state, finding = "STRUCTURE_ACTIVE", "BEARISH_STRUCTURE"
-    elif state == MIXED:
-        lifecycle_state, finding = "STRUCTURE_TRANSITION", "STRUCTURE_TRANSITION"
+        finding = invalidation["event"]
+    elif sweep["confirmed"]:
+        finding = "SWEEP_RECLAIM"
+    elif failed["confirmed"]:
+        finding = "FAILED_BOS"
+    elif bos["confirmed"]:
+        finding = bos["event"]
+    elif external["state"] == UP:
+        finding = "BULLISH_STRUCTURE"
+    elif external["state"] == DOWN:
+        finding = "BEARISH_STRUCTURE"
+    elif internal["state"] in {UP, DOWN}:
+        finding = "STRUCTURE_FORMING"
     else:
-        lifecycle_state, finding = "STRUCTURE_FORMING", "STRUCTURE_FORMING"
+        finding = "STRUCTURE_TRANSITION"
 
+    direction = bos.get("direction") if bos.get("confirmed") else external["state"]
     observations = [
-        f"external_state={state}", f"internal_state={internal['state']}",
+        f"external_state={external['state']}", f"internal_state={internal['state']}",
         f"sequence={external['structural_sequence'] or 'NONE'}",
         f"protected_high={protected['protected_high']['price'] if protected['protected_high'] else 'NONE'}",
         f"protected_low={protected['protected_low']['price'] if protected['protected_low'] else 'NONE'}",
-        f"bos={bos_choch.get('event')}", f"choch={'CONFIRMED' if bos_choch.get('event') == 'CHOCH' else 'NO'}",
-        f"failed_break={failed.get('event')}", f"liquidity={liquidity.get('event')}", f"invalidation={invalidation.get('event')}",
+        f"bos={bos['event']}", f"choch={'CHOCH' if bos.get('event') == 'CHOCH' else 'NO'}",
+        f"failed_break={failed['event']}", f"liquidity={sweep['event']}",
+        f"lifecycle={lifecycle}", f"invalidation={invalidation['event']}",
     ]
+    reasons = ["CAUSAL_STRUCTURE_ANALYSIS", "CLOSED_CANDLE_ONLY", "CONFIRMED_PIVOTS_ONLY", "NO_LOOKAHEAD", "PROTECTED_LEVEL_CAUSALITY", "STRUCTURE_LIFECYCLE_EXPLICIT"]
+    if bos.get("confirmed"):
+        reasons.append("BREAK_REQUIRES_PROTECTED_LEVEL_CLOSE")
+    if sweep.get("confirmed"):
+        reasons.append("SWEEP_REQUIRES_CLOSED_RECLAIM")
+    if invalidation.get("invalidated"):
+        reasons.append(invalidation["basis"])
 
     return {
-        "engine": "E3", "role": "MARKET_STRUCTURE_ANALYST", "architecture": ARCHITECTURE, "question": QUESTION,
-        "status": "OK", "finding": finding, "observations": observations,
-        "reasons": ["CAUSAL_STRUCTURE_ANALYSIS", "CONFIRMED_PIVOTS_ONLY", "CLOSED_CANDLE_ONLY", "NO_LOOKAHEAD"],
+        "engine": "E3", "role": "MARKET_STRUCTURE_ANALYST", "architecture": ARCHITECTURE,
+        "question": QUESTION, "status": "OK", "finding": finding,
+        "direction": direction, "observations": observations, "reasons": reasons,
         "decision_authority": "E9_ONLY", "trade_decision": None,
-        "structure_state": state, "structure_direction": state if state in {UP, DOWN} else NEUTRAL,
-        "internal_state": internal["state"], "external_state": external["state"],
-        "hh": external["latest_hh"], "hl": external["latest_hl"], "lh": external["latest_lh"], "ll": external["latest_ll"],
-        "protected_high": protected["protected_high"], "protected_low": protected["protected_low"],
-        "bos": bos_choch if bos_choch.get("event", "").startswith("BOS") else {"event": "NO_BOS", "confirmed": False},
-        "choch": bos_choch if bos_choch.get("event") == "CHOCH" else {"event": "NO_CHOCH", "confirmed": False},
-        "failed_break": failed,
-        "liquidity_sweep": liquidity,
-        "reclaim": liquidity if liquidity.get("event") == "SWEEP_RECLAIM" else {"event": "NO_RECLAIM", "confirmed": False},
-        "invalidation": invalidation,
-        "structure_lifecycle": {"state": lifecycle_state, "current_structure": state, "last_confirmed_pivot_index": max((p["confirmation_index"] for p in external_h + external_l), default=None), "as_of_closed_candle": current},
-        "external_structure": external, "internal_structure": internal, "protected_structure": protected,
-        "bos_choch": bos_choch, "liquidity": liquidity,
-        "causal": {"lookahead_allowed": False, "future_data_used": False, "current_candle_index": current, "confirmation_cutoff": current, "pivot_confirmation_required": True, "break_requires_closed_candle": True},
-        "data_quality": {"valid_bars": len(clean), "rejected": rejected, "atr": round(atr, 8)},
-        "contract": {"return_type": "dict", "stable_semantic_fields": True, "tuple_normalized": True, "decision_owner": "E9"},
+        "data_quality": {"valid_bars": len(clean), "rejected": rejected, "current_index": current},
+        "structure_state": external["state"], "internal_state": internal["state"],
+        "external_structure": external, "internal_structure": internal,
+        "protected_structure": protected, "bos": bos, "choch": bos if bos.get("event") == "CHOCH" else {"event": "NO_CHOCH", "confirmed": False},
+        "failed_break": failed, "liquidity": sweep, "invalidation": invalidation,
+        "structure_lifecycle": lifecycle,
+        "pivots": {"external_highs": external_h[-12:], "external_lows": external_l[-12:], "internal_highs": internal_h[-12:], "internal_lows": internal_l[-12:]},
     }
