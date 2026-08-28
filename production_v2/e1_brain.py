@@ -91,26 +91,26 @@ def analyze_e1(bars: list[dict[str, Any]] | None) -> dict[str, Any]:
     lookbacks=(5,10,20,40); slopes=[_slope(closes,atr14,n) for n in lookbacks]; thresholds=(.15,.20,.30,.40)
     horizons=["UP" if s>=t else "DOWN" if s<=-t else "FLAT" for s,t in zip(slopes,thresholds)]; up,down=horizons.count("UP"),horizons.count("DOWN")
     long_horizons=horizons[1:]; long_up,long_down=long_horizons.count("UP"),long_horizons.count("DOWN")
-    longer_up,longer_down=long_up,long_down
     if up==4: pressure="UP"
     elif down==4: pressure="DOWN"
-    elif longer_up>longer_down: pressure="UP"
-    elif longer_down>longer_up: pressure="DOWN"
+    elif long_up>long_down: pressure="UP"
+    elif long_down>long_up: pressure="DOWN"
     else: pressure="BALANCED"
-    consensus=max(up,down)/4
-    long_consensus=max(long_up,long_down)/3
+    consensus=max(up,down)/4; long_consensus=max(long_up,long_down)/3
     if pressure=="UP":
         persistence=sum((slopes[0]>=.20,slopes[1]>=.25,slopes[2]>=.35,slopes[3]>=.45))/4
         long_persistence=sum((slopes[1]>=.25,slopes[2]>=.35,slopes[3]>=.45))/3
     elif pressure=="DOWN":
         persistence=sum((slopes[0]<=-.20,slopes[1]<=-.25,slopes[2]<=-.35,slopes[3]<=-.45))/4
         long_persistence=sum((slopes[1]<=-.25,slopes[2]<=-.35,slopes[3]<=-.45))/3
-    else:
-        persistence=0.0; long_persistence=0.0
+    else: persistence=0.0; long_persistence=0.0
     eff10,eff20,eff40=(_efficiency(closes,n) for n in (10,20,40))
     structure,structure_quality,pivot_counts=_pivot_structure(valid); structure_direction="UP" if structure=="BULLISH" else "DOWN" if structure=="BEARISH" else "NEUTRAL"
     structure_conflict=pressure in {"UP","DOWN"} and structure_direction in {"UP","DOWN"} and structure_direction!=pressure
-    structural_proxy=structure=="MIXED" and structure_quality<=.30 and long_persistence>=.667 and max(eff20,eff40)>=.22
+    # Mixed pivots are not automatically a broken trend. If slower horizons and
+    # EMA context agree strongly, E1 records contextual structural alignment and
+    # lets downstream setup/risk brains decide whether the pullback is tradable.
+    structural_proxy=structure=="MIXED" and structure_quality<=.30 and long_persistence>=.667 and long_consensus>=.667
     structure_alignment=1.0 if structure_direction==pressure and pressure!="BALANCED" else .75 if structural_proxy else .5 if pressure=="BALANCED" and structure=="MIXED" else 0.0
     ema_alignment=1.0 if pressure in {"UP","DOWN"} and ema_relation==pressure else 0.0
     ema_conflict=pressure in {"UP","DOWN"} and ema_relation in {"UP","DOWN"} and ema_relation!=pressure; horizon_conflict=up>0 and down>0
@@ -125,9 +125,6 @@ def analyze_e1(bars: list[dict[str, Any]] | None) -> dict[str, Any]:
     volatility="EXPANDING" if expansion else "CONTRACTING" if compression else "NORMAL"
     pressure_score=consensus*(.65+.35*persistence)
     trend_score=.25*consensus+.25*persistence+.20*structure_alignment+.15*ema_alignment+.10*long_consensus+.05*max(eff20,eff40)
-    # Professional reconciliation: a short M5 counter-move must not erase a coherent
-    # slower trend. Efficiency remains a strength measure, not a hard veto, when
-    # EMA context + structure + 10/20/40-bar direction agree.
     established_trend=(pressure in {"UP","DOWN"} and consensus>=.75 and persistence>=.50 and structure_alignment>=.75 and ema_alignment==1.0 and max(eff20,eff40)>=.22)
     contextual_trend=(pressure in {"UP","DOWN"} and long_consensus>=.667 and long_persistence>=.667 and structure_alignment>=.75 and ema_alignment==1.0)
     trend_candidate=established_trend or contextual_trend
