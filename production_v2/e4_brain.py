@@ -5,9 +5,10 @@ from typing import Any
 
 PROFESSIONAL_QUESTION="Where is liquidity, who took it, and did price accept or reject the auction?"
 E4_ROLE="LIQUIDITY_AUCTION_ANALYST"
-ARCHITECTURE="E4_SINGLE_PROFESSIONAL_LIQUIDITY_AUCTION_BRAIN_V21"
+ARCHITECTURE="E4_SINGLE_PROFESSIONAL_LIQUIDITY_AUCTION_BRAIN_V22"
 MIN_BARS=30; PIVOT_WING=2; LOOKBACK_PIVOTS=80; EVENT_LOOKBACK=6; MAX_EVENT_AGE=8; MAX_CONFIRM_BARS=6
 ZONE_TOLERANCE_ATR=.15; INTERACTION_ATR=.05; REJECTION_CLOSE_ATR=.10; ACCEPTANCE_ATR=.15; MIN_BODY_RATIO=.55; MIN_WICK_RATIO=.30
+MIN_CONFIRM_BARS=2; MIN_ACCEPT_DISPLACEMENT_ATR=.35; MIN_ACCEPT_BODY_RATIO=.55
 
 def _num(v:Any)->float|None:
     try:x=float(v)
@@ -63,7 +64,7 @@ def _consume(zones,bars,atr):
 
 def _geometry(b):
     span=max(float(b["high"])-float(b["low"]),1e-12);body=abs(float(b["close"])-float(b["open"]))/span
-    return {"body_ratio":round(body,4),"upper_wick_ratio":round((float(b["high"])-max(float(b["open"]),float(b["close"]))/span if False else (float(b["high"])-max(float(b["open"]),float(b["close"])))/span),4),"lower_wick_ratio":round((min(float(b["open"]),float(b["close"]))-float(b["low"]))/span,4),"range":round(span,6)}
+    return {"body_ratio":round(body,4),"upper_wick_ratio":round((float(b["high"])-max(float(b["open"]),float(b["close"])))/span,4),"lower_wick_ratio":round((min(float(b["open"]),float(b["close"]))-float(b["low"]))/span,4),"range":round(span,6)}
 
 def _event_for_zone(bars,zone,atr,i):
     if i<=int(zone.get("last_touch_index",-1)):return None
@@ -91,9 +92,11 @@ def _find_recent_event(bars,highs,lows,atr):
     for i in range(max(1,cur-EVENT_LOOKBACK),cur+1):
         for z in highs+lows:
             e=_event_for_zone(bars,z,atr,i)
-            if e:c.append((3 if e["auction_state"] in {"REJECTION","ACCEPTANCE","FAILED_BREAK_RECLAIM"} else 1,i,int(z.get("touches",1)),e))
+            if e:c.append(e)
     if not c:return {"type":"NO_LIQUIDITY_EVENT","auction_state":"UNRESOLVED","directional_implication":"NEUTRAL","liquidity_state":"UNRESOLVED","liquidity_taker":"NONE","response_actor":"NONE","actor_evidence_type":"NONE","strength":.30,"zone":None,"index":cur}
-    return max(c,key=lambda x:(x[0],x[1],x[2],x[3]["strength"]))[-1]
+    # Professional lifecycle rule: the newest causal event supersedes older events.
+    # Never let an older acceptance/rejection win merely because it has a higher label priority.
+    return max(c,key=lambda e:(int(e["index"]),int(e.get("zone",{}).get("touches",1)),float(e.get("strength",0))))
 
 def _adaptive_horizon(event,atr):
     g=event.get("candle_geometry") or {};c=event.get("event_candle") or {};level=float(event.get("level",0.));disp=abs(float(c.get("close",level))-level)/max(atr,1e-9);body=float(g.get("body_ratio",0.))
@@ -110,18 +113,23 @@ def _response_quality(event,bar,atr):
 
 def _follow_through(event,bars,atr):
     i=int(event.get("index",-1));zone=event.get("zone") or {}
-    if i<0 or i>=len(bars)-1 or not zone:return {"present":False,"bars":0,"available_bars":0,"required_bars":0,"horizon_bars":0,"reason":"NO_POST_EVENT_CANDLE","invalidated":False,"expired":False,"checks":[]}
+    if i<0 or i>=len(bars)-1 or not zone:return {"present":False,"bars":0,"available_bars":0,"required_bars":MIN_CONFIRM_BARS,"horizon_bars":0,"reason":"NO_POST_EVENT_CANDLE","invalidated":False,"expired":False,"checks":[],"decisive_single":False}
     horizon=min(MAX_CONFIRM_BARS,_adaptive_horizon(event,atr));direction=event.get("directional_implication","NEUTRAL");level=float(event.get("level",zone.get("price",0.)));checks=[];support=0;invalidated=False
     for j in range(i+1,min(len(bars),i+horizon+1)):
         b=bars[j];q=_response_quality(event,b,atr);close=float(b["close"]);opposite=close<level-atr*INTERACTION_ATR if direction=="UP" else close>level+atr*INTERACTION_ATR if direction=="DOWN" else False
         q.update({"index":j,"close":close,"opposite_reclaim":opposite});invalidated=invalidated or opposite
         if q["meaningful"] and not opposite:support+=1
         checks.append(q)
-    available=len(checks);required=2
-    # No single-candle exception: a professional confirmation needs persistence across two closed candles.
-    present=not invalidated and support>=required
+    available=len(checks);required=MIN_CONFIRM_BARS
+    # Acceptance is not proven by the event candle. It requires persistence after the break.
+    acceptance_quality=True
+    if event.get("auction_state")=="ACCEPTANCE":
+        meaningful=[x for x in checks if x.get("meaningful") and not x.get("opposite_reclaim")]
+        acceptance_quality=(len(meaningful)>=required and any(float(x.get("displacement_atr",0))>=MIN_ACCEPT_DISPLACEMENT_ATR and float(x.get("body_ratio",0))>=MIN_ACCEPT_BODY_RATIO for x in meaningful))
+    present=not invalidated and support>=required and acceptance_quality
     expired=not present and not invalidated and available>=horizon
-    return {"present":present,"bars":support,"available_bars":available,"required_bars":required,"horizon_bars":horizon,"reason":"FOLLOW_THROUGH_CONFIRMED" if present else "EVENT_EXPIRED" if expired else "FOLLOW_THROUGH_ABSENT","invalidated":invalidated,"expired":expired,"checks":checks,"decisive_single":False}
+    reason="FOLLOW_THROUGH_CONFIRMED" if present else "TRUE_ACCEPTANCE_NOT_PROVEN" if event.get("auction_state")=="ACCEPTANCE" and not expired else "EVENT_EXPIRED" if expired else "FOLLOW_THROUGH_ABSENT"
+    return {"present":present,"bars":support,"available_bars":available,"required_bars":required,"horizon_bars":horizon,"reason":reason,"invalidated":invalidated,"expired":expired,"checks":checks,"decisive_single":False,"acceptance_quality":acceptance_quality}
 
 def _auction_confirmation(event,bars,atr):
     if not event.get("zone"):return {"state":"UNRESOLVED","confirmed":False,"follow_through":False,"follow_through_bars":0,"reason":"NO_EVENT","lifecycle":"NO_EVENT","detail":{}}
@@ -130,7 +138,7 @@ def _auction_confirmation(event,bars,atr):
     elif f["expired"]:state,confirmed,lifecycle="EXPIRED",False,"EXPIRED"
     elif f["present"] and base in {"REJECTION","ACCEPTANCE","FAILED_BREAK_RECLAIM"}:state="ACCEPTANCE_CONFIRMED" if base=="ACCEPTANCE" else "REJECTION_CONFIRMED";confirmed,lifecycle=True,"CONFIRMED"
     else:state={"REJECTION":"REJECTION_PENDING","ACCEPTANCE":"ACCEPTANCE_PENDING","FAILED_BREAK_RECLAIM":"REJECTION_PENDING"}.get(base,"INTERACTION_PENDING");confirmed,lifecycle=False,"PENDING"
-    return {"state":state,"confirmed":confirmed,"follow_through":f["present"],"follow_through_bars":f["bars"],"reason":"POST_EVENT_RECLAMATION" if f["invalidated"] else f["reason"],"lifecycle":lifecycle,"detail":f}
+    return {"state":state,"confirmed":confirmed,"follow_through":f["present"],"follow_through_bars":f["bars"],"reason":f["reason"] if not f["invalidated"] else "POST_EVENT_RECLAMATION","lifecycle":lifecycle,"detail":f}
 
 def _context_hint(bus):
     votes=[]
@@ -155,10 +163,11 @@ def analyze_e4(snapshot=None,evidence_bus=None):
     elif not confirmed:counter=["NO_FOLLOW_THROUGH","AUCTION_DIRECTION_REMAINS_UNRESOLVED"]
     elif direction=="UP":counter=["RECLAIM_BELOW_LIQUIDITY_LEVEL","OPPOSITE_LOWER_EVENT_CHALLENGES_BULLISH_THESIS"]
     else:counter=["RECLAIM_ABOVE_LIQUIDITY_LEVEL","OPPOSITE_HIGHER_EVENT_CHALLENGES_BEARISH_THESIS"]
-    if confirmed:finding=f"{event['type']}_CONFIRMED";quality="HIGH_CONVICTION" if event.get("zone",{}).get("touches",1)>=2 and auction["follow_through_bars"]>=2 else "CONFIRMED"
+    if confirmed:
+        finding="LOW_ACCEPTANCE_CONFIRMED" if event.get("type")=="LOW_ACCEPTANCE_CANDIDATE" else "HIGH_ACCEPTANCE_CONFIRMED" if event.get("type")=="HIGH_ACCEPTANCE_CANDIDATE" else event["type"]+"_CONFIRMED";quality="HIGH_CONVICTION" if event.get("zone",{}).get("touches",1)>=2 and auction["follow_through_bars"]>=2 else "CONFIRMED"
     elif event.get("zone"):finding=event["type"];quality="INVALIDATED" if auction["state"]=="INVALIDATED" else "EXPIRED" if auction["state"]=="EXPIRED" else "PENDING"
     else:finding,quality="NO_LIQUIDITY_EVENT","UNRESOLVED"
-    observations=_audit(event,auction,bars,atr,context,highs,lows)+[f"event_directional_implication={event.get('directional_implication','NEUTRAL')}",f"direction_confirmed={confirmed}",f"counter_evidence_count={len(counter)}","actor_identification=INFERENCE_FROM_PRICE_ACTION_NOT_ORDER_FLOW", "confirmation_requires_two_closed_candles=True"]
-    return {**base,"state":"ANALYSIS_COMPLETE","analysis_status":"COMPLETE","finding":finding,"direction":direction,"directional_implication":direction,"direction_confirmed":confirmed,"confidence":round(event.get("strength",.30) if confirmed else min(event.get("strength",.30),.45),3),"evidence_strength":round(event.get("strength",.30),3),"observations":observations,"liquidity_map":{"high_zones":highs,"low_zones":lows},"event":event,"auction":auction,"auction_state":auction["state"],"follow_through":detail,"follow_through_bars":auction["follow_through_bars"],"auction_confirmation":{"confirmed":confirmed,"state":auction["state"]},"auction_confirmation_state":auction["state"],"auction_quality":quality,"counter_evidence":counter,"invalidation":["newer confirmed liquidity event supersedes current event","post-event close through defended liquidity level invalidates the thesis","event expiry without sufficient follow-through invalidates confirmation"],"reasons":[] if confirmed else ["AUCTION_RESPONSE_NOT_CONFIRMED" if auction["state"] not in {"INVALIDATED","EXPIRED"} else auction["state"]]}
+    observations=_audit(event,auction,bars,atr,context,highs,lows)+[f"event_directional_implication={event.get('directional_implication','NEUTRAL')}",f"direction_confirmed={confirmed}",f"counter_evidence_count={len(counter)}","actor_identification=INFERENCE_FROM_PRICE_ACTION_NOT_ORDER_FLOW","confirmation_requires_two_closed_candles=True","newer_event_supersedes_older=True",f"true_acceptance_gate={'PASS' if (auction.get('detail') or {}).get('acceptance_quality',True) else 'FAIL'}"]
+    return {**base,"state":"ANALYSIS_COMPLETE","analysis_status":"COMPLETE","finding":finding,"direction":direction,"directional_implication":direction,"direction_confirmed":confirmed,"confidence":round(event.get("strength",.30) if confirmed else min(event.get("strength",.30),.45),3),"evidence_strength":round(event.get("strength",.30),3),"observations":observations,"liquidity_map":{"high_zones":highs,"low_zones":lows},"event":event,"auction":auction,"auction_state":auction["state"],"follow_through":detail,"follow_through_bars":auction["follow_through_bars"],"auction_confirmation":{"confirmed":confirmed,"state":auction["state"]},"auction_confirmation_state":auction["state"],"auction_quality":quality,"counter_evidence":counter,"invalidation":["newer confirmed liquidity event supersedes current event","post-event close through defended liquidity level invalidates the thesis","event expiry without sufficient follow-through invalidates confirmation"],"reasons":[] if confirmed else ["TRUE_ACCEPTANCE_NOT_PROVEN" if event.get("auction_state")=="ACCEPTANCE" else "AUCTION_RESPONSE_NOT_CONFIRMED" if auction["state"] not in {"INVALIDATED","EXPIRED"} else auction["state"]]}
 
 __all__=["analyze_e4"]
