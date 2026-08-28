@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 from .contracts import DecisionResult, EngineResult
-from .e1_professional_layer_v6 import analyze_e1_professional_v6
+from .e1_professional_layer_v7 import analyze_e1_professional_v7
 from .e2_brain import analyze_e2
 from .e3_brain import analyze_e3
 from .e4_brain import analyze_e4
@@ -57,10 +57,10 @@ class ProductionPipeline:
         bars = list(snapshot.get("bars") or [])
         results: dict[str, EngineResult] = {}
 
-        # E1 V6 is the sole market-state brain. It arbitrates dominant
-        # higher-horizon context versus short-term counter-pressure and never
-        # creates setup, entry, risk or trade decisions.
-        e1 = _dict_result("E1", analyze_e1_professional_v6(bars))
+        # E1 V7 is the sole market-state brain. It separates dominant market
+        # state from current phase, pressure and volatility, and never creates
+        # setup, entry, risk or trade decisions.
+        e1 = _dict_result("E1", analyze_e1_professional_v7(bars))
         results["E1"] = e1
 
         e2_snapshot = dict(snapshot)
