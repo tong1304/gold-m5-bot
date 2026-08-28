@@ -4,17 +4,13 @@ from statistics import mean
 from typing import Any
 
 QUESTION = "What is price structure communicating?"
-ARCHITECTURE = "E3_SINGLE_PROFESSIONAL_BRAIN_V60_CAUSAL"
+ARCHITECTURE = "E3_SINGLE_PROFESSIONAL_BRAIN_V61_CAUSAL_CONTRACT"
 UP, DOWN, NEUTRAL, MIXED = "UP", "DOWN", "NEUTRAL", "MIXED"
 MIN_CANDLES = 40
 IR, ER = 2, 5
 PROMINENCE_ATR = 0.10
-EQ_TOLERANCE_ATR = 0.10
-BOS_CLOSE_ATR = 0.08
-BOS_BODY_ATR = 0.20
-BOS_CLOSE_LOCATION = 0.50
-FOLLOW_THROUGH_BARS = 2
-SWEEP_MIN_ATR = 0.05
+EQ_TOLERANCE_ATR = 0.08
+SWEEP_MIN_ATR = 0.10
 RECLAIM_MIN_ATR = 0.05
 
 
@@ -30,13 +26,16 @@ def _clean(bars):
     out, reasons = [], []
     for i, bar in enumerate(bars or []):
         if not isinstance(bar, dict):
-            reasons.append(f"bar_{i}_not_mapping"); continue
+            reasons.append(f"bar_{i}_not_mapping")
+            continue
         vals = [_num(bar.get(k)) for k in ("open", "high", "low", "close")]
         if any(x is None for x in vals):
-            reasons.append(f"bar_{i}_ohlc_invalid"); continue
+            reasons.append(f"bar_{i}_ohlc_invalid")
+            continue
         o, h, l, c = vals
         if h < max(o, c) or l > min(o, c) or h < l:
-            reasons.append(f"bar_{i}_ohlc_inconsistent"); continue
+            reasons.append(f"bar_{i}_ohlc_inconsistent")
+            continue
         out.append({"open": o, "high": h, "low": l, "close": c})
     return out, reasons
 
@@ -49,277 +48,297 @@ def _tr(b, i):
 
 
 def _atr(b, p=14, end=None):
-    if not b: return 0.0
+    if not b:
+        return 0.0
     end = len(b) - 1 if end is None else min(end, len(b) - 1)
-    if end < 0: return 0.0
+    if end < 0:
+        return 0.0
     start = max(1, end - p + 1)
     vals = [_tr(b, i) for i in range(start, end + 1)]
     return mean(vals) if vals else 0.0
 
 
-def _atr_at(b, i, p=14): return _atr(b, p, i)
-
-
 def _pivots(b, side, radius):
+    """Return only primitive tuples here; normalize them immediately at the boundary."""
     out = []
     for i in range(radius, len(b) - radius):
         x = b[i][side]
-        left = [b[j][side] for j in range(i-radius, i)]
-        right = [b[j][side] for j in range(i+1, i+radius+1)]
-        prom = PROMINENCE_ATR * max(_atr_at(b, i), 1e-12)
+        left = [b[j][side] for j in range(i - radius, i)]
+        right = [b[j][side] for j in range(i + 1, i + radius + 1)]
+        prom = PROMINENCE_ATR * max(_atr(b, 14, i), 1e-12)
         if side == "high":
-            ok = x >= max(left) and x > max(right) and min(x-max(left), x-max(right)) >= prom
+            ok = x >= max(left) and x > max(right) and min(x - max(left), x - max(right)) >= prom
         else:
-            ok = x <= min(left) and x < min(right) and min(min(left)-x, min(right)-x) >= prom
-        if ok: out.append((i, x, i + radius))
+            ok = x <= min(left) and x < min(right) and min(min(left) - x, min(right) - x) >= prom
+        if ok:
+            out.append((i, x, i + radius))
     return out
 
 
-def _compress(points, atr, side=None, spacing=2):
-    out=[]; tol=max(atr*EQ_TOLERANCE_ATR,1e-12)
+def _pivot_records(raw, current_index):
+    """Normalize tuple pivots to one dict contract and enforce causal confirmation."""
+    out = []
+    for item in raw or []:
+        if not isinstance(item, (tuple, list)) or len(item) != 3:
+            continue
+        idx, price, confirmation_index = item
+        try:
+            idx, price, confirmation_index = int(idx), float(price), int(confirmation_index)
+        except (TypeError, ValueError):
+            continue
+        if confirmation_index <= current_index:
+            out.append({
+                "index": idx,
+                "price": round(price, 8),
+                "confirmation_index": confirmation_index,
+                "status": "CONFIRMED",
+            })
+    return out
+
+
+def _compress(points, atr, spacing=2):
+    out = []
+    tol = max(atr * EQ_TOLERANCE_ATR, 1e-12)
     for p in points:
-        if not out or p[0]-out[-1][0]>=spacing: out.append(p); continue
-        q=out[-1]
-        if abs(p[1]-q[1])<=tol or (side=="high" and p[1]>q[1]) or (side=="low" and p[1]<q[1]): out[-1]=p
+        if not out or p["index"] - out[-1]["index"] >= spacing:
+            out.append(p)
+            continue
+        if abs(p["price"] - out[-1]["price"]) <= tol:
+            if p["confirmation_index"] >= out[-1]["confirmation_index"]:
+                out[-1] = p
     return out
 
 
-def _label(hp, lp, atr):
-    tol=max(atr*EQ_TOLERANCE_ATR,1e-12); highs=[]; lows=[]; prev=None
-    for i,p,ci in hp:
-        label="SWING_HIGH" if prev is None else "EQH" if abs(p-prev[1])<=tol else "HH" if p>prev[1] else "LH"
-        highs.append({"index":i,"price":round(p,8),"label":label,"confirmation_index":ci}); prev=(i,p)
-    prev=None
-    for i,p,ci in lp:
-        label="SWING_LOW" if prev is None else "EQL" if abs(p-prev[1])<=tol else "HL" if p>prev[1] else "LL"
-        lows.append({"index":i,"price":round(p,8),"label":label,"confirmation_index":ci}); prev=(i,p)
-    return highs,lows
+def _label(highs, lows, atr):
+    tol = max(atr * EQ_TOLERANCE_ATR, 1e-12)
+    labeled_h, labeled_l = [], []
+    prev = None
+    for p in highs:
+        label = "SWING_HIGH" if prev is None else "EQH" if abs(p["price"] - prev[1]) <= tol else "HH" if p["price"] > prev[1] else "LH"
+        labeled_h.append({**p, "label": label})
+        prev = (p["index"], p["price"])
+    prev = None
+    for p in lows:
+        label = "SWING_LOW" if prev is None else "EQL" if abs(p["price"] - prev[1]) <= tol else "HL" if p["price"] > prev[1] else "LL"
+        labeled_l.append({**p, "label": label})
+        prev = (p["index"], p["price"])
+    return labeled_h, labeled_l
 
 
-def _causal(xs, current_index):
-    return [x for x in xs if x.get("confirmation_index", x.get("index", 0)) <= current_index]
-
-
-def _latest(xs, labels, max_confirm=None):
-    for x in reversed(sorted(xs,key=lambda z:z["index"])):
-        if x["label"] in labels and (max_confirm is None or x.get("confirmation_index",x["index"])<=max_confirm): return x
+def _latest(xs, labels):
+    for x in reversed(xs or []):
+        if x.get("label") in labels:
+            return x
     return None
 
 
-def _counts(h,l,n=8):
-    counts={k:0 for k in ("HH","HL","LH","LL","EQH","EQL")}
-    for x in sorted(h+l,key=lambda z:z["index"])[-n:]:
-        if x["label"] in counts: counts[x["label"]]+=1
-    return counts
-
-
-def _count(h,l,n=8):
-    c=_counts(h,l,n); bull=c["HH"]+c["HL"]; bear=c["LH"]+c["LL"]
-    if bull>=bear+2:return UP
-    if bear>=bull+2:return DOWN
-    if bull==bear==0:return NEUTRAL
-    return MIXED
-
-
-def _semantic_structure_state(highs,lows):
-    events=sorted([x for x in highs+lows if x["label"] in {"HH","HL","LH","LL"}],key=lambda x:(x["index"],0 if x["label"] in {"HH","LH"} else 1))
-    state=NEUTRAL; last_high=last_low=None; transitions=[]
+def _semantic_structure_state(highs, lows):
+    events = sorted(
+        [x for x in (highs + lows) if x.get("label") in {"HH", "HL", "LH", "LL"}],
+        key=lambda x: (x["index"], 0 if x["label"] in {"HH", "LH"} else 1),
+    )
+    state = NEUTRAL
+    last_high = last_low = None
+    transitions = []
     for x in events:
-        label=x["label"]
-        if label in {"HH","LH"}:
-            last_high=x
-            if last_low:
-                if label=="HH" and last_low["label"]=="HL":state=UP
-                elif label=="LH" and last_low["label"]=="LL":state=DOWN
-                else:state=MIXED
+        label = x["label"]
+        if label in {"HH", "LH"}:
+            last_high = x
         else:
-            last_low=x
-            if last_high:
-                if label=="HL" and last_high["label"]=="HH":state=UP
-                elif label=="LL" and last_high["label"]=="LH":state=DOWN
-                else:state=MIXED
-        transitions.append({"index":x["index"],"label":label,"state_after":state})
-    return {"state":state,"basis":"ORDERED_CAUSAL_SWING_RELATIONSHIPS","counts_used_as_authority":False,"latest_directional_event":events[-1] if events else None,"latest_hh":_latest(highs,{"HH"}),"latest_hl":_latest(lows,{"HL"}),"latest_lh":_latest(highs,{"LH"}),"latest_ll":_latest(lows,{"LL"}),"bullish_pair":bool(last_high and last_low and last_high["label"]=="HH" and last_low["label"]=="HL"),"bearish_pair":bool(last_high and last_low and last_high["label"]=="LH" and last_low["label"]=="LL"),"structural_sequence":"→".join(x["label"] for x in events[-12:]),"transitions":transitions[-12:],"semantic_rule":"ORDERED_SWINGS_ONLY;CONFIRMED_PIVOTS_ONLY;COUNTS_DESCRIPTIVE_ONLY;NEWER_CONFIRMED_LEG_HAS_AUTHORITY"}
+            last_low = x
+        if last_high and last_low:
+            if last_high["label"] == "HH" and last_low["label"] == "HL":
+                state = UP
+            elif last_high["label"] == "LH" and last_low["label"] == "LL":
+                state = DOWN
+            else:
+                state = MIXED
+        transitions.append({"index": x["index"], "label": label, "state_after": state})
+    return {
+        "state": state,
+        "basis": "ORDERED_CAUSAL_SWING_RELATIONSHIPS",
+        "counts_used_as_authority": False,
+        "latest_directional_event": events[-1] if events else None,
+        "latest_hh": _latest(highs, {"HH"}),
+        "latest_hl": _latest(lows, {"HL"}),
+        "latest_lh": _latest(highs, {"LH"}),
+        "latest_ll": _latest(lows, {"LL"}),
+        "bullish_pair": bool(last_high and last_low and last_high["label"] == "HH" and last_low["label"] == "HL"),
+        "bearish_pair": bool(last_high and last_low and last_high["label"] == "LH" and last_low["label"] == "LL"),
+        "structural_sequence": "→".join(x["label"] for x in events[-12:]),
+        "transitions": transitions[-12:],
+        "semantic_rule": "ORDERED_SWINGS_ONLY;CONFIRMED_PIVOTS_ONLY;COUNTS_DESCRIPTIVE_ONLY;NEWER_CONFIRMED_LEG_HAS_AUTHORITY",
+    }
 
 
-def _semantic_pair(h,l):return _semantic_structure_state(h,l)["state"]
-def _resolve_structure(h,l):return _semantic_pair(h,l)
-def _resolve_external_state(h,l):return _semantic_pair(h,l)
-def _classify(h,l):return _semantic_pair(h,l)
+def _protected_structure(highs, lows, state):
+    if state == UP:
+        return {
+            "protected_high": _latest(highs, {"HH"}),
+            "protected_low": _latest(lows, {"HL"}),
+            "logic": "latest_confirmed_HL_protects_bullish_structure",
+        }
+    if state == DOWN:
+        return {
+            "protected_high": _latest(highs, {"LH"}),
+            "protected_low": _latest(lows, {"LL"}),
+            "logic": "latest_confirmed_LH_protects_bearish_structure",
+        }
+    return {"protected_high": None, "protected_low": None, "logic": "NO_CLEAR_DIRECTIONAL_PROTECTED_PAIR"}
 
 
-def _protected_structure(direction,h,l):
-    highs,lows=sorted(h,key=lambda x:x["index"]),sorted(l,key=lambda x:x["index"])
-    if direction==UP:
-        impulse=_latest(highs,{"HH"}); anchor=_latest([x for x in lows if impulse and x["index"]<impulse["index"]],{"HL"}) if impulse else None
-        if anchor and any(x["label"]=="LL" and anchor["index"]<x["index"]<impulse["index"] for x in lows):anchor=None
-        return {"protected_high":impulse,"protected_low":anchor,"primary_direction":UP,"primary_level":anchor["price"] if anchor else None,"primary_label":"HL" if anchor else None,"invalidation_level":anchor["price"] if anchor else None,"invalidation_type":"CLOSED_CANDLE_ACCEPTANCE_BELOW_PROTECTED_LOW","anchor_quality":"IDEAL" if anchor else "MISSING","anchor_status":"ACTIVE" if anchor else "MISSING","anchor_index":anchor["index"] if anchor else None,"anchor_price":anchor["price"] if anchor else None,"anchor_is_ideal":bool(anchor),"candidate_anchor":None}
-    if direction==DOWN:
-        impulse=_latest(lows,{"LL"}); anchor=_latest([x for x in highs if impulse and x["index"]<impulse["index"]],{"LH"}) if impulse else None
-        if anchor and any(x["label"]=="HH" and anchor["index"]<x["index"]<impulse["index"] for x in highs):anchor=None
-        return {"protected_high":anchor,"protected_low":impulse,"primary_direction":DOWN,"primary_level":anchor["price"] if anchor else None,"primary_label":"LH" if anchor else None,"invalidation_level":anchor["price"] if anchor else None,"invalidation_type":"CLOSED_CANDLE_ACCEPTANCE_ABOVE_PROTECTED_HIGH","anchor_quality":"IDEAL" if anchor else "MISSING","anchor_status":"ACTIVE" if anchor else "MISSING","anchor_index":anchor["index"] if anchor else None,"anchor_price":anchor["price"] if anchor else None,"anchor_is_ideal":bool(anchor),"candidate_anchor":None}
-    return {"protected_high":_latest(highs,{"HH","LH"}),"protected_low":_latest(lows,{"HL","LL"}),"primary_direction":NEUTRAL,"primary_level":None,"primary_label":None,"invalidation_level":None,"invalidation_type":"NO_DIRECTIONAL_INVALIDATION_LEVEL","anchor_quality":"UNRESOLVED","anchor_status":"MISSING","anchor_index":None,"anchor_price":None,"anchor_is_ideal":False,"candidate_anchor":None}
+def _current_break(bars, highs, lows, atr, structure, scope="EXTERNAL", idx=None):
+    if not bars:
+        return {"event": "NO_BREAK", "direction": NEUTRAL, "confirmed": False, "scope": scope}
+    i = len(bars) - 1 if idx is None else idx
+    if i < 0 or i >= len(bars):
+        return {"event": "NO_BREAK", "direction": NEUTRAL, "confirmed": False, "scope": scope}
+    b = bars[i]
+    candidates = []
+    high = _latest(highs, {"HH", "LH"})
+    low = _latest(lows, {"HL", "LL"})
+    if high and b["close"] > high["price"]:
+        candidates.append({"event": "BOS_UP", "direction": UP, "level": high["price"], "structure_index": high["index"]})
+    if low and b["close"] < low["price"]:
+        candidates.append({"event": "BOS_DOWN", "direction": DOWN, "level": low["price"], "structure_index": low["index"]})
+    if not candidates:
+        return {"event": "NO_BREAK", "direction": NEUTRAL, "confirmed": False, "closed_candle_confirmed": True, "scope": scope}
+    x = max(candidates, key=lambda z: abs(b["close"] - z["level"]))
+    prior = structure.get("state", NEUTRAL)
+    choch = (prior == DOWN and x["direction"] == UP) or (prior == UP and x["direction"] == DOWN)
+    return {
+        **x,
+        "event": "CHOCH" if choch else x["event"],
+        "confirmed": True,
+        "closed_candle_confirmed": True,
+        "break_candle_index": i,
+        "distance_atr": round(abs(b["close"] - x["level"]) / max(atr, 1e-12), 4),
+        "scope": scope,
+    }
 
 
-def _quality(bar,level,direction,atr):
-    if atr<=0 or level is None:return {"confirmed":False,"distance_atr":0.0,"body_atr":0.0,"close_location":0.0,"displacement_ok":False,"close_beyond_level":False}
-    rng=max(bar["high"]-bar["low"],1e-12); body=abs(bar["close"]-bar["open"])/atr; location=(bar["close"]-bar["low"])/rng; distance=((bar["close"]-level) if direction==UP else (level-bar["close"])) / atr; close_ok=distance>=BOS_CLOSE_ATR; displacement=body>=BOS_BODY_ATR or (location>=BOS_CLOSE_LOCATION if direction==UP else location<=1-BOS_CLOSE_LOCATION)
-    return {"confirmed":bool(close_ok and displacement),"distance_atr":round(max(0.0,distance),4),"body_atr":round(body,4),"close_location":round(location,4),"displacement_ok":displacement,"close_beyond_level":close_ok}
+def _failure_from_break(break_event, bars, atr):
+    if not break_event.get("confirmed"):
+        return {"event": "NO_FAILURE", "confirmed": False, "current": False}
+    i = break_event["break_candle_index"]
+    level = break_event["level"]
+    direction = break_event["direction"]
+    failed = False
+    if i + 1 < len(bars):
+        if direction == UP:
+            failed = bars[i + 1]["close"] < level
+        elif direction == DOWN:
+            failed = bars[i + 1]["close"] > level
+    return {
+        "event": "FAILED_BOS" if failed else "NO_FAILURE",
+        "direction": DOWN if direction == UP else UP,
+        "confirmed": bool(failed),
+        "current": bool(failed and i + 1 == len(bars) - 1),
+        "closed_candle_confirmed": True,
+        "level": level,
+        "break_candle_index": i,
+        "failure_candle_index": i + 1 if failed else None,
+        "scope": break_event.get("scope", "EXTERNAL"),
+        "distance_atr": round(abs(bars[i + 1]["close"] - level) / max(atr, 1e-12), 4) if failed else 0.0,
+    }
 
 
-def _event(bar,pivot,direction,atr,event,scope,idx):
-    q=_quality(bar,pivot["price"],direction,atr)
-    if not q["confirmed"]:return {"event":"NO_BOS","direction":NEUTRAL,"confirmed":False,"scope":scope,"closed_candle_confirmed":True,**q}
-    return {"event":event,"direction":direction,"confirmed":True,"scope":scope,"level":pivot["price"],"swing_index":pivot["index"],"swing_label":pivot["label"],"break_candle_index":idx,"closed_candle_confirmed":True,**q}
-
-
-def _current_break(bars,highs,lows,atr,structure,scope="EXTERNAL",idx=None):
-    idx=len(bars)-1 if idx is None else idx
-    if idx<1 or atr<=0:return {"event":"NO_BOS","direction":NEUTRAL,"confirmed":False,"scope":scope,"closed_candle_confirmed":False}
-    hh,lh=_latest(highs,{"HH"},idx-1),_latest(highs,{"LH"},idx-1); hl,ll=_latest(lows,{"HL"},idx-1),_latest(lows,{"LL"},idx-1); c,pc=bars[idx]["close"],bars[idx-1]["close"]; candidates=[]
-    if structure==UP:
-        if hh and c>hh["price"] and pc<=hh["price"]:candidates.append((hh,UP,"CONFIRMED_BOS"))
-        if hl and c<hl["price"] and pc>=hl["price"]:candidates.append((hl,DOWN,"CONFIRMED_CHOCH"))
-    elif structure==DOWN:
-        if ll and c<ll["price"] and pc>=ll["price"]:candidates.append((ll,DOWN,"CONFIRMED_BOS"))
-        if lh and c>lh["price"] and pc<=lh["price"]:candidates.append((lh,UP,"CONFIRMED_CHOCH"))
-    events=[_event(bars[idx],p,d,atr,e,scope,idx) for p,d,e in candidates]; events=[e for e in events if e["confirmed"]]
-    return max(events,key=lambda e:e["distance_atr"]) if events else {"event":"NO_BOS","direction":NEUTRAL,"confirmed":False,"scope":scope,"closed_candle_confirmed":True}
-
-
-def _bos(bars,highs,lows,atr,prior_structure,scope="EXTERNAL"):return _current_break(bars,highs,lows,atr,prior_structure,scope)
-def _structure_at(highs,lows,idx):return _resolve_structure([x for x in highs if x["confirmation_index"]<=idx],[x for x in lows if x["confirmation_index"]<=idx])
-def _scan_breaks(bars,highs,lows,atr,scope="EXTERNAL"):
-    return [e for i in range(1,len(bars)) if (e:=_current_break(bars,highs,lows,atr,_structure_at(highs,lows,i-1),scope,i)).get("confirmed")]
-
-
-def _break_history(bars,highs,lows,atr,structure):
-    events=_scan_breaks(bars,highs,lows,atr); history=[]; active=None
-    for e in events:
-        if active and e["break_candle_index"]<=active["break_candle_index"]:continue
-        d,level,start=e["direction"],e["level"],e["break_candle_index"]+1; failure_idx=next((j for j in range(start,len(bars)) if (d==UP and bars[j]["close"]<=level-RECLAIM_MIN_ATR*atr) or (d==DOWN and bars[j]["close"]>=level+RECLAIM_MIN_ATR*atr)),None); end=min(len(bars),start+FOLLOW_THROUGH_BARS); accepted=failure_idx is None and end>start and all((bars[j]["close"]>=level+RECLAIM_MIN_ATR*atr) if d==UP else (bars[j]["close"]<=level-RECLAIM_MIN_ATR*atr) for j in range(start,end)); x={**e,"status":"FAILED_BREAK_RECLAIMED" if failure_idx is not None else "ACCEPTED_BREAK_WITH_FOLLOW_THROUGH" if accepted else "BREAK_CONFIRMED_AWAITING_FOLLOW_THROUGH","accepted":accepted,"follow_through_bars":max(0,end-start),"failure_candle_index":failure_idx}
-        if failure_idx is not None or e["break_candle_index"]<len(bars)-1:history.append(x);active=None
-        else:active=x
-    return history,active
-
-
-def _break_event_lifecycle(history,last_index):
-    if not history:return {"stage":"NONE","current":False,"accepted":False,"terminal":False,"age_bars":None}
-    x=history[-1];failed=x.get("status")=="FAILED_BREAK_RECLAIMED";accepted=x.get("status")=="ACCEPTED_BREAK_WITH_FOLLOW_THROUGH";return {"stage":"FAILED" if failed else "ACCEPTED" if accepted else "HISTORICAL","current":False,"accepted":accepted,"terminal":True,"age_bars":max(0,last_index-x.get("break_candle_index",last_index)),**x}
-
-
-def _sweep_reclaim(bars,highs,lows,atr,structure):
-    if not bars or atr<=0:return {"event":"NO_SWEEP_RECLAIM","direction":NEUTRAL,"confirmed":False,"lifecycle":"NONE","current":False}
-    i=len(bars)-1;found=[]
-    for p,d,side in [(_latest(highs,{"HH","LH","EQH"},i-1),DOWN,"high"),(_latest(lows,{"HL","LL","EQL"},i-1),UP,"low")]:
-        if not p:continue
-        sweep=(bars[i]["high"]-p["price"])/atr if side=="high" else (p["price"]-bars[i]["low"])/atr; reclaim=(p["price"]-bars[i]["close"])/atr if side=="high" else (bars[i]["close"]-p["price"])/atr
-        if sweep>=SWEEP_MIN_ATR:
-            stage="RECLAIM" if reclaim>=RECLAIM_MIN_ATR else "SWEEP";found.append((reclaim,{"event":"SWEEP_RECLAIM" if stage=="RECLAIM" else "SWEEP","direction":d,"confirmed":True,"closed_candle_confirmed":True,"current":True,"level":p["price"],"swing_index":p["index"],"sweep_candle_index":i,"sweep_distance_atr":round(sweep,4),"reclaim_distance_atr":round(max(0.0,reclaim),4),"scope":"EXTERNAL","liquidity_type":"EQUAL_HIGH" if p["label"]=="EQH" else "EQUAL_LOW" if p["label"]=="EQL" else "STRUCTURAL_SWING","lifecycle":stage}))
-    return max(found,key=lambda x:x[0])[1] if found else {"event":"NO_SWEEP_RECLAIM","direction":NEUTRAL,"confirmed":False,"lifecycle":"NONE","current":False}
-
-
-def _sweep_history(bars,highs,lows,atr):
-    events=[]
-    for i in range(1,len(bars)):
-        for p,d,side in [(_latest(highs,{"HH","LH","EQH"},i-1),DOWN,"high"),(_latest(lows,{"HL","LL","EQL"},i-1),UP,"low")]:
-            if not p:continue
-            a=max(_atr_at(bars,i),1e-12); sweep=(bars[i]["high"]-p["price"])/a if side=="high" else (p["price"]-bars[i]["low"])/a; reclaim=(p["price"]-bars[i]["close"])/a if side=="high" else (bars[i]["close"]-p["price"])/a
-            if sweep>=SWEEP_MIN_ATR and reclaim>=RECLAIM_MIN_ATR:events.append({"event":"SWEEP_RECLAIM","direction":d,"confirmed":True,"closed_candle_confirmed":True,"current":i==len(bars)-1,"level":p["price"],"swing_index":p["index"],"sweep_candle_index":i,"sweep_distance_atr":round(sweep,4),"reclaim_distance_atr":round(reclaim,4),"lifecycle":"SWEEP_RECLAIM"})
-    return events
-
-
-def _sweep_failure(bars,highs,lows,atr,prior_structure=NEUTRAL):
-    if not bars or atr<=0:return {"event":"NO_FAILURE","direction":NEUTRAL,"confirmed":False}
-    i=len(bars)-1
-    if prior_structure==UP:
-        p=_latest(highs,{"HH"},i-1)
-        if p and bars[i-1]["close"]>p["price"] and bars[i]["close"]<=p["price"]-RECLAIM_MIN_ATR*atr:return {"event":"FAILED_BOS","direction":DOWN,"confirmed":True,"closed_candle_confirmed":True,"level":p["price"],"break_candle_index":i-1,"failure_candle_index":i}
-    if prior_structure==DOWN:
-        p=_latest(lows,{"LL"},i-1)
-        if p and bars[i-1]["close"]<p["price"] and bars[i]["close"]>=p["price"]+RECLAIM_MIN_ATR*atr:return {"event":"FAILED_BOS","direction":UP,"confirmed":True,"closed_candle_confirmed":True,"level":p["price"],"break_candle_index":i-1,"failure_candle_index":i}
-    return {"event":"NO_FAILURE","direction":NEUTRAL,"confirmed":False}
-
-
-def _lifecycle(current,failure,history,active,last_index):
-    if failure.get("confirmed"):return {"stage":"FAILED","current":bool(failure.get("current",True)),"active":False,"accepted":False,"follow_through":False,"failure":True,"terminal":True,"age_bars":0,"follow_through_bars":0,"level":failure.get("level"),"break_candle_index":failure.get("break_candle_index"),"failure_candle_index":failure.get("failure_candle_index")}
-    if current.get("confirmed"):return {"stage":"CONFIRMED","current":True,"active":True,"accepted":False,"follow_through":False,"failure":False,"terminal":False,"age_bars":0,"follow_through_bars":0,"level":current["level"],"break_candle_index":current["break_candle_index"],"event":current["event"]}
-    if active:
-        accepted=bool(active.get("accepted"));return {"stage":"ACCEPTED" if accepted else "CONFIRMED","current":True,"active":True,"accepted":accepted,"follow_through":accepted,"failure":False,"terminal":False,"age_bars":last_index-active["break_candle_index"],"follow_through_bars":active.get("follow_through_bars",0),"level":active["level"],"break_candle_index":active["break_candle_index"],"event":active.get("event")}
-    return _break_event_lifecycle(history,last_index)
-
-
-def _invalidation(bars,structure,protected):
-    level=protected.get("invalidation_level");base={"direction":structure,"level":level,"type":protected.get("invalidation_type"),"confirmed":False,"closed_candle_confirmed":False,"source_label":protected.get("primary_label"),"source_index":protected.get("anchor_index"),"invalidates_current_external_thesis":False,"does_not_confirm_reversal":True}
-    if not bars or structure not in {UP,DOWN} or level is None or protected.get("anchor_status")!="ACTIVE":return base
-    atr=max(_atr(bars),1e-12);broken=(structure==UP and bars[-1]["close"]<=level-RECLAIM_MIN_ATR*atr) or (structure==DOWN and bars[-1]["close"]>=level+RECLAIM_MIN_ATR*atr);base.update({"confirmed":broken,"closed_candle_confirmed":True,"invalidates_current_external_thesis":broken});return base
-
-
-def _structure_authority(external,internal,protected,current_event,invalidation):
-    ext,inte=external.get("state",NEUTRAL),internal.get("state",NEUTRAL)
-    if invalidation.get("confirmed"):return {"authority":"NONE","direction":NEUTRAL,"internal_role":"CONTEXT_ONLY","count_role":"DESCRIPTIVE_ONLY","reason":"PROTECTED_STRUCTURE_INVALIDATED","score":0.0,"internal_state":inte,"authority_is_actionable":False}
-    if ext not in {UP,DOWN}:return {"authority":"NONE","direction":NEUTRAL,"internal_role":"CONTEXT_ONLY","count_role":"DESCRIPTIVE_ONLY","reason":"NO_DIRECTIONAL_EXTERNAL_STRUCTURE","score":0.0,"internal_state":inte,"authority_is_actionable":False}
-    score=0.55+(0.25 if protected.get("anchor_status")=="ACTIVE" else 0.0)+(0.15 if current_event.get("confirmed") else 0.0)
-    return {"authority":"EXTERNAL","direction":ext,"internal_role":"CONTEXT_ONLY","count_role":"DESCRIPTIVE_ONLY","reason":"EXTERNAL_ORDERED_STRUCTURE_HAS_PRIMARY_AUTHORITY","score":round(min(1.0,score),4),"internal_state":inte,"authority_is_actionable":protected.get("anchor_status")=="ACTIVE"}
-
-
-def _authority(ext,inte,ec,ic,bos,failure,protected,sweep,invalidation,slope=NEUTRAL,slope_quality=0.0):return _structure_authority({"state":ext},{"state":inte},protected,bos,invalidation)|{"external_count_state":ec,"internal_count_state":ic}
-
-def _state(ext,inte,bos,failure,sweep,invalidation,life):
-    if invalidation.get("confirmed"):return "STRUCTURE_INVALIDATED"
-    if failure.get("confirmed") and failure.get("current",False):return "STRUCTURE_FAILURE"
-    if bos.get("confirmed"):return "CHANGE_OF_CHARACTER" if bos.get("event")=="CONFIRMED_CHOCH" else "BREAKOUT_CONFIRMED"
-    if ext in {UP,DOWN} and inte==ext:return "CONTINUATION"
-    if ext in {UP,DOWN} and inte in {UP,DOWN} and ext!=inte:return "STRUCTURE_CONFLICT"
-    if ext==MIXED or inte==MIXED:return "TRANSITION"
-    if sweep.get("confirmed"):return "LIQUIDITY_RECLAIM_CONTEXT"
-    return "RANGE_STRUCTURE"
-
-
-def _empty(status,reasons):
-    p=_protected_structure(NEUTRAL,[],[])
-    return {"architecture":ARCHITECTURE,"reasoning_role":"MARKET_STRUCTURE_ANALYST","question":QUESTION,"analysis_status":status,"finding":"INSUFFICIENT_DATA","direction":NEUTRAL,"structural_bias":NEUTRAL,"structure_state":"RANGE_STRUCTURE","current_structure":{"external":NEUTRAL,"internal":NEUTRAL,"final":"RANGE_STRUCTURE"},"internal_structure":{"state":NEUTRAL,"count_state":NEUTRAL},"external_structure":{"state":NEUTRAL,"count_state":NEUTRAL},"internal_count_state":NEUTRAL,"external_count_state":NEUTRAL,"swing_map":{"internal_highs":[],"internal_lows":[],"external_highs":[],"external_lows":[]},"bos":{"event":"NO_BOS","direction":NEUTRAL,"confirmed":False},"failure":{"event":"NO_FAILURE","direction":NEUTRAL,"confirmed":False},"current_break":{"stage":"NONE","current":False},"historical_break":{"stage":"NONE","current":False},"current_liquidity":{"stage":"NONE","current":False},"historical_liquidity":{"stage":"NONE","current":False},"sweep_reclaim":{"event":"NO_SWEEP_RECLAIM","direction":NEUTRAL,"confirmed":False,"lifecycle":"NONE"},"break_lifecycle":{"stage":"NONE"},"protected_structure":p,"structural_invalidation":{"confirmed":False,"level":None,"type":"NO_DIRECTIONAL_INVALIDATION_LEVEL"},"protected_level_break":{"confirmed":False},"structure_authority":0.0,"authority_detail":{"authority":"NONE","score":0.0,"reason":"INSUFFICIENT_DATA"},"structure_strength":0.0,"confidence":0.0,"evidence":[],"conflicts":reasons,"reason_codes":reasons,"observations":reasons,"reasoning_trace":{"external_is_authority":False,"closed_candle_only":True,"upstream_inputs_used":False,"current_state":"INCOMPLETE","count_is_authority":False,"slope_is_structural_authority":False,"causal_pivot_filter":True},"trade_decision_authority":False,"decision_authority":"E9_ONLY","decision":None,"gate":None,"specialists_active":False,"specialists_status":"PAUSED","sub_engines_active":False,"sub_engines_status":"PAUSED","specialists":{}}
+def _sweep_reclaim(bars, highs, lows, atr):
+    if not bars or atr <= 0:
+        return {"event": "NO_SWEEP_RECLAIM", "direction": NEUTRAL, "confirmed": False, "lifecycle": "NONE", "current": False}
+    i = len(bars) - 1
+    found = []
+    for p, direction, side in [(_latest(highs, {"HH", "LH", "EQH"}), DOWN, "high"), (_latest(lows, {"HL", "LL", "EQL"}), UP, "low")]:
+        if not p or p["confirmation_index"] > i - 1:
+            continue
+        sweep = (bars[i]["high"] - p["price"]) / atr if side == "high" else (p["price"] - bars[i]["low"]) / atr
+        reclaim = (p["price"] - bars[i]["close"]) / atr if side == "high" else (bars[i]["close"] - p["price"]) / atr
+        if sweep >= SWEEP_MIN_ATR:
+            stage = "RECLAIM" if reclaim >= RECLAIM_MIN_ATR else "SWEEP"
+            found.append((max(0.0, reclaim), {
+                "event": "SWEEP_RECLAIM" if stage == "RECLAIM" else "SWEEP",
+                "direction": direction,
+                "confirmed": True,
+                "closed_candle_confirmed": True,
+                "current": True,
+                "level": p["price"],
+                "swing_index": p["index"],
+                "sweep_candle_index": i,
+                "sweep_distance_atr": round(sweep, 4),
+                "reclaim_distance_atr": round(max(0.0, reclaim), 4),
+                "scope": "EXTERNAL",
+                "liquidity_type": "EQUAL_HIGH" if p["label"] == "EQH" else "EQUAL_LOW" if p["label"] == "EQL" else "STRUCTURAL_SWING",
+                "lifecycle": stage,
+            }))
+    return max(found, key=lambda x: x[0])[1] if found else {"event": "NO_SWEEP_RECLAIM", "direction": NEUTRAL, "confirmed": False, "lifecycle": "NONE", "current": False}
 
 
 def analyze_e3(bars):
-    b,data=_clean(bars)
-    if len(b)<MIN_CANDLES:return _empty("INCOMPLETE",["INSUFFICIENT_CANDLES"]+data[:8])
-    atr=_atr(b);ih=_compress(_pivots(b,"high",IR),atr,"high");il=_compress(_pivots(b,"low",IR),atr,"low");eh=_compress(_pivots(b,"high",ER),atr,"high");el=_compress(_pivots(b,"low",ER),atr,"low")
-    last=len(b)-1;ih,il,eh,el=_causal(ih,last),_causal(il,last),_causal(eh,last),_causal(el,last)
-    ihl,ill=_label(ih,il,atr);ehl,ell=_label(eh,el,atr);int_sem,ext_sem=_semantic_structure_state(ihl,ill),_semantic_structure_state(ehl,ell);inte,ext=int_sem["state"],ext_sem["state"];ic,ec=_count(ihl,ill),_count(ehl,ell);ics,ecs=_counts(ihl,ill),_counts(ehl,ell)
-    protected=_protected_structure(ext,ehl,ell);eb=_current_break(b,ehl,ell,atr,ext,"EXTERNAL");ib=_current_break(b,ihl,ill,atr,inte,"INTERNAL");all_breaks=_scan_breaks(b,ehl,ell,atr);hist_breaks=[e for e in all_breaks if e["break_candle_index"]<last]
-    historical_break={"stage":"NONE","current":False}
-    if hist_breaks:
-        x=hist_breaks[-1];d,level=x["direction"],x["level"];a=max(_atr_at(b,x["break_candle_index"]),1e-12);fail=next((j for j in range(x["break_candle_index"]+1,len(b)) if (d==UP and b[j]["close"]<=level-RECLAIM_MIN_ATR*a) or (d==DOWN and b[j]["close"]>=level+RECLAIM_MIN_ATR*a)),None);end=min(len(b),x["break_candle_index"]+1+FOLLOW_THROUGH_BARS);accepted=fail is None and end>x["break_candle_index"]+1 and all((b[j]["close"]>=level+RECLAIM_MIN_ATR*a) if d==UP else (b[j]["close"]<=level-RECLAIM_MIN_ATR*a) for j in range(x["break_candle_index"]+1,end));historical_break={"stage":"FAILED" if fail is not None else "ACCEPTED" if accepted else "NONE","current":False,"event":x.get("event"),"direction":d,"level":level,"break_candle_index":x["break_candle_index"],"failure_candle_index":fail}
-    current_liq_raw=_sweep_reclaim(b,ehl,ell,atr,ext);current_liq_stage="RECLAIM" if current_liq_raw.get("event")=="SWEEP_RECLAIM" else "SWEEP" if current_liq_raw.get("confirmed") else "NONE";current_liquidity={"stage":current_liq_stage,"current":current_liq_stage!="NONE","event":current_liq_raw.get("event"),"direction":current_liq_raw.get("direction"),"level":current_liq_raw.get("level")};sh=_sweep_history(b,ehl,ell,atr);last_hist=next((x for x in reversed(sh) if x.get("event")=="SWEEP_RECLAIM" and not x.get("current")),None);historical_liquidity={"stage":"SWEEP_RECLAIM" if last_hist else "NONE","current":False,"event":"SWEEP_RECLAIM" if last_hist else "NONE","direction":last_hist.get("direction") if last_hist else NEUTRAL,"level":last_hist.get("level") if last_hist else None}
-    failure={"event":"NO_FAILURE","direction":NEUTRAL,"confirmed":False,"current":False}
-    if historical_break["stage"]=="FAILED":failure={"event":"HISTORICAL_FAILED_BOS","direction":DOWN if historical_break["direction"]==UP else UP,"confirmed":True,"current":False,"closed_candle_confirmed":True,"level":historical_break["level"],"break_candle_index":historical_break["break_candle_index"],"failure_candle_index":historical_break.get("failure_candle_index"),"scope":"EXTERNAL"}
-    invalidation=_invalidation(b,ext,protected);life=_lifecycle(eb,failure,[],None,last);auth=_structure_authority(ext_sem,int_sem,protected,eb,invalidation);state=_state(ext,inte,eb,failure,current_liq_raw,invalidation,life);reasons=[];conflicts=[]
-    if ext!=ec:reasons.append("EXTERNAL_COUNT_STATE_DIVERGENCE_DESCRIPTIVE_ONLY");conflicts.append("EXTERNAL_COUNT_STATE_IS_NOT_AUTHORITY")
-    if inte!=ic:reasons.append("INTERNAL_COUNT_STATE_DIVERGENCE_DESCRIPTIVE_ONLY");conflicts.append("INTERNAL_COUNT_STATE_IS_NOT_AUTHORITY")
-    if ib.get("confirmed") and not eb.get("confirmed"):reasons.append("INTERNAL_BREAK_NOT_EXTERNAL_AUTHORITY");conflicts.append("INTERNAL_BREAK_VS_EXTERNAL_AUTHORITY")
-    if ext in {UP,DOWN} and inte in {UP,DOWN} and ext!=inte:reasons.append("INTERNAL_STRUCTURE_CONFLICT");conflicts.append("INTERNAL_VS_EXTERNAL_STRUCTURE")
-    if eb.get("confirmed"):reasons.append("CURRENT_CLOSED_CANDLE_BREAK_CONFIRMED")
-    if eb.get("event")=="CONFIRMED_CHOCH":reasons.append("CURRENT_CHOCH_CONFIRMED_BY_CLOSED_CANDLE")
-    if current_liquidity["current"]:reasons.append("CURRENT_LIQUIDITY_EVENT_CONFIRMED")
-    if historical_liquidity["stage"]=="SWEEP_RECLAIM":reasons.append("HISTORICAL_SWEEP_RECLAIM")
-    if historical_break["stage"]=="FAILED":reasons.append("HISTORICAL_STRUCTURAL_BREAK_FAILED_AND_RECLAIMED");conflicts.append("HISTORICAL_FAILURE_CANNOT_OVERRIDE_CURRENT_STRUCTURE")
-    if historical_break["stage"]=="ACCEPTED":reasons.append("HISTORICAL_BREAK_ACCEPTED_AFTER_FOLLOW_THROUGH")
-    if invalidation.get("confirmed"):reasons.append("PROTECTED_STRUCTURE_INVALIDATED");conflicts.append("PROTECTED_STRUCTURE_INVALIDATED")
-    if protected.get("anchor_quality")=="MISSING" and ext in {UP,DOWN}:reasons.append("PROTECTED_ANCHOR_MISSING_NO_FALLBACK_AUTHORIZED")
-    if ext==MIXED:reasons.append("EXTERNAL_STRUCTURE_HAS_NO_DIRECTIONAL_AUTHORITY")
-    if inte==MIXED:reasons.append("INTERNAL_STRUCTURE_IS_MIXED")
-    reasons=list(dict.fromkeys(reasons+data[:8]));conflicts=list(dict.fromkeys(conflicts))
-    if invalidation.get("confirmed"):finding,direction="STRUCTURE_INVALIDATED",NEUTRAL
-    elif eb.get("confirmed"):finding,direction=eb["event"],eb["direction"]
-    elif ext in {UP,DOWN} and inte in {UP,DOWN} and ext!=inte:finding,direction=f"{ext}_STRUCTURE_WITH_INTERNAL_CONFLICT",ext
-    elif ext in {UP,DOWN}:finding,direction=f"{ext}_STRUCTURE",ext
-    elif ext==MIXED or inte==MIXED:finding,direction="MIXED_STRUCTURE",NEUTRAL
-    else:finding,direction="RANGE_STRUCTURE",NEUTRAL
-    confidence=min(1.0,0.30+0.65*auth["score"]+(0.08 if eb.get("confirmed") else 0.0));confidence=min(confidence,0.55) if ext in {MIXED,NEUTRAL} else confidence;confidence=min(confidence,0.60) if invalidation.get("confirmed") else confidence
-    evidence=[f"external_structure={ext}",f"internal_structure={inte}",f"external_count_state={ec}",f"internal_count_state={ic}",f"external_bos={eb.get('event')}",f"internal_bos={ib.get('event')}",f"current_break={'CONFIRMED' if eb.get('confirmed') else 'NONE'}",f"historical_break={historical_break['stage']}",f"current_liquidity={current_liquidity['stage']}",f"historical_liquidity={historical_liquidity['stage']}",f"protected_primary_level={protected.get('primary_level')}",f"protected_anchor_quality={protected.get('anchor_quality')}",f"structure_authority={auth['score']}","causal_pivots_only=True","count_state_role=DESCRIPTIVE_NOT_AUTHORITY","historical_events_do_not_override_current_state","semantic_basis=ORDERED_CONFIRMED_SWING_RELATIONSHIPS"]
-    trace={"external_state":ext,"internal_state":inte,"external_semantics":ext_sem,"internal_semantics":int_sem,"external_count_state":ec,"internal_count_state":ic,"external_bos_confirmed":eb.get("confirmed",False),"internal_bos_confirmed":ib.get("confirmed",False),"internal_bos_has_market_authority":False,"external_is_authority":auth["authority"]=="EXTERNAL","external_authority_is_actionable":auth["authority_is_actionable"],"closed_candle_only":True,"protected_structure_is_invalidation_anchor":protected.get("anchor_is_ideal",False),"protected_level_break_invalidates_current_external_thesis":invalidation.get("confirmed",False),"current_break_stage":"CONFIRMED" if eb.get("confirmed") else "NONE","historical_break_stage":historical_break["stage"],"current_liquidity_stage":current_liquidity["stage"],"historical_liquidity_stage":historical_liquidity["stage"],"authority_explanation":auth["reason"],"authority_basis":auth["authority"],"authority_direction":auth["direction"],"upstream_inputs_used":False,"upstream_direction_used":False,"upstream_decisions_used":False,"upstream_gates_used":False,"count_is_authority":False,"slope_is_structural_authority":False,"causal_pivot_filter":True,"current_state":state,"historical_context":{"break":historical_break["stage"],"liquidity":historical_liquidity["stage"]},"invalidation_rule":protected.get("invalidation_type"),"structure_narrative":f"External={ext}; Internal={inte}; current_break={'CONFIRMED' if eb.get('confirmed') else 'NONE'}; historical_break={historical_break['stage']}; current_liquidity={current_liquidity['stage']}; authority={auth['authority']}; invalidation={'CONFIRMED' if invalidation.get('confirmed') else 'NOT_CONFIRMED'}."}
-    return {"architecture":ARCHITECTURE,"reasoning_role":"MARKET_STRUCTURE_ANALYST","question":QUESTION,"analysis_status":"COMPLETE","finding":finding,"direction":direction,"structural_bias":ext if ext in {UP,DOWN} else NEUTRAL,"structure_state":state,"current_structure":{"external":ext,"internal":inte,"final":finding},"internal_structure":{"state":inte,"count_state":ic,"counts":ics,"semantic":int_sem},"external_structure":{"state":ext,"count_state":ec,"counts":ecs,"semantic":ext_sem},"internal_count_state":ic,"external_count_state":ec,"internal_counts":ics,"external_counts":ecs,"internal_sequence":"→".join(x["label"] for x in sorted(ihl+ill,key=lambda x:x["index"])[-12:]),"external_sequence":"→".join(x["label"] for x in sorted(ehl+ell,key=lambda x:x["index"])[-12:]),"swing_map":{"internal_highs":ihl,"internal_lows":ill,"external_highs":ehl,"external_lows":ell},"atr14":round(atr,8),"closed_candles":len(b),"bos":eb,"external_bos":eb.get("event"),"internal_bos":ib.get("event"),"external_bos_detail":eb,"internal_bos_detail":ib,"current_break":{"stage":"CONFIRMED" if eb.get("confirmed") else "NONE","current":bool(eb.get("confirmed")),"event":eb.get("event"),"direction":eb.get("direction"),"level":eb.get("level"),"break_candle_index":eb.get("break_candle_index")},"historical_break":historical_break,"failure":failure,"structural_failure":failure,"current_liquidity":current_liquidity,"historical_liquidity":historical_liquidity,"sweep_reclaim":current_liq_raw,"sweep_history":sh[-5:],"break_lifecycle":life,"break_history":hist_breaks[-5:],"protected_structure":protected,"protected_high":protected["protected_high"]["price"] if protected.get("protected_high") else None,"protected_low":protected["protected_low"]["price"] if protected.get("protected_low") else None,"structural_invalidation":invalidation,"protected_level_break":invalidation,"BOS_type":eb.get("event"),"BOS_level":eb.get("level"),"BOS_candle_index":eb.get("break_candle_index"),"structure_strength":auth["score"],"structure_authority":auth["score"],"authority_detail":auth,"confidence":round(confidence,4),"evidence":evidence,"conflicts":conflicts,"reason_codes":reasons,"observations":[f"closed_candles={len(b)}",f"atr14={round(atr,8)}"]+evidence,"reasoning_trace":trace,"upstream_inputs_used":False,"upstream_direction_used":False,"upstream_decisions_used":False,"score_used":False,"trade_decision_authority":False,"decision_authority":"E9_ONLY","decision":None,"gate":None,"specialists_active":False,"specialists_status":"PAUSED","sub_engines_active":False,"sub_engines_status":"PAUSED","specialists":{}}
+    """Professional causal market-structure brain. Never emits a trade decision."""
+    clean, reasons = _clean(bars)
+    if len(clean) < MIN_CANDLES:
+        return {
+            "engine": "E3",
+            "architecture": ARCHITECTURE,
+            "question": QUESTION,
+            "status": "INSUFFICIENT_DATA",
+            "decision_authority": "E9_ONLY",
+            "trade_decision": None,
+            "data_quality": {"valid_bars": len(clean), "rejected": reasons},
+        }
 
+    current = len(clean) - 1
+    atr = _atr(clean)
+    raw_h = _pivots(clean, "high", ER)
+    raw_l = _pivots(clean, "low", ER)
+    highs = _compress(_pivot_records(raw_h, current), atr)
+    lows = _compress(_pivot_records(raw_l, current), atr)
+    highs, lows = _label(highs, lows, atr)
 
-__all__=["analyze_e3","_compress","_bos","_sweep_failure","_current_break","_break_history","_failure","_sweep_reclaim","_state","_resolve_external_state","_protected_structure","_authority","_lifecycle","_invalidation","_semantic_structure_state","_break_event_lifecycle","_structure_authority","_resolve_structure"]
+    internal_highs = _compress(_pivot_records(_pivots(clean, "high", IR), current), atr)
+    internal_lows = _compress(_pivot_records(_pivots(clean, "low", IR), current), atr)
+    internal_highs, internal_lows = _label(internal_highs, internal_lows, atr)
+
+    external = _semantic_structure_state(highs, lows)
+    internal = _semantic_structure_state(internal_highs, internal_lows)
+    protected = _protected_structure(highs, lows, external["state"])
+    bos = _current_break(clean, highs, lows, atr, external, "EXTERNAL", current)
+    failure = _failure_from_break(bos, clean, atr)
+    sweep = _sweep_reclaim(clean, highs, lows, atr)
+
+    lifecycle = {
+        "current_structure": external["state"],
+        "bos_stage": "CONFIRMED" if bos.get("confirmed") else "NONE",
+        "failure_stage": "FAILED" if failure.get("confirmed") else "NONE",
+        "liquidity_stage": sweep.get("lifecycle", "NONE"),
+        "last_confirmed_pivot_index": max([x["confirmation_index"] for x in highs + lows], default=None),
+        "as_of_closed_candle": current,
+    }
+
+    narrative = {
+        UP: "Bullish external structure is currently dominant; internal structure is context, not authority.",
+        DOWN: "Bearish external structure is currently dominant; internal structure is context, not authority.",
+        MIXED: "External structure is mixed; directional commitment is not structurally clean.",
+        NEUTRAL: "No sufficiently clear directional external structure is confirmed.",
+    }[external["state"]]
+
+    return {
+        "engine": "E3",
+        "architecture": ARCHITECTURE,
+        "question": QUESTION,
+        "status": "OK",
+        "decision_authority": "E9_ONLY",
+        "trade_decision": None,
+        "as_of_closed_candle": current,
+        "causal": {"lookahead_allowed": False, "future_data_used": False, "confirmation_cutoff": current},
+        "data_quality": {"valid_bars": len(clean), "rejected": reasons, "atr": round(atr, 8)},
+        "external_structure": external,
+        "internal_structure": internal,
+        "protected_structure": protected,
+        "bos_choch": bos,
+        "failed_break": failure,
+        "liquidity": sweep,
+        "structure_lifecycle": lifecycle,
+        "narrative": narrative,
+        "contract": {"return_type": "dict", "tuple_normalized": True, "decision_owner": "E9"},
+    }
