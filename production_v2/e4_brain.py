@@ -1,11 +1,13 @@
 from __future__ import annotations
+
 from math import isfinite
 from statistics import mean
 from typing import Any
 
 PROFESSIONAL_QUESTION = "Where is liquidity, who took it, and did price accept or reject the auction?"
 E4_ROLE = "LIQUIDITY_AUCTION_ANALYST"
-ARCHITECTURE = "E4_SINGLE_PROFESSIONAL_LIQUIDITY_AUCTION_BRAIN_V24"
+ARCHITECTURE = "E4_SINGLE_PROFESSIONAL_LIQUIDITY_AUCTION_BRAIN_V25"
+
 MIN_BARS = 30
 PIVOT_WING = 2
 LOOKBACK = 80
@@ -22,6 +24,7 @@ FRESH_BARS = 3
 RECENT_BARS = 12
 AGED_BARS = 24
 MIN_DISPLACEMENT_ATR = 0.20
+TOUCH_SEPARATION_BARS = 3
 
 
 def _num(v: Any):
@@ -88,15 +91,18 @@ def _zones(levels, side, atr, current):
             groups.append([item])
         else:
             groups[-1].append(item)
+
     out = []
     for g in groups:
         prices = [p for _, p in g]
-        idx = [i for i, _ in g]
+        idx = sorted(i for i, _ in g)
         last = max(idx)
         gaps = [b - a for a, b in zip(idx, idx[1:])]
-        separated = sum(1 for gap in gaps if gap >= 3)
+        separated = sum(1 for gap in gaps if gap >= TOUCH_SEPARATION_BARS)
         raw_touches = len(idx)
         independent_touches = 1 + separated if idx else 0
+        separation_valid = raw_touches <= 1 or separated > 0
+        age = max(0, current - last)
         out.append({
             "side": side,
             "price": mean(prices),
@@ -105,12 +111,12 @@ def _zones(levels, side, atr, current):
             "touches": independent_touches,
             "raw_touch_count": raw_touches,
             "separated_touches": separated,
-            "touch_separation_valid": separated > 0 if raw_touches > 1 else True,
+            "touch_separation_valid": separation_valid,
             "last_touch_index": last,
-            "age_bars": current - last,
-            "freshness": _freshness(current - last),
+            "age_bars": age,
+            "freshness": _freshness(age),
             "kind": "CLUSTER_LIQUIDITY" if independent_touches >= 3 else "EQUAL_LIQUIDITY" if independent_touches >= 2 else "SWING_LIQUIDITY",
-            "active": current - last <= MAX_EVENT_AGE + MAX_CONFIRM_BARS,
+            "active": age <= MAX_EVENT_AGE + MAX_CONFIRM_BARS,
         })
     return out
 
@@ -126,7 +132,7 @@ def _geom(b):
 
 
 def _event(bars, z, atr, i):
-    if i <= z["last_touch_index"] or i <= 0:
+    if i <= z["last_touch_index"] or i <= 0 or i >= len(bars):
         return None
     b, prev = bars[i], bars[i - 1]
     level = z["upper"] if z["side"] == "HIGH" else z["lower"]
@@ -145,8 +151,12 @@ def _event(bars, z, atr, i):
             typ, state, direction = "HIGH_FAILED_BREAK_RECLAIM", "FAILED_BREAK_RECLAIM", "DOWN"
         elif rejection:
             typ, state, direction = "HIGH_SWEEP_REJECTION", "REJECTION", "DOWN"
+        elif swept and b["close"] > level + accept:
+            typ, state, direction = "HIGH_SWEEP_ACCEPTANCE", "ACCEPTANCE", "UP"
         elif acceptance:
             typ, state, direction = "HIGH_ACCEPTANCE_CANDIDATE", "ACCEPTANCE", "UP"
+        elif swept:
+            typ, state, direction = "HIGH_SWEEP_CANDIDATE", "SWEEP_CANDIDATE", "NEUTRAL"
         elif interacted:
             typ, state, direction = "HIGH_LIQUIDITY_INTERACTION", "INTERACTION", "NEUTRAL"
         else:
@@ -163,8 +173,12 @@ def _event(bars, z, atr, i):
             typ, state, direction = "LOW_FAILED_BREAK_RECLAIM", "FAILED_BREAK_RECLAIM", "UP"
         elif rejection:
             typ, state, direction = "LOW_SWEEP_REJECTION", "REJECTION", "UP"
+        elif swept and b["close"] < level - accept:
+            typ, state, direction = "LOW_SWEEP_ACCEPTANCE", "ACCEPTANCE", "DOWN"
         elif acceptance:
             typ, state, direction = "LOW_ACCEPTANCE_CANDIDATE", "ACCEPTANCE", "DOWN"
+        elif swept:
+            typ, state, direction = "LOW_SWEEP_CANDIDATE", "SWEEP_CANDIDATE", "NEUTRAL"
         elif interacted:
             typ, state, direction = "LOW_LIQUIDITY_INTERACTION", "INTERACTION", "NEUTRAL"
         else:
@@ -172,13 +186,19 @@ def _event(bars, z, atr, i):
         taker = "SELL_SIDE_PRESSURE_INFERENCE"
         response = "BUY_SIDE_RESPONSE_INFERENCE" if direction == "UP" else "SELL_SIDE_CONTINUATION_INFERENCE" if direction == "DOWN" else "UNRESOLVED_PRICE_RESPONSE"
 
-    strength = {"REJECTION": 0.95, "FAILED_BREAK_RECLAIM": 0.94, "ACCEPTANCE": 0.88, "INTERACTION": 0.55}[state]
+    strength = {
+        "REJECTION": 0.95,
+        "FAILED_BREAK_RECLAIM": 0.94,
+        "ACCEPTANCE": 0.88,
+        "SWEEP_CANDIDATE": 0.65,
+        "INTERACTION": 0.55,
+    }[state]
     return {
         "type": typ,
         "auction_state": state,
         "directional_implication": direction,
-        "liquidity_state": "TAKEN",
-        "liquidity_taker": taker,
+        "liquidity_state": "TAKEN" if swept else "INTERACTED",
+        "liquidity_taker": taker if swept else "INFERENCE_NOT_PROVABLE",
         "response_actor": response,
         "actor_evidence_type": "PRICE_ACTION_INFERENCE_ONLY",
         "actor_identification_limit": "OHLC_CANNOT_IDENTIFY_ACTUAL_PARTICIPANTS_OR_ORDER_FLOW",
@@ -187,6 +207,8 @@ def _event(bars, z, atr, i):
         "index": i,
         "age_bars": len(bars) - 1 - i,
         "level": level,
+        "swept": swept,
+        "interacted": interacted,
         "event_candle": {k: b[k] for k in ("open", "high", "low", "close")},
         "candle_geometry": g,
     }
@@ -194,11 +216,13 @@ def _event(bars, z, atr, i):
 
 def _find_recent_event(bars, zones, atr):
     cur = len(bars) - 1
+    search_age = MAX_EVENT_AGE + MAX_CONFIRM_BARS
+    start = max(1, cur - max(EVENT_LOOKBACK, search_age))
     events = []
-    for i in range(max(1, cur - EVENT_LOOKBACK), cur + 1):
+    for i in range(start, cur + 1):
         for z in zones:
             e = _event(bars, z, atr, i)
-            if e and e["age_bars"] <= MAX_EVENT_AGE:
+            if e and e["age_bars"] <= search_age:
                 events.append(e)
     if not events:
         return {
@@ -214,10 +238,18 @@ def _find_recent_event(bars, zones, atr):
             "index": cur,
             "age_bars": 0,
         }
-    # Non-directional interaction is not allowed to supersede a newer causal
-    # rejection/acceptance candidate on the same auction. A decisive event
-    # always outranks a later passive touch until that thesis resolves.
-    return max(events, key=lambda e: (e["auction_state"] != "INTERACTION", e["index"], e["strength"], e["zone"]["touches"]))
+    # Causal precedence is explicit: newer decisive auction evidence wins;
+    # passive interaction cannot overwrite a decisive event merely by being newer.
+    decisive = {"REJECTION", "FAILED_BREAK_RECLAIM", "ACCEPTANCE"}
+    return max(
+        events,
+        key=lambda e: (
+            e["auction_state"] in decisive,
+            e["index"],
+            e["strength"],
+            (e.get("zone") or {}).get("touches", 0),
+        ),
+    )
 
 
 def _follow_through(event, bars, atr):
@@ -230,13 +262,15 @@ def _follow_through(event, bars, atr):
             "acceptance_quality": False, "rejection_quality": False,
             "reason": "NO_POST_EVENT_CANDLE", "checks": [], "decisive_single": False,
         }
+
     level = event["level"]
     direction = event["directional_implication"]
     base = event["auction_state"]
-    required = CONFIRM_BARS if base in {"ACCEPTANCE", "REJECTION", "FAILED_BREAK_RECLAIM"} else CONFIRM_BARS
+    required = CONFIRM_BARS
     horizon = min(MAX_CONFIRM_BARS, max(required + 1, 3))
     checks, support = [], 0
     invalidated = False
+
     for j in range(i + 1, min(len(bars), i + horizon + 1)):
         b = bars[j]
         g = _geom(b)
@@ -250,9 +284,11 @@ def _follow_through(event, bars, atr):
             opposite = b["close"] > level + atr * INTERACTION_ATR
         else:
             disp, hold, opposite = 0.0, False, False
+
         meaningful = hold and disp >= MIN_DISPLACEMENT_ATR
         support += int(meaningful and not opposite)
-        invalidated |= opposite
+        if opposite:
+            invalidated = True
         checks.append({
             "index": j,
             "close": b["close"],
@@ -290,13 +326,22 @@ def _follow(event, bars, atr):
 def _auction(event, bars, atr):
     if not event.get("zone"):
         return {"state": "UNRESOLVED", "confirmed": False, "follow_through_bars": 0, "lifecycle": "NO_EVENT", "detail": {}}
+
     f = _follow_through(event, bars, atr)
     base = event["auction_state"]
-    if f["invalidated"]:
+    if base in {"INTERACTION", "SWEEP_CANDIDATE"}:
+        # These are observations, never directional confirmation by themselves.
+        if f["invalidated"]:
+            state, confirmed, life = "INVALIDATED", False, "INVALIDATED"
+        elif f["expired"]:
+            state, confirmed, life = "EXPIRED", False, "EXPIRED"
+        else:
+            state, confirmed, life = "INTERACTION_PENDING", False, "PENDING"
+    elif f["invalidated"]:
         state, confirmed, life = "INVALIDATED", False, "INVALIDATED"
     elif f["expired"]:
         state, confirmed, life = "EXPIRED", False, "EXPIRED"
-    elif f["present"] and base in {"REJECTION", "ACCEPTANCE", "FAILED_BREAK_RECLAIM"}:
+    elif f["present"]:
         state = "ACCEPTANCE_CONFIRMED" if base == "ACCEPTANCE" else "REJECTION_CONFIRMED"
         confirmed, life = True, "CONFIRMED"
     elif base == "REJECTION":
@@ -334,7 +379,7 @@ def _reasoning(event, auction, counter, invalidation):
     return {
         "question": PROFESSIONAL_QUESTION,
         "liquidity_event": {"type": event.get("type", "NONE"), "state": s, "level": event.get("level"), "side": (event.get("zone") or {}).get("side", "NONE"), "kind": (event.get("zone") or {}).get("kind", "NONE"), "age_bars": event.get("age_bars", 0)},
-        "take": {"status": "TAKEN" if event.get("zone") else "NONE", "taker": event.get("liquidity_taker", "NONE"), "evidence": event.get("actor_evidence_type", "NONE")},
+        "take": {"status": event.get("liquidity_state", "NONE"), "taker": event.get("liquidity_taker", "NONE"), "evidence": event.get("actor_evidence_type", "NONE")},
         "response": {"status": "CONFIRMED" if auction.get("confirmed") else "PENDING", "direction": event.get("directional_implication", "NEUTRAL"), "actor": event.get("response_actor", "NONE")},
         "acceptance": {"candidate": s == "ACCEPTANCE", "confirmed": auction.get("state") == "ACCEPTANCE_CONFIRMED"},
         "rejection": {"candidate": s in {"REJECTION", "FAILED_BREAK_RECLAIM"}, "confirmed": auction.get("state") == "REJECTION_CONFIRMED"},
@@ -388,6 +433,7 @@ def analyze_e4(snapshot=None, evidence_bus=None):
     confirmed = auction["confirmed"]
     direction = event["directional_implication"] if confirmed else "NEUTRAL"
     detail = auction.get("detail") or {}
+
     if auction["state"] == "INVALIDATED":
         counter = ["POST_EVENT_RECLAMATION", "ORIGINAL_AUCTION_THESIS_REJECTED"]
     elif auction["state"] == "EXPIRED":
@@ -398,9 +444,14 @@ def analyze_e4(snapshot=None, evidence_bus=None):
         counter = ["NO_FOLLOW_THROUGH", "AUCTION_DIRECTION_REMAINS_UNRESOLVED"]
     else:
         counter = ["OPPOSITE_LIQUIDITY_EVENT_CHALLENGES_THESIS"]
+
     finding = (event["type"] + "_CONFIRMED") if confirmed else event["type"] if event.get("zone") else "NO_LIQUIDITY_EVENT"
     quality = "CONFIRMED" if confirmed else "INVALIDATED" if auction["state"] == "INVALIDATED" else "EXPIRED" if auction["state"] == "EXPIRED" else "PENDING"
-    inv = ["newer confirmed liquidity event supersedes current event", "post-event close through defended liquidity level invalidates thesis", "event expiry without sufficient follow-through invalidates confirmation"]
+    inv = [
+        "newer confirmed liquidity event supersedes current event",
+        "post-event close through defended liquidity level invalidates thesis",
+        "event expiry without sufficient follow-through invalidates confirmation",
+    ]
     thesis = f"LIQUIDITY={event.get('type','NONE')}; TAKE={event.get('liquidity_state','UNRESOLVED')}; RESPONSE={event.get('response_actor','NONE')}; AUCTION={auction['state']}; DIRECTION={direction}; CONFIRMED={confirmed}"
     reasoning = _reasoning(event, auction, counter, inv)
     reasoning.update({"independent_thesis": thesis, "conclusion": finding, "direction": direction})
@@ -420,9 +471,51 @@ def analyze_e4(snapshot=None, evidence_bus=None):
         reasons = ["TRUE_ACCEPTANCE_NOT_PROVEN", "TRUE_AUCTION_CONFIRMATION_NOT_PROVEN"]
     elif event.get("auction_state") in {"REJECTION", "FAILED_BREAK_RECLAIM"}:
         reasons = ["TRUE_REJECTION_NOT_PROVEN", "TRUE_AUCTION_CONFIRMATION_NOT_PROVEN"]
+    elif event.get("auction_state") == "SWEEP_CANDIDATE":
+        reasons = ["SWEEP_DETECTED_BUT_REJECTION_OR_ACCEPTANCE_NOT_PROVEN", "TRUE_AUCTION_CONFIRMATION_NOT_PROVEN"]
     else:
         reasons = ["TRUE_AUCTION_CONFIRMATION_NOT_PROVEN"]
-    return {**base, "state": "ANALYSIS_COMPLETE", "analysis_status": "COMPLETE", "finding": finding, "analyst_conclusion": finding, "direction": direction, "directional_implication": direction, "direction_confirmed": confirmed, "confidence": round(event.get("strength", .30) if confirmed else min(event.get("strength", .30), .45), 3), "evidence_strength": round(event.get("strength", .30), 3), "contextual_direction_hint": context_hint, "observations": obs, "liquidity_map": {"high_zones": highs, "low_zones": lows}, "event": event, "auction": auction, "auction_state": auction["state"], "follow_through": detail, "follow_through_bars": auction["follow_through_bars"], "auction_confirmation": {"confirmed": confirmed, "state": auction["state"]}, "auction_confirmation_state": auction["state"], "auction_quality": quality, "counter_evidence": counter, "invalidation": inv, "reasons": reasons, "independent_thesis": thesis, "professional_reasoning": reasoning, "audit": {"closed_candle_only": True, "no_lookahead": True, "actor_identification": "PRICE_ACTION_INFERENCE_ONLY", "actor_identification_limit": "OHLC_CANNOT_IDENTIFY_ACTUAL_PARTICIPANTS_OR_ORDER_FLOW", "liquidity_map_high_zones": len(highs), "liquidity_map_low_zones": len(lows), "auction_state": auction["state"], "follow_through_bars": auction["follow_through_bars"], "required_confirmation_bars": detail.get("required_bars", CONFIRM_BARS), "confirmation_horizon": detail.get("horizon_bars", 0)}}
+
+    return {
+        **base,
+        "state": "ANALYSIS_COMPLETE",
+        "analysis_status": "COMPLETE",
+        "finding": finding,
+        "analyst_conclusion": finding,
+        "direction": direction,
+        "directional_implication": direction,
+        "direction_confirmed": confirmed,
+        "confidence": round(event.get("strength", .30) if confirmed else min(event.get("strength", .30), .45), 3),
+        "evidence_strength": round(event.get("strength", .30), 3),
+        "contextual_direction_hint": context_hint,
+        "observations": obs,
+        "liquidity_map": {"high_zones": highs, "low_zones": lows},
+        "event": event,
+        "auction": auction,
+        "auction_state": auction["state"],
+        "follow_through": detail,
+        "follow_through_bars": auction["follow_through_bars"],
+        "auction_confirmation": {"confirmed": confirmed, "state": auction["state"]},
+        "auction_confirmation_state": auction["state"],
+        "auction_quality": quality,
+        "counter_evidence": counter,
+        "invalidation": inv,
+        "reasons": reasons,
+        "independent_thesis": thesis,
+        "professional_reasoning": reasoning,
+        "audit": {
+            "closed_candle_only": True,
+            "no_lookahead": True,
+            "actor_identification": "PRICE_ACTION_INFERENCE_ONLY",
+            "actor_identification_limit": "OHLC_CANNOT_IDENTIFY_ACTUAL_PARTICIPANTS_OR_ORDER_FLOW",
+            "liquidity_map_high_zones": len(highs),
+            "liquidity_map_low_zones": len(lows),
+            "auction_state": auction["state"],
+            "follow_through_bars": auction["follow_through_bars"],
+            "required_confirmation_bars": detail.get("required_bars", CONFIRM_BARS),
+            "confirmation_horizon": detail.get("horizon_bars", 0),
+        },
+    }
 
 
-__all__ = ["analyze_e4", "_find_recent_event", "_follow_through", "_follow", "ARCHITECTURE"]
+__all__ = ["analyze_e4", "_find_recent_event", "_follow_through", "_follow", "_auction", "_event", "_zones", "ARCHITECTURE"]
