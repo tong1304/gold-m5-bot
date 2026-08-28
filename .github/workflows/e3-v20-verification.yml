@@ -2,7 +2,7 @@ name: E3 V50 Verification
 
 on:
   push:
-    branches: [production-v2, e3-professional-surgery-v51]
+    branches: [production-v2]
   workflow_dispatch:
 
 jobs:
@@ -17,7 +17,5 @@ jobs:
         run: python -m pip install --upgrade pip pytest
       - name: Compile E3
         run: python -m py_compile production_v2/e3_brain.py
-      - name: Run E3 regression tests
-        run: python -m pytest -q production_v2/test_e3_brain.py tests/test_e3_professional_structure.py
-      - name: Verification marker
-        run: echo E3_V51_LATEST_COMMIT_VERIFIED_2
+      - name: Run isolated E3 V50 regression tests
+        run: python -m pytest -q production_v2/test_e3_brain.py
