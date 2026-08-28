@@ -20,6 +20,14 @@ HORIZONS = (10, 20, 40)
 HORIZON_THRESHOLDS = (0.20, 0.30, 0.40)
 
 
+def _num(value: Any) -> float | None:
+    try:
+        value = float(value)
+    except (TypeError, ValueError):
+        return None
+    return value if value == value and abs(value) != float("inf") else None
+
+
 def _direction(value: Any) -> str:
     value = str(value or "NEUTRAL").upper()
     return value if value in DIRECTIONS else "NEUTRAL"
@@ -36,14 +44,6 @@ def _atr14(bars: list[dict[str, Any]]) -> float:
         trs.append(high - low if previous_close is None else max(high - low, abs(high - previous_close), abs(low - previous_close)))
         previous_close = close
     return sum(trs) / len(trs) if trs else 0.0
-
-
-def _num(value: Any) -> float | None:
-    try:
-        value = float(value)
-    except (TypeError, ValueError):
-        return None
-    return value if value == value and abs(value) != float("inf") else None
 
 
 def _slope(closes: list[float], atr: float, bars: int) -> float:
@@ -72,12 +72,7 @@ def _independent_long_horizon(bars: list[dict[str, Any]]) -> dict[str, Any]:
 
 
 def select_dominant_regime_v18(*, structure_direction: str, structure_quality: float, structural_persistence: bool, long_direction: str, long_consensus: float, long_persistence: float, pressure_direction: str, ema_relation: str, non_directional_state: str = "TRANSITION", transition_confirmed: bool = False) -> dict[str, Any]:
-    """Arbitrate E1 market state without mistaking a pullback for a regime flip.
-
-    Persistent structure remains the regime anchor when long-horizon evidence
-    disagrees. A true TRANSITION requires the independent transition-commitment
-    evidence to be confirmed; disagreement alone is WATCH/counter-evidence.
-    """
+    """Arbitrate E1 market state without mistaking a pullback for a regime flip."""
     sd, ld, pd = _direction(structure_direction), _direction(long_direction), _direction(pressure_direction)
     ema = _direction(ema_relation)
     quality = max(0.0, min(1.0, float(structure_quality)))
@@ -117,7 +112,6 @@ def analyze_e1_professional_v18(bars: list[dict[str, Any]] | None) -> dict[str, 
     independent = result.get("independent_evidence") or {}
     pressure = _direction((independent.get("pressure") or {}).get("direction"))
     ema = _direction((independent.get("ema_context") or {}).get("relation"))
-
     commitment = (result.get("professional_reasoning") or {}).get("transition_commitment") or {}
     transition_confirmed = bool(commitment) and all(bool(value) for value in commitment.values())
 
@@ -141,8 +135,8 @@ def analyze_e1_professional_v18(bars: list[dict[str, Any]] | None) -> dict[str, 
         "directional_state": decision["directional_state"],
         "transition": decision["transition"],
         "transition_status": decision["transition"],
-        "transition_confirmed": decision["transition_confirmed"] == "CONFIRMED",
-        "transition_committed": decision["transition_confirmed"] == "CONFIRMED",
+        "transition_confirmed": decision["transition"] == "CONFIRMED",
+        "transition_committed": decision["transition"] == "CONFIRMED",
         "e1_trade_authority": False,
         "e1_contract_version": "PROFESSIONAL_MARKET_STATE_V18",
         "e1_engine_version": "PROFESSIONAL_MARKET_STATE_V18",
