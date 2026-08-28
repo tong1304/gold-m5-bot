@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 from .contracts import DecisionResult, EngineResult
-from .e1_professional_core_v20 import analyze_e1_professional_v20
+from .e1_brain import analyze_e1
 from .e2_brain import analyze_e2
 from .e3_brain import analyze_e3
 from .e4_brain import analyze_e4
@@ -14,16 +14,8 @@ from .e8_brain import analyze_e8
 from .e9_brain import analyze_e9
 
 ENGINE_ORDER = ("E1", "E2", "E3", "E4", "E5", "E6", "E7", "E8", "E9")
-
-EVIDENCE_INPUTS = {
-    "E1": (), "E2": ("E1",), "E3": (), "E4": ("E1", "E3"),
-    "E5": ("E1", "E3", "E4"), "E6": ("E1", "E2", "E3", "E4", "E5"),
-    "E7": ("E4", "E6"), "E8": ("E5", "E6", "E7"),
-    "E9": ("E1", "E2", "E3", "E4", "E5", "E6", "E7", "E8"),
-}
-
+EVIDENCE_INPUTS = {"E1": (), "E2": ("E1",), "E3": (), "E4": ("E1", "E3"), "E5": ("E1", "E3", "E4"), "E6": ("E1", "E2", "E3", "E4", "E5"), "E7": ("E4", "E6"), "E8": ("E5", "E6", "E7"), "E9": ("E1", "E2", "E3", "E4", "E5", "E6", "E7", "E8")}
 NAMES = {"E1":"Market State Brain","E2":"Opportunity / Regime Brain","E3":"Market Structure Brain","E4":"Liquidity Brain","E5":"Location / Value Brain","E6":"Setup Brain","E7":"Confirmation Brain","E8":"Trade Economics Brain","E9":"Master Decision Brain"}
-
 
 def _dict_result(engine_id: str, output: dict[str, Any]) -> EngineResult:
     confidence = output.get("confidence", output.get("evidence_strength", 0.0))
@@ -32,13 +24,11 @@ def _dict_result(engine_id: str, output: dict[str, Any]) -> EngineResult:
     reasons = output.get("reason_codes", output.get("reasons", output.get("conflicts", ())))
     return EngineResult(engine_id, NAMES[engine_id], output.get("gate_passed"), score, output, tuple(str(x) for x in (reasons or ())))
 
-
 class ProductionPipeline:
     ENGINE_ORDER = ENGINE_ORDER
-
     def run(self, market_data: dict[str, Any], *, wait_bars=0, resume_state=None, historical_calibration=None):
         snapshot = dict(market_data); bars = list(snapshot.get("bars") or []); results: dict[str, EngineResult] = {}
-        e1 = _dict_result("E1", analyze_e1_professional_v20(bars)); results["E1"] = e1
+        e1 = _dict_result("E1", analyze_e1(bars)); results["E1"] = e1
         e2_snapshot = dict(snapshot); e2_snapshot["E1_result"] = e1.output
         results["E2"] = _dict_result("E2", analyze_e2(e2_snapshot))
         results["E3"] = _dict_result("E3", analyze_e3(bars)); results["E4"] = _dict_result("E4", analyze_e4(snapshot, results)); results["E5"] = _dict_result("E5", analyze_e5(snapshot, results)); results["E6"] = analyze_e6(snapshot, results); results["E7"] = analyze_e7(snapshot, results); results["E8"] = analyze_e8(snapshot, results); results["E9"] = analyze_e9(snapshot, results)
