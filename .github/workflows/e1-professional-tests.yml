@@ -6,9 +6,12 @@ on:
     paths:
       - 'production_v2/e1_brain.py'
       - 'production_v2/e1_professional_layer.py'
+      - 'production_v2/e1_professional_layer_v4.py'
+      - 'production_v2/e1_professional_layer_v5.py'
       - 'production_v2/pipeline.py'
       - 'production_v2/tests/test_e1_professional_reconciliation_v2.py'
       - 'tests/test_e1_professional_reasoning.py'
+      - 'tests/test_e1_professional_v5.py'
       - '.github/workflows/e1-professional-tests.yml'
 
 jobs:
@@ -25,8 +28,11 @@ jobs:
         run: |
           python -m py_compile production_v2/e1_brain.py
           python -m py_compile production_v2/e1_professional_layer.py
+          python -m py_compile production_v2/e1_professional_layer_v4.py
+          python -m py_compile production_v2/e1_professional_layer_v5.py
           python -m py_compile production_v2/pipeline.py
       - name: Run E1 professional tests
         run: |
           python -m pytest -q tests/test_e1_professional_reasoning.py
           python -m pytest -q production_v2/tests/test_e1_professional_reconciliation_v2.py
+          python -m pytest -q tests/test_e1_professional_v5.py
