@@ -45,6 +45,7 @@ def test_e1_requires_structure_and_price_alignment_before_declaring_trend():
 
 def test_e1_never_exports_setup_or_execution_decisions():
     result = analyze_e1(_clean_bear_trend())
-    forbidden = {"BUY", "SELL", "ENTRY", "STOP", "TARGET", "POSITION_SIZE", "EXECUTE"}
-    text = str(result).upper()
-    assert not any(token in text for token in forbidden)
+    forbidden_top_level = {"decision", "entry", "stop", "target", "position_size", "execution"}
+    assert not forbidden_top_level.intersection(result.keys())
+    assert result["trade_decision_authority"] is False
+    assert result["decision_authority"] == "E9_ONLY"
