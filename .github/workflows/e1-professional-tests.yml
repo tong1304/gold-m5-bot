@@ -25,6 +25,7 @@ on:
       - 'tests/test_e1_brain_v21.py'
       - 'tests/test_e1_v14_arbitration.py'
       - 'tests/test_e1_structure_first_v15.py'
+      - 'tests/test_e1_v16_structure_authority.py'
       - '.github/workflows/e1-professional-tests.yml'
 
 jobs:
@@ -63,3 +64,4 @@ jobs:
           python -m pytest -q tests/test_e1_professional_v7.py
           python -m pytest -q tests/test_e1_v14_arbitration.py
           python -m pytest -q tests/test_e1_structure_first_v15.py
+          python -m pytest -q tests/test_e1_v16_structure_authority.py
