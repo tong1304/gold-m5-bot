@@ -14,7 +14,7 @@ MIN_BARS = 60
 PIVOT_WING = 2
 MARKET_STATES = {"TREND_UP", "TREND_DOWN", "RANGE", "COMPRESSION", "EXPANSION", "TRANSITION", "UNCLEAR"}
 DIRECTIONAL_STATES = {"CONFIRMED", "DEVELOPING", "NEUTRAL", "CONFLICTED", "UNRESOLVED"}
-EVIDENCE_HIERARCHY = "DATA_QUALITY -> STRUCTURE -> VOLATILITY -> PRESSURE -> PERSISTENCE -> REGIME -> TRANSITION"
+EVIDENCE_HIERARCHY = "DATA_QUALITY -> VOLATILITY -> STRUCTURE -> PRESSURE -> PERSISTENCE -> STATE -> TRANSITION"
 OWNERSHIP = {"owns": ["data_integrity", "volatility_regime", "market_structure_context", "directional_pressure", "multi_horizon_alignment", "trend_persistence", "market_regime", "regime_transition"], "does_not_own": ["opportunity_setup", "liquidity_auction", "trade_location", "entry_confirmation", "trade_economics", "risk_management", "trade_execution"]}
 
 
@@ -70,8 +70,7 @@ def _structure(bars: list[dict[str, Any]], atr: float) -> dict[str, Any]:
     elif lh + ll >= 2 and lh + ll > hh + hl: state, quality = "BEARISH", .52
     else: state, quality = "MIXED", .30
     last = bars[-1]["close"]; sh = max((x[1] for x in highs), default=last); sl = min((x[1] for x in lows), default=last)
-    buf = max(.10 * atr, 1e-12)
-    bos_up, bos_dn = last > sh + buf, last < sl - buf
+    buf = max(.10 * atr, 1e-12); bos_up, bos_dn = last > sh + buf, last < sl - buf
     return {"state": state, "quality": quality, "counts": {"HH": hh, "HL": hl, "LH": lh, "LL": ll}, "external_bos": "CONFIRMED_BOS" if bos_up or bos_dn else "NO_BOS", "bos_direction": "UP" if bos_up else "DOWN" if bos_dn else "NONE", "recent_swing_high": sh, "recent_swing_low": sl}
 
 
@@ -95,7 +94,6 @@ def analyze_e1(bars: list[dict[str, Any]] | None) -> dict[str, Any]:
         valid.append({**raw, **v})
     if len(valid) < MIN_BARS:
         return _incomplete("insufficient reliable closed candles; classification withheld", [f"valid_candles={len(valid)}", f"minimum_required={MIN_BARS}"], ["DATA_QUALITY_ANOMALIES"] if invalid else [])
-
     closes = [b["close"] for b in valid]; atr14, atr50 = _atr(valid, 14), _atr(valid, 50)
     if atr14 <= 0 or atr50 <= 0: return _incomplete("ATR invalid; classification withheld", ["ATR_INVALID"], ["ATR_INVALID"])
     e20s, e50s = _ema(closes, 20), _ema(closes, 50); e20, e50 = e20s[-1], e50s[-1]
