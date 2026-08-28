@@ -13,6 +13,8 @@ BOS_CLOSE_ATR=.08
 BOS_BODY_ATR=.20
 BOS_CLOSE_LOCATION=.55
 FOLLOW_THROUGH_BARS=2
+FAILURE_SWEEP_ATR=.05
+FAILURE_RECLAIM_ATR=.05
 
 def _num(v:Any):
     try:
@@ -107,6 +109,9 @@ def _current_break(bars,h,l,atr,structure,scope='EXTERNAL',idx=None):
         if q['confirmed']:out.append((q['distance_atr'],_event(bars[idx],lo,DOWN,atr,'CONFIRMED_CHOCH' if structure==UP else 'CONFIRMED_BOS',scope,idx)))
     return max(out,key=lambda x:x[0])[1] if out else {'event':'NO_BOS','direction':NEUTRAL,'confirmed':False,'scope':scope}
 
+def _bos(bars,highs,lows,atr,prior_structure,scope='EXTERNAL'):
+    return _current_break(bars,highs,lows,atr,prior_structure,scope)
+
 def _break_history(bars,h,l,atr,structure):
     events=[]; active=None
     for i in range(1,len(bars)):
@@ -125,6 +130,9 @@ def _failure(bars,active,atr):
     for i in range(active['break_candle_index']+1,len(bars)):
         if (d==UP and bars[i]['close']<lv) or (d==DOWN and bars[i]['close']>lv): return {'event':'FAILED_BOS','direction':DOWN if d==UP else UP,'confirmed':True,'level':lv,'break_candle_index':active['break_candle_index'],'failure_candle_index':i,'scope':'EXTERNAL','reclaim_distance_atr':round(abs(bars[i]['close']-lv)/max(atr,1e-12),4)}
     return {'event':'NO_FAILURE','direction':NEUTRAL,'confirmed':False}
+
+def _sweep_failure(bars,highs,lows,atr=None,prior_structure=MIXED):
+    atr=atr or _atr(bars); _,active=_break_history(bars,highs,lows,atr,prior_structure); return _failure(bars,active,atr)
 
 def _lifecycle(bars,current,failure,history,active):
     if failure['confirmed']:return {'stage':'FAILED_BREAK_RECLAIM','active':False,'accepted':False,'follow_through':False,'failure':True,'level':failure['level'],'break_candle_index':failure['break_candle_index'],'failure_candle_index':failure['failure_candle_index']}
@@ -204,4 +212,4 @@ def analyze_e3(bars):
     trace={'external_state':ext,'internal_state':inte,'external_count_state':ec,'internal_count_state':ic,'slope_context':slope,'slope_is_structural_authority':False,'external_bos_confirmed':eb['confirmed'],'internal_bos_confirmed':ib['confirmed'],'external_is_authority':True,'closed_candle_only':True,'protected_structure_is_invalidation_anchor':True,'break_lifecycle_stage':life['stage'],'authority_explanation':auth['explanation'],'upstream_inputs_used':False}
     return {'architecture':ARCHITECTURE,'reasoning_role':'MARKET_STRUCTURE_ANALYST','question':QUESTION,'analysis_status':'COMPLETE','finding':finding,'direction':direction,'structure_state':state,'internal_structure':{'state':inte,'count_state':ic,'counts':ics},'external_structure':{'state':ext,'count_state':ec,'counts':ecs},'internal_count_state':ic,'external_count_state':ec,'internal_counts':ics,'external_counts':ecs,'internal_sequence':'→'.join(x['label'] for x in sorted(ihl+ill,key=lambda x:x['index'])[-12:]),'external_sequence':'→'.join(x['label'] for x in sorted(ehl+ell,key=lambda x:x['index'])[-12:]),'swing_map':{'internal_highs':ihl,'internal_lows':ill,'external_highs':ehl,'external_lows':ell},'atr14':round(atr,8),'closed_candles':len(b),'bos':eb,'external_bos':eb['event'],'internal_bos':ib['event'],'external_bos_detail':eb,'internal_bos_detail':ib,'failure':fail,'break_lifecycle':life,'break_history':history[-5:],'protected_structure':protected,'protected_high':protected['protected_high']['price'] if protected['protected_high'] else None,'protected_low':protected['protected_low']['price'] if protected['protected_low'] else None,'structural_invalidation':inv,'structure_strength':auth['score'],'structure_authority':auth['score'],'authority_detail':auth,'confidence':round(conf,4),'evidence':ev,'conflicts':conflicts,'reason_codes':reasons,'observations':[f'closed_candles={len(b)}',f'atr14={round(atr,8)}']+ev,'reasoning_trace':trace,'slope_context':slope,'slope_quality':sq,'upstream_direction_used':False,'upstream_decisions_used':False,'upstream_gates_used':False,'score_used':False,'trade_decision_authority':False,'decision_authority':'E9_ONLY','decision':None,'gate':None,'specialists_active':False,'specialists_status':'PAUSED','specialists':{}}
 
-__all__=['analyze_e3','_compress','_current_break','_break_history','_failure']
+__all__=['analyze_e3','_compress','_bos','_sweep_failure','_current_break','_break_history','_failure']
