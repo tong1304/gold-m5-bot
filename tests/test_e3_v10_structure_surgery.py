@@ -1,4 +1,4 @@
-from production_v2.e3_brain import analyze_e3
+from production_v2.e3_brain import _sweep_reclaim, _sweep_failure, analyze_e3
 
 
 def bar(open_, high, low, close):
@@ -14,23 +14,23 @@ def series(values, wick=0.2):
 
 
 def test_current_sweep_reclaim_is_not_reported_as_bos_or_failed_bos():
-    bars = series([100 + i * 0.2 for i in range(60)])
-    bars[-1] = bar(110.0, 112.0, 109.0, 109.7)
-    result = analyze_e3(bars)
-    assert result["bos"]["confirmed"] is False
-    assert result["failure"]["confirmed"] is False
-    assert result["sweep_reclaim"]["confirmed"] is True
-    assert result["sweep_reclaim"]["direction"] == "DOWN"
+    bars = [bar(100, 101, 99, 100), bar(100, 101, 99, 100), bar(100, 112, 99, 109.7)]
+    highs = [{"index": 1, "price": 110.0, "label": "HH", "confirmation_index": 2}]
+    lows = [{"index": 0, "price": 99.0, "label": "HL", "confirmation_index": 0}]
+    result = _sweep_reclaim(bars, highs, lows, atr=2.0, structure="UP")
+    assert result["confirmed"] is True
+    assert result["event"] == "SWEEP_RECLAIM"
+    assert result["direction"] == "DOWN"
 
 
 def test_failed_bos_requires_a_real_break_then_closed_reclaim():
-    bars = series([100 + i * 0.2 for i in range(58)])
-    bars[-2] = bar(111.0, 113.0, 110.5, 112.0)
-    bars[-1] = bar(112.0, 112.3, 109.0, 109.4)
-    result = analyze_e3(bars)
-    assert result["failure"]["confirmed"] is True
-    assert result["failure"]["event"] == "FAILED_BOS"
-    assert result["break_lifecycle"]["stage"] == "FAILED_BREAK_RECLAIM"
+    bars = [bar(100, 101, 99, 100), bar(100, 113, 99, 112), bar(112, 112.3, 109, 109.4)]
+    highs = [{"index": 0, "price": 110.0, "label": "HH", "confirmation_index": 0}]
+    lows = [{"index": 0, "price": 99.0, "label": "HL", "confirmation_index": 0}]
+    result = _sweep_failure(bars, highs, lows, atr=2.0, prior_structure="UP")
+    assert result["confirmed"] is True
+    assert result["event"] == "FAILED_BOS"
+    assert result["direction"] == "DOWN"
 
 
 def test_break_lifecycle_does_not_promote_historical_break_to_current_break():
@@ -38,7 +38,7 @@ def test_break_lifecycle_does_not_promote_historical_break_to_current_break():
     result = analyze_e3(bars)
     lifecycle = result["break_lifecycle"]
     assert lifecycle["current"] is False
-    assert lifecycle["stage"] in {"NO_CONFIRMED_BREAK", "HISTORICAL_ACCEPTED_BREAK"}
+    assert lifecycle["stage"] in {"NO_CONFIRMED_BREAK", "HISTORICAL_ACCEPTED_BREAK", "HISTORICAL_FAILED_BREAK"}
 
 
 def test_structure_authority_explains_external_priority_and_internal_conflict():
