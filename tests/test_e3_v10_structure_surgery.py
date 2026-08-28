@@ -78,7 +78,7 @@ def test_structure_conflict_is_explicit_when_external_and_internal_directions_di
     no_failure = {"confirmed": False}
     no_sweep = {"confirmed": False}
     no_invalidation = {"confirmed": False}
-    assert _state("DOWN", "UP", no_event, no_failure, no_sweep, no_invalidation) == "STRUCTURE_CONFLICT"
+    assert _state("DOWN", "UP", no_event, no_failure, no_sweep, no_invalidation, {}) == "STRUCTURE_CONFLICT"
 
 
 def test_authority_contract_exposes_primary_structure_and_invalidation_anchor():
