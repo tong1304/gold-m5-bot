@@ -2,7 +2,7 @@
 
 E1 answers one question only: What is the market doing right now?
 It analyses CLOSED candles only and owns market-state classification.
-It must never create a setup, entry, stop, target, risk plan, or trade decision.
+It never creates a setup, entry, stop, target, risk plan, or trade decision.
 """
 from __future__ import annotations
 
@@ -87,15 +87,12 @@ def _structure(bars: list[dict[str, Any]], atr: float) -> dict[str, Any]:
             highs.append((i, high))
         if low <= min(x["low"] for x in window):
             lows.append((i, low))
-
     highs, lows = highs[-8:], lows[-8:]
     hh = sum(highs[i][1] > highs[i - 1][1] for i in range(1, len(highs)))
     lh = sum(highs[i][1] < highs[i - 1][1] for i in range(1, len(highs)))
     hl = sum(lows[i][1] > lows[i - 1][1] for i in range(1, len(lows)))
     ll = sum(lows[i][1] < lows[i - 1][1] for i in range(1, len(lows)))
-
-    bullish_score = min(hh, hl)
-    bearish_score = min(lh, ll)
+    bullish_score, bearish_score = min(hh, hl), min(lh, ll)
     if bullish_score >= 2 and bullish_score > bearish_score:
         state, quality = "BULLISH", min(1.0, 0.62 + 0.07 * bullish_score)
     elif bearish_score >= 2 and bearish_score > bullish_score:
@@ -106,79 +103,111 @@ def _structure(bars: list[dict[str, Any]], atr: float) -> dict[str, Any]:
         state, quality = "BEARISH", 0.52
     else:
         state, quality = "MIXED", 0.30
-
     last = bars[-1]["close"]
     recent_high = max((x[1] for x in highs), default=last)
     recent_low = min((x[1] for x in lows), default=last)
     buffer = max(0.10 * atr, 1e-12)
-    bos_up = last > recent_high + buffer
-    bos_down = last < recent_low - buffer
-    bos = "CONFIRMED_BOS" if bos_up or bos_down else "NO_BOS"
+    bos_up, bos_down = last > recent_high + buffer, last < recent_low - buffer
     return {
-        "state": state,
-        "quality": quality,
+        "state": state, "quality": quality,
         "counts": {"HH": hh, "HL": hl, "LH": lh, "LL": ll},
-        "external_bos": bos,
+        "external_bos": "CONFIRMED_BOS" if bos_up or bos_down else "NO_BOS",
         "bos_direction": "UP" if bos_up else "DOWN" if bos_down else "NONE",
-        "recent_swing_high": recent_high,
-        "recent_swing_low": recent_low,
+        "recent_swing_high": recent_high, "recent_swing_low": recent_low,
     }
 
 
 def _base() -> dict[str, Any]:
+    return {"question": QUESTION, "reasoning_role": "MARKET_STATE_ANALYST", "trade_decision_authority": False, "decision_authority": "E9_ONLY", "architecture": "E1_SINGLE_PROFESSIONAL_BRAIN"}
+
+
+def _hierarchical_state(
+    *, pressure: str, structure_direction: str, structure_quality: float,
+    consensus: float, persistence: float, ema_relation: str,
+    long_consensus: float, long_persistence: float, context_flip: bool,
+    structure_break: bool, single_counter_candle: bool = False,
+    structure_bos_direction: str | None = None,
+) -> dict[str, Any]:
+    """Apply E1's authority hierarchy: structure first, pressure second, context last.
+
+    EMA disagreement, a single counter candle, or a mixed structure cannot by themselves
+    promote a transition or erase an established structural regime.
+    """
+    direction = pressure if pressure in {"UP", "DOWN"} else "NEUTRAL"
+    structure_dir = structure_direction if structure_direction in {"UP", "DOWN"} else "NEUTRAL"
+    counter: list[str] = []
+    if direction != "NEUTRAL" and structure_dir != "NEUTRAL" and structure_dir != direction:
+        counter.append("STRUCTURE_DISAGREES_WITH_PRESSURE")
+    if direction != "NEUTRAL" and ema_relation in {"UP", "DOWN"} and ema_relation != direction:
+        counter.append("EMA_DISAGREES_WITH_PRESSURE")
+    if consensus < 0.75 or long_consensus < 0.667:
+        counter.append("MULTI_HORIZON_NOT_FULLY_CONFIRMED")
+    if context_flip:
+        counter.append("RECENT_CONTEXT_FLIP")
+    if single_counter_candle:
+        counter.append("SINGLE_COUNTER_CANDLE")
+    if not counter:
+        counter.append("NO_MATERIAL_COUNTER_EVIDENCE")
+
+    structural_regime = structure_dir in {"UP", "DOWN"} and structure_quality >= 0.52
+    aligned_trend = (
+        direction in {"UP", "DOWN"}
+        and structural_regime
+        and structure_dir == direction
+        and long_consensus >= 0.667
+        and long_persistence >= 0.667
+    )
+    developing_trend = direction in {"UP", "DOWN"} and structure_dir == direction and structure_quality >= 0.52
+
+    # A transition is a structural repricing event, not an EMA lag event.
+    structural_repricing = (
+        direction in {"UP", "DOWN"}
+        and structure_dir in {"UP", "DOWN"}
+        and structure_dir != direction
+        and structure_quality >= 0.62
+        and structure_break
+        and structure_bos_direction == direction
+        and persistence >= 0.75
+        and long_persistence >= 0.667
+    )
+    transition = structural_repricing and context_flip
+
+    if transition:
+        state, maturity = "TRANSITION", "TRANSITION"
+        reason = "confirmed structural repricing against the prior context"
+    elif aligned_trend:
+        state, maturity = ("TREND_UP" if direction == "UP" else "TREND_DOWN"), "ESTABLISHED"
+        reason = "structure, pressure and multi-horizon persistence are aligned"
+    elif developing_trend:
+        state, maturity = ("TREND_UP" if direction == "UP" else "TREND_DOWN"), "DEVELOPING"
+        reason = "structure agrees with pressure but trend confirmation is still developing"
+    elif direction in {"UP", "DOWN"}:
+        state, maturity = "UNCLEAR", "DIRECTIONAL_DEVELOPING"
+        reason = "directional pressure exists but structural authority is insufficient"
+    else:
+        state, maturity = "UNCLEAR", "UNRESOLVED"
+        reason = "evidence does not establish a dominant directional regime"
+
+    directional_state = "CONFLICTED" if transition else "CONFIRMED" if state in {"TREND_UP", "TREND_DOWN"} and maturity == "ESTABLISHED" else "DEVELOPING" if direction in {"UP", "DOWN"} else "NEUTRAL"
+    support = max(0.0, min(1.0, (consensus + persistence + (1.0 if structure_dir == direction and direction != "NEUTRAL" else 0.0) + long_consensus + long_persistence) / 5.0))
+    counter_score = max(0.0, min(1.0, len([x for x in counter if x != "NO_MATERIAL_COUNTER_EVIDENCE"]) / 5.0))
+    stability = max(0.0, min(1.0, (long_consensus + long_persistence + (1.0 if structural_regime else 0.0)) / 3.0 - 0.15 * counter_score))
+    stability_status = "STABLE" if stability >= 0.70 and not transition else "UNSTABLE" if stability < 0.45 or transition else "WATCH"
     return {
-        "question": QUESTION,
-        "reasoning_role": "MARKET_STATE_ANALYST",
-        "trade_decision_authority": False,
-        "decision_authority": "E9_ONLY",
-        "architecture": "E1_SINGLE_PROFESSIONAL_BRAIN",
+        "state": state, "direction": direction, "maturity": maturity,
+        "directional_state": directional_state, "transition": transition,
+        "reason": reason, "counter_evidence": counter,
+        "support_score": round(support, 3), "counter_score": round(counter_score, 3),
+        "stability_score": round(stability, 3), "stability_status": stability_status,
     }
 
 
 def _incomplete(reason: str, evidence: list[str], conflicts: list[str]) -> dict[str, Any]:
-    professional = {
-        "task": "DESCRIBE_MARKET_STATE_ONLY",
-        "primary_state": "UNCLEAR",
-        "market_state": "UNCLEAR",
-        "direction": "NEUTRAL",
-        "directional_pressure": "NEUTRAL",
-        "directional_state": "UNRESOLVED",
-        "trend_maturity": "UNRESOLVED",
-        "trend_confirmed": False,
-        "regime_stress": False,
-        "transition_confirmed": False,
-        "conflict_detected": bool(conflicts),
-        "conflict_count": len(conflicts),
-        "classification_reason": reason,
-        "single_counter_candle": False,
-        "pressure_score": 0.0,
-        "structure_alignment": 0.0,
-        "trend_score": 0.0,
-        "directional_consensus": {"confirmed": False, "score": 0.0},
-        "regime_basis": reason,
-        "primary_thesis": {"direction": "NEUTRAL", "status": "UNRESOLVED", "supporting_evidence": [], "counter_evidence": [reason]},
-        "counter_evidence": [reason],
-        "invalidation": {"conditions": ["Reliable closed-candle data becomes insufficient"], "primary": "DATA_QUALITY_FAILURE"},
-        "confidence_model": {"support": 0.0, "counter_evidence": 1.0, "structure": 0.0, "persistence": 0.0, "stability": 0.0},
-        "state_stability": {"status": "UNRESOLVED", "score": 0.0},
-        "independent_evidence": {"data_quality": evidence},
-        "evidence_hierarchy": EVIDENCE_HIERARCHY,
-        "ownership_boundaries": OWNERSHIP,
-    }
-    return {
-        **_base(), "market_state": "UNCLEAR", "directional_pressure": "NEUTRAL",
-        "directional_state": "UNRESOLVED", "trend_state": "NONE", "volatility_state": "UNKNOWN",
-        "structure_state": "UNCLEAR", "structure_quality": 0.0, "range_state": "UNKNOWN",
-        "compression": "UNKNOWN", "expansion": "UNKNOWN", "transition": "UNKNOWN",
-        "regime_stress": "UNKNOWN", "confidence": 0.0, "evidence": evidence,
-        "observations": evidence, "conflicts": conflicts, "reasons": [reason],
-        "reasoning_trace": [f"QUESTION -> {QUESTION}", "DATA -> insufficient reliable closed candles", f"STATE -> UNCLEAR because={reason}"],
-        "professional_reasoning": professional, "analysis_status": "INCOMPLETE",
-    }
+    professional = {"task": "DESCRIBE_MARKET_STATE_ONLY", "primary_state": "UNCLEAR", "market_state": "UNCLEAR", "direction": "NEUTRAL", "directional_pressure": "NEUTRAL", "directional_state": "UNRESOLVED", "trend_maturity": "UNRESOLVED", "trend_confirmed": False, "regime_stress": False, "transition_confirmed": False, "conflict_detected": bool(conflicts), "conflict_count": len(conflicts), "classification_reason": reason, "single_counter_candle": False, "pressure_score": 0.0, "structure_alignment": 0.0, "trend_score": 0.0, "directional_consensus": {"confirmed": False, "score": 0.0}, "regime_basis": reason, "primary_thesis": {"direction": "NEUTRAL", "status": "UNRESOLVED", "supporting_evidence": [], "counter_evidence": [reason]}, "counter_evidence": [reason], "invalidation": {"conditions": ["Reliable closed-candle data becomes insufficient"], "primary": "DATA_QUALITY_FAILURE"}, "confidence_model": {"support": 0.0, "counter_evidence": 1.0, "structure": 0.0, "persistence": 0.0, "stability": 0.0}, "state_stability": {"status": "UNRESOLVED", "score": 0.0}, "independent_evidence": {"data_quality": evidence}, "evidence_hierarchy": EVIDENCE_HIERARCHY, "ownership_boundaries": OWNERSHIP}
+    return {**_base(), "market_state": "UNCLEAR", "directional_pressure": "NEUTRAL", "directional_state": "UNRESOLVED", "trend_state": "NONE", "volatility_state": "UNKNOWN", "structure_state": "UNCLEAR", "structure_quality": 0.0, "range_state": "UNKNOWN", "compression": "UNKNOWN", "expansion": "UNKNOWN", "transition": "UNKNOWN", "regime_stress": "UNKNOWN", "confidence": 0.0, "evidence": evidence, "observations": evidence, "conflicts": conflicts, "reasons": [reason], "reasoning_trace": [f"QUESTION -> {QUESTION}", "DATA -> insufficient reliable closed candles", f"STATE -> UNCLEAR because={reason}"], "professional_reasoning": professional, "analysis_status": "INCOMPLETE"}
 
 
 def analyze_e1(bars: list[dict[str, Any]] | None) -> dict[str, Any]:
-    """Classify market state from closed candles; never issue a trade action."""
     valid: list[dict[str, Any]] = []
     invalid = 0
     for raw in bars or []:
@@ -186,7 +215,7 @@ def analyze_e1(bars: list[dict[str, Any]] | None) -> dict[str, Any]:
             invalid += 1
             continue
         values = {key: _num(raw.get(key)) for key in ("open", "high", "low", "close")}
-        if any(value is None for value in values.values()):
+        if any(v is None for v in values.values()):
             invalid += 1
             continue
         o, h, l, c = values["open"], values["high"], values["low"], values["close"]
@@ -194,33 +223,26 @@ def analyze_e1(bars: list[dict[str, Any]] | None) -> dict[str, Any]:
             invalid += 1
             continue
         valid.append({**raw, **values})
-
     if len(valid) < MIN_BARS:
-        return _incomplete(
-            "insufficient reliable closed candles; classification withheld",
-            [f"valid_candles={len(valid)}", f"minimum_required={MIN_BARS}"],
-            ["DATA_QUALITY_ANOMALIES"] if invalid else [],
-        )
+        return _incomplete("insufficient reliable closed candles; classification withheld", [f"valid_candles={len(valid)}", f"minimum_required={MIN_BARS}"], ["DATA_QUALITY_ANOMALIES"] if invalid else [])
 
-    closes = [bar["close"] for bar in valid]
+    closes = [b["close"] for b in valid]
     atr14, atr50 = _atr(valid, 14), _atr(valid, 50)
     if atr14 <= 0 or atr50 <= 0:
         return _incomplete("ATR invalid; classification withheld", ["ATR_INVALID"], ["ATR_INVALID"])
-
-    ema20_series, ema50_series = _ema(closes, 20), _ema(closes, 50)
-    ema20, ema50 = ema20_series[-1], ema50_series[-1]
+    ema20s, ema50s = _ema(closes, 20), _ema(closes, 50)
+    ema20, ema50 = ema20s[-1], ema50s[-1]
     ema_relation = "UP" if ema20 > ema50 else "DOWN" if ema20 < ema50 else "FLAT"
     ema_gap = (ema20 - ema50) / atr14
-    ema20_slope, ema50_slope = _slope(ema20_series, atr14, 5), _slope(ema50_series, atr14, 5)
+    ema20_slope, ema50_slope = _slope(ema20s, atr14, 5), _slope(ema50s, atr14, 5)
 
     horizons = (5, 10, 20, 40)
     thresholds = (0.15, 0.20, 0.30, 0.40)
     slopes = [_slope(closes, atr14, n) for n in horizons]
-    horizon_states = ["UP" if slope >= threshold else "DOWN" if slope <= -threshold else "FLAT" for slope, threshold in zip(slopes, thresholds)]
+    horizon_states = ["UP" if s >= t else "DOWN" if s <= -t else "FLAT" for s, t in zip(slopes, thresholds)]
     up_count, down_count = horizon_states.count("UP"), horizon_states.count("DOWN")
     long_states = horizon_states[1:]
     long_up, long_down = long_states.count("UP"), long_states.count("DOWN")
-
     if up_count == 4:
         pressure = "UP"
     elif down_count == 4:
@@ -231,7 +253,6 @@ def analyze_e1(bars: list[dict[str, Any]] | None) -> dict[str, Any]:
         pressure = "DOWN"
     else:
         pressure = "BALANCED"
-
     consensus = max(up_count, down_count) / 4.0
     long_consensus = max(long_up, long_down) / 3.0
     if pressure == "UP":
@@ -246,44 +267,72 @@ def analyze_e1(bars: list[dict[str, Any]] | None) -> dict[str, Any]:
     eff10, eff20, eff40 = (_efficiency(closes, n) for n in (10, 20, 40))
     structure = _structure(valid, atr14)
     structure_direction = "UP" if structure["state"] == "BULLISH" else "DOWN" if structure["state"] == "BEARISH" else "NEUTRAL"
-    structure_alignment = 1.0 if structure_direction == pressure and pressure != "BALANCED" else 0.75 if structure["state"] == "MIXED" and long_consensus >= .667 and long_persistence >= .667 else 0.5 if pressure == "BALANCED" and structure["state"] == "MIXED" else 0.0
-    ema_alignment = 1.0 if pressure in {"UP", "DOWN"} and ema_relation == pressure else 0.0
-
     prior_atr = _atr(valid, 50, -64, -14) if len(valid) >= 64 else atr50
     volatility_ratio = atr14 / max(prior_atr, 1e-12)
-    compression = volatility_ratio < 0.78
-    expansion = volatility_ratio > 1.10
+    compression, expansion = volatility_ratio < 0.78, volatility_ratio > 1.10
     volatility = "EXPANDING" if expansion else "CONTRACTING" if compression else "NORMAL"
 
-    pressure_score = consensus * (0.65 + 0.35 * persistence)
-    trend_score = 0.25 * consensus + 0.25 * persistence + 0.20 * structure_alignment + 0.15 * ema_alignment + 0.10 * long_consensus + 0.05 * max(eff20, eff40)
-    established_trend = pressure in {"UP", "DOWN"} and consensus >= .75 and persistence >= .50 and structure_alignment >= .75 and ema_alignment == 1.0 and max(eff20, eff40) >= .22
-    contextual_trend = pressure in {"UP", "DOWN"} and long_consensus >= .667 and long_persistence >= .667 and structure_alignment >= .75 and ema_alignment == 1.0
-    trend_candidate = established_trend or contextual_trend
-
-    context_slope = _slope(closes, atr14, 30)
-    recent_slope = _slope(closes, atr14, 8)
+    context_slope, recent_slope = _slope(closes, atr14, 30), _slope(closes, atr14, 8)
     context_flip = abs(context_slope) >= .45 and abs(recent_slope) >= .65 and (context_slope > 0) != (recent_slope > 0)
     structure_break = structure["external_bos"] == "CONFIRMED_BOS"
     bos_against_pressure = structure_break and pressure in {"UP", "DOWN"} and structure["bos_direction"] != pressure
-    horizon_flip = up_count > 0 and down_count > 0 and consensus >= .75 and persistence >= .75
-    ema_context_flip = ema_relation in {"UP", "DOWN"} and pressure in {"UP", "DOWN"} and ema_relation != pressure and context_flip
-    ema_lag = ema_relation in {"UP", "DOWN"} and pressure in {"UP", "DOWN"} and ema_relation != pressure and consensus >= .75 and persistence >= .75 and (abs(slopes[1]) >= .20 or abs(slopes[2]) >= .30)
+    prior_pressure = "UP" if _slope(closes[:-1], atr14, 5) > .20 else "DOWN" if _slope(closes[:-1], atr14, 5) < -.20 else "NEUTRAL"
+    last_direction = "UP" if valid[-1]["close"] > valid[-1]["open"] else "DOWN" if valid[-1]["close"] < valid[-1]["open"] else "FLAT"
+    single_counter_candle = prior_pressure in {"UP", "DOWN"} and last_direction in {"UP", "DOWN"} and last_direction != prior_pressure
 
-    transition_evidence = []
+    arbitration = _hierarchical_state(
+        pressure=pressure,
+        structure_direction=structure_direction,
+        structure_quality=structure["quality"],
+        consensus=consensus,
+        persistence=persistence,
+        ema_relation=ema_relation,
+        long_consensus=long_consensus,
+        long_persistence=long_persistence,
+        context_flip=context_flip,
+        structure_break=structure_break,
+        single_counter_candle=single_counter_candle,
+        structure_bos_direction=structure["bos_direction"],
+    )
+    state = arbitration["state"]
+    direction = arbitration["direction"]
+    label = "BULLISH" if direction == "UP" else "BEARISH" if direction == "DOWN" else "NEUTRAL"
+    range_candidate = pressure == "BALANCED" and eff20 < .35 and eff40 < .40 and abs(ema_gap) < .85
+    expansion_candidate = expansion and pressure in {"UP", "DOWN"} and eff10 >= .25 and abs(slopes[0]) >= .25
+    # Compression/range/expansion only win when no directional structural thesis exists.
+    if state == "UNCLEAR" and pressure == "BALANCED":
+        if compression and eff20 < .30:
+            state, maturity = "COMPRESSION", "CONTRACTING"
+        elif expansion_candidate:
+            state, maturity = "EXPANSION", "EXPANDING"
+        elif range_candidate:
+            state, maturity = "RANGE", "RANGE"
+        else:
+            maturity = "UNRESOLVED"
+    else:
+        maturity = arbitration["maturity"]
+
+    structural_alignment = 1.0 if structure_direction == direction and direction != "NEUTRAL" else 0.5 if structure["state"] == "MIXED" else 0.0
+    ema_alignment = 1.0 if direction in {"UP", "DOWN"} and ema_relation == direction else 0.0
+    pressure_score = consensus * (0.65 + 0.35 * persistence)
+    trend_score = 0.30 * consensus + 0.25 * persistence + 0.25 * structural_alignment + 0.10 * ema_alignment + 0.10 * long_consensus
+    confidence = max(0.0, min(.99, 0.50 * arbitration["support_score"] + 0.20 * structure["quality"] + 0.15 * arbitration["stability_score"] + 0.10 * persistence + 0.05 * max(eff20, eff40) - 0.20 * arbitration["counter_score"]))
+    if state == "UNCLEAR":
+        confidence = min(confidence, .65)
+    if arbitration["transition"]:
+        confidence = min(confidence, .80)
+
+    transition_evidence: list[str] = []
     if context_flip:
         transition_evidence.append("CONTEXT_FLIP")
     if structure_break:
         transition_evidence.append("STRUCTURE_BREAK")
     if bos_against_pressure:
         transition_evidence.append("STRUCTURE_BREAK_AGAINST_PRESSURE")
-    if horizon_flip:
-        transition_evidence.append("PERSISTENT_HORIZON_CONFLICT")
-    if ema_context_flip:
-        transition_evidence.append("EMA_CONTEXT_FLIP")
-    if ema_lag:
-        transition_evidence.append("EMA_LAG_WITH_PERSISTENT_PRESSURE")
-    transition = not trend_candidate and (bos_against_pressure or ((context_flip or structure_break) and (horizon_flip or ema_context_flip)) or ema_lag)
+    if arbitration["transition"]:
+        transition_evidence.append("STRUCTURAL_REPRICING_CONFIRMED")
+    if ema_relation in {"UP", "DOWN"} and pressure in {"UP", "DOWN"} and ema_relation != pressure:
+        transition_evidence.append("EMA_DISAGREEMENT_MONITORED_NOT_TRANSITION")
 
     conflicts: list[str] = []
     if invalid:
@@ -294,258 +343,30 @@ def analyze_e1(bars: list[dict[str, Any]] | None) -> dict[str, Any]:
         conflicts.append("STRUCTURE_VS_PRICE_PRESSURE")
     if up_count > 0 and down_count > 0:
         conflicts.append("SHORT_VS_LONG_HORIZON")
-    if pressure == "BALANCED":
-        conflicts.append("DIRECTIONAL_PRESSURE_BALANCED")
     if context_flip:
         conflicts.append("RECENT_IMPULSE_VS_PRIOR_CONTEXT")
     if bos_against_pressure:
         conflicts.append("STRUCTURE_BREAK_VS_PRESSURE")
+    conflicts.extend(x for x in arbitration["counter_evidence"] if x not in {"NO_MATERIAL_COUNTER_EVIDENCE", "SINGLE_COUNTER_CANDLE", "MULTI_HORIZON_NOT_FULLY_CONFIRMED", "RECENT_CONTEXT_FLIP", "STRUCTURE_DISAGREES_WITH_PRESSURE", "EMA_DISAGREES_WITH_PRESSURE"} and x not in conflicts)
 
-    single_counter_candle = False
-    prior_pressure = "UP" if _slope(closes[:-1], atr14, 5) > .20 else "DOWN" if _slope(closes[:-1], atr14, 5) < -.20 else "NEUTRAL"
-    last_direction = "UP" if valid[-1]["close"] > valid[-1]["open"] else "DOWN" if valid[-1]["close"] < valid[-1]["open"] else "FLAT"
-    if prior_pressure in {"UP", "DOWN"} and last_direction in {"UP", "DOWN"} and last_direction != prior_pressure and not transition:
-        single_counter_candle = True
-
-    range_candidate = pressure == "BALANCED" and eff20 < .35 and eff40 < .40 and abs(ema_gap) < .85
-    expansion_candidate = expansion and pressure in {"UP", "DOWN"} and eff10 >= .25 and abs(slopes[0]) >= .25
-
-    if transition:
-        state, reason, maturity = "TRANSITION", "repricing conflicts with the established market context", "TRANSITION"
-    elif trend_candidate:
-        state = "TREND_UP" if pressure == "UP" else "TREND_DOWN"
-        reason = "structure, pressure, persistence, EMA context and efficiency are coherent" if established_trend else "slower-horizon structure and directional context are coherent"
-        maturity = "ESTABLISHED" if established_trend else "DEVELOPING"
-    elif compression and (pressure == "BALANCED" or eff20 < .30):
-        state, reason, maturity = "COMPRESSION", "volatility contraction dominates directional evidence", "CONTRACTING"
-    elif expansion_candidate:
-        state, reason, maturity = "EXPANSION", "volatility is expanding with directional impulse", "EXPANDING"
-    elif range_candidate:
-        state, reason, maturity = "RANGE", "two-sided non-directional behavior dominates", "RANGE"
-    elif pressure in {"UP", "DOWN"} and (persistence >= .25 or consensus >= .50):
-        state, reason, maturity = "UNCLEAR", "directional pressure exists but independent regime confirmation is insufficient", "DIRECTIONAL_DEVELOPING"
-    else:
-        state, reason, maturity = "UNCLEAR", "evidence does not establish a dominant regime", "UNRESOLVED"
-
-    direction = "UP" if pressure == "UP" else "DOWN" if pressure == "DOWN" else "NEUTRAL"
-    label = "BULLISH" if direction == "UP" else "BEARISH" if direction == "DOWN" else "NEUTRAL"
-    directional_state = (
-        "CONFIRMED" if state in {"TREND_UP", "TREND_DOWN"}
-        else "CONFLICTED" if transition
-        else "DEVELOPING" if direction in {"UP", "DOWN"} and (consensus >= .50 or persistence >= .25)
-        else "NEUTRAL" if direction == "NEUTRAL" else "UNRESOLVED"
-    )
-
-    # Professional reasoning: thesis first, then support, then disconfirming evidence.
-    supporting: list[str] = []
-    if direction != "NEUTRAL":
-        if structure_direction == direction:
-            supporting.append("STRUCTURE_ALIGNS")
-        if ema_relation == direction:
-            supporting.append("EMA_CONTEXT_ALIGNS")
-        if long_consensus >= .667:
-            supporting.append("LONG_HORIZONS_ALIGN")
-        if long_persistence >= .667:
-            supporting.append("LONG_HORIZON_PERSISTENCE")
-        if max(eff20, eff40) >= .22:
-            supporting.append("PRICE_EFFICIENCY_SUPPORTS_DIRECTION")
-        if expansion:
-            supporting.append("VOLATILITY_EXPANSION_SUPPORTS_REPRICING")
-
-    counter: list[str] = []
-    if structure_direction in {"UP", "DOWN"} and structure_direction != direction:
-        counter.append("STRUCTURE_DISAGREES_WITH_PRESSURE")
-    if ema_relation in {"UP", "DOWN"} and ema_relation != direction:
-        counter.append("EMA_DISAGREES_WITH_PRESSURE")
-    if up_count > 0 and down_count > 0:
-        counter.append("HORIZON_DISAGREEMENT")
-    if context_flip:
-        counter.append("RECENT_CONTEXT_FLIP")
-    if structure_break and structure["bos_direction"] != direction and direction != "NEUTRAL":
-        counter.append("STRUCTURE_BREAK_AGAINST_THESIS")
-    if single_counter_candle:
-        counter.append("SINGLE_COUNTER_CANDLE")
-    if not counter:
-        counter.append("NO_MATERIAL_COUNTER_EVIDENCE")
-
-    # A state is stable only when multiple independent horizons agree and no strong disconfirming event exists.
-    stability_support = (long_consensus + long_persistence + structure_alignment + ema_alignment) / 4.0
-    stability_penalty = min(0.75, 0.15 * len([x for x in counter if x != "NO_MATERIAL_COUNTER_EVIDENCE"]))
-    stability_score = max(0.0, min(1.0, stability_support - stability_penalty))
-    stability_status = "STABLE" if stability_score >= .70 and not transition else "UNSTABLE" if stability_score < .45 or transition else "WATCH"
-
-    support_score = max(0.0, min(1.0, (consensus + persistence + structure_alignment + ema_alignment + long_consensus) / 5.0))
-    counter_score = max(0.0, min(1.0, len([x for x in counter if x != "NO_MATERIAL_COUNTER_EVIDENCE"]) / 5.0))
-    confidence = 0.45 * support_score + 0.20 * structure["quality"] + 0.15 * stability_score + 0.10 * persistence + 0.10 * max(eff20, eff40) - 0.20 * counter_score
-    if state == "UNCLEAR":
-        confidence = min(confidence, .65)
-    if transition:
-        confidence = min(confidence, .80)
-    confidence = max(0.0, min(.99, confidence))
-
-    if direction == "UP":
-        primary_invalidation = "PRICE_ACCEPTS_BELOW_THE_PROTECTED_BULLISH_STRUCTURE_OR_PRESSURE_REMAINS_PERSISTENTLY_DOWN"
-        invalid_conditions = [
-            "STRUCTURE_TURNS_BEARISH",
-            "MULTI_HORIZON_PRESSURE_TURNS_DOWN_AND_PERSISTS",
-            "EMA_CONTEXT_FLIPS_DOWN_WITH_CONFIRMING_STRUCTURE",
-        ]
-    elif direction == "DOWN":
-        primary_invalidation = "PRICE_ACCEPTS_ABOVE_THE_PROTECTED_BEARISH_STRUCTURE_OR_PRESSURE_REMAINS_PERSISTENTLY_UP"
-        invalid_conditions = [
-            "STRUCTURE_TURNS_BULLISH",
-            "MULTI_HORIZON_PRESSURE_TURNS_UP_AND_PERSISTS",
-            "EMA_CONTEXT_FLIPS_UP_WITH_CONFIRMING_STRUCTURE",
-        ]
-    else:
-        primary_invalidation = "A_DOMINANT_REGIME_IS_ESTABLISHED_BY_INDEPENDENT_EVIDENCE"
-        invalid_conditions = [
-            "PERSISTENT_MULTI_HORIZON_DIRECTIONAL_PRESSURE",
-            "CONFIRMED_STRUCTURE_BREAK_WITH_ACCEPTANCE",
-        ]
-
-    thesis_status = "CONFIRMED" if state in {"TREND_UP", "TREND_DOWN"} and stability_status == "STABLE" else "DEVELOPING" if direction != "NEUTRAL" else "UNRESOLVED"
-    thesis = {
-        "direction": direction,
-        "label": label,
-        "status": thesis_status,
-        "supporting_evidence": supporting,
-        "counter_evidence": counter,
-        "support_score": round(support_score, 3),
-        "counter_score": round(counter_score, 3),
-    }
-    invalidation = {
-        "primary": primary_invalidation,
-        "conditions": invalid_conditions,
-        "current_status": "VALID" if not transition else "UNDER_THREAT",
-    }
-    confidence_model = {
-        "support": round(support_score, 3),
-        "counter_evidence": round(counter_score, 3),
-        "structure": round(structure_alignment, 3),
-        "persistence": round(persistence, 3),
-        "stability": round(stability_score, 3),
-    }
-
-    directional_consensus = {
-        "direction": direction,
-        "confirmed": consensus >= .75,
-        "score": round(consensus, 3),
-        "long_horizon_score": round(long_consensus, 3),
-        "horizons": horizon_states,
-        "up_count": up_count,
-        "down_count": down_count,
-        "state": directional_state,
-    }
-    independent_evidence = {
-        "data_quality": {"valid_candles": len(valid), "invalid_candles": invalid},
-        "structure": {**structure, "quality": round(structure["quality"], 3), "alignment": round(structure_alignment, 3)},
-        "pressure": {"direction": direction, "score": round(pressure_score, 3), "state": directional_state},
-        "persistence": {"score": round(persistence, 3), "long_horizon_score": round(long_persistence, 3), "efficiency20": round(eff20, 3), "efficiency40": round(eff40, 3)},
-        "ema_context": {"relation": ema_relation, "gap_atr": round(ema_gap, 3), "ema20_slope_atr": round(ema20_slope, 3), "ema50_slope_atr": round(ema50_slope, 3), "alignment": round(ema_alignment, 3)},
-        "volatility": {"atr14": round(atr14, 6), "prior_atr": round(prior_atr, 6), "ratio": round(volatility_ratio, 3)},
-        "stability": {"score": round(stability_score, 3), "status": stability_status},
-        "counter_evidence": counter,
-        "invalidation": invalidation,
-    }
-
-    evidence = [
-        f"valid_candles={len(valid)}", f"invalid_candles={invalid}",
-        f"ema20_vs_ema50={ema_relation}", f"ema_gap_atr={ema_gap:.3f}",
-        f"ema20_slope_atr={ema20_slope:.3f}", f"ema50_slope_atr={ema50_slope:.3f}",
-        *(f"price_slope_{n}_atr={s:.3f}" for n, s in zip(horizons, slopes)),
-        f"multi_horizon={','.join(horizon_states)}", f"directional_consensus={consensus:.3f}",
-        f"long_horizon_consensus={long_consensus:.3f}", f"directional_state={directional_state}",
-        f"persistence={persistence:.3f}", f"long_horizon_persistence={long_persistence:.3f}",
-        f"efficiency20={eff20:.3f}", f"efficiency40={eff40:.3f}",
-        f"structure_counts={structure['counts']}", f"structure_state={structure['state']}",
-        f"structure_alignment={structure_alignment:.3f}", f"external_bos={structure['external_bos']}",
-        f"pressure_score={pressure_score:.3f}", f"trend_score={trend_score:.3f}",
-        f"volatility_ratio={volatility_ratio:.3f}", f"stability={stability_status}:{stability_score:.3f}",
-        f"counter_evidence={counter}", f"invalidation={invalid_conditions}",
-        f"transition_evidence={transition_evidence}", f"established_trend={established_trend}",
-        f"contextual_trend={contextual_trend}", f"trend_candidate={trend_candidate}",
-        f"regime_stress={'PRESENT' if (not transition and not trend_candidate and direction != 'NEUTRAL' and conflicts) else 'ABSENT'}",
-        f"single_counter_candle={single_counter_candle}",
-    ]
-
-    regime_stress = not transition and not trend_candidate and direction in {"UP", "DOWN"} and bool(conflicts) and (consensus >= .50 or persistence >= .50)
+    support = arbitration["support_score"]
+    counter = arbitration["counter_evidence"]
+    thesis_status = "CONFIRMED" if state in {"TREND_UP", "TREND_DOWN"} and maturity == "ESTABLISHED" else "DEVELOPING" if direction != "NEUTRAL" else "UNRESOLVED"
+    primary_invalidation = "PRICE_ACCEPTS_BELOW_THE_PROTECTED_BULLISH_STRUCTURE_OR_PRESSURE_REMAINS_PERSISTENTLY_DOWN" if direction == "UP" else "PRICE_ACCEPTS_ABOVE_THE_PROTECTED_BEARISH_STRUCTURE_OR_PRESSURE_REMAINS_PERSISTENTLY_UP" if direction == "DOWN" else "A_DOMINANT_REGIME_IS_ESTABLISHED_BY_INDEPENDENT_EVIDENCE"
+    invalid_conditions = ["STRUCTURE_TURNS_BEARISH", "MULTI_HORIZON_PRESSURE_TURNS_DOWN_AND_PERSISTS", "EMA_CONTEXT_FLIPS_DOWN_WITH_CONFIRMING_STRUCTURE"] if direction == "UP" else ["STRUCTURE_TURNS_BULLISH", "MULTI_HORIZON_PRESSURE_TURNS_UP_AND_PERSISTS", "EMA_CONTEXT_FLIPS_UP_WITH_CONFIRMING_STRUCTURE"] if direction == "DOWN" else ["PERSISTENT_MULTI_HORIZON_DIRECTIONAL_PRESSURE", "CONFIRMED_STRUCTURE_BREAK_WITH_ACCEPTANCE"]
+    thesis = {"direction": direction, "label": label, "status": thesis_status, "supporting_evidence": ["STRUCTURE_ALIGNS"] if structural_alignment == 1.0 else [], "counter_evidence": counter, "support_score": support, "counter_score": arbitration["counter_score"]}
+    invalidation = {"primary": primary_invalidation, "conditions": invalid_conditions, "current_status": "UNDER_THREAT" if arbitration["transition"] else "VALID"}
+    directional_consensus = {"direction": direction, "confirmed": consensus >= .75, "score": round(consensus, 3), "long_horizon_score": round(long_consensus, 3), "horizons": horizon_states, "up_count": up_count, "down_count": down_count, "state": arbitration["directional_state"]}
+    independent_evidence = {"data_quality": {"valid_candles": len(valid), "invalid_candles": invalid}, "structure": {**structure, "quality": round(structure["quality"], 3), "alignment": round(structural_alignment, 3)}, "pressure": {"direction": direction, "score": round(pressure_score, 3), "state": arbitration["directional_state"]}, "persistence": {"score": round(persistence, 3), "long_horizon_score": round(long_persistence, 3), "efficiency20": round(eff20, 3), "efficiency40": round(eff40, 3)}, "ema_context": {"relation": ema_relation, "gap_atr": round(ema_gap, 3), "ema20_slope_atr": round(ema20_slope, 3), "ema50_slope_atr": round(ema50_slope, 3), "alignment": round(ema_alignment, 3)}, "volatility": {"atr14": round(atr14, 6), "prior_atr": round(prior_atr, 6), "ratio": round(volatility_ratio, 3)}, "stability": {"score": arbitration["stability_score"], "status": arbitration["stability_status"]}, "counter_evidence": counter, "invalidation": invalidation}
+    evidence = [f"valid_candles={len(valid)}", f"invalid_candles={invalid}", f"ema20_vs_ema50={ema_relation}", f"ema_gap_atr={ema_gap:.3f}", f"ema20_slope_atr={ema20_slope:.3f}", f"ema50_slope_atr={ema50_slope:.3f}", *(f"price_slope_{n}_atr={s:.3f}" for n, s in zip(horizons, slopes)), f"multi_horizon={','.join(horizon_states)}", f"directional_consensus={consensus:.3f}", f"long_horizon_consensus={long_consensus:.3f}", f"directional_state={arbitration['directional_state']}", f"persistence={persistence:.3f}", f"long_horizon_persistence={long_persistence:.3f}", f"structure_counts={structure['counts']}", f"structure_state={structure['state']}", f"structure_alignment={structural_alignment:.3f}", f"external_bos={structure['external_bos']}", f"pressure_score={pressure_score:.3f}", f"trend_score={trend_score:.3f}", f"volatility_ratio={volatility_ratio:.3f}", f"stability={arbitration['stability_status']}:{arbitration['stability_score']:.3f}", f"counter_evidence={counter}", f"invalidation={invalid_conditions}", f"transition_evidence={transition_evidence}", f"single_counter_candle={single_counter_candle}"]
     reasons = list(dict.fromkeys(conflicts))
-    if transition:
+    if arbitration["transition"]:
         reasons.append("REGIME_TRANSITION_CONFIRMED")
-    elif regime_stress:
-        reasons.append("REGIME_STRESS_ACTIVE")
-    elif directional_state == "DEVELOPING":
-        reasons.append("DIRECTIONAL_STATE_DEVELOPING")
     elif state == "UNCLEAR":
         reasons.append("REGIME_CONFIRMATION_INSUFFICIENT")
+    elif arbitration["directional_state"] == "DEVELOPING":
+        reasons.append("DIRECTIONAL_STATE_DEVELOPING")
 
-    professional = {
-        "task": "DESCRIBE_MARKET_STATE_ONLY",
-        "primary_state": state,
-        "market_state": state,
-        "direction": direction,
-        "directional_pressure": label,
-        "directional_state": directional_state,
-        "trend_maturity": maturity,
-        "trend_confirmed": state in {"TREND_UP", "TREND_DOWN"},
-        "regime_stress": regime_stress,
-        "transition_confirmed": transition,
-        "conflict_detected": bool(conflicts),
-        "conflict_count": len(conflicts),
-        "classification_reason": reason,
-        "single_counter_candle": single_counter_candle,
-        "pressure_score": round(pressure_score, 3),
-        "structure_alignment": round(structure_alignment, 3),
-        "trend_score": round(trend_score, 3),
-        "directional_consensus": directional_consensus,
-        "primary_thesis": thesis,
-        "counter_evidence": counter,
-        "invalidation": invalidation,
-        "confidence_model": confidence_model,
-        "state_stability": {"status": stability_status, "score": round(stability_score, 3)},
-        "regime_basis": f"pressure={direction}; consensus={consensus:.2f}; long_consensus={long_consensus:.2f}; persistence={persistence:.2f}; long_persistence={long_persistence:.2f}; structure={structure['state']}; ema={ema_relation}; volatility={volatility}; stability={stability_status}",
-        "independent_evidence": independent_evidence,
-        "evidence_hierarchy": EVIDENCE_HIERARCHY,
-        "ownership_boundaries": OWNERSHIP,
-    }
-
-    trace = [
-        f"QUESTION -> {QUESTION}",
-        f"EVIDENCE_HIERARCHY -> {EVIDENCE_HIERARCHY}",
-        f"STRUCTURE -> {structure['state']} quality={structure['quality']:.2f} alignment={structure_alignment:.2f}",
-        f"PRESSURE -> {direction} score={pressure_score:.2f} state={directional_state}",
-        f"PERSISTENCE -> {persistence:.2f} long={long_persistence:.2f}",
-        f"VOLATILITY -> {volatility} ratio={volatility_ratio:.2f}",
-        f"STABILITY -> {stability_status} score={stability_score:.2f}",
-        f"THESIS -> {direction} status={thesis_status} support={support_score:.2f} counter={counter_score:.2f}",
-        f"INVALIDATION -> {primary_invalidation}",
-        f"REGIME_RECONCILIATION -> established={established_trend} contextual={contextual_trend}",
-        f"STATE -> {state} because={reason}",
-        f"TRANSITION -> {'PRESENT' if transition else 'ABSENT'} evidence={transition_evidence}",
-    ]
-
-    return {
-        **_base(),
-        "market_state": state,
-        "directional_pressure": direction if contextual_trend and not established_trend else label,
-        "directional_pressure_label": label,
-        "directional_state": directional_state,
-        "trend_state": "UP" if state == "TREND_UP" else "DOWN" if state == "TREND_DOWN" else "NONE",
-        "volatility_state": volatility,
-        "structure_state": structure["state"],
-        "structure_quality": round(structure["quality"], 3),
-        "range_state": "RANGE" if range_candidate else "NOT_RANGE",
-        "compression": "PRESENT" if compression else "ABSENT",
-        "expansion": "PRESENT" if expansion else "ABSENT",
-        "transition": "PRESENT" if transition else "ABSENT",
-        "regime_stress": "PRESENT" if regime_stress else "ABSENT",
-        "confidence": round(confidence, 3),
-        "evidence": evidence,
-        "observations": evidence,
-        "conflicts": conflicts,
-        "reasons": reasons,
-        "reasoning_trace": trace,
-        "professional_reasoning": professional,
-        "analysis_status": "COMPLETE",
-    }
+    professional = {"task": "DESCRIBE_MARKET_STATE_ONLY", "primary_state": state, "market_state": state, "direction": direction, "directional_pressure": label, "directional_state": arbitration["directional_state"], "trend_maturity": maturity, "trend_confirmed": state in {"TREND_UP", "TREND_DOWN"}, "regime_stress": state == "UNCLEAR" and direction != "NEUTRAL", "transition_confirmed": arbitration["transition"], "conflict_detected": bool(conflicts), "conflict_count": len(conflicts), "classification_reason": arbitration["reason"], "single_counter_candle": single_counter_candle, "pressure_score": round(pressure_score, 3), "structure_alignment": round(structural_alignment, 3), "trend_score": round(trend_score, 3), "directional_consensus": directional_consensus, "primary_thesis": thesis, "counter_evidence": counter, "invalidation": invalidation, "confidence_model": {"support": support, "counter_evidence": arbitration["counter_score"], "structure": structural_alignment, "persistence": round(persistence, 3), "stability": arbitration["stability_score"]}, "state_stability": {"status": arbitration["stability_status"], "score": arbitration["stability_score"]}, "regime_basis": f"structure={structure['state']}; pressure={direction}; long_consensus={long_consensus:.2f}; long_persistence={long_persistence:.2f}; ema={ema_relation}; volatility={volatility}; stability={arbitration['stability_status']}", "independent_evidence": independent_evidence, "evidence_hierarchy": EVIDENCE_HIERARCHY, "ownership_boundaries": OWNERSHIP}
+    trace = [f"QUESTION -> {QUESTION}", f"EVIDENCE_HIERARCHY -> {EVIDENCE_HIERARCHY}", f"STRUCTURE -> {structure['state']} quality={structure['quality']:.2f} alignment={structural_alignment:.2f}", f"PRESSURE -> {direction} score={pressure_score:.2f} state={arbitration['directional_state']}", f"PERSISTENCE -> {persistence:.2f} long={long_persistence:.2f}", f"VOLATILITY -> {volatility} ratio={volatility_ratio:.2f}", f"STABILITY -> {arbitration['stability_status']} score={arbitration['stability_score']:.2f}", f"THESIS -> {direction} status={thesis_status} support={support:.2f} counter={arbitration['counter_score']:.2f}", f"INVALIDATION -> {primary_invalidation}", f"STATE -> {state} because={arbitration['reason']}", f"TRANSITION -> {'PRESENT' if arbitration['transition'] else 'ABSENT'} evidence={transition_evidence}"]
+    return {**_base(), "market_state": state, "directional_pressure": direction if direction != "NEUTRAL" else label, "directional_pressure_label": label, "directional_state": arbitration["directional_state"], "trend_state": "UP" if state == "TREND_UP" else "DOWN" if state == "TREND_DOWN" else "NONE", "volatility_state": volatility, "structure_state": structure["state"], "structure_quality": round(structure["quality"], 3), "range_state": "RANGE" if range_candidate else "NOT_RANGE", "compression": "PRESENT" if compression else "ABSENT", "expansion": "PRESENT" if expansion else "ABSENT", "transition": "PRESENT" if arbitration["transition"] else "ABSENT", "regime_stress": "PRESENT" if state == "UNCLEAR" and direction != "NEUTRAL" else "ABSENT", "confidence": round(confidence, 3), "evidence": evidence, "observations": evidence, "conflicts": conflicts, "reasons": reasons, "reasoning_trace": trace, "professional_reasoning": professional, "analysis_status": "COMPLETE"}
