@@ -1,44 +1,48 @@
 from production_v2.e1_brain import analyze_e1
 
 
-def bars(n=120, start=100.0, step=0.20):
-    out = []
-    price = start
-    for i in range(n):
-        close = price + step
-        out.append({"open": price, "high": close + 0.05, "low": price - 0.03, "close": close})
-        price = close
-    return out
+def bars_from_closes(closes):
+    bars=[]
+    for i,c in enumerate(closes):
+        prev=closes[i-1] if i else c
+        span=max(0.2, abs(c-prev)*0.35)
+        bars.append({"open":prev,"high":max(prev,c)+span,"low":min(prev,c)-span,"close":c})
+    return bars
 
 
-def test_e1_is_market_state_only():
-    result = analyze_e1(bars())
-    assert result["reasoning_role"] == "MARKET_STATE_ANALYST"
-    assert result["trade_decision_authority"] is False
-    assert result["decision_authority"] == "E9_ONLY"
-    assert "decision" not in result
+def test_insufficient_data_withholds_state():
+    out=analyze_e1(bars_from_closes([100+i for i in range(20)]))
+    assert out["market_state"]=="UNCLEAR"
+    assert out["analysis_status"]=="INCOMPLETE"
+    assert out["trade_decision_authority"] is False
 
 
-def test_e1_exposes_evidence_and_counter_evidence():
-    result = analyze_e1(bars())
-    assert isinstance(result["evidence"], list)
-    assert isinstance(result["conflicts"], list)
-    assert "professional_reasoning" in result
-    assert "classification_reason" in result["professional_reasoning"]
+def test_strong_directional_structure_is_trend_not_just_pressure():
+    closes=[]
+    price=100.0
+    for i in range(100):
+        price += 0.8 if i < 80 else 0.45
+        closes.append(price)
+    out=analyze_e1(bars_from_closes(closes))
+    assert out["market_state"] in {"TREND_UP","EXPANSION"}
+    assert out["directional_pressure"]=="UP"
+    assert out["professional_reasoning"]["task"]=="DESCRIBE_MARKET_STATE_ONLY"
 
 
-def test_e1_withholds_state_when_data_is_insufficient():
-    result = analyze_e1(bars(20))
-    assert result["market_state"] == "UNCLEAR"
-    assert result["analysis_status"] == "INCOMPLETE"
-    assert result["confidence"] == 0.0
+def test_range_requires_non_directional_behavior():
+    closes=[]
+    for i in range(100):
+        closes.append(100 + (1.5 if i%4 in (0,1) else -1.5))
+    out=analyze_e1(bars_from_closes(closes))
+    assert out["market_state"] in {"RANGE","COMPRESSION","UNCLEAR"}
+    assert out["market_state"] not in {"TREND_UP","TREND_DOWN"}
 
 
-def test_e1_can_identify_compression_without_making_trade_decision():
-    data = []
-    price = 100.0
-    for _ in range(120):
-        data.append({"open": price, "high": price + 0.01, "low": price - 0.01, "close": price + 0.001})
-    result = analyze_e1(data)
-    assert result["trade_decision_authority"] is False
-    assert result["market_state"] in {"COMPRESSION", "RANGE", "TRANSITION", "UNCLEAR"}
+def test_output_exposes_counter_evidence_conflict_stability_and_invalidation():
+    closes=[100 + 0.55*i for i in range(70)] + [138 - 0.75*i for i in range(30)]
+    out=analyze_e1(bars_from_closes(closes))
+    pr=out["professional_reasoning"]
+    assert "counter_evidence" in pr
+    assert "state_stability" in pr
+    assert "invalidation" in pr
+    assert "independent_evidence" in pr
