@@ -1,405 +1,128 @@
 from __future__ import annotations
-
 from statistics import mean
 from typing import Any
 
 QUESTION = "What opportunity is the market offering right now?"
 MIN_BARS = 80
-ARCHITECTURE = "E2_PROFESSIONAL_OPPORTUNITY_CORE_V5"
+ARCHITECTURE = "E2_PROFESSIONAL_OPPORTUNITY_CORE_V7"
 
 
 def _bars(snapshot: dict[str, Any]) -> list[dict[str, Any]]:
-    bars = snapshot.get("bars") or []
-    return [b for b in bars if isinstance(b, dict) and all(k in b for k in ("open", "high", "low", "close"))]
+    return [b for b in (snapshot.get("bars") or []) if isinstance(b, dict) and all(k in b for k in ("open", "high", "low", "close"))]
 
 
-def _ema(values: list[float], period: int) -> float:
-    if not values:
-        return 0.0
-    a = 2.0 / (period + 1.0)
-    value = values[0]
-    for x in values[1:]:
-        value = a * x + (1.0 - a) * value
-    return value
+def _ema(v: list[float], p: int) -> float:
+    if not v: return 0.0
+    a = 2.0 / (p + 1.0); x = v[0]
+    for y in v[1:]: x = a * y + (1-a) * x
+    return x
 
 
-def _atr(bars: list[dict[str, Any]], period: int = 14) -> float:
-    if len(bars) < 2:
-        return 0.0
-    trs: list[float] = []
-    prev = float(bars[0]["close"])
-    for b in bars[-period:]:
-        h, l = float(b["high"]), float(b["low"])
-        trs.append(max(h - l, abs(h - prev), abs(l - prev)))
-        prev = float(b["close"])
+def _atr(bars: list[dict[str, Any]], p: int = 14) -> float:
+    if len(bars) < 2: return 0.0
+    start = max(1, len(bars)-p); trs=[]
+    for i in range(start, len(bars)):
+        h,l = float(bars[i]["high"]), float(bars[i]["low"]); pc=float(bars[i-1]["close"])
+        trs.append(max(h-l, abs(h-pc), abs(l-pc)))
     return mean(trs) if trs else 0.0
 
 
 def _pivots(bars: list[dict[str, Any]], wing: int = 2) -> tuple[list[float], list[float]]:
-    highs: list[float] = []
-    lows: list[float] = []
-    for i in range(wing, len(bars) - wing):
-        hi = float(bars[i]["high"])
-        lo = float(bars[i]["low"])
-        window = bars[i - wing:i + wing + 1]
-        if hi >= max(float(x["high"]) for x in window):
-            highs.append(hi)
-        if lo <= min(float(x["low"]) for x in window):
-            lows.append(lo)
-    return highs, lows
+    hs=[]; ls=[]
+    for i in range(wing, len(bars)-wing):
+        w=bars[i-wing:i+wing+1]; h=float(bars[i]["high"]); l=float(bars[i]["low"])
+        if h >= max(float(x["high"]) for x in w): hs.append(h)
+        if l <= min(float(x["low"]) for x in w): ls.append(l)
+    return hs,ls
 
 
 def _unavailable() -> dict[str, Any]:
-    return {
-        "role": "OPPORTUNITY_REGIME_ANALYST",
-        "question": QUESTION,
-        "finding": "INSUFFICIENT_DATA",
-        "state": "UNAVAILABLE",
-        "regime": "UNRESOLVED",
-        "direction": "NEUTRAL",
-        "opportunity": "NONE",
-        "opportunity_state": "WAIT",
-        "opportunity_maturity": "UNPROVEN",
-        "independence": "E2_FIRST_E1_CROSS_CHECK",
-        "auction_intent": "UNKNOWN",
-        "auction_intent_detail": {},
-        "conditional_map": [],
-        "market_tree": {},
-        "opportunity_hierarchy": {},
-        "hard_veto": ["INSUFFICIENT_MARKET_DATA"],
-        "requires_downstream_confirmation": True,
-        "entry": None,
-        "decision": None,
-        "reasons": ["INSUFFICIENT_MARKET_DATA"],
-    }
+    return {"role":"OPPORTUNITY_REGIME_ANALYST","question":QUESTION,"finding":"INSUFFICIENT_DATA","state":"UNAVAILABLE","regime":"UNRESOLVED","direction":"NEUTRAL","opportunity":"NONE","opportunity_state":"WAIT","opportunity_maturity":"UNPROVEN","independence":"E2_INDEPENDENT_E1_CROSS_CHECK","reasoning_mode":"PROFESSIONAL_DISCRETIONARY","trade_decision_authority":"NONE","auction_intent":"UNKNOWN","auction_intent_detail":{},"opportunity_taxonomy":["TREND_CONTINUATION","PULLBACK_CONTINUATION","RANGE_ROTATION","BREAKOUT_REPRICING","LIQUIDITY_REVERSAL","NO_OPPORTUNITY"],"opportunity_hierarchy":{"primary":None,"secondary":[],"rejected":[],"ranked":[]},"primary_thesis":"NEUTRAL_NO_OPPORTUNITY_UNPROVEN","counter_evidence":["INSUFFICIENT_MARKET_DATA"],"invalidation":["DATA_INSUFFICIENT"],"hard_veto":["INSUFFICIENT_MARKET_DATA"],"asymmetric_opportunity":{"directional_space_atr":0.0,"path_quality":0.0,"is_asymmetric":False},"location":{},"opposing_space":{},"conditional_map":[{"if":"IF sufficient closed-candle market data becomes available","then":"THEN rebuild the opportunity map"}],"market_tree":{},"professional_reasoning":{"question":"What is the market offering, not what do I want it to do?","context_vs_trade_decision":"E2 maps opportunity only; it never authorizes entry."},"no_trade_reasoning":["WAIT_FOR_VALID_MARKET_INFORMATION"],"requires_downstream_confirmation":True,"entry":None,"decision":None,"reasons":["INSUFFICIENT_MARKET_DATA"],"observations":[]}
 
 
 def analyze_e2(snapshot: dict[str, Any]) -> dict[str, Any]:
-    """E2 independently maps opportunity, intent and conditional paths; never issues entry/final trade decisions."""
-    bars = _bars(snapshot)
-    if len(bars) < MIN_BARS:
-        return _unavailable()
+    """Independent opportunity brain. E1 is read-only counter-evidence; E2 never issues entry/final decisions."""
+    bars=_bars(snapshot)
+    if len(bars)<MIN_BARS: return _unavailable()
+    hs=[float(b["high"]) for b in bars]; ls=[float(b["low"]) for b in bars]; cs=[float(b["close"]) for b in bars]; os=[float(b["open"]) for b in bars]
+    atr=max(_atr(bars),1e-12); last=cs[-1]
+    e20,e50=_ema(cs,20),_ema(cs,50); e20p,e50p=_ema(cs[:-5],20),_ema(cs[:-5],50)
+    gap=(e20-e50)/atr; s20=(e20-e20p)/atr; s50=(e50-e50p)/atr; s5=(last-cs[-6])/atr; s20p=(last-cs[-21])/atr
+    rng=[max(float(b["high"])-float(b["low"]),0.0) for b in bars]; avg20=max(mean(rng[-20:]),1e-12); vr=mean(rng[-5:])/avg20
+    travel=max(sum(rng[-12:]),1e-12); eff=abs(last-cs[-13])/travel
+    hi20,lo20=max(hs[-21:-1]),min(ls[-21:-1]); hi40,lo40=max(hs[-41:-1]),min(ls[-41:-1]); width=max(hi40-lo40,1e-12); pos=max(0,min(1,(last-lo40)/width))
+    ph,pl=_pivots(bars); hh=len(ph)>=2 and ph[-1]>ph[-2]; lh=len(ph)>=2 and ph[-1]<ph[-2]; hl=len(pl)>=2 and pl[-1]>pl[-2]; ll=len(pl)>=2 and pl[-1]<pl[-2]
+    bull=hh and hl; bear=lh and ll
+    up={"ema_gap":gap>.35,"ema20_slope":s20>.08,"ema50_slope":s50>-.05,"short_slope":s5>.20,"medium_slope":s20p>.45,"structure":bull,"efficiency":eff>=.30}
+    dn={"ema_gap":gap<-.35,"ema20_slope":s20<-.08,"ema50_slope":s50<.05,"short_slope":s5<-.20,"medium_slope":s20p<-.45,"structure":bear,"efficiency":eff>=.30}
+    uc,dc=sum(up.values()),sum(dn.values())
+    span=max(hs[-1]-ls[-1],1e-12); body=abs(last-os[-1])/span; cp=(last-ls[-1])/span; uw=(hs[-1]-max(os[-1],last))/span; lw=(min(os[-1],last)-ls[-1])/span
+    broke_up,broke_dn=last>hi20,last<lo20; sweep_hi=hs[-1]>hi20 and last<=hi20; sweep_lo=ls[-1]<lo20 and last>=lo20
+    accept_up=broke_up and cp>=.65 and body>=.45; accept_dn=broke_dn and cp<=.35 and body>=.45
+    reject_hi=sweep_hi and cp<=.45 and uw>=.20; reject_lo=sweep_lo and cp>=.55 and lw>=.20
+    disp_up=body>=.60 and cp>=.75 and span>=1.25*avg20; disp_dn=body>=.60 and cp<=.25 and span>=1.25*avg20
+    balanced=abs(s20p)<.65 and eff<.30 and width/atr<8.5
+    follow=[cs[-i]-cs[-i-1] for i in range(1,4)]; fu=sum(x>0 for x in follow); fd=sum(x<0 for x in follow); net5=(last-cs[-5])/atr
+    prior=max(cs[-11:-5])-min(cs[-11:-5])
+    pb_up=gap>.20 and s20>.25 and prior>=.90*atr and -.80<=net5<=.15 and pos<.80
+    pb_dn=gap<-.20 and s20<-.25 and prior>=.90*atr and -.15<=net5<=.80 and pos>.20
+    if accept_up and fu>=2: intent,phase,strength="BUY_SIDE_ACCEPTANCE","ACCEPTANCE","HIGH"
+    elif accept_dn and fd>=2: intent,phase,strength="SELL_SIDE_ACCEPTANCE","ACCEPTANCE","HIGH"
+    elif reject_hi: intent,phase,strength="FAILED_HIGH_AUCTION","REJECTION","MODERATE"
+    elif reject_lo: intent,phase,strength="FAILED_LOW_AUCTION","REJECTION","MODERATE"
+    elif uc>=5 and net5>.50: intent,phase,strength="BUYER_INITIATIVE_PENDING_ACCEPTANCE","INITIATIVE","MODERATE"
+    elif dc>=5 and net5<-.50: intent,phase,strength="SELLER_INITIATIVE_PENDING_ACCEPTANCE","INITIATIVE","MODERATE"
+    elif balanced: intent,phase,strength="TWO_SIDED_BALANCE","BALANCE","LOW"
+    else: intent,phase,strength="UNCOMMITTED_AUCTION","UNRESOLVED","LOW"
+    intent_reason={"BUY_SIDE_ACCEPTANCE":"buyers achieved acceptance outside prior range","SELL_SIDE_ACCEPTANCE":"sellers achieved acceptance outside prior range","FAILED_HIGH_AUCTION":"high was explored then rejected","FAILED_LOW_AUCTION":"low was explored then rejected","BUYER_INITIATIVE_PENDING_ACCEPTANCE":"buyers show initiative without proven acceptance","SELLER_INITIATIVE_PENDING_ACCEPTANCE":"sellers show initiative without proven acceptance","TWO_SIDED_BALANCE":"auction remains rotational","UNCOMMITTED_AUCTION":"neither side has durable acceptance"}[intent]
 
-    highs = [float(b["high"]) for b in bars]
-    lows = [float(b["low"]) for b in bars]
-    closes = [float(b["close"]) for b in bars]
-    opens = [float(b["open"]) for b in bars]
-    atr = max(_atr(bars), 1e-12)
-    last = closes[-1]
-
-    e20 = _ema(closes, 20)
-    e50 = _ema(closes, 50)
-    e20_prev = _ema(closes[:-5], 20)
-    e50_prev = _ema(closes[:-5], 50)
-    gap = (e20 - e50) / atr
-    slope20_ema = (e20 - e20_prev) / atr
-    slope50_ema = (e50 - e50_prev) / atr
-    slope5 = (last - closes[-6]) / atr
-    slope20 = (last - closes[-21]) / atr
-
-    ranges = [max(float(b["high"]) - float(b["low"]), 0.0) for b in bars]
-    avg20 = max(mean(ranges[-20:]), 1e-12)
-    volatility_ratio = mean(ranges[-5:]) / avg20
-    travel = max(sum(ranges[-12:]), 1e-12)
-    efficiency12 = abs(last - closes[-13]) / travel
-
-    hi20, lo20 = max(highs[-21:-1]), min(lows[-21:-1])
-    hi40, lo40 = max(highs[-41:-1]), min(lows[-41:-1])
-    width = max(hi40 - lo40, 1e-12)
-    position40 = max(0.0, min(1.0, (last - lo40) / width))
-
-    pivot_highs, pivot_lows = _pivots(bars)
-    hh = len(pivot_highs) >= 2 and pivot_highs[-1] > pivot_highs[-2]
-    lh = len(pivot_highs) >= 2 and pivot_highs[-1] < pivot_highs[-2]
-    hl = len(pivot_lows) >= 2 and pivot_lows[-1] > pivot_lows[-2]
-    ll = len(pivot_lows) >= 2 and pivot_lows[-1] < pivot_lows[-2]
-    bullish_structure = hh and hl
-    bearish_structure = lh and ll
-
-    up = sum((gap > .35, slope20_ema > .08, slope50_ema > -.05, slope5 > .20,
-              slope20 > .45, bullish_structure, efficiency12 >= .30))
-    down = sum((gap < -.35, slope20_ema < -.08, slope50_ema < .05, slope5 < -.20,
-                slope20 < -.45, bearish_structure, efficiency12 >= .30))
-
-    span = max(highs[-1] - lows[-1], 1e-12)
-    body = abs(last - opens[-1]) / span
-    close_position = (last - lows[-1]) / span
-    upper_wick = (highs[-1] - max(opens[-1], last)) / span
-    lower_wick = (min(opens[-1], last) - lows[-1]) / span
-
-    broke_up = last > hi20
-    broke_down = last < lo20
-    sweep_high = highs[-1] > hi20 and last <= hi20
-    sweep_low = lows[-1] < lo20 and last >= lo20
-    acceptance_up = broke_up and close_position >= .65 and body >= .45
-    acceptance_down = broke_down and close_position <= .35 and body >= .45
-    rejection_high = sweep_high and close_position <= .45 and upper_wick >= .20
-    rejection_low = sweep_low and close_position >= .55 and lower_wick >= .20
-    displacement_up = body >= .60 and close_position >= .75 and span >= 1.25 * avg20
-    displacement_down = body >= .60 and close_position <= .25 and span >= 1.25 * avg20
-    balanced = abs(slope20) < .65 and efficiency12 < .30 and width / atr < 8.5
-
-    recent = [closes[-i] - closes[-i - 1] for i in range(1, 4)]
-    follow_up = sum(x > 0 for x in recent)
-    follow_down = sum(x < 0 for x in recent)
-    net5 = (last - closes[-5]) / atr
-
-    # Deep auction intent: distinguish initiative, acceptance, failed auction and unresolved balance.
-    if acceptance_up and follow_up >= 2:
-        auction_intent = "BUY_SIDE_ACCEPTANCE"
-        auction_phase = "ACCEPTANCE"
-        intent_strength = "HIGH"
-        intent_reason = "breakout closed outside prior value/range and follow-through agrees"
-    elif acceptance_down and follow_down >= 2:
-        auction_intent = "SELL_SIDE_ACCEPTANCE"
-        auction_phase = "ACCEPTANCE"
-        intent_strength = "HIGH"
-        intent_reason = "breakdown closed outside prior value/range and follow-through agrees"
-    elif rejection_high:
-        auction_intent = "FAILED_HIGH_AUCTION"
-        auction_phase = "REJECTION"
-        intent_strength = "MODERATE"
-        intent_reason = "price explored above prior high but returned inside"
-    elif rejection_low:
-        auction_intent = "FAILED_LOW_AUCTION"
-        auction_phase = "REJECTION"
-        intent_strength = "MODERATE"
-        intent_reason = "price explored below prior low but returned inside"
-    elif up >= 5 and net5 > .50:
-        auction_intent = "BUYER_INITIATIVE_PENDING_ACCEPTANCE"
-        auction_phase = "INITIATIVE"
-        intent_strength = "MODERATE"
-        intent_reason = "buyers show directional initiative but acceptance is not proven"
-    elif down >= 5 and net5 < -.50:
-        auction_intent = "SELLER_INITIATIVE_PENDING_ACCEPTANCE"
-        auction_phase = "INITIATIVE"
-        intent_strength = "MODERATE"
-        intent_reason = "sellers show directional initiative but acceptance is not proven"
-    elif balanced:
-        auction_intent = "TWO_SIDED_BALANCE"
-        auction_phase = "BALANCE"
-        intent_strength = "LOW"
-        intent_reason = "auction remains rotational and directionally inefficient"
-    else:
-        auction_intent = "UNCOMMITTED_AUCTION"
-        auction_phase = "UNRESOLVED"
-        intent_strength = "LOW"
-        intent_reason = "neither side has demonstrated sufficient acceptance"
-
-    def opportunity(name: str, direction: str, regime: str, structure: bool,
-                    acceptance: bool = False, rejection: bool = False,
-                    pullback: bool = False, displacement: bool = False) -> dict[str, Any]:
-        space = max((hi40 - last) / atr, 0.0) if direction == "UP" else max((last - lo40) / atr, 0.0)
-        favorable_location = .10 <= position40 <= .75 if direction == "UP" else .25 <= position40 <= .90
-        extended = position40 >= .92 if direction == "UP" else position40 <= .08
-        vetoes: list[str] = []
-        if not favorable_location:
-            vetoes.append("LOCATION_NOT_ADVANTAGEOUS")
-        if space < 1.0:
-            vetoes.append("INSUFFICIENT_OPPOSING_SPACE")
-        if extended:
-            vetoes.append("OVEREXTENDED_LOCATION")
-        if name == "BREAKOUT_CONTINUATION" and not acceptance:
-            vetoes.append("NO_ACCEPTANCE")
-        if rejection and ((direction == "UP" and position40 >= .70) or (direction == "DOWN" and position40 <= .30)):
-            vetoes.append("FAILED_AUCTION_CONFLICT")
-        quality = max(0.0, min(1.0,
-            .20 * float(structure) + .18 * float(acceptance or displacement) +
-            .16 * float(pullback) + .14 * float(favorable_location) +
-            .16 * min(space / 3.0, 1.0) + .16 * min(efficiency12 / .55, 1.0) -
-            .18 * float(rejection) - .18 * float(extended)))
-        return {
-            "name": name, "direction": direction, "regime": regime,
-            "quality": quality, "space_atr": space, "vetoes": vetoes,
-            "eligible": not vetoes, "structure": structure,
-            "acceptance": acceptance, "pullback": pullback,
-            "rejection": rejection, "displacement": displacement,
-        }
-
-    candidates: list[dict[str, Any]] = []
-    if up >= 4:
-        candidates.append(opportunity("TREND_PULLBACK_CONTINUATION", "UP", "TREND", bullish_structure,
-                                      rejection=rejection_high, displacement=displacement_up))
-    if down >= 4:
-        candidates.append(opportunity("TREND_PULLBACK_CONTINUATION", "DOWN", "TREND", bearish_structure,
-                                      rejection=rejection_low, displacement=displacement_down))
-    if acceptance_up:
-        candidates.append(opportunity("BREAKOUT_CONTINUATION", "UP", "BREAKOUT", bullish_structure, True,
-                                      rejection_high, displacement=displacement_up))
-    if acceptance_down:
-        candidates.append(opportunity("BREAKOUT_CONTINUATION", "DOWN", "BREAKOUT", bearish_structure, True,
-                                      rejection_high, displacement=displacement_down))
-    if rejection_low and position40 <= .30:
-        candidates.append(opportunity("LIQUIDITY_REVERSAL", "UP", "MEAN_REVERSION", bullish_structure,
-                                      rejection=True, displacement=displacement_up))
-    if rejection_high and position40 >= .70:
-        candidates.append(opportunity("LIQUIDITY_REVERSAL", "DOWN", "MEAN_REVERSION", bearish_structure,
-                                      rejection=True, displacement=displacement_down))
-    if balanced:
-        candidates.append(opportunity("RANGE_ROTATION", "UP" if position40 < .5 else "DOWN", "RANGE", True))
-
-    eligible = sorted((x for x in candidates if x["eligible"]),
-                      key=lambda x: (x["quality"], x["space_atr"]), reverse=True)
-    best = eligible[0] if eligible else None
-    second = eligible[1] if len(eligible) > 1 else None
-    competing = bool(best and second and best["direction"] != second["direction"] and
-                      abs(best["quality"] - second["quality"]) < .12)
-
-    direction = best["direction"] if best and not competing else "NEUTRAL"
-    regime = best["regime"] if best and not competing else ("RANGE" if balanced else "TRANSITION")
-    primary = best["name"] if best and not competing else ("WAIT_FOR_RANGE_EDGE" if regime == "RANGE" else "WAIT_FOR_REPRICING")
-
-    if best and not competing:
-        phase = "ACCEPTANCE" if best["acceptance"] else "REJECTION" if best["rejection"] else "DEVELOPING"
-    else:
-        phase = "BALANCED" if balanced else "UNRESOLVED"
-
-    opposing_space = (
-        max((hi40 - last) / atr, 0.0) if direction == "UP" else
-        max((last - lo40) / atr, 0.0) if direction == "DOWN" else 0.0
-    )
-
-    hard_veto: list[str] = []
-    if competing:
-        hard_veto.append("COMPETING_HYPOTHESES")
-    if best is None:
-        hard_veto.append("NO_ELIGIBLE_OPPORTUNITY")
-    if direction == "DOWN" and position40 <= .12 and opposing_space < .5:
-        hard_veto.append("SHORT_CHASE_AT_DISCOUNT_WITH_NO_SPACE")
-    if direction == "UP" and position40 >= .88 and opposing_space < .5:
-        hard_veto.append("LONG_CHASE_AT_PREMIUM_WITH_NO_SPACE")
-    if auction_intent in {"UNCOMMITTED_AUCTION", "BUYER_INITIATIVE_PENDING_ACCEPTANCE", "SELLER_INITIATIVE_PENDING_ACCEPTANCE"}:
-        hard_veto.append("AUCTION_ACCEPTANCE_NOT_PROVEN")
-
-    # Professional discretionary reasoning: explain what matters, what does not, and what changes the thesis.
-    counter_evidence: list[str] = []
-    e1 = snapshot.get("E1_result") or {}
-    e1_finding = str(e1.get("finding", "")).upper()
-    if e1_finding and direction != "NEUTRAL" and direction not in e1_finding and "TRANSITION" not in e1_finding:
-        counter_evidence.append("E1_DIRECTIONAL_VIEW_CONFLICT_RETAINED_AS_COUNTER_EVIDENCE")
-    if rejection_high and direction == "UP":
-        counter_evidence.append("FAILED_HIGH_AUCTION_AGAINST_LONG_THESIS")
-    if rejection_low and direction == "DOWN":
-        counter_evidence.append("FAILED_LOW_AUCTION_AGAINST_SHORT_THESIS")
-    if efficiency12 < .15 and direction != "NEUTRAL":
-        counter_evidence.append("LOW_AUCTION_EFFICIENCY_REDUCES_DIRECTIONAL_CONVICTION")
-
-    # Market tree: mutually explicit branches rather than a single prediction.
-    if direction == "UP":
-        strengthen = "IF pullback holds and buyers regain acceptance -> bullish continuation strengthens"
-        invalidate = "IF opposing structure wins or acceptance fails -> bullish thesis invalidates"
-    elif direction == "DOWN":
-        strengthen = "IF pullback holds and sellers regain acceptance -> bearish continuation strengthens"
-        invalidate = "IF opposing structure wins or acceptance fails -> bearish thesis invalidates"
-    else:
-        strengthen = "IF directional evidence converges and auction accepts -> a directional thesis becomes actionable for downstream engines"
-        invalidate = "IF counter-evidence dominates -> remain neutral and preserve capital"
-
-    conditional_map = [
-        strengthen,
-        invalidate,
-        "IF range edge rejects -> range rotation develops",
-        "IF range break + acceptance -> breakout repricing develops",
-        "IF failed auction receives opposite-side follow-through -> liquidity reversal strengthens",
-        "IF opposing space collapses -> opportunity is vetoed regardless of directional evidence",
-    ]
-
-    hierarchy = {
-        "primary": primary,
-        "secondary": "LIQUIDITY_REVERSAL" if "FAILED" in auction_intent else "BREAKOUT_REPRICING",
-        "alternative": "RANGE_ROTATION",
-        "conditional_priority": [
-            "accepted auction > developing directional opportunity > range rotation > no-trade",
-            "reversal requires failed auction plus opposite-side follow-through",
-            "breakout requires acceptance, not merely a wick through the boundary",
-        ],
-        "invalidation": "opposing structure wins, auction acceptance fails, or opposing space disappears",
-        "no_trade_when": hard_veto or ["downstream confirmation is absent"],
-    }
-
-    opportunity_maturity = "CONDITIONAL" if best and not hard_veto else "UNPROVEN"
-    finding = (
-        f"Independent E2 thesis: {regime}/{direction} creates {primary} at {phase}; "
-        f"auction intent={auction_intent}; thesis is conditional and requires downstream confirmation."
-    )
-
-    return {
-        "role": "OPPORTUNITY_REGIME_ANALYST",
-        "question": QUESTION,
-        "finding": finding,
-        "state": "ANALYSIS_COMPLETE",
-        "architecture": ARCHITECTURE,
-        "regime": regime,
-        "direction": direction,
-        "phase": phase,
-        "opportunity": primary,
-        "opportunity_state": "WAIT" if hard_veto else "DEVELOPING",
-        "opportunity_maturity": opportunity_maturity,
-        "independence": "E2_FIRST_E1_CROSS_CHECK",
-        "auction_state": "ACCEPTED" if auction_phase == "ACCEPTANCE" else "FAILED" if auction_phase == "REJECTION" else "UNRESOLVED",
-        "auction_intent": auction_intent,
-        "auction_intent_detail": {
-            "phase": auction_phase,
-            "strength": intent_strength,
-            "why": intent_reason,
-            "buyer_evidence": up,
-            "seller_evidence": down,
-            "follow_through_up": follow_up,
-            "follow_through_down": follow_down,
-            "acceptance_proven": acceptance_up or acceptance_down,
-        },
-        "location_context": "EDGE_LOW" if position40 <= .20 else "EDGE_HIGH" if position40 >= .80 else "MID_RANGE",
-        "opposing_space_atr": round(opposing_space, 3),
-        "regime_confidence": round(max(up, down) / 7.0, 3),
-        "confidence": round(best["quality"], 3) if best else 0.0,
-        "opportunity_score": round(best["quality"], 3) if best else 0.0,
-        "counter_evidence": counter_evidence,
-        "counter_evidence_severity": "HIGH" if hard_veto else "MODERATE" if counter_evidence else "LOW",
-        "missing_evidence": ["closed-candle acceptance/follow-through"],
-        "invalidation_evidence": [
-            "opposing structure wins",
-            "auction thesis fails to receive follow-through",
-            "opposing space disappears",
-        ],
-        "why_not_trade": hierarchy["no_trade_when"],
-        "conditional_map": conditional_map,
-        "market_tree": {
-            "root": "OBSERVE_AUCTION",
-            "branches": [
-                {"if": "acceptance_proven", "then": "promote_directional_opportunity"},
-                {"if": "range_edge_rejection", "then": "promote_range_rotation"},
-                {"if": "range_break_and_acceptance", "then": "promote_breakout_repricing"},
-                {"if": "failed_auction_and_opposite_follow_through", "then": "promote_liquidity_reversal"},
-                {"if": "counter_evidence_dominates", "then": "remain_neutral"},
-                {"if": "opposing_space_insufficient", "then": "hard_veto"},
-            ],
-        },
-        "opportunity_hierarchy": hierarchy,
-        "hard_veto": hard_veto,
-        "requires_downstream_confirmation": True,
-        "opportunity_decision": "WAIT",
-        "entry": None,
-        "trigger": None,
-        "decision": None,
-        "professional_reasoning": {
-            "question": QUESTION,
-            "thesis": finding,
-            "why_now": f"Auction intent={auction_intent}; primary opportunity={primary}.",
-            "what_market_is_trying_to_do": intent_reason,
-            "expected_path": conditional_map,
-            "required_evidence": [
-                "acceptance or rejection follow-through",
-                "opposing space remains adequate",
-                "thesis remains structurally valid",
-            ],
-            "counter_case": counter_evidence or ["No dominant counter-evidence detected"],
-            "invalidation_conditions": hierarchy["invalidation"],
-            "timing": "WAIT",
-            "independent_thesis": True,
-            "e1_used_as": "CROSS_CHECK_ONLY",
-            "entry_authorized": False,
-        },
-        "reasons": (["HARD_VETO_PRESENT"] if hard_veto else []) +
-                   (["COUNTER_EVIDENCE_PRESENT"] if counter_evidence else []) +
-                   ["CONDITIONAL_OPPORTUNITY_MAP", "OPPORTUNITY_HIERARCHY", "AUCTION_INTENT_DEPTH"],
-    }
+    def cand(name,direction,regime,structure,acceptance=False,rejection=False,pullback=False,displacement=False):
+        space=max((hi40-last)/atr,0) if direction=="UP" else max((last-lo40)/atr,0); loc=.10<=pos<=.75 if direction=="UP" else .25<=pos<=.90
+        ext=pos>=.92 if direction=="UP" else pos<=.08; veto=[]
+        if not loc:veto.append("LOCATION_NOT_ADVANTAGEOUS")
+        if space<1.0:veto.append("INSUFFICIENT_OPPOSING_SPACE")
+        if ext:veto.append("OVEREXTENDED_LOCATION")
+        if name=="BREAKOUT_REPRICING" and not acceptance:veto.append("NO_ACCEPTANCE")
+        if name=="PULLBACK_CONTINUATION" and not pullback:veto.append("NO_PULLBACK_STRUCTURE")
+        if name=="LIQUIDITY_REVERSAL" and not rejection:veto.append("NO_LIQUIDITY_REJECTION")
+        q=max(0,min(1,.18*float(structure)+.18*float(acceptance)+.16*float(pullback)+.16*float(rejection)+.12*float(displacement)+.10*float(loc)+.10*min(space/3,1)))
+        return {"name":name,"direction":direction,"regime":regime,"quality":round(q,4),"space_atr":round(space,4),"location_ok":loc,"structure":structure,"acceptance":acceptance,"rejection":rejection,"pullback":pullback,"displacement":displacement,"vetoes":veto,"eligible":not veto}
+    c=[]
+    if uc>=4:c.append(cand("PULLBACK_CONTINUATION","UP","TREND",bull,pullback=pb_up,displacement=disp_up))
+    if dc>=4:c.append(cand("PULLBACK_CONTINUATION","DOWN","TREND",bear,pullback=pb_dn,displacement=disp_dn))
+    if accept_up:c.append(cand("BREAKOUT_REPRICING","UP","BREAKOUT",bull,acceptance=True,displacement=disp_up))
+    if accept_dn:c.append(cand("BREAKOUT_REPRICING","DOWN","BREAKOUT",bear,acceptance=True,displacement=disp_dn))
+    if reject_lo:c.append(cand("LIQUIDITY_REVERSAL","UP","REVERSAL",bull,rejection=True,displacement=disp_up))
+    if reject_hi:c.append(cand("LIQUIDITY_REVERSAL","DOWN","REVERSAL",bear,rejection=True,displacement=disp_dn))
+    if balanced and pos<=.35:c.append(cand("RANGE_ROTATION","UP","RANGE",True))
+    if balanced and pos>=.65:c.append(cand("RANGE_ROTATION","DOWN","RANGE",True))
+    ranked=sorted(c,key=lambda x:(x["quality"],x["space_atr"]),reverse=True); eligible=[x for x in ranked if x["eligible"]]
+    competing=len(eligible)>=2 and eligible[0]["direction"]!=eligible[1]["direction"] and abs(eligible[0]["quality"]-eligible[1]["quality"])<.12
+    hard=[]
+    if not eligible: hard.append("NO_ELIGIBLE_OPPORTUNITY")
+    if competing: hard.append("COMPETING_HYPOTHESES")
+    if intent in {"UNCOMMITTED_AUCTION","BUYER_INITIATIVE_PENDING_ACCEPTANCE","SELLER_INITIATIVE_PENDING_ACCEPTANCE"}: hard.append("AUCTION_ACCEPTANCE_NOT_PROVEN")
+    primary=eligible[0] if eligible and not competing else None
+    direction=primary["direction"] if primary else "NEUTRAL"; regime=primary["regime"] if primary else ("RANGE" if balanced else "TRANSITION")
+    opp=primary["name"] if primary else ("WAIT_FOR_RANGE_EDGE" if balanced else "WAIT_FOR_REPRICING")
+    maturity="ACCEPTED" if primary and primary["acceptance"] else "REJECTED" if primary and primary["rejection"] else "DEVELOPING" if primary else "UNPROVEN"
+    counter=[]; e1=snapshot.get("E1_result") or {}; ef=str(e1.get("finding","")).upper()
+    if direction=="UP" and ("DOWN" in ef or "BEARISH" in ef):counter.append("E1_BEARISH_VIEW_IS_COUNTER_EVIDENCE_NOT_COMMAND")
+    if direction=="DOWN" and ("UP" in ef or "BULLISH" in ef):counter.append("E1_BULLISH_VIEW_IS_COUNTER_EVIDENCE_NOT_COMMAND")
+    if eff<.15: counter.append("LOW_AUCTION_EFFICIENCY")
+    if direction=="UP" and reject_hi: counter.append("FAILED_HIGH_AUCTION_AGAINST_LONG_THESIS")
+    if direction=="DOWN" and reject_lo: counter.append("FAILED_LOW_AUCTION_AGAINST_SHORT_THESIS")
+    invalid=["IF_price_accepts_through_the_thesis_invalidation_level_THEN_thesis_invalidates"] if direction=="NEUTRAL" else (["IF_price_accepts_below_recent_support_THEN_bullish_thesis_invalidates"] if direction=="UP" else ["IF_price_accepts_above_recent_resistance_THEN_bearish_thesis_invalidates"])
+    if primary and primary["name"]=="BREAKOUT_REPRICING": invalid.append("IF_breakout_returns_inside_prior_range_THEN_breakout_thesis_invalidates")
+    if primary and primary["name"]=="LIQUIDITY_REVERSAL": invalid.append("IF_rejection_level_is_reclaimed_in_original_direction_THEN_reversal_thesis_invalidates")
+    if direction=="UP": maps=[("IF buyers defend the pullback or reclaim","THEN bullish continuation path strengthens"),("IF price loses the defended area","THEN bullish path weakens"),("IF sellers gain confirmed acceptance below opposing structure","THEN bearish path becomes primary")]
+    elif direction=="DOWN": maps=[("IF sellers defend the pullback or rejection","THEN bearish continuation path strengthens"),("IF price reclaims the defended area","THEN bearish path weakens"),("IF buyers gain confirmed acceptance above opposing structure","THEN bullish path becomes primary")]
+    elif balanced: maps=[("IF range edge rejects","THEN range rotation develops"),("IF range edge fails","THEN rotation thesis weakens"),("IF range breaks and acceptance follows","THEN breakout repricing becomes primary")]
+    else: maps=[("IF one side gains closed-candle acceptance","THEN directional opportunity develops"),("IF price remains two-sided and inefficient","THEN directional thesis remains unproven"),("IF the opposite side gains acceptance","THEN opportunity map flips")]
+    conditional=[{"if":a,"then":b} for a,b in maps]
+    no_trade=list(hard)
+    if primary is None:no_trade.append("NO_PRIMARY_OPPORTUNITY_THESIS")
+    no_trade.append("E2_HAS_NO_ENTRY_AUTHORITY")
+    if primary and not primary["acceptance"] and primary["name"] in {"PULLBACK_CONTINUATION","BREAKOUT_REPRICING"}:no_trade.append("DOWNSTREAM_CONFIRMATION_REQUIRED")
+    thesis=f"{direction}_{opp}_{maturity}" if direction!="NEUTRAL" else f"NEUTRAL_{opp}_UNPROVEN"
+    return {"role":"OPPORTUNITY_REGIME_ANALYST","question":QUESTION,"finding":thesis,"state":"ANALYSIS_COMPLETE","regime":regime,"direction":direction,"opportunity":opp,"opportunity_state":"WAIT" if hard or primary is None else "DEVELOPING","opportunity_maturity":maturity,"independence":"E2_INDEPENDENT_E1_CROSS_CHECK","reasoning_mode":"PROFESSIONAL_DISCRETIONARY","trade_decision_authority":"NONE","auction_intent":intent,"auction_intent_detail":{"phase":phase,"strength":strength,"reason":intent_reason},"opportunity_taxonomy":["TREND_CONTINUATION","PULLBACK_CONTINUATION","RANGE_ROTATION","BREAKOUT_REPRICING","LIQUIDITY_REVERSAL","NO_OPPORTUNITY"],"opportunity_hierarchy":{"primary":primary,"secondary":eligible[1:3],"rejected":[x for x in ranked if not x["eligible"]],"ranked":ranked,"selection_rule":"HIERARCHY_THEN_HARD_VETO_THEN_DOWNSTREAM_CONFIRMATION"},"primary_thesis":thesis,"counter_evidence":counter,"invalidation":invalid,"hard_veto":hard,"asymmetric_opportunity":{"directional_space_atr":primary["space_atr"] if primary else 0.0,"location_position40":round(pos,4),"path_quality":primary["quality"] if primary else 0.0,"is_asymmetric":bool(primary and primary["space_atr"]>=1.5 and primary["location_ok"])},"location":{"position40":round(pos,4),"range_width_atr":round(width/atr,4),"value_zone":"DISCOUNT" if pos<.35 else "PREMIUM" if pos>.65 else "EQUILIBRIUM"},"opposing_space":{"up_atr":round(max((hi40-last)/atr,0),4),"down_atr":round(max((last-lo40)/atr,0),4)},"conditional_map":conditional,"market_tree":{"current_state":thesis,"strengthen":conditional[0]["then"],"weaken":conditional[1]["then"],"opposite":conditional[2]["then"]},"professional_reasoning":{"question":"What is the market offering, not what do I want it to do?","context_vs_trade_decision":"E2 maps opportunity/context only; E7/E8/E9 own confirmation, economics and final action.","competing_hypotheses":[x["name"]+":"+x["direction"] for x in eligible[:4]],"auction_intent_depth":intent_reason,"discretionary_rule":"Do not force a trade when auction intent, path, location, opposing space or invalidation is unclear."},"no_trade_reasoning":no_trade,"requires_downstream_confirmation":True,"entry":None,"decision":None,"reasons":["E2_INDEPENDENT_ANALYSIS",f"AUCTION_INTENT={intent}",f"OPPORTUNITY={opp}"]+[f"HARD_VETO={x}" for x in hard]+[f"COUNTER={x}" for x in counter],"observations":[f"atr14={atr:.8f}",f"ema_gap_atr={gap:.4f}",f"ema20_slope_atr={s20:.4f}",f"ema50_slope_atr={s50:.4f}",f"slope5_atr={s5:.4f}",f"slope20_atr={s20p:.4f}",f"volatility_ratio={vr:.4f}",f"efficiency12={eff:.4f}",f"up_evidence={uc}/7",f"down_evidence={dc}/7",f"position_40={pos:.4f}",f"opposing_space_atr={primary['space_atr'] if primary else 0.0:.4f}"]}
