@@ -30,8 +30,6 @@ def test_external_authority_uses_paired_structure_not_counts():
     highs = [swing(20, 110, 'HH'), swing(50, 115, 'HH')]
     lows = [swing(35, 100, 'HL'), swing(65, 105, 'HL')]
     assert _resolve_structure(highs, lows) == UP
-
-    # An old bearish count must not downgrade a current confirmed bullish pair.
     highs.insert(0, swing(5, 120, 'LH'))
     lows.insert(0, swing(10, 90, 'LL'))
     assert _resolve_structure(highs, lows) == UP
@@ -84,7 +82,6 @@ def test_lifecycle_failure_is_terminal():
 
 
 def test_real_scenario_analysis_returns_complete_e3_without_upstream_dependency():
-    # Downtrend -> pullback -> lower high -> lower low, then unfinished auction.
     closes = []
     for a, b in [(100, 110), (110, 102), (102, 108), (108, 98), (98, 105), (105, 94), (94, 99)]:
         closes.extend(wave(a, b))
@@ -101,3 +98,19 @@ def test_insufficient_data_is_safe():
     result = analyze_e3(make_bars([100] * 10))
     assert result['analysis_status'] == 'INCOMPLETE'
     assert result['direction'] == NEUTRAL
+
+
+def test_professional_schema_separates_current_and_historical_breaks():
+    result = analyze_e3(make_bars([100] * 60))
+    assert 'current_break' in result
+    assert 'historical_break' in result
+    assert result['current_break']['stage'] in {'NONE', 'CONFIRMED', 'ACCEPTED', 'FAILED'}
+    assert result['historical_break']['stage'] in {'NONE', 'ACCEPTED', 'FAILED'}
+
+
+def test_professional_schema_separates_current_and_historical_liquidity():
+    result = analyze_e3(make_bars([100] * 60))
+    assert 'current_liquidity' in result
+    assert 'historical_liquidity' in result
+    assert result['current_liquidity']['stage'] in {'NONE', 'SWEEP', 'RECLAIM'}
+    assert result['historical_liquidity']['stage'] in {'NONE', 'SWEEP_RECLAIM'}
