@@ -4,9 +4,12 @@ on:
   push:
     branches: [production-v2]
     paths:
-      - 'production_v2/e1_professional_core_v15.py'
       - 'production_v2/e1_professional_core_v14.py'
+      - 'production_v2/e1_professional_core_v15.py'
+      - 'production_v2/e1_professional_core_v16.py'
+      - 'production_v2/pipeline.py'
       - 'tests/test_e1_v16_structure_authority.py'
+      - 'tests/test_e1_v16_runtime_contract.py'
       - '.github/workflows/e1-v16-regression.yml'
 
 jobs:
@@ -20,6 +23,6 @@ jobs:
       - name: Install test dependencies
         run: python -m pip install --upgrade pip pytest
       - name: Compile E1 V16
-        run: python -m py_compile production_v2/e1_professional_core_v14.py production_v2/e1_professional_core_v15.py
+        run: python -m py_compile production_v2/e1_professional_core_v14.py production_v2/e1_professional_core_v15.py production_v2/e1_professional_core_v16.py production_v2/pipeline.py
       - name: Run E1 V16 regression
-        run: python -m pytest -q tests/test_e1_v16_structure_authority.py
+        run: python -m pytest -q tests/test_e1_v16_structure_authority.py tests/test_e1_v16_runtime_contract.py
