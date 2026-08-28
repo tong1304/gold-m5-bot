@@ -157,9 +157,11 @@ def analyze_e1_professional_v10(bars: list[dict[str, Any]] | None) -> dict[str, 
         if atr <= 0:
             raise ValueError("INVALID_ATR_FOR_V10")
 
-        ema20s = _ema(closes, 20)
-        ema50s = _ema(closes, 50)
-        ema20, ema50 = ema20s[-1], ema50s[-1]
+        # V7/V8 _ema returns the final EMA value (float), not an EMA series.
+        # V10 previously treated it as a sequence and indexed it, producing
+        # the production TypeError: 'float' object is not subscriptable.
+        ema20 = float(_ema(closes, 20))
+        ema50 = float(_ema(closes, 50))
         gap = (ema20 - ema50) / max(atr, 1e-12)
         ema = "UP" if ema20 > ema50 else "DOWN" if ema20 < ema50 else "NEUTRAL"
 
@@ -243,9 +245,6 @@ def analyze_e1_professional_v10(bars: list[dict[str, Any]] | None) -> dict[str, 
         and structure in {"UP", "DOWN"}
     )
 
-    # IMPORTANT: compute derived values before output.update(). Python evaluates
-    # nested dictionary values before update(), so reading output[...] here used
-    # to cause the production KeyError 'structural_persistence'.
     output.update({
         "market_state": market_state,
         "trend_state": trend_state,
