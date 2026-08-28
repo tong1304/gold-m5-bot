@@ -16,14 +16,9 @@ def make_bars(closes):
     return bars
 
 
-def wave(*levels):
-    out = []
-    for level in levels:
-        start = out[-1] if out else level
-        step = (level - start) / 10.0
-        for j in range(10):
-            out.append(start + step * (j + 1))
-    return out
+def wave(start, end):
+    step = (end - start) / 10.0
+    return [start + step * (j + 1) for j in range(10)]
 
 
 def test_external_authority_uses_paired_structure_not_counts():
@@ -71,10 +66,7 @@ def test_closed_candle_bos_only():
 
 def test_lifecycle_failure_is_terminal():
     current = {'confirmed': False, 'event': 'NO_BOS', 'direction': NEUTRAL}
-    failure = {
-        'confirmed': True, 'direction': DOWN, 'level': 110.0,
-        'break_candle_index': 40, 'failure_candle_index': 43,
-    }
+    failure = {'confirmed': True, 'direction': DOWN, 'level': 110.0, 'break_candle_index': 40, 'failure_candle_index': 43}
     life = _lifecycle(current, failure, [], None, 50)
     assert life['stage'] == 'FAILED'
     assert life['terminal'] is True
@@ -89,7 +81,7 @@ def test_real_scenario_analysis_returns_complete_e3_without_upstream_dependency(
     result = analyze_e3(make_bars(closes))
     assert result['analysis_status'] == 'COMPLETE'
     assert result['reasoning_trace']['upstream_inputs_used'] is False
-    assert result['reasoning_trace']['external_is_authority'] is True
+    assert result['reasoning_trace']['external_is_authority'] is True, result
     assert result['reasoning_trace']['closed_candle_only'] is True
     assert 'count_state_role=DESCRIPTIVE_NOT_AUTHORITY' in result['evidence']
     assert result['decision_authority'] == 'E9_ONLY'
