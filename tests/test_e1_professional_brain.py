@@ -72,3 +72,13 @@ def test_e1_confidence_is_lower_when_regime_evidence_conflicts():
     trend_out = analyze_e1(_bars_from_closes(trend))
     conflict_out = analyze_e1(_bars_from_closes(conflict))
     assert conflict_out["confidence"] < trend_out["confidence"]
+
+
+def test_e1_exposes_professional_reconciliation_metrics():
+    out = analyze_e1(_bars_from_closes([100 + 0.25 * i for i in range(80)]))
+    reasoning = out["professional_reasoning"]
+    assert 0.0 <= reasoning["pressure_score"] <= 1.0
+    assert 0.0 <= reasoning["structure_alignment"] <= 1.0
+    assert 0.0 <= reasoning["trend_score"] <= 1.0
+    assert reasoning["regime_basis"]
+    assert reasoning["independent_evidence"]
