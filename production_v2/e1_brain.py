@@ -90,20 +90,27 @@ def analyze_e1(bars: list[dict[str, Any]] | None) -> dict[str, Any]:
     ema20_slope,ema50_slope=_slope(e20s,atr14,5),_slope(e50s,atr14,5)
     lookbacks=(5,10,20,40); slopes=[_slope(closes,atr14,n) for n in lookbacks]; thresholds=(.15,.20,.30,.40)
     horizons=["UP" if s>=t else "DOWN" if s<=-t else "FLAT" for s,t in zip(slopes,thresholds)]; up,down=horizons.count("UP"),horizons.count("DOWN")
-    longer_up,longer_down=horizons[1:].count("UP"),horizons[1:].count("DOWN")
+    long_horizons=horizons[1:]; long_up,long_down=long_horizons.count("UP"),long_horizons.count("DOWN")
+    longer_up,longer_down=long_up,long_down
     if up==4: pressure="UP"
     elif down==4: pressure="DOWN"
     elif longer_up>longer_down: pressure="UP"
     elif longer_down>longer_up: pressure="DOWN"
     else: pressure="BALANCED"
     consensus=max(up,down)/4
-    if pressure=="UP": persistence=sum((slopes[0]>=.20,slopes[1]>=.25,slopes[2]>=.35,slopes[3]>=.45))/4
-    elif pressure=="DOWN": persistence=sum((slopes[0]<=-.20,slopes[1]<=-.25,slopes[2]<=-.35,slopes[3]<=-.45))/4
-    else: persistence=0.0
+    long_consensus=max(long_up,long_down)/3
+    if pressure=="UP":
+        persistence=sum((slopes[0]>=.20,slopes[1]>=.25,slopes[2]>=.35,slopes[3]>=.45))/4
+        long_persistence=sum((slopes[1]>=.25,slopes[2]>=.35,slopes[3]>=.45))/3
+    elif pressure=="DOWN":
+        persistence=sum((slopes[0]<=-.20,slopes[1]<=-.25,slopes[2]<=-.35,slopes[3]<=-.45))/4
+        long_persistence=sum((slopes[1]<=-.25,slopes[2]<=-.35,slopes[3]<=-.45))/3
+    else:
+        persistence=0.0; long_persistence=0.0
     eff10,eff20,eff40=(_efficiency(closes,n) for n in (10,20,40))
     structure,structure_quality,pivot_counts=_pivot_structure(valid); structure_direction="UP" if structure=="BULLISH" else "DOWN" if structure=="BEARISH" else "NEUTRAL"
     structure_conflict=pressure in {"UP","DOWN"} and structure_direction in {"UP","DOWN"} and structure_direction!=pressure
-    structural_proxy=structure=="MIXED" and structure_quality<=.30 and persistence>=.75 and max(eff20,eff40)>=.22
+    structural_proxy=structure=="MIXED" and structure_quality<=.30 and long_persistence>=.667 and max(eff20,eff40)>=.22
     structure_alignment=1.0 if structure_direction==pressure and pressure!="BALANCED" else .75 if structural_proxy else .5 if pressure=="BALANCED" and structure=="MIXED" else 0.0
     ema_alignment=1.0 if pressure in {"UP","DOWN"} and ema_relation==pressure else 0.0
     ema_conflict=pressure in {"UP","DOWN"} and ema_relation in {"UP","DOWN"} and ema_relation!=pressure; horizon_conflict=up>0 and down>0
@@ -117,11 +124,16 @@ def analyze_e1(bars: list[dict[str, Any]] | None) -> dict[str, Any]:
     compression=volatility_ratio<.78; expansion=volatility_ratio>1.10
     volatility="EXPANDING" if expansion else "CONTRACTING" if compression else "NORMAL"
     pressure_score=consensus*(.65+.35*persistence)
-    trend_score=.30*consensus+.25*persistence+.20*structure_alignment+.15*ema_alignment+.10*max(eff20,eff40)
-    trend_candidate=pressure in {"UP","DOWN"} and consensus>=.75 and persistence>=.50 and structure_alignment>=.75 and ema_alignment==1.0 and max(eff20,eff40)>=.22
+    trend_score=.25*consensus+.25*persistence+.20*structure_alignment+.15*ema_alignment+.10*long_consensus+.05*max(eff20,eff40)
+    # Professional reconciliation: a short M5 counter-move must not erase a coherent
+    # slower trend. Efficiency remains a strength measure, not a hard veto, when
+    # EMA context + structure + 10/20/40-bar direction agree.
+    established_trend=(pressure in {"UP","DOWN"} and consensus>=.75 and persistence>=.50 and structure_alignment>=.75 and ema_alignment==1.0 and max(eff20,eff40)>=.22)
+    contextual_trend=(pressure in {"UP","DOWN"} and long_consensus>=.667 and long_persistence>=.667 and structure_alignment>=.75 and ema_alignment==1.0)
+    trend_candidate=established_trend or contextual_trend
     prior_context=_slope(closes,atr14,30); recent_context=_slope(closes,atr14,8)
     context_flip=abs(prior_context)>=.45 and abs(recent_context)>=.65 and (prior_context>0)!=(recent_context>0)
-    structure_break_proxy=structure_conflict and persistence>=.75 and structure_quality>=.52
+    structure_break_proxy=structure_conflict and long_persistence>=.667 and structure_quality>=.52
     persistent_horizon_flip=horizon_conflict and consensus>=.75 and persistence>=.75
     ema_context_flip=ema_conflict and context_flip and persistence>=.50
     ema_lag_transition=ema_conflict and consensus>=.75 and persistence>=.75 and (abs(slopes[1])>=.20 or abs(slopes[2])>=.30)
@@ -135,7 +147,10 @@ def analyze_e1(bars: list[dict[str, Any]] | None) -> dict[str, Any]:
     range_candidate=pressure=="BALANCED" and eff20<.35 and eff40<.40 and abs(ema_gap)<.85
     expansion_candidate=expansion and pressure in {"UP","DOWN"} and eff10>=.25 and abs(slopes[0])>=.25
     if transition: state,reason,maturity="TRANSITION","persistent repricing conflicts with slower market context","TRANSITION"
-    elif trend_candidate: state,reason,maturity=("TREND_UP" if pressure=="UP" else "TREND_DOWN","direction, persistence, structure, EMA context and efficiency are coherent","ESTABLISHED")
+    elif trend_candidate:
+        state="TREND_UP" if pressure=="UP" else "TREND_DOWN"
+        if established_trend: reason="direction, persistence, structure, EMA context and efficiency are coherent"; maturity="ESTABLISHED"
+        else: reason="slower-horizon direction, structure and EMA context remain coherent despite short-term pullback"; maturity="DEVELOPING"
     elif compression and (pressure=="BALANCED" or eff20<.30): state,reason,maturity="COMPRESSION","volatility contraction dominates directional evidence","CONTRACTING"
     elif expansion_candidate: state,reason,maturity="EXPANSION","volatility is expanding with directional impulse","EXPANDING"
     elif range_candidate: state,reason,maturity="RANGE","two-sided non-directional behavior dominates","RANGE"
@@ -147,17 +162,18 @@ def analyze_e1(bars: list[dict[str, Any]] | None) -> dict[str, Any]:
     elif direction in {"UP","DOWN"} and (consensus>=.50 or persistence>=.25): directional_state="DEVELOPING"
     elif direction=="NEUTRAL": directional_state="NEUTRAL"
     else: directional_state="UNRESOLVED"
-    directional_consensus={"direction":direction,"confirmed":consensus>=.75,"score":round(consensus,3),"horizons":horizons,"up_count":up,"down_count":down,"state":directional_state}
-    independent_evidence={"data_quality":{"valid_candles":len(valid),"invalid_candles":invalid_count},"volatility":{"atr14":round(atr14,6),"prior_atr":round(prior_atr,6),"ratio":round(volatility_ratio,3)},"structure":{"state":structure,"quality":round(structure_quality,3),"alignment":round(structure_alignment,3),"counts":pivot_counts},"pressure":{"direction":direction,"score":round(pressure_score,3),"state":directional_state},"persistence":{"score":round(persistence,3),"efficiency20":round(eff20,3),"efficiency40":round(eff40,3)},"ema_context":{"relation":ema_relation,"gap_atr":round(ema_gap,3),"alignment":round(ema_alignment,3)},"transition":{"confirmed":transition,"evidence":transition_evidence}}
-    regime_basis=f"pressure={direction}; consensus={consensus:.2f}; persistence={persistence:.2f}; structure={structure}; ema={ema_relation}; volatility={volatility}; trend_score={trend_score:.2f}"
-    evidence=[f"valid_candles={len(valid)}",f"invalid_candles={invalid_count}",f"ema20_vs_ema50={ema_relation}",f"ema_gap_atr={ema_gap:.3f}",f"ema20_slope_atr={ema20_slope:.3f}",f"ema50_slope_atr={ema50_slope:.3f}",*(f"price_slope_{n}_atr={s:.3f}" for n,s in zip(lookbacks,slopes)),f"multi_horizon={','.join(horizons)}",f"directional_consensus={consensus:.3f}",f"directional_state={directional_state}",f"persistence={persistence:.3f}",f"efficiency20={eff20:.3f}",f"efficiency40={eff40:.3f}",f"structure_counts={pivot_counts}",f"structure_alignment={structure_alignment:.3f}",f"pressure_score={pressure_score:.3f}",f"trend_score={trend_score:.3f}",f"volatility_ratio={volatility_ratio:.3f}",f"context_flip={context_flip}",f"transition_evidence={transition_evidence}",f"trend_candidate={trend_candidate}",f"regime_stress={regime_stress}",f"ema_lag_transition={ema_lag_transition}",f"single_counter_candle={single_counter_candle}"]
+    directional_consensus={"direction":direction,"confirmed":consensus>=.75,"score":round(consensus,3),"long_horizon_score":round(long_consensus,3),"horizons":horizons,"up_count":up,"down_count":down,"state":directional_state}
+    independent_evidence={"data_quality":{"valid_candles":len(valid),"invalid_candles":invalid_count},"volatility":{"atr14":round(atr14,6),"prior_atr":round(prior_atr,6),"ratio":round(volatility_ratio,3)},"structure":{"state":structure,"quality":round(structure_quality,3),"alignment":round(structure_alignment,3),"counts":pivot_counts},"pressure":{"direction":direction,"score":round(pressure_score,3),"state":directional_state},"persistence":{"score":round(persistence,3),"long_horizon_score":round(long_persistence,3),"efficiency20":round(eff20,3),"efficiency40":round(eff40,3)},"ema_context":{"relation":ema_relation,"gap_atr":round(ema_gap,3),"alignment":round(ema_alignment,3)},"transition":{"confirmed":transition,"evidence":transition_evidence}}
+    regime_basis=f"pressure={direction}; consensus={consensus:.2f}; long_consensus={long_consensus:.2f}; persistence={persistence:.2f}; long_persistence={long_persistence:.2f}; structure={structure}; ema={ema_relation}; volatility={volatility}; trend_score={trend_score:.2f}"
+    evidence=[f"valid_candles={len(valid)}",f"invalid_candles={invalid_count}",f"ema20_vs_ema50={ema_relation}",f"ema_gap_atr={ema_gap:.3f}",f"ema20_slope_atr={ema20_slope:.3f}",f"ema50_slope_atr={ema50_slope:.3f}",*(f"price_slope_{n}_atr={s:.3f}" for n,s in zip(lookbacks,slopes)),f"multi_horizon={','.join(horizons)}",f"directional_consensus={consensus:.3f}",f"long_horizon_consensus={long_consensus:.3f}",f"directional_state={directional_state}",f"persistence={persistence:.3f}",f"long_horizon_persistence={long_persistence:.3f}",f"efficiency20={eff20:.3f}",f"efficiency40={eff40:.3f}",f"structure_counts={pivot_counts}",f"structure_alignment={structure_alignment:.3f}",f"pressure_score={pressure_score:.3f}",f"trend_score={trend_score:.3f}",f"volatility_ratio={volatility_ratio:.3f}",f"context_flip={context_flip}",f"transition_evidence={transition_evidence}",f"established_trend={established_trend}",f"contextual_trend={contextual_trend}",f"trend_candidate={trend_candidate}",f"regime_stress={regime_stress}",f"ema_lag_transition={ema_lag_transition}",f"single_counter_candle={single_counter_candle}"]
     confidence=.30+.25*structure_quality+.20*consensus+.15*persistence+.10*max(eff20,eff40)
     if state=="UNCLEAR": confidence=min(confidence,.65)
     if transition or regime_stress: confidence=min(confidence,.80)
+    if contextual_trend and not established_trend: confidence=min(max(confidence,.72),.84)
     reasons=list(conflicts)
     if transition: reasons.append("REGIME_TRANSITION_CONFIRMED")
     elif regime_stress: reasons.append("REGIME_STRESS_ACTIVE")
     elif directional_state=="DEVELOPING": reasons.append("DIRECTIONAL_STATE_DEVELOPING")
     elif state=="UNCLEAR": reasons.append("REGIME_CONFIRMATION_INSUFFICIENT")
     pr={"task":"DESCRIBE_MARKET_STATE_ONLY","primary_state":state,"market_state":state,"direction":direction,"directional_pressure":public_pressure,"directional_state":directional_state,"trend_maturity":maturity,"trend_confirmed":state in {"TREND_UP","TREND_DOWN"},"regime_stress":regime_stress,"transition_confirmed":transition,"conflict_detected":bool(conflicts),"conflict_count":len(conflicts),"classification_reason":reason,"single_counter_candle":single_counter_candle,"pressure_score":round(pressure_score,3),"structure_alignment":round(structure_alignment,3),"trend_score":round(trend_score,3),"directional_consensus":directional_consensus,"regime_basis":regime_basis,"independent_evidence":independent_evidence,"evidence_hierarchy":EVIDENCE_HIERARCHY,"ownership_boundaries":OWNERSHIP}
-    return {**_base(),"market_state":state,"directional_pressure":public_pressure,"directional_state":directional_state,"trend_state":"UP" if state=="TREND_UP" else "DOWN" if state=="TREND_DOWN" else "NONE","volatility_state":volatility,"structure_state":structure,"structure_quality":round(structure_quality,3),"range_state":"RANGE" if range_candidate else "NOT_RANGE","compression":"PRESENT" if compression else "ABSENT","expansion":"PRESENT" if expansion else "ABSENT","transition":"PRESENT" if transition else "ABSENT","regime_stress":"PRESENT" if regime_stress else "ABSENT","confidence":round(max(0.0,min(.99,confidence)),3),"evidence":evidence,"observations":evidence,"conflicts":conflicts,"reasons":reasons,"reasoning_trace":[f"QUESTION -> {QUESTION}",f"EVIDENCE_HIERARCHY -> {EVIDENCE_HIERARCHY}",f"STRUCTURE -> {structure} quality={structure_quality:.2f} alignment={structure_alignment:.2f}",f"PRESSURE -> {direction} score={pressure_score:.2f} state={directional_state}",f"VOLATILITY -> {volatility} ratio={volatility_ratio:.2f}",f"PERSISTENCE -> {persistence:.2f}",f"TREND_SCORE -> {trend_score:.2f}",f"REGIME_CONFIRMATION -> trend_confirmed={trend_candidate} maturity={maturity}",f"REGIME_STRESS -> {'PRESENT' if regime_stress else 'ABSENT'}",f"STATE -> {state} because={reason}",f"DIRECTIONAL_STATE -> {directional_state}",f"TRANSITION -> {'PRESENT' if transition else 'ABSENT'} evidence={transition_evidence}"],"professional_reasoning":pr,"analysis_status":"COMPLETE"}
+    return {**_base(),"market_state":state,"directional_pressure":public_pressure,"directional_state":directional_state,"trend_state":"UP" if state=="TREND_UP" else "DOWN" if state=="TREND_DOWN" else "NONE","volatility_state":volatility,"structure_state":structure,"structure_quality":round(structure_quality,3),"range_state":"RANGE" if range_candidate else "NOT_RANGE","compression":"PRESENT" if compression else "ABSENT","expansion":"PRESENT" if expansion else "ABSENT","transition":"PRESENT" if transition else "ABSENT","regime_stress":"PRESENT" if regime_stress else "ABSENT","confidence":round(max(0.0,min(.99,confidence)),3),"evidence":evidence,"observations":evidence,"conflicts":conflicts,"reasons":reasons,"reasoning_trace":[f"QUESTION -> {QUESTION}",f"EVIDENCE_HIERARCHY -> {EVIDENCE_HIERARCHY}",f"STRUCTURE -> {structure} quality={structure_quality:.2f} alignment={structure_alignment:.2f}",f"PRESSURE -> {direction} score={pressure_score:.2f} state={directional_state}",f"VOLATILITY -> {volatility} ratio={volatility_ratio:.2f}",f"PERSISTENCE -> {persistence:.2f} long={long_persistence:.2f}",f"TREND_SCORE -> {trend_score:.2f}",f"REGIME_RECONCILIATION -> established={established_trend} contextual={contextual_trend}",f"REGIME_CONFIRMATION -> trend_confirmed={trend_candidate} maturity={maturity}",f"REGIME_STRESS -> {'PRESENT' if regime_stress else 'ABSENT'}",f"STATE -> {state} because={reason}",f"DIRECTIONAL_STATE -> {directional_state}",f"TRANSITION -> {'PRESENT' if transition else 'ABSENT'} evidence={transition_evidence}"],"professional_reasoning":pr,"analysis_status":"COMPLETE"}
