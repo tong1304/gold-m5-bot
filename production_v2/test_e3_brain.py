@@ -55,7 +55,7 @@ def test_protected_structure_and_invalidation_anchor():
     p = _protected_structure(UP, highs, lows)
     assert p['primary_direction'] == UP
     assert p['primary_label'] == 'HL'
-    assert p['invalidation_level'] == 105.0
+    assert p['invalidation_level'] == 100.0
     assert p['invalidation_type'] == 'CLOSED_CANDLE_ACCEPTANCE_BELOW_PROTECTED_LOW'
 
 
@@ -76,9 +76,10 @@ def test_lifecycle_failure_is_terminal():
         'break_candle_index': 40, 'failure_candle_index': 43,
     }
     life = _lifecycle(current, failure, [], None, 50)
-    assert life['stage'] == 'FAILED_BREAK_RECLAIM'
+    assert life['stage'] == 'FAILED'
     assert life['terminal'] is True
     assert life['failure'] is True
+    assert life['current'] is False
 
 
 def test_real_scenario_analysis_returns_complete_e3_without_upstream_dependency():
