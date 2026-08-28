@@ -13,7 +13,8 @@ def _bars(closes):
 
 def test_e1_exposes_explicit_professional_arbitration_contract():
     r = analyze_e1_professional_v10(_bars([5000.0 - i * 2.0 for i in range(120)]))
-    assert r["e1_contract_version"] == "PROFESSIONAL_MARKET_STATE_V11"
+    assert r["e1_contract_version"] == "PROFESSIONAL_MARKET_STATE_V10"
+    assert r["e1_engine_version"] == "PROFESSIONAL_MARKET_STATE_V11"
     assert r["professional_reasoning"]["arbitration_order"] == [
         "DATA_QUALITY",
         "STRUCTURE",
@@ -41,7 +42,6 @@ def test_e1_never_commits_transition_from_counter_pressure_alone():
 
 def test_e1_transition_requires_structural_repricing_not_just_pressure_flip():
     closes = [5000.0 - i * 2.0 for i in range(100)]
-    # A large counter move without persistent structural repricing must remain non-transition.
     closes.extend([4800.0, 4830.0, 4860.0, 4890.0])
     r = analyze_e1_professional_v10(_bars(closes))
     assert r["transition_confirmed"] is False
