@@ -4,7 +4,7 @@ from statistics import mean
 from typing import Any
 
 QUESTION = "What is price structure communicating?"
-ARCHITECTURE = "E3_SINGLE_PROFESSIONAL_BRAIN_V10"
+ARCHITECTURE = "E3_SINGLE_PROFESSIONAL_BRAIN_V11"
 UP, DOWN, NEUTRAL, MIXED = "UP", "DOWN", "NEUTRAL", "MIXED"
 MIN_CANDLES = 40
 IR, ER = 2, 5
@@ -79,7 +79,6 @@ def _pivots(b, side, radius):
 
 
 def _compress(points, atr, side=None, spacing=2):
-    """Collapse clustered pivots while retaining the meaningful extreme."""
     if isinstance(side, int) and spacing == 2:
         spacing, side = side, None
     out = []
@@ -156,16 +155,40 @@ def _classify(h, l):
 
 
 def _protected(s, h, l):
+    """Protected structure is the last defended swing that can invalidate the external thesis."""
     if s == UP:
-        low = _latest(l, {"HL"})
-        high = _latest(h, {"HH", "EQH"})
-    elif s == DOWN:
-        high = _latest(h, {"LH", "EQH"})
-        low = _latest(l, {"LL", "EQL"})
-    else:
-        high = _latest(h, {"HH", "LH", "EQH"})
-        low = _latest(l, {"HL", "LL", "EQL"})
-    return {"protected_high": high, "protected_low": low}
+        primary = _latest(l, {"HL"})
+        secondary = _latest(h, {"HH", "EQH"})
+        return {
+            "protected_high": secondary,
+            "protected_low": primary,
+            "primary_direction": UP,
+            "primary_level": primary["price"] if primary else None,
+            "invalidation_level": primary["price"] if primary else None,
+            "invalidation_type": "CLOSED_CANDLE_ACCEPTANCE_BELOW_PROTECTED_LOW",
+            "why_primary": "The latest defended HL is the anchor for the current external bullish thesis.",
+        }
+    if s == DOWN:
+        primary = _latest(h, {"LH"})
+        secondary = _latest(l, {"LL", "EQL"})
+        return {
+            "protected_high": primary,
+            "protected_low": secondary,
+            "primary_direction": DOWN,
+            "primary_level": primary["price"] if primary else None,
+            "invalidation_level": primary["price"] if primary else None,
+            "invalidation_type": "CLOSED_CANDLE_ACCEPTANCE_ABOVE_PROTECTED_HIGH",
+            "why_primary": "The latest defended LH is the anchor for the current external bearish thesis.",
+        }
+    return {
+        "protected_high": _latest(h, {"HH", "LH", "EQH"}),
+        "protected_low": _latest(l, {"HL", "LL", "EQL"}),
+        "primary_direction": NEUTRAL,
+        "primary_level": None,
+        "invalidation_level": None,
+        "invalidation_type": "NO_DIRECTIONAL_INVALIDATION_LEVEL",
+        "why_primary": "No directional external structure has enough authority to define a thesis anchor.",
+    }
 
 
 def _quality(bar, level, direction, atr):
@@ -200,6 +223,7 @@ def _event(bar, pivot, direction, atr, event, scope, idx):
         "swing_index": pivot["index"],
         "swing_label": pivot["label"],
         "break_candle_index": idx,
+        "closed_candle_confirmed": True,
         **{k: q[k] for k in ("distance_atr", "body_atr", "close_location", "displacement_ok", "close_beyond_level")},
     }
 
@@ -212,12 +236,12 @@ def _current_break(bars, highs, lows, atr, structure, scope="EXTERNAL", idx=None
     hi = _latest(highs, {"HH", "LH", "EQH"}, max_confirm)
     lo = _latest(lows, {"HL", "LL", "EQL"}, max_confirm)
     out = []
-    if hi and (idx == 0 or bars[idx - 1]["close"] <= hi["price"]):
+    if hi and bars[idx]["close"] > hi["price"] and (idx == 0 or bars[idx - 1]["close"] <= hi["price"]):
         q = _quality(bars[idx], hi["price"], UP, atr)
         if q["confirmed"]:
             event = "CONFIRMED_CHOCH" if structure == DOWN else "CONFIRMED_BOS"
             out.append((q["distance_atr"], _event(bars[idx], hi, UP, atr, event, scope, idx)))
-    if lo and (idx == 0 or bars[idx - 1]["close"] >= lo["price"]):
+    if lo and bars[idx]["close"] < lo["price"] and (idx == 0 or bars[idx - 1]["close"] >= lo["price"]):
         q = _quality(bars[idx], lo["price"], DOWN, atr)
         if q["confirmed"]:
             event = "CONFIRMED_CHOCH" if structure == UP else "CONFIRMED_BOS"
@@ -229,33 +253,34 @@ def _bos(bars, highs, lows, atr, prior_structure, scope="EXTERNAL"):
     return _current_break(bars, highs, lows, atr, prior_structure, scope)
 
 
+def _structure_at(highs, lows, idx):
+    h = [x for x in highs if x["confirmation_index"] <= idx]
+    l = [x for x in lows if x["confirmation_index"] <= idx]
+    return _classify(h, l)
+
+
 def _break_history(bars, highs, lows, atr, structure):
-    events = []
-    active = None
+    """Reconstruct break lifecycle without treating a historical event as current authority."""
+    events, active = [], None
     for i in range(len(bars)):
         if active:
-            level, direction = active["level"], active["direction"]
             active["follow_through_bars"] += 1
+            level, direction = active["level"], active["direction"]
             reclaimed = (direction == UP and bars[i]["close"] <= level - RECLAIM_MIN_ATR * atr) or (direction == DOWN and bars[i]["close"] >= level + RECLAIM_MIN_ATR * atr)
             if reclaimed:
-                active = dict(active, status="FAILED_BREAK_RECLAIMED", failure_candle_index=i)
-                events.append(active)
+                events.append(dict(active, status="FAILED_BREAK_RECLAIMED", failure_candle_index=i))
                 active = None
             elif active["follow_through_bars"] >= FOLLOW_THROUGH_BARS:
-                active = dict(active, status="ACCEPTED_BREAK_WITH_FOLLOW_THROUGH")
-                events.append(active)
+                events.append(dict(active, status="ACCEPTED_BREAK_WITH_FOLLOW_THROUGH", acceptance_candle_index=i))
                 active = None
         if active is None:
-            e = _current_break(bars, highs, lows, atr, structure, "EXTERNAL", i)
+            prior = _structure_at(highs, lows, i - 1)
+            e = _current_break(bars, highs, lows, atr, prior, "EXTERNAL", i)
             if e["confirmed"]:
                 active = {
-                    "event": e["event"],
-                    "direction": e["direction"],
-                    "level": e["level"],
-                    "swing_index": e["swing_index"],
-                    "break_candle_index": i,
-                    "status": "BREAK_CONFIRMED_AWAITING_FOLLOW_THROUGH",
-                    "follow_through_bars": 0,
+                    "event": e["event"], "direction": e["direction"], "level": e["level"],
+                    "swing_index": e["swing_index"], "break_candle_index": i,
+                    "status": "BREAK_CONFIRMED_AWAITING_FOLLOW_THROUGH", "follow_through_bars": 0,
                 }
     return events, active
 
@@ -264,20 +289,10 @@ def _failure(bars, active, atr):
     if not active:
         return {"event": "NO_FAILURE", "direction": NEUTRAL, "confirmed": False}
     level, direction = active["level"], active["direction"]
-    start = active["break_candle_index"] + 1
-    for i in range(start, len(bars)):
+    for i in range(active["break_candle_index"] + 1, len(bars)):
         reclaimed = (direction == UP and bars[i]["close"] <= level - RECLAIM_MIN_ATR * atr) or (direction == DOWN and bars[i]["close"] >= level + RECLAIM_MIN_ATR * atr)
         if reclaimed:
-            return {
-                "event": "FAILED_BOS",
-                "direction": DOWN if direction == UP else UP,
-                "confirmed": True,
-                "level": level,
-                "break_candle_index": active["break_candle_index"],
-                "failure_candle_index": i,
-                "scope": "EXTERNAL",
-                "reclaim_distance_atr": round(abs(bars[i]["close"] - level) / max(atr, 1e-12), 4),
-            }
+            return {"event": "FAILED_BOS", "direction": DOWN if direction == UP else UP, "confirmed": True, "closed_candle_confirmed": True, "level": level, "break_candle_index": active["break_candle_index"], "failure_candle_index": i, "scope": "EXTERNAL", "reclaim_distance_atr": round(abs(bars[i]["close"] - level) / max(atr, 1e-12), 4)}
     return {"event": "NO_FAILURE", "direction": NEUTRAL, "confirmed": False}
 
 
@@ -292,17 +307,16 @@ def _sweep_reclaim(bars, highs, lows, atr, structure):
         sweep = (bars[i]["high"] - hi["price"]) / atr
         reclaim = (hi["price"] - bars[i]["close"]) / atr
         if sweep >= SWEEP_MIN_ATR and reclaim >= RECLAIM_MIN_ATR:
-            candidates.append((reclaim, {"event": "SWEEP_RECLAIM", "direction": DOWN, "confirmed": True, "level": hi["price"], "swing_index": hi["index"], "sweep_candle_index": i, "sweep_distance_atr": round(sweep, 4), "reclaim_distance_atr": round(reclaim, 4), "scope": "EXTERNAL"}))
+            candidates.append((reclaim, {"event": "SWEEP_RECLAIM", "direction": DOWN, "confirmed": True, "closed_candle_confirmed": True, "level": hi["price"], "swing_index": hi["index"], "sweep_candle_index": i, "sweep_distance_atr": round(sweep, 4), "reclaim_distance_atr": round(reclaim, 4), "scope": "EXTERNAL"}))
     if lo:
         sweep = (lo["price"] - bars[i]["low"]) / atr
         reclaim = (bars[i]["close"] - lo["price"]) / atr
         if sweep >= SWEEP_MIN_ATR and reclaim >= RECLAIM_MIN_ATR:
-            candidates.append((reclaim, {"event": "SWEEP_RECLAIM", "direction": UP, "confirmed": True, "level": lo["price"], "swing_index": lo["index"], "sweep_candle_index": i, "sweep_distance_atr": round(sweep, 4), "reclaim_distance_atr": round(reclaim, 4), "scope": "EXTERNAL"}))
+            candidates.append((reclaim, {"event": "SWEEP_RECLAIM", "direction": UP, "confirmed": True, "closed_candle_confirmed": True, "level": lo["price"], "swing_index": lo["index"], "sweep_candle_index": i, "sweep_distance_atr": round(sweep, 4), "reclaim_distance_atr": round(reclaim, 4), "scope": "EXTERNAL"}))
     return max(candidates, key=lambda x: x[0])[1] if candidates else {"event": "NO_SWEEP_RECLAIM", "direction": NEUTRAL, "confirmed": False}
 
 
 def _sweep_failure(bars, highs, lows, atr=None, prior_structure=MIXED):
-    """Compatibility helper: only a real break followed by close-back-inside is FAILED_BOS."""
     atr = atr or _atr(bars)
     if not bars or atr <= 0:
         return {"event": "NO_FAILURE", "direction": NEUTRAL, "confirmed": False}
@@ -312,32 +326,34 @@ def _sweep_failure(bars, highs, lows, atr=None, prior_structure=MIXED):
         return failure
     for x in reversed(events):
         if x.get("status") == "FAILED_BREAK_RECLAIMED":
-            return {"event": "FAILED_BOS", "direction": DOWN if x["direction"] == UP else UP, "confirmed": True, "level": x["level"], "break_candle_index": x["break_candle_index"], "failure_candle_index": x["failure_candle_index"], "scope": "EXTERNAL"}
+            return {"event": "FAILED_BOS", "direction": DOWN if x["direction"] == UP else UP, "confirmed": True, "closed_candle_confirmed": True, "level": x["level"], "break_candle_index": x["break_candle_index"], "failure_candle_index": x["failure_candle_index"], "scope": "EXTERNAL"}
     return {"event": "NO_FAILURE", "direction": NEUTRAL, "confirmed": False}
 
 
-def _lifecycle(current, failure, history, active):
+def _lifecycle(current, failure, history, active, last_index):
     if failure["confirmed"]:
-        return {"stage": "FAILED_BREAK_RECLAIM", "current": False, "active": False, "accepted": False, "follow_through": False, "failure": True, "level": failure["level"], "break_candle_index": failure["break_candle_index"], "failure_candle_index": failure["failure_candle_index"]}
+        start = failure["break_candle_index"]
+        return {"stage": "FAILED_BREAK_RECLAIM", "current": False, "active": False, "accepted": False, "follow_through": False, "failure": True, "terminal": True, "age_bars": max(0, last_index - start), "follow_through_bars": 0, "level": failure["level"], "break_candle_index": start, "failure_candle_index": failure["failure_candle_index"]}
     if current["confirmed"]:
-        return {"stage": "CURRENT_BREAK_AWAITING_FOLLOW_THROUGH", "current": True, "active": True, "accepted": False, "follow_through": False, "failure": False, "level": current["level"], "break_candle_index": current["break_candle_index"]}
+        return {"stage": "CURRENT_BREAK_AWAITING_FOLLOW_THROUGH", "current": True, "active": True, "accepted": False, "follow_through": False, "failure": False, "terminal": False, "age_bars": 0, "follow_through_bars": 0, "level": current["level"], "break_candle_index": current["break_candle_index"]}
     if active:
-        return {"stage": "CURRENT_BREAK_AWAITING_FOLLOW_THROUGH", "current": active["break_candle_index"] == current.get("break_candle_index"), "active": True, "accepted": False, "follow_through": False, "failure": False, "level": active["level"], "break_candle_index": active["break_candle_index"]}
+        age = max(0, last_index - active["break_candle_index"])
+        return {"stage": "CURRENT_BREAK_AWAITING_FOLLOW_THROUGH", "current": True, "active": True, "accepted": False, "follow_through": False, "failure": False, "terminal": False, "age_bars": age, "follow_through_bars": active.get("follow_through_bars", 0), "level": active["level"], "break_candle_index": active["break_candle_index"]}
     if history:
         x = history[-1]
-        return {"stage": "HISTORICAL_ACCEPTED_BREAK" if x["status"] == "ACCEPTED_BREAK_WITH_FOLLOW_THROUGH" else "HISTORICAL_FAILED_BREAK", "current": False, "active": False, "accepted": x["status"] == "ACCEPTED_BREAK_WITH_FOLLOW_THROUGH", "follow_through": x["status"] == "ACCEPTED_BREAK_WITH_FOLLOW_THROUGH", "failure": x["status"] == "FAILED_BREAK_RECLAIMED", "level": x["level"], "break_candle_index": x["break_candle_index"]}
-    return {"stage": "NO_CONFIRMED_BREAK", "current": False, "active": False, "accepted": False, "follow_through": False, "failure": False, "level": None, "break_candle_index": None}
+        accepted = x["status"] == "ACCEPTED_BREAK_WITH_FOLLOW_THROUGH"
+        return {"stage": "HISTORICAL_ACCEPTED_BREAK" if accepted else "HISTORICAL_FAILED_BREAK", "current": False, "active": False, "accepted": accepted, "follow_through": accepted, "failure": not accepted, "terminal": True, "age_bars": max(0, last_index - x["break_candle_index"]), "follow_through_bars": x.get("follow_through_bars", FOLLOW_THROUGH_BARS if accepted else 0), "level": x["level"], "break_candle_index": x["break_candle_index"], "acceptance_candle_index": x.get("acceptance_candle_index"), "failure_candle_index": x.get("failure_candle_index")}
+    return {"stage": "NO_CONFIRMED_BREAK", "current": False, "active": False, "accepted": False, "follow_through": False, "failure": False, "terminal": False, "age_bars": None, "follow_through_bars": 0, "level": None, "break_candle_index": None}
 
 
 def _invalidation(bars, structure, protected):
-    ph, pl = protected.get("protected_high"), protected.get("protected_low")
-    if structure == UP and pl:
-        confirmed = bars[-1]["close"] <= pl["price"] - RECLAIM_MIN_ATR * max(_atr(bars), 1e-12)
-        return {"direction": UP, "level": pl["price"], "type": "CLOSED_CANDLE_ACCEPTANCE_BELOW_PROTECTED_LOW", "confirmed": confirmed, "source_label": pl["label"], "source_index": pl["index"], "invalidates_current_external_thesis": confirmed}
-    if structure == DOWN and ph:
-        confirmed = bars[-1]["close"] >= ph["price"] + RECLAIM_MIN_ATR * max(_atr(bars), 1e-12)
-        return {"direction": DOWN, "level": ph["price"], "type": "CLOSED_CANDLE_ACCEPTANCE_ABOVE_PROTECTED_HIGH", "confirmed": confirmed, "source_label": ph["label"], "source_index": ph["index"], "invalidates_current_external_thesis": confirmed}
-    return {"direction": structure, "level": None, "type": "NO_DIRECTIONAL_INVALIDATION_LEVEL", "confirmed": False, "source_label": None, "source_index": None, "invalidates_current_external_thesis": False}
+    level = protected.get("invalidation_level")
+    if not bars or structure not in {UP, DOWN} or level is None:
+        return {"direction": structure, "level": level, "type": protected.get("invalidation_type", "NO_DIRECTIONAL_INVALIDATION_LEVEL"), "confirmed": False, "closed_candle_confirmed": False, "source_label": None, "source_index": None, "invalidates_current_external_thesis": False}
+    atr = max(_atr(bars), 1e-12)
+    confirmed = (structure == UP and bars[-1]["close"] <= level - RECLAIM_MIN_ATR * atr) or (structure == DOWN and bars[-1]["close"] >= level + RECLAIM_MIN_ATR * atr)
+    primary = protected.get("protected_high") if structure == DOWN else protected.get("protected_low")
+    return {"direction": structure, "level": level, "type": protected["invalidation_type"], "confirmed": confirmed, "closed_candle_confirmed": True, "source_label": primary.get("label") if primary else None, "source_index": primary.get("index") if primary else None, "invalidates_current_external_thesis": confirmed}
 
 
 def _slope(b, n=20):
@@ -352,41 +368,34 @@ def _authority(ext, inte, ec, ic, bos, failure, protected, sweep, invalidation, 
     support, penalties = [], []
     score = 0.0
     if ext in {UP, DOWN}:
-        score += 0.35
-        support.append(f"EXTERNAL_{ext}_PRIMARY")
+        score += 0.35; support.append(f"EXTERNAL_{ext}_PRIMARY")
     else:
         penalties.append("EXTERNAL_STRUCTURE_UNRESOLVED")
     if ext in {UP, DOWN} and inte == ext:
-        score += 0.20
-        support.append("INTERNAL_ALIGNS_WITH_EXTERNAL")
+        score += 0.20; support.append("INTERNAL_ALIGNS_WITH_EXTERNAL")
     elif inte in {UP, DOWN}:
-        penalties.append("INTERNAL_COUNTER_STRUCTURE")
+        penalties.append("INTERNAL_COUNTER_STRUCTURE_CONTEXT_ONLY")
     if ext in {UP, DOWN} and ec == ext:
-        score += 0.15
-        support.append("EXTERNAL_COUNT_CONFIRMS_SEQUENCE")
+        score += 0.15; support.append("EXTERNAL_COUNT_CONFIRMS_SEQUENCE")
     elif ext in {UP, DOWN}:
         penalties.append("EXTERNAL_COUNT_DIVERGES")
-    if protected["protected_high"] or protected["protected_low"]:
-        score += 0.10
-        support.append("PROTECTED_STRUCTURE_IDENTIFIED")
+    if protected.get("primary_level") is not None:
+        score += 0.10; support.append("PROTECTED_PRIMARY_STRUCTURE_IDENTIFIED")
     else:
-        penalties.append("PROTECTED_STRUCTURE_MISSING")
+        penalties.append("PROTECTED_PRIMARY_STRUCTURE_MISSING")
     if bos["confirmed"]:
-        score += 0.15
-        support.append("CURRENT_CLOSED_CANDLE_BREAK")
+        score += 0.15; support.append("CURRENT_CLOSED_CANDLE_BREAK")
     if failure["confirmed"]:
-        score -= 0.30
-        penalties.append("BREAK_FAILED_AND_RECLAIMED")
+        score -= 0.30; penalties.append("BREAK_FAILED_AND_RECLAIMED")
     if sweep["confirmed"]:
         support.append("LIQUIDITY_SWEEP_RECLAIM_SEPARATED_FROM_BOS")
     if invalidation["confirmed"]:
-        score -= 0.35
-        penalties.append("PROTECTED_STRUCTURE_INVALIDATED")
+        score -= 0.35; penalties.append("PROTECTED_STRUCTURE_INVALIDATED")
     if slope != ext and ext in {UP, DOWN}:
         penalties.append("SLOPE_CONFLICT_CONTEXT_ONLY")
     score = round(max(0.0, min(1.0, score)), 4)
     level = "HIGH" if score >= 0.80 else "MEDIUM" if score >= 0.55 else "LOW"
-    return {"score": score, "level": level, "support": support, "penalties": penalties, "primary": "External structure has authority; internal structure is context unless it breaks protected external structure on a closed candle.", "explanation": "PRIMARY=EXTERNAL_STRUCTURE; support=" + ",".join(support) + "; penalties=" + ",".join(penalties)}
+    return {"score": score, "level": level, "support": support, "penalties": penalties, "primary": "External structure has authority; internal structure is context unless it breaks the protected external anchor on a closed candle.", "explanation": "PRIMARY=EXTERNAL_STRUCTURE; support=" + ",".join(support) + "; penalties=" + ",".join(penalties)}
 
 
 def _state(ext, inte, bos, failure, sweep, invalidation):
@@ -399,7 +408,7 @@ def _state(ext, inte, bos, failure, sweep, invalidation):
     if ext in {UP, DOWN} and inte == ext:
         return "CONTINUATION"
     if ext in {UP, DOWN} and inte in {UP, DOWN} and inte != ext:
-        return "INTERNAL_COUNTER_MOVE"
+        return "STRUCTURE_CONFLICT"
     if ext in {UP, DOWN} and inte == MIXED:
         return "INTERNAL_CONFLICT"
     if ext == MIXED and inte in {UP, DOWN}:
@@ -417,8 +426,9 @@ def _empty(status, reasons):
         "external_structure": {"state": NEUTRAL, "count_state": NEUTRAL}, "internal_count_state": NEUTRAL, "external_count_state": NEUTRAL,
         "swing_map": {"internal_highs": [], "internal_lows": [], "external_highs": [], "external_lows": []},
         "bos": {"event": "NO_BOS", "direction": NEUTRAL, "confirmed": False}, "failure": {"event": "NO_FAILURE", "direction": NEUTRAL, "confirmed": False},
-        "sweep_reclaim": {"event": "NO_SWEEP_RECLAIM", "direction": NEUTRAL, "confirmed": False}, "break_lifecycle": {"stage": "NO_CONFIRMED_BREAK", "current": False},
-        "protected_structure": {"protected_high": None, "protected_low": None}, "structural_invalidation": _invalidation([], NEUTRAL, {"protected_high": None, "protected_low": None}),
+        "sweep_reclaim": {"event": "NO_SWEEP_RECLAIM", "direction": NEUTRAL, "confirmed": False}, "break_lifecycle": {"stage": "NO_CONFIRMED_BREAK", "current": False, "age_bars": None, "follow_through_bars": 0, "terminal": False},
+        "protected_structure": {"protected_high": None, "protected_low": None, "primary_direction": NEUTRAL, "primary_level": None, "invalidation_level": None, "why_primary": "Insufficient data."},
+        "structural_invalidation": {"direction": NEUTRAL, "level": None, "type": "NO_DIRECTIONAL_INVALIDATION_LEVEL", "confirmed": False},
         "protected_level_break": {"confirmed": False}, "structure_authority": 0.0, "authority_detail": {"score": 0.0, "level": "LOW", "primary": "External structure has authority."},
         "structure_strength": 0.0, "confidence": 0.0, "evidence": [], "conflicts": reasons, "reason_codes": reasons,
         "observations": [f"closed_candles={status}"], "reasoning_trace": {"external_is_authority": True, "closed_candle_only": True, "upstream_inputs_used": False, "slope_is_structural_authority": False, "internal_bos_has_market_authority": False, "protected_level_break_is_not_automatic_reversal": True, "protected_level_break_invalidates_current_external_thesis": False},
@@ -430,7 +440,6 @@ def analyze_e3(bars):
     b, data = _clean(bars)
     if len(b) < MIN_CANDLES:
         return _empty("INCOMPLETE", ["INSUFFICIENT_CANDLES"] + data[:8])
-
     atr = _atr(b)
     ih = _compress(_pivots(b, "high", IR), atr, "high")
     il = _compress(_pivots(b, "low", IR), atr, "low")
@@ -442,83 +451,67 @@ def analyze_e3(bars):
     ic, ec = _count(ihl, ill), _count(ehl, ell)
     ics, ecs = _counts(ihl, ill), _counts(ehl, ell)
     protected = _protected(ext, ehl, ell)
-
     eb = _current_break(b, ehl, ell, atr, ext, "EXTERNAL")
     ib = _current_break(b, ihl, ill, atr, inte, "INTERNAL")
     history, active = _break_history(b, ehl, ell, atr, ext)
     fail = _failure(b, active, atr)
     sweep = _sweep_reclaim(b, ehl, ell, atr, ext)
     invalidation = _invalidation(b, ext, protected)
-    life = _lifecycle(eb, fail, history, active)
+    life = _lifecycle(eb, fail, history, active, len(b) - 1)
     slope, slope_quality = _slope(b)
     state = _state(ext, inte, eb, fail, sweep, invalidation)
     auth = _authority(ext, inte, ec, ic, eb, fail, protected, sweep, invalidation, slope, slope_quality)
 
     reasons = []
-    if ext != ec:
-        reasons.append("EXTERNAL_COUNT_STATE_DIVERGENCE")
-    if inte != ic:
-        reasons.append("INTERNAL_COUNT_STATE_DIVERGENCE")
-    if ext == MIXED:
-        reasons.append("STRUCTURE_UNRESOLVED")
-    if slope != ext and ext in {UP, DOWN}:
-        reasons.append("SLOPE_DISAGREES_WITH_STRUCTURE")
-    if ib["confirmed"] and not eb["confirmed"]:
-        reasons.append("INTERNAL_BREAK_NOT_EXTERNAL_AUTHORITY")
-    if not eb["confirmed"]:
-        reasons.append("NO_CONFIRMED_EXTERNAL_BOS")
-    if life["stage"] == "CURRENT_BREAK_AWAITING_FOLLOW_THROUGH":
-        reasons.append("BREAK_FOLLOW_THROUGH_PENDING")
-    if life["stage"] == "HISTORICAL_ACCEPTED_BREAK":
-        reasons.append("HISTORICAL_BREAK_NOT_CURRENT_AUTHORITY")
-    if fail["confirmed"]:
-        reasons.append("STRUCTURAL_BREAK_FAILED_AND_RECLAIMED")
-    if sweep["confirmed"]:
-        reasons.append("SWEEP_RECLAIM_SEPARATED_FROM_BOS")
-    if invalidation["confirmed"]:
-        reasons.append("PROTECTED_STRUCTURE_INVALIDATED")
+    if ext != ec: reasons.append("EXTERNAL_COUNT_STATE_DIVERGENCE")
+    if inte != ic: reasons.append("INTERNAL_COUNT_STATE_DIVERGENCE")
+    if ext == MIXED: reasons.append("STRUCTURE_UNRESOLVED")
+    if slope != ext and ext in {UP, DOWN}: reasons.append("SLOPE_DISAGREES_WITH_STRUCTURE")
+    if ib["confirmed"] and not eb["confirmed"]: reasons.append("INTERNAL_BREAK_NOT_EXTERNAL_AUTHORITY")
+    if not eb["confirmed"]: reasons.append("NO_CONFIRMED_EXTERNAL_BOS")
+    if life["stage"] == "CURRENT_BREAK_AWAITING_FOLLOW_THROUGH": reasons.append("BREAK_FOLLOW_THROUGH_PENDING")
+    if life["stage"] == "HISTORICAL_ACCEPTED_BREAK": reasons.append("HISTORICAL_BREAK_NOT_CURRENT_AUTHORITY")
+    if fail["confirmed"]: reasons.append("STRUCTURAL_BREAK_FAILED_AND_RECLAIMED")
+    if sweep["confirmed"]: reasons.append("SWEEP_RECLAIM_SEPARATED_FROM_BOS")
+    if invalidation["confirmed"]: reasons.append("PROTECTED_STRUCTURE_INVALIDATED")
     reasons = list(dict.fromkeys(reasons + data[:8]))
 
     direction = NEUTRAL if invalidation["confirmed"] else ext if ext in {UP, DOWN} else eb["direction"] if eb["confirmed"] else NEUTRAL
-    finding = "STRUCTURE_FAILURE=" + fail["direction"] if fail["confirmed"] else eb["event"] if eb["confirmed"] else "BULLISH_STRUCTURE" if ext == UP and inte == UP else "BEARISH_STRUCTURE" if ext == DOWN and inte == DOWN else "MIXED_STRUCTURE"
-    conf = min(1.0, 0.45 + 0.45 * auth["score"] + (0.10 if eb["confirmed"] else 0.0))
-    if ext == MIXED:
-        conf = min(conf, 0.55)
     if fail["confirmed"]:
-        conf = min(conf, 0.60)
-    if life["stage"] == "CURRENT_BREAK_AWAITING_FOLLOW_THROUGH":
-        conf = min(conf, 0.72)
-    if invalidation["confirmed"]:
-        conf = min(conf, 0.60)
+        finding = "STRUCTURE_FAILURE=" + fail["direction"]
+    elif eb["confirmed"]:
+        finding = eb["event"]
+    elif ext == UP and inte == UP:
+        finding = "BULLISH_STRUCTURE"
+    elif ext == DOWN and inte == DOWN:
+        finding = "BEARISH_STRUCTURE"
+    else:
+        finding = "MIXED_STRUCTURE"
+    conf = min(1.0, 0.45 + 0.45 * auth["score"] + (0.10 if eb["confirmed"] else 0.0))
+    if ext == MIXED: conf = min(conf, 0.55)
+    if fail["confirmed"]: conf = min(conf, 0.60)
+    if life["stage"] == "CURRENT_BREAK_AWAITING_FOLLOW_THROUGH": conf = min(conf, 0.72)
+    if invalidation["confirmed"]: conf = min(conf, 0.60)
 
     conflicts = []
-    if ext != ec:
-        conflicts.append("EXTERNAL_STRUCTURAL_STATE_VS_COUNT_STATE")
-    if inte != ic:
-        conflicts.append("INTERNAL_STRUCTURAL_STATE_VS_COUNT_STATE")
-    if slope != ext and ext in {UP, DOWN}:
-        conflicts.append("SLOPE_VS_EXTERNAL_STRUCTURE")
-    if ext in {UP, DOWN} and inte in {UP, DOWN} and inte != ext:
-        conflicts.append("INTERNAL_VS_EXTERNAL_STRUCTURE")
-    if ib["confirmed"] and not eb["confirmed"]:
-        conflicts.append("INTERNAL_BREAK_VS_EXTERNAL_AUTHORITY")
-    if fail["confirmed"]:
-        conflicts.append("BREAK_FAILED_RECLAIMED")
-    if sweep["confirmed"] and eb["confirmed"]:
-        conflicts.append("SWEEP_VS_BREAK_EVENT_DISTINCTION")
-    if invalidation["confirmed"]:
-        conflicts.append("PROTECTED_STRUCTURE_INVALIDATED")
+    if ext != ec: conflicts.append("EXTERNAL_STRUCTURAL_STATE_VS_COUNT_STATE")
+    if inte != ic: conflicts.append("INTERNAL_STRUCTURAL_STATE_VS_COUNT_STATE")
+    if slope != ext and ext in {UP, DOWN}: conflicts.append("SLOPE_VS_EXTERNAL_STRUCTURE")
+    if ext in {UP, DOWN} and inte in {UP, DOWN} and inte != ext: conflicts.append("INTERNAL_VS_EXTERNAL_STRUCTURE")
+    if ib["confirmed"] and not eb["confirmed"]: conflicts.append("INTERNAL_BREAK_VS_EXTERNAL_AUTHORITY")
+    if fail["confirmed"]: conflicts.append("BREAK_FAILED_RECLAIMED")
+    if sweep["confirmed"] and eb["confirmed"]: conflicts.append("SWEEP_VS_BREAK_EVENT_DISTINCTION")
+    if invalidation["confirmed"]: conflicts.append("PROTECTED_STRUCTURE_INVALIDATED")
 
     recent_high = ehl[-1] if ehl else None
     recent_low = ell[-1] if ell else None
     prior_high = ehl[-2] if len(ehl) >= 2 else None
     prior_low = ell[-2] if len(ell) >= 2 else None
-    protected_level_break = {**invalidation}
     evidence = [
         f"external_structure={ext}", f"internal_structure={inte}", f"external_count_state={ec}", f"internal_count_state={ic}",
         f"external_bos={eb['event']}", f"internal_bos={ib['event']}", f"sweep_reclaim={sweep['event']}", f"break_lifecycle={life['stage']}",
-        f"protected_high={protected['protected_high']['price'] if protected['protected_high'] else None}",
-        f"protected_low={protected['protected_low']['price'] if protected['protected_low'] else None}",
+        f"protected_primary_direction={protected['primary_direction']}", f"protected_primary_level={protected['primary_level']}",
+        f"protected_high={protected['protected_high']['price'] if protected['protected_high'] else None}", f"protected_low={protected['protected_low']['price'] if protected['protected_low'] else None}",
         f"invalidation={invalidation['type']}@{invalidation['level']}", f"slope_context={slope}", f"slope_quality={slope_quality}", f"structure_authority={auth['score']}",
     ]
     trace = {
@@ -542,7 +535,7 @@ def analyze_e3(bars):
         "sweep_reclaim": sweep, "break_lifecycle": life, "break_history": history[-5:], "protected_structure": protected,
         "protected_high": protected["protected_high"]["price"] if protected["protected_high"] else None,
         "protected_low": protected["protected_low"]["price"] if protected["protected_low"] else None,
-        "structural_invalidation": invalidation, "protected_level_break": protected_level_break,
+        "structural_invalidation": invalidation, "protected_level_break": invalidation,
         "BOS_type": eb["event"], "BOS_level": eb.get("level"), "BOS_candle_index": eb.get("break_candle_index"),
         "recent_high": recent_high, "recent_low": recent_low, "prior_high": prior_high, "prior_low": prior_low,
         "structure_strength": auth["score"], "structure_authority": auth["score"], "authority_detail": auth, "confidence": round(conf, 4),
@@ -554,4 +547,4 @@ def analyze_e3(bars):
     }
 
 
-__all__ = ["analyze_e3", "_compress", "_bos", "_sweep_failure", "_current_break", "_break_history", "_failure"]
+__all__ = ["analyze_e3", "_compress", "_bos", "_sweep_failure", "_current_break", "_break_history", "_failure", "_sweep_reclaim", "_state"]
