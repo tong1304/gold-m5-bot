@@ -21,6 +21,17 @@ MIN_SLOPE_ATR = 0.20
 CONFIRM_GAP_ATR = 0.50
 
 
+def _clean_v10_reasons(reasons: list[Any] | tuple[Any, ...] | None) -> list[str]:
+    """Remove stale V10 error telemetry inherited from older E1 layers.
+
+    V10 must report an error only when the current V10 evaluation actually
+    fails. A completed V10 evaluation must never carry a historical
+    ``V10_DATA_ERROR:*`` marker from a previous runtime/version.
+    """
+    return [str(reason) for reason in (reasons or ())
+            if not str(reason).startswith("V10_DATA_ERROR:")]
+
+
 def _opposite(direction: str) -> str:
     return "DOWN" if direction == "UP" else "UP" if direction == "DOWN" else "NEUTRAL"
 
@@ -136,6 +147,7 @@ def _transition_v10(
 def analyze_e1_professional_v10(bars: list[dict[str, Any]] | None) -> dict[str, Any]:
     """V10 authoritative hierarchical arbitration with a stable output contract."""
     output = dict(analyze_e1_professional_v9(bars))
+    output["reasons"] = _clean_v10_reasons(output.get("reasons"))
     if output.get("analysis_status") == "INCOMPLETE":
         return output
 
@@ -349,7 +361,7 @@ def analyze_e1_professional_v10(bars: list[dict[str, Any]] | None) -> dict[str, 
     ])
     output["reasoning_trace"] = list(dict.fromkeys(trace))
 
-    reasons = list(output.get("reasons") or [])
+    reasons = _clean_v10_reasons(output.get("reasons"))
     reasons.extend([
         "V10_HIERARCHICAL_STATE_MACHINE",
         "V10_PERSISTENT_STRUCTURE_CONTRACT",
