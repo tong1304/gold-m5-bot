@@ -19,12 +19,12 @@ def _num(x:Any)->float|None:
 
 def _ema(v:list[float],p:int)->list[float]:
     if not v:return[]
-    a,cur=2/(p+1),v[0]; out=[cur]
+    a,cur=2/(p+1),v[0];out=[cur]
     for x in v[1:]:cur=a*x+(1-a)*cur;out.append(cur)
     return out
 
 def _atr(b:list[dict[str,Any]],p:int,start:int|None=None,end:int|None=None)->float:
-    s=(b[start:end] if start is not None or end is not None else b)[-p:]; trs=[];prev=None
+    s=(b[start:end] if start is not None or end is not None else b)[-p:];trs=[];prev=None
     for x in s:
         h,l,c=x["high"],x["low"],x["close"];trs.append(h-l if prev is None else max(h-l,abs(h-prev),abs(l-prev)));prev=c
     return mean(trs) if trs else 0
@@ -76,7 +76,7 @@ def analyze_e1(bars:list[dict[str,Any]]|None)->dict[str,Any]:
     elif pressure=="DOWN":pers=sum((slopes[0]<=-.20,slopes[1]<=-.25,slopes[2]<=-.35,slopes[3]<=-.45))/4;long_pers=sum((slopes[1]<=-.25,slopes[2]<=-.35,slopes[3]<=-.45))/3
     else:pers=long_pers=0
     ef10,ef20,ef40=(_eff(closes,n) for n in(10,20,40));st=_structure(valid,a14);sd="UP" if st["state"]=="BULLISH" else "DOWN" if st["state"]=="BEARISH" else "NEUTRAL";struct_proxy=st["state"]=="MIXED" and st["quality"]<=.30 and long_pers>=.667 and long_cons>=.667;sa=1 if sd==pressure and pressure!="BALANCED" else .75 if struct_proxy else .5 if pressure=="BALANCED" and st["state"]=="MIXED" else 0;ea=1 if pressure in{"UP","DOWN"} and ema==pressure else 0;ec=pressure in{"UP","DOWN"} and ema in{"UP","DOWN"} and ema!=pressure;sc=pressure in{"UP","DOWN"} and sd in{"UP","DOWN"} and sd!=pressure;hc=up>0 and dn>0
-    prior_a=_atr(valid,50,-64,-14) if len(valid)>=64 else a50;vr=a14/max(prior_a,1e-12);compression,expansion=vr<.78,vr>1.10;vol="EXPANDING" if expansion else "CONTRACTING" if compression else "NORMAL";ps=cons*(.65+.35*pers);ts=.25*cons+.25*pers+.20*sa+.15*ea+.10*long_cons+.05*max(ef20,ef40);est=pressure in{"UP","DOWN"} and cons>=.75 and pers>=.50 and sa>=.75 and ea==1 and max(ef20,ef40)>=.22;contextual=pressure in{"UP","DOWN"} and long_cons>=.667 and long_pers>=.667 and sa>=.75 and ea==1;trend=est or contextual
+    prior_a=_atr(valid,50,-64,-14) if len(valid)>=64 else a50;vr=a14/max(prior_a,1e-12);compression,expansion=vr<.78,vr>1.10;volatility="EXPANDING" if expansion else "CONTRACTING" if compression else "NORMAL";ps=cons*(.65+.35*pers);ts=.25*cons+.25*pers+.20*sa+.15*ea+.10*long_cons+.05*max(ef20,ef40);est=pressure in{"UP","DOWN"} and cons>=.75 and pers>=.50 and sa>=.75 and ea==1 and max(ef20,ef40)>=.22;contextual=pressure in{"UP","DOWN"} and long_cons>=.667 and long_pers>=.667 and sa>=.75 and ea==1;trend=est or contextual
     pctx,rctx=_slope(closes,a14,30),_slope(closes,a14,8);flip=abs(pctx)>=.45 and abs(rctx)>=.65 and(pctx>0)!=(rctx>0);bos_against=st["external_bos"]=="CONFIRMED_BOS" and pressure in{"UP","DOWN"} and st["bos_direction"]!=pressure;pf=hc and cons>=.75 and pers>=.75;ef=ec and flip and pers>=.50;elag=ec and cons>=.75 and pers>=.75 and(abs(slopes[1])>=.20 or abs(slopes[2])>=.30);te=[x for x,ok in(("CONTEXT_FLIP",flip),("STRUCTURE_BREAK",st["external_bos"]=="CONFIRMED_BOS"),("STRUCTURE_BREAK_AGAINST_PRESSURE",bos_against),("PERSISTENT_HORIZON_FLIP",pf),("EMA_CONTEXT_FLIP",ef),("EMA_LAG_WITH_PERSISTENT_PRESSURE",elag)) if ok];transition=not trend and(bos_against or((flip or st["external_bos"]=="CONFIRMED_BOS")and(pf or ef))or elag);stress=not transition and not trend and pressure in{"UP","DOWN"} and(ec or sc or hc)and(cons>=.50 or pers>=.50)
     conflicts=[]
     if invalid:conflicts.append("DATA_QUALITY_ANOMALIES")
