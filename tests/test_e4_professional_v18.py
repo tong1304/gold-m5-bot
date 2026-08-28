@@ -1,18 +1,18 @@
-from production_v2.professional_e4_brain_v15 import analyze_e4
+from production_v2.e4_brain import analyze_e4
 
 
 def _bars(values):
-    return [{"open": v - 0.2, "high": v + 0.5, "low": v - 0.5, "close": v} for v in values]
+    return [{"open": v - 0.2, "high": v + 0.5, "low": v - 0.5, "close": v, "closed": True} for v in values]
 
 
-def test_e4_professional_contract_exposes_auction_quality_and_competing_readings():
+def test_e4_professional_contract_exposes_auditable_auction_state():
     result = analyze_e4({"bars": _bars([100 + i * 0.05 for i in range(60)])})
     assert "auction_quality" in result
-    assert "event_quality" in result
-    assert "post_event_displacement" in result
-    assert "competing_interpretations" in result
-    assert "liquidity_taker_confidence" in result
     assert "professional_reasoning" in result
+    assert "audit" in result
+    assert result["professional_reasoning"]["actor_identification"] == "INFERENCE_FROM_OHLC_ONLY"
+    assert result["audit"]["closed_candle_only"] is True
+    assert result["audit"]["no_lookahead"] is True
 
 
 def test_e4_professional_contract_preserves_analysis_only_boundary():
@@ -21,3 +21,8 @@ def test_e4_professional_contract_preserves_analysis_only_boundary():
     assert result["gate"] is None
     assert result["decision_authority"] == "E9_ONLY"
     assert result["trade_decision_authority"] is False
+
+
+def test_e4_true_acceptance_is_not_confirmed_by_the_event_candle_alone():
+    result = analyze_e4({"bars": _bars([100 + i * 0.05 for i in range(60)])})
+    assert result["direction_confirmed"] is False or result["auction_state"] != "ACCEPTANCE_CONFIRMED"
