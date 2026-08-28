@@ -28,6 +28,8 @@ jobs:
         run: python -m pytest -q tests/test_e1_brain_v21.py
       - name: Run E1 Professional Brain regression tests
         run: python -m pytest -q tests/test_e1_professional_brain.py
+      - name: Run E1 long-horizon reconciliation regression tests
+        run: python -m pytest -q tests/test_e1_long_horizon_reconciliation.py
       - name: Run E2 Professional Brain regression tests
         run: python -m pytest -q production_v2/test_e2_brain.py
       - name: Run E2 core-only professional contract tests
