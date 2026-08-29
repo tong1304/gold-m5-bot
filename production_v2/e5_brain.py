@@ -157,81 +157,39 @@ def _side(side: str, vp: float, vd: float, ext: str, blocked: bool, sweep: bool,
 
 
 def _repricing(side: str, vp: float, ext: str, space: float | None, blocked: bool, sweep: bool, value_response: str) -> dict[str, Any]:
-    """Describe what would improve location; never predict a reversal.
-
-    Acceptance beyond value is continuation evidence, not repricing. Repricing
-    becomes active only when price is actually moving back toward accepted value.
-    """
+    """Describe what would improve location; never predict a reversal."""
     c = []
     accepted_counter_value = value_response in {"ACCEPTED_ABOVE_VALUE", "ACCEPTED_BELOW_VALUE"}
     rejection = value_response in {"REJECTED_ABOVE_VALUE", "REJECTED_BELOW_VALUE"}
-
     if side == "LONG":
-        if vp > DISCOUNT:
-            c.append("PRICE_REPRICES_TOWARD_DISCOUNT_OR_ACCEPTED_VALUE")
-        if value_response == "REJECTED_BELOW_VALUE":
-            c.append("LOW_VALUE_REJECTION_CONFIRMED")
-        elif value_response == "ACCEPTED_BELOW_VALUE":
-            c.append("DISCOUNT_ACCEPTED_CONTINUATION_RISK")
-        elif not sweep:
-            c.append("FRESH_LOW_LIQUIDITY_REJECTION_OR_RECLAIM")
+        if vp > DISCOUNT: c.append("PRICE_REPRICES_TOWARD_DISCOUNT_OR_ACCEPTED_VALUE")
+        if value_response == "REJECTED_BELOW_VALUE": c.append("LOW_VALUE_REJECTION_CONFIRMED")
+        elif value_response == "ACCEPTED_BELOW_VALUE": c.append("DISCOUNT_ACCEPTED_CONTINUATION_RISK")
+        elif not sweep: c.append("FRESH_LOW_LIQUIDITY_REJECTION_OR_RECLAIM")
     else:
-        if vp < PREMIUM:
-            c.append("PRICE_REPRICES_TOWARD_PREMIUM_OR_ACCEPTED_VALUE")
-        if value_response == "REJECTED_ABOVE_VALUE":
-            c.append("HIGH_VALUE_REJECTION_CONFIRMED")
-        elif value_response == "ACCEPTED_ABOVE_VALUE":
-            c.append("PREMIUM_ACCEPTED_CONTINUATION_RISK")
-        elif not sweep:
-            c.append("FRESH_HIGH_LIQUIDITY_REJECTION_OR_RECLAIM")
-
+        if vp < PREMIUM: c.append("PRICE_REPRICES_TOWARD_PREMIUM_OR_ACCEPTED_VALUE")
+        if value_response == "REJECTED_ABOVE_VALUE": c.append("HIGH_VALUE_REJECTION_CONFIRMED")
+        elif value_response == "ACCEPTED_ABOVE_VALUE": c.append("PREMIUM_ACCEPTED_CONTINUATION_RISK")
+        elif not sweep: c.append("FRESH_HIGH_LIQUIDITY_REJECTION_OR_RECLAIM")
     if ext in {"EXTENDED","EXCESSIVE"}: c.append("EXTENSION_NORMALIZES")
     if space is not None and space < 1: c.append("AVAILABLE_SPACE_REOPENS")
-
-    if rejection:
-        mode = "REJECTION_CONFIRMED"
-    elif accepted_counter_value:
-        mode = "ACCEPTANCE_CONTINUATION"
-    elif abs(vp - 0.5) <= 0.15:
-        mode = "VALUE_REBALANCING"
-    else:
-        mode = "WAIT_FOR_REPRICING"
-
-    return {
-        "required_for_improvement": c,
-        "thesis_invalidators":["PRICE_ACCEPTS_DEEPER_COUNTER_VALUE","OPPOSING_STRUCTURE_BECOMES_IMMEDIATE"],
-        "mode": mode,
-        "is_prediction": False,
-    }
+    if rejection: mode = "REJECTION_CONFIRMED"
+    elif accepted_counter_value: mode = "ACCEPTANCE_CONTINUATION"
+    elif abs(vp - 0.5) <= 0.15: mode = "VALUE_REBALANCING"
+    else: mode = "WAIT_FOR_REPRICING"
+    return {"required_for_improvement":c,"thesis_invalidators":["PRICE_ACCEPTS_DEEPER_COUNTER_VALUE","OPPOSING_STRUCTURE_BECOMES_IMMEDIATE"],"mode":mode,"is_prediction":False}
 
 
 def _incomplete(reason: str, problems: list[str]) -> dict[str, Any]:
     e = problems or ["NO_RELIABLE_EVIDENCE"]
-    return {"architecture":ARCHITECTURE,"version":VERSION,"question":QUESTION,
-            "task":"ASSESS_PRICE_LOCATION_ONLY","location_state":"UNRESOLVED","location_quality":"UNRESOLVED",
-            "direction":"NEUTRAL","value_state":"UNKNOWN","structural_location":"UNKNOWN",
-            "liquidity_location":"UNKNOWN","extension_state":"UNKNOWN","available_space":"UNKNOWN",
-            "available_space_atr":None,"long_location_quality":"UNKNOWN","short_location_quality":"UNKNOWN",
-            "preferred_location":"NONE","confidence":0.0,"evidence":e,"observations":e,"counter_evidence":[],
-            "conflicts":problems,"reason_codes":["E5_DATA_INCOMPLETE"],
-            "reasoning_trace":[f"QUESTION -> {QUESTION}",f"DATA_QUALITY -> {reason}"],
-            "professional_reasoning":{"question":QUESTION,"thesis":reason,
-                "evidence_hierarchy":"VALUE -> VALUE_RESPONSE -> STRUCTURE -> LIQUIDITY -> EXTENSION -> SPACE -> ASYMMETRY -> REPRICING_MAP -> COUNTER_EVIDENCE",
-                "upstream_decisions_used":False,"upstream_gates_used":False,"upstream_scores_used":False,
-                "upstream_direction_used_for_location_score":False,"decision_authority":"E9_ONLY"},
-            "trade_decision_authority":False,"decision_authority":"E9_ONLY","gate":None,"decision":None,
-            "specialist_gate":"NONE","specialists":{},"specialists_active":False,"specialists_status":"NOT_USED"}
+    return {"architecture":ARCHITECTURE,"version":VERSION,"question":QUESTION,"task":"ASSESS_PRICE_LOCATION_ONLY","location_state":"UNRESOLVED","location_quality":"UNRESOLVED","direction":"NEUTRAL","value_state":"UNKNOWN","structural_location":"UNKNOWN","liquidity_location":"UNKNOWN","extension_state":"UNKNOWN","available_space":"UNKNOWN","available_space_atr":None,"long_location_quality":"UNKNOWN","short_location_quality":"UNKNOWN","preferred_location":"NONE","confidence":0.0,"evidence":e,"observations":e,"counter_evidence":[],"conflicts":problems,"reason_codes":["E5_DATA_INCOMPLETE"],"reasoning_trace":[f"QUESTION -> {QUESTION}",f"DATA_QUALITY -> {reason}"],"professional_reasoning":{"question":QUESTION,"thesis":reason,"evidence_hierarchy":"VALUE -> VALUE_RESPONSE -> STRUCTURE -> LIQUIDITY -> EXTENSION -> SPACE -> ASYMMETRY -> REPRICING_MAP -> COUNTER_EVIDENCE","upstream_decisions_used":False,"upstream_gates_used":False,"upstream_scores_used":False,"upstream_direction_used_for_location_score":False,"decision_authority":"E9_ONLY"},"trade_decision_authority":False,"decision_authority":"E9_ONLY","gate":None,"decision":None,"specialist_gate":"NONE","specialists":{},"specialists_active":False,"specialists_status":"NOT_USED"}
 
 
 def analyze_e5(snapshot: dict[str, Any], permitted: dict[str, Any] | None = None) -> dict[str, Any]:
-    """Professional E5 location/value analysis; E9 remains decision authority."""
     bars, problems = _bars(snapshot)
-    if len(bars) < MIN_BARS:
-        return _incomplete(f"reliable candles below minimum {MIN_BARS}", problems[:8])
+    if len(bars) < MIN_BARS: return _incomplete(f"reliable candles below minimum {MIN_BARS}", problems[:8])
     atr = _atr(bars)
-    if atr <= 0:
-        return _incomplete("ATR invalid; location cannot be normalized", ["ATR_INVALID"])
-
+    if atr <= 0: return _incomplete("ATR invalid; location cannot be normalized", ["ATR_INVALID"])
     price = bars[-1]["close"]
     value, value_method = _value(bars)
     vl, vh = _range(bars, VALUE_LOOKBACK)
@@ -239,116 +197,62 @@ def analyze_e5(snapshot: dict[str, Any], permitted: dict[str, Any] | None = None
     vp = max(0.0, min(1.0, (price - vl) / width))
     vd = (price - value) / atr
     value_state = "DISCOUNT" if vp <= DISCOUNT else "PREMIUM" if vp >= PREMIUM else "EQUILIBRIUM"
-    extension_atr = abs(vd)
-    extension_state = _extension(extension_atr)
-
-    sl, sh = _range(bars, STRUCTURE_LOOKBACK)
-    phs, pls = _pivots(bars)
-    tol = 0.15 * atr
+    extension_atr = abs(vd); extension_state = _extension(extension_atr)
+    sl, sh = _range(bars, STRUCTURE_LOOKBACK); phs, pls = _pivots(bars); tol = 0.15 * atr
     resistance, support = _above(price, phs + [sh], tol), _below(price, pls + [sl], tol)
     long_space, short_space = _atr_dist(price, resistance, atr), _atr_dist(price, support, atr)
     rd, sd = _atr_dist(price, sh, atr), _atr_dist(price, sl, atr)
     near_r, near_s = rd is not None and rd <= .75, sd is not None and sd <= .75
     structural = "COMPRESSED_STRUCTURE" if near_r and near_s else "AT_RESISTANCE" if near_r else "AT_SUPPORT" if near_s else "INSIDE_STRUCTURE"
-
     high_sweep, low_sweep, prior_high, prior_low = _fresh_sweeps(bars)
     liquidity = "BOTH_FRESH_SWEEPS" if high_sweep and low_sweep else "FRESH_HIGH_SWEEP" if high_sweep else "FRESH_LOW_SWEEP" if low_sweep else "NO_FRESH_SWEEP"
+    lookback = min(5, len(bars) - 1); recent = bars[-lookback:]
+    value_band = max(0.25 * atr, 0.10 * width); near_value = abs(price - value) <= value_band
+    closes_below = sum(b["close"] < value - value_band for b in recent); closes_above = sum(b["close"] > value + value_band for b in recent)
+    reclaim_from_below = any(b["low"] < value and b["close"] >= value for b in recent); reject_from_above = any(b["high"] > value and b["close"] <= value for b in recent)
+    if reclaim_from_below and closes_below >= 1: value_response = "REJECTED_BELOW_VALUE"
+    elif reject_from_above and closes_above >= 1: value_response = "REJECTED_ABOVE_VALUE"
+    elif near_value: value_response = "ACCEPTING_VALUE"
+    elif closes_below >= max(2, lookback // 2): value_response = "ACCEPTED_BELOW_VALUE"
+    elif closes_above >= max(2, lookback // 2): value_response = "ACCEPTED_ABOVE_VALUE"
+    else: value_response = "UNRESOLVED_VALUE_RESPONSE"
 
-    # Closed-candle value response: discount/premium is a location fact, not
-    # a reversal thesis. Acceptance and rejection must be observed first.
-    lookback = min(5, len(bars) - 1)
-    recent = bars[-lookback:]
-    value_band = max(0.25 * atr, 0.10 * width)
-    near_value = abs(price - value) <= value_band
-    closes_below = sum(b["close"] < value - value_band for b in recent)
-    closes_above = sum(b["close"] > value + value_band for b in recent)
-    reclaim_from_below = any(b["low"] < value and b["close"] >= value for b in recent)
-    reject_from_above = any(b["high"] > value and b["close"] <= value for b in recent)
+    if value_response in {"REJECTED_BELOW_VALUE", "REJECTED_ABOVE_VALUE"}: repricing_state = "REPRICING_FAILED"
+    elif value_response == "ACCEPTED_BELOW_VALUE": repricing_state = "ACCEPTANCE_BELOW_VALUE"
+    elif value_response == "ACCEPTED_ABOVE_VALUE": repricing_state = "ACCEPTANCE_ABOVE_VALUE"
+    elif value_response == "ACCEPTING_VALUE": repricing_state = "REPRICING_STARTING"
+    else: repricing_state = "NO_REPRICING"
 
-    if reclaim_from_below and closes_below >= 1:
-        value_response = "REJECTED_BELOW_VALUE"
-    elif reject_from_above and closes_above >= 1:
-        value_response = "REJECTED_ABOVE_VALUE"
-    elif near_value:
-        value_response = "ACCEPTING_VALUE"
-    elif closes_below >= max(2, lookback // 2):
-        value_response = "ACCEPTED_BELOW_VALUE"
-    elif closes_above >= max(2, lookback // 2):
-        value_response = "ACCEPTED_ABOVE_VALUE"
-    else:
-        value_response = "UNRESOLVED_VALUE_RESPONSE"
-
-    # Acceptance beyond value means the auction is being accepted there; it is
-    # not evidence that price is already repricing back. Repricing is a state
-    # only when the observed response supports movement toward value.
-    if value_response == "REJECTED_BELOW_VALUE":
-        repricing_state = "REPRICING_FAILED"
-    elif value_response == "REJECTED_ABOVE_VALUE":
-        repricing_state = "REPRICING_FAILED"
-    elif value_response == "ACCEPTED_BELOW_VALUE":
-        repricing_state = "ACCEPTANCE_BELOW_VALUE"
-    elif value_response == "ACCEPTED_ABOVE_VALUE":
-        repricing_state = "ACCEPTANCE_ABOVE_VALUE"
-    elif value_response == "ACCEPTING_VALUE":
-        repricing_state = "REPRICING_STARTING"
-    else:
-        repricing_state = "NO_REPRICING"
-
-    long_blocked = long_space is not None and long_space < .5
-    short_blocked = short_space is not None and short_space < .5
+    long_blocked = long_space is not None and long_space < .5; short_blocked = short_space is not None and short_space < .5
     long_side = _side("LONG", vp, vd, extension_state, long_blocked, low_sweep, long_space)
     short_side = _side("SHORT", vp, vd, extension_state, short_blocked, high_sweep, short_space)
-
-    # Professional rule: cheap/expensive without rejection is not a reversal
-    # edge. Acceptance is explicitly treated as continuation evidence.
     if value_state == "DISCOUNT":
         if value_response in {"ACCEPTED_BELOW_VALUE", "UNRESOLVED_VALUE_RESPONSE"}:
-            long_side["components"]["value"] *= .35
-            long_side["counter_evidence"].append("DISCOUNT_WITHOUT_REJECTION")
+            long_side["components"]["value"] *= .35; long_side["counter_evidence"].append("DISCOUNT_WITHOUT_REJECTION")
         elif value_response == "REJECTED_BELOW_VALUE":
-            long_side["components"]["value"] = min(1.0, long_side["components"]["value"] + .20)
-            long_side["evidence"].append("DISCOUNT_REJECTION_CONFIRMED")
+            long_side["components"]["value"] = min(1.0, long_side["components"]["value"] + .20); long_side["evidence"].append("DISCOUNT_REJECTION_CONFIRMED")
     elif value_state == "PREMIUM":
         if value_response in {"ACCEPTED_ABOVE_VALUE", "UNRESOLVED_VALUE_RESPONSE"}:
-            short_side["components"]["value"] *= .35
-            short_side["counter_evidence"].append("PREMIUM_WITHOUT_REJECTION")
+            short_side["components"]["value"] *= .35; short_side["counter_evidence"].append("PREMIUM_WITHOUT_REJECTION")
         elif value_response == "REJECTED_ABOVE_VALUE":
-            short_side["components"]["value"] = min(1.0, short_side["components"]["value"] + .20)
-            short_side["evidence"].append("PREMIUM_REJECTION_CONFIRMED")
+            short_side["components"]["value"] = min(1.0, short_side["components"]["value"] + .20); short_side["evidence"].append("PREMIUM_REJECTION_CONFIRMED")
 
     def recompute(side_data: dict[str, Any]) -> None:
-        c = side_data["components"]
-        side_data["score"] = round(.30*c["value"] + .15*c["structure"] + .15*c["liquidity"] + .20*c["extension"] + .20*c["space"], 4)
-        s = side_data["score"]
-        side_data["quality"] = "HIGH" if s >= .72 else "ACCEPTABLE" if s >= .58 else "CONDITIONAL" if s >= .45 else "UNFAVORABLE"
-
-    recompute(long_side)
-    recompute(short_side)
-
-    # E5 may describe a preferred location only when the location evidence is
-    # asymmetric. Acceptance at premium/discount alone cannot create reversal bias.
-    if long_side["score"] >= .58 and long_side["score"] > short_side["score"] + .05:
-        preferred = "LONG"
-    elif short_side["score"] >= .58 and short_side["score"] > long_side["score"] + .05:
-        preferred = "SHORT"
-    else:
-        preferred = "NONE"
+        c = side_data["components"]; side_data["score"] = round(.30*c["value"] + .15*c["structure"] + .15*c["liquidity"] + .20*c["extension"] + .20*c["space"], 4)
+        s = side_data["score"]; side_data["quality"] = "HIGH" if s >= .72 else "ACCEPTABLE" if s >= .58 else "CONDITIONAL" if s >= .45 else "UNFAVORABLE"
+    recompute(long_side); recompute(short_side)
+    if long_side["score"] >= .58 and long_side["score"] > short_side["score"] + .05: preferred = "LONG"
+    elif short_side["score"] >= .58 and short_side["score"] > long_side["score"] + .05: preferred = "SHORT"
+    else: preferred = "NONE"
 
     if preferred == "NONE":
-        if value_response in {"ACCEPTED_ABOVE_VALUE", "ACCEPTED_BELOW_VALUE"}:
-            location_state = "ACCEPTED_AUCTION_NO_REVERSAL_EDGE"
-        elif value_response == "ACCEPTING_VALUE":
-            location_state = "WAIT_REPRICING"
-        elif repricing_state == "REPRICING_FAILED":
-            location_state = "WAIT_CONFIRMATION"
-        else:
-            location_state = "WAIT_REPRICING"
-    else:
-        location_state = "FAVORABLE_LOCATION"
+        if value_response in {"ACCEPTED_ABOVE_VALUE", "ACCEPTED_BELOW_VALUE"}: location_state = "ACCEPTED_AUCTION_NO_REVERSAL_EDGE"
+        elif value_response == "ACCEPTING_VALUE": location_state = "WAIT_REPRICING"
+        elif repricing_state == "REPRICING_FAILED": location_state = "WAIT_CONFIRMATION"
+        else: location_state = "WAIT_REPRICING"
+    else: location_state = "FAVORABLE_LOCATION"
 
-    quality_score = max(long_side["score"], short_side["score"])
-    confidence = round(max(0.0, min(1.0, quality_score)), 4)
-
+    quality_score = max(long_side["score"], short_side["score"]); confidence = round(max(0.0, min(1.0, quality_score)), 4)
     counter_evidence = []
     if extension_state in {"EXTENDED", "EXCESSIVE"}: counter_evidence.append("EXTENSION_RISK")
     if not high_sweep and not low_sweep: counter_evidence.append("NO_FRESH_LIQUIDITY_CONFIRMATION")
@@ -359,60 +263,8 @@ def analyze_e5(snapshot: dict[str, Any], permitted: dict[str, Any] | None = None
     if value_response == "ACCEPTED_ABOVE_VALUE": counter_evidence.append("PREMIUM_ACCEPTED_CONTINUATION_RISK")
     if value_response == "ACCEPTED_BELOW_VALUE": counter_evidence.append("DISCOUNT_ACCEPTED_CONTINUATION_RISK")
 
-    repricing = _repricing(
-        preferred if preferred != "NONE" else ("LONG" if value_state == "DISCOUNT" else "SHORT" if value_state == "PREMIUM" else "LONG"),
-        vp, extension_state,
-        long_space if preferred == "LONG" else short_space if preferred == "SHORT" else None,
-        long_blocked if preferred == "LONG" else short_blocked if preferred == "SHORT" else False,
-        low_sweep if preferred == "LONG' else high_sweep if preferred == "SHORT" else (low_sweep or high_sweep),
-        value_response,
-    )
-
+    repricing = _repricing(preferred if preferred != "NONE" else ("LONG" if value_state == "DISCOUNT" else "SHORT" if value_state == "PREMIUM" else "LONG"), vp, extension_state, long_space if preferred == "LONG" else short_space if preferred == "SHORT" else None, long_blocked if preferred == "LONG" else short_blocked if preferred == "SHORT" else False, low_sweep if preferred == "LONG" else high_sweep if preferred == "SHORT" else (low_sweep or high_sweep), value_response)
     ctx, upstream_evidence, conflicts = _context(permitted)
     evidence = [f"VALUE_{value_state}", f"VALUE_RESPONSE_{value_response}", f"REPRICING_{repricing_state}", f"STRUCTURE_{structural}", f"LIQUIDITY_{liquidity}", f"EXTENSION_{extension_state}"]
-    observations = [
-        f"closed_candles={len(bars)}", f"atr14_current={atr:.6f}", f"price={price:.8f}",
-        f"value={value:.8f}", f"value_method={value_method}", f"value_position={vp:.4f}",
-        f"value_distance_atr={vd:.6f}", f"value_state={value_state}", f"value_response={value_response}",
-        f"repricing_state={repricing_state}", f"structural_location={structural}",
-        f"next_resistance={resistance}", f"next_support={support}",
-        f"available_space_atr_long={long_space}", f"available_space_atr_short={short_space}",
-        f"extension_atr={extension_atr:.6f}", f"extension_state={extension_state}", f"liquidity_location={liquidity}",
-    ]
-
-    return {
-        "architecture": ARCHITECTURE, "version": VERSION, "question": QUESTION,
-        "task": "ASSESS_PRICE_LOCATION_ONLY", "location_state": location_state,
-        "location_quality": "HIGH" if confidence >= .72 else "ACCEPTABLE" if confidence >= .58 else "CONDITIONAL" if confidence >= .45 else "UNFAVORABLE",
-        "direction": "NEUTRAL", "value_state": value_state, "value_response": value_response,
-        "value_quality": "REJECTED" if value_response.startswith("REJECTED") else "ACCEPTED" if value_response.startswith("ACCEPTED") or value_response == "ACCEPTING_VALUE" else "UNRESOLVED",
-        "structural_location": structural, "liquidity_location": liquidity,
-        "extension_state": extension_state, "extension_atr": round(extension_atr, 6),
-        "available_space": _space_label(long_space if preferred == "LONG" else short_space if preferred == "SHORT" else max((x for x in (long_space, short_space) if x is not None), default=None)),
-        "available_space_atr": max((x for x in (long_space, short_space) if x is not None), default=None),
-        "long_location_quality": long_side["quality"], "short_location_quality": short_side["quality"],
-        "long_location_score": long_side["score"], "short_location_score": short_side["score"],
-        "preferred_location": preferred, "confidence": confidence,
-        "evidence": evidence + upstream_evidence, "observations": observations,
-        "counter_evidence": counter_evidence, "conflicts": conflicts,
-        "reason_codes": ["VALUE_LOCATION_ANALYSIS", "VALUE_RESPONSE_CLASSIFIED", "REPRICING_STATE_EXPLICIT", "COUNTER_EVIDENCE_APPLIED"],
-        "reasoning_trace": [
-            f"QUESTION -> {QUESTION}", f"VALUE -> {value_state} distance={vd:.3f}ATR",
-            f"VALUE_RESPONSE -> {value_response}", f"REPRICING -> {repricing_state}",
-            f"STRUCTURE -> {structural}", f"LIQUIDITY -> {liquidity}", f"EXTENSION -> {extension_state}",
-            f"ASYMMETRY -> LONG={long_side['score']:.4f} SHORT={short_side['score']:.4f}",
-            f"LOCATION_DECISION -> {location_state}",
-        ],
-        "professional_reasoning": {
-            "question": QUESTION,
-            "thesis": f"{location_state}: value={value_state}, response={value_response}, repricing={repricing_state}",
-            "evidence_hierarchy": "VALUE -> VALUE_RESPONSE -> STRUCTURE -> LIQUIDITY -> EXTENSION -> SPACE -> ASYMMETRY -> REPRICING_MAP -> COUNTER_EVIDENCE",
-            "upstream_decisions_used": bool(ctx), "upstream_gates_used": False,
-            "upstream_scores_used": False, "upstream_direction_used_for_location_score": False,
-            "decision_authority": "E9_ONLY",
-        },
-        "repricing": repricing, "trade_decision_authority": False,
-        "decision_authority": "E9_ONLY", "gate": None, "decision": None,
-        "specialist_gate": "NONE", "specialists": {}, "specialists_active": False,
-        "specialists_status": "NOT_USED",
-    }
+    observations = [f"closed_candles={len(bars)}", f"atr14_current={atr:.6f}", f"price={price:.8f}", f"value={value:.8f}", f"value_method={value_method}", f"value_position={vp:.4f}", f"value_distance_atr={vd:.6f}", f"value_state={value_state}", f"value_response={value_response}", f"repricing_state={repricing_state}", f"structural_location={structural}", f"next_resistance={resistance}", f"next_support={support}", f"available_space_atr_long={long_space}", f"available_space_atr_short={short_space}", f"extension_atr={extension_atr:.6f}", f"extension_state={extension_state}", f"liquidity_location={liquidity}"]
+    return {"architecture":ARCHITECTURE,"version":VERSION,"question":QUESTION,"task":"ASSESS_PRICE_LOCATION_ONLY","location_state":location_state,"location_quality":"HIGH" if confidence >= .72 else "ACCEPTABLE" if confidence >= .58 else "CONDITIONAL" if confidence >= .45 else "UNFAVORABLE","direction":"NEUTRAL","value_state":value_state,"value_response":value_response,"value_quality":"REJECTED" if value_response.startswith("REJECTED") else "ACCEPTED" if value_response.startswith("ACCEPTED") or value_response == "ACCEPTING_VALUE" else "UNRESOLVED","structural_location":structural,"liquidity_location":liquidity,"extension_state":extension_state,"extension_atr":round(extension_atr,6),"available_space":_space_label(long_space if preferred == "LONG" else short_space if preferred == "SHORT" else max((x for x in (long_space,short_space) if x is not None),default=None)),"available_space_atr":max((x for x in (long_space,short_space) if x is not None),default=None),"long_location_quality":long_side["quality"],"short_location_quality":short_side["quality"],"long_location_score":long_side["score"],"short_location_score":short_side["score"],"preferred_location":preferred,"confidence":confidence,"evidence":evidence+upstream_evidence,"observations":observations,"counter_evidence":counter_evidence,"conflicts":conflicts,"reason_codes":["VALUE_LOCATION_ANALYSIS","VALUE_RESPONSE_CLASSIFIED","REPRICING_STATE_EXPLICIT","COUNTER_EVIDENCE_APPLIED"],"reasoning_trace":[f"QUESTION -> {QUESTION}",f"VALUE -> {value_state} distance={vd:.3f}ATR",f"VALUE_RESPONSE -> {value_response}",f"REPRICING -> {repricing_state}",f"STRUCTURE -> {structural}",f"LIQUIDITY -> {liquidity}",f"EXTENSION -> {extension_state}",f"ASYMMETRY -> LONG={long_side['score']:.4f} SHORT={short_side['score']:.4f}",f"LOCATION_DECISION -> {location_state}"],"professional_reasoning":{"question":QUESTION,"thesis":f"{location_state}: value={value_state}, response={value_response}, repricing={repricing_state}","evidence_hierarchy":"VALUE -> VALUE_RESPONSE -> STRUCTURE -> LIQUIDITY -> EXTENSION -> SPACE -> ASYMMETRY -> REPRICING_MAP -> COUNTER_EVIDENCE","upstream_decisions_used":bool(ctx),"upstream_gates_used":False,"upstream_scores_used":False,"upstream_direction_used_for_location_score":False,"decision_authority":"E9_ONLY"},"repricing":repricing,"trade_decision_authority":False,"decision_authority":"E9_ONLY","gate":None,"decision":None,"specialist_gate":"NONE","specialists":{},"specialists_active":False,"specialists_status":"NOT_USED"}
