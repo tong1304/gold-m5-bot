@@ -7,11 +7,12 @@ from .professional_e4_brain_v18 import analyze_e4 as _base_analyze_e4
 
 PROFESSIONAL_QUESTION = "Where is liquidity, who took it, and did price accept or reject the auction?"
 E4_ROLE = "LIQUIDITY_AUCTION_ANALYST"
-ARCHITECTURE = "E4_SINGLE_PROFESSIONAL_LIQUIDITY_AUCTION_BRAIN_V30"
+ARCHITECTURE = "E4_SINGLE_PROFESSIONAL_LIQUIDITY_AUCTION_BRAIN_V31"
 CONFIRM_BARS = 2
 MAX_CONFIRM_BARS = 5
 INTERACTION_ATR = 0.05
 MIN_DISPLACEMENT_ATR = 0.20
+TERMINAL_STATES = ("CONFIRMED", "INVALIDATED", "EXPIRED")
 
 
 def _num(value: Any):
@@ -53,41 +54,73 @@ def _atr(bars, period=14):
     return sum(tr[-period:]) / min(period, len(tr)) if tr else 0.0
 
 
+def _event_class(event):
+    """Normalize base event names to the only auction classes E4 may confirm."""
+    kind = str(event.get("type") or "").upper()
+    if "FAILED_BREAK" in kind or "SWEEP_REJECTION" in kind or "REJECTION" in kind:
+        return "REJECTION"
+    if "ACCEPTANCE" in kind:
+        return "ACCEPTANCE"
+    return "UNRESOLVED"
+
+
 def _deterministic_follow_through(event, bars, atr):
-    """Closed-candle-only state machine: PENDING -> exactly one terminal state."""
+    """Closed-candle-only finite state machine: PENDING -> one terminal state."""
     empty = {
-        "present": False, "bars": 0, "available_bars": 0,
-        "required_bars": CONFIRM_BARS, "horizon_bars": 0,
-        "invalidated": False, "expired": False,
-        "acceptance_quality": False, "rejection_quality": False,
-        "reason": "NO_POST_EVENT_CANDLE", "checks": [],
-        "decisive_single": False, "consecutive": False,
-        "confirmed_at": None, "invalidated_at": None,
+        "present": False,
+        "bars": 0,
+        "available_bars": 0,
+        "required_bars": CONFIRM_BARS,
+        "horizon_bars": 0,
+        "invalidated": False,
+        "expired": False,
+        "acceptance_quality": False,
+        "rejection_quality": False,
+        "reason": "NO_POST_EVENT_CANDLE",
+        "checks": [],
+        "decisive_single": False,
+        "consecutive": False,
+        "confirmed_at": None,
+        "invalidated_at": None,
         "terminal_lifecycle": "PENDING",
+        "terminal": False,
     }
     if not isinstance(event, dict) or not event.get("zone"):
         return empty
 
     index = int(event.get("index", -1))
-    if index < 0 or index >= len(bars) - 1:
-        return empty
+    if index < 0 or index >= len(bars):
+        out = dict(empty)
+        out["reason"] = "INVALID_EVENT_INDEX"
+        return out
 
     level = _num(event.get("level"))
-    direction = str(event.get("directional_implication") or "NEUTRAL").upper()
+    if level is None:
+        zone = event.get("zone") or {}
+        side = str(zone.get("side") or "").upper()
+        level = _num(zone.get("upper" if side == "HIGH" else "lower"))
+
     event_atr = _num(event.get("atr_at_event")) or atr
     if level is None or event_atr is None or event_atr <= 0:
         out = dict(empty)
-        out.update({"reason": "INVALID_EVENT_METRICS", "terminal_lifecycle": "PENDING"})
+        out["reason"] = "INVALID_EVENT_METRICS"
         return out
 
-    horizon = min(MAX_CONFIRM_BARS, len(bars) - 1 - index)
+    horizon = min(MAX_CONFIRM_BARS, max(0, len(bars) - 1 - index))
     out = dict(empty)
     out["available_bars"] = horizon
     out["horizon_bars"] = horizon
 
-    if direction not in {"UP", "DOWN"}:
+    event_class = _event_class(event)
+    direction = str(event.get("directional_implication") or "NEUTRAL").upper()
+    if event_class == "UNRESOLVED" or direction not in {"UP", "DOWN"}:
         if horizon >= MAX_CONFIRM_BARS:
-            out.update({"expired": True, "reason": "EVENT_EXPIRED", "terminal_lifecycle": "EXPIRED"})
+            out.update({
+                "expired": True,
+                "terminal": True,
+                "reason": "EVENT_EXPIRED",
+                "terminal_lifecycle": "EXPIRED",
+            })
         else:
             out["reason"] = "DIRECTIONAL_RESPONSE_NOT_ESTABLISHED"
         return out
@@ -108,14 +141,21 @@ def _deterministic_follow_through(event, bars, atr):
 
         if opposite:
             out["checks"].append({
-                "index": j, "close": close, "hold": hold,
-                "displacement_atr": displacement, "meaningful": meaningful,
-                "opposite_reclaim": True, "consecutive": 0,
-                "terminal": "INVALIDATION",
+                "index": j,
+                "close": close,
+                "hold": hold,
+                "displacement_atr": displacement,
+                "meaningful": meaningful,
+                "opposite_reclaim": True,
+                "consecutive": 0,
+                "terminal": "INVALIDATED",
             })
             out.update({
-                "invalidated": True, "invalidated_at": j,
-                "bars": 0, "consecutive": False,
+                "invalidated": True,
+                "terminal": True,
+                "invalidated_at": j,
+                "bars": 0,
+                "consecutive": False,
                 "reason": "POST_EVENT_RECLAMATION",
                 "terminal_lifecycle": "INVALIDATED",
             })
@@ -123,27 +163,39 @@ def _deterministic_follow_through(event, bars, atr):
 
         consecutive = consecutive + 1 if meaningful else 0
         out["checks"].append({
-            "index": j, "close": close, "hold": hold,
-            "displacement_atr": displacement, "meaningful": meaningful,
-            "opposite_reclaim": False, "consecutive": consecutive,
-            "terminal": "CONFIRMATION" if consecutive >= CONFIRM_BARS else None,
+            "index": j,
+            "close": close,
+            "hold": hold,
+            "displacement_atr": displacement,
+            "meaningful": meaningful,
+            "opposite_reclaim": False,
+            "consecutive": consecutive,
+            "terminal": "CONFIRMED" if consecutive >= CONFIRM_BARS else None,
         })
 
-        # Terminal state is immutable: once confirmed, later candles cannot
-        # rewrite this event into INVALIDATED. A newer event may supersede it.
+        # First terminal event wins. Once CONFIRMED, later candles cannot
+        # rewrite this event into INVALIDATED. A newer causal event is separate.
         if consecutive >= CONFIRM_BARS:
             out.update({
-                "present": True, "bars": consecutive,
-                "confirmed_at": j, "consecutive": True,
+                "present": True,
+                "terminal": True,
+                "bars": consecutive,
+                "confirmed_at": j,
+                "consecutive": True,
                 "reason": "FOLLOW_THROUGH_CONFIRMED",
                 "terminal_lifecycle": "CONFIRMED",
+                "acceptance_quality": event_class == "ACCEPTANCE",
+                "rejection_quality": event_class == "REJECTION",
             })
-            out["acceptance_quality"] = event.get("auction_state") == "ACCEPTANCE"
-            out["rejection_quality"] = event.get("auction_state") == "REJECTION"
             return out
 
     if horizon >= MAX_CONFIRM_BARS:
-        out.update({"expired": True, "reason": "EVENT_EXPIRED", "terminal_lifecycle": "EXPIRED"})
+        out.update({
+            "expired": True,
+            "terminal": True,
+            "reason": "EVENT_EXPIRED",
+            "terminal_lifecycle": "EXPIRED",
+        })
     else:
         out["reason"] = "FOLLOW_THROUGH_ABSENT"
     return out
@@ -151,24 +203,25 @@ def _deterministic_follow_through(event, bars, atr):
 
 def _auction_state(event, follow):
     if not event.get("zone"):
-        return "UNRESOLVED", False, "NO_EVENT"
+        return "UNRESOLVED", False, "PENDING"
 
-    lifecycle = follow.get("terminal_lifecycle", "PENDING")
-    base = str(event.get("auction_state") or "UNRESOLVED").upper()
+    lifecycle = str(follow.get("terminal_lifecycle") or "PENDING").upper()
+    event_class = _event_class(event)
 
     if lifecycle == "INVALIDATED":
         return "INVALIDATED", False, "INVALIDATED"
-    if lifecycle == "CONFIRMED":
-        if base == "ACCEPTANCE":
-            return "ACCEPTANCE_CONFIRMED", True, "CONFIRMED"
-        if base == "REJECTION":
-            return "REJECTION_CONFIRMED", True, "CONFIRMED"
-        return "AUCTION_CONFIRMED", True, "CONFIRMED"
     if lifecycle == "EXPIRED":
         return "EXPIRED", False, "EXPIRED"
-    if base == "ACCEPTANCE":
+    if lifecycle == "CONFIRMED":
+        if event_class == "ACCEPTANCE":
+            return "ACCEPTANCE_CONFIRMED", True, "CONFIRMED"
+        if event_class == "REJECTION":
+            return "REJECTION_CONFIRMED", True, "CONFIRMED"
+        return "AUCTION_CONFIRMED", True, "CONFIRMED"
+
+    if event_class == "ACCEPTANCE":
         return "ACCEPTANCE_PENDING", False, "PENDING"
-    if base == "REJECTION":
+    if event_class == "REJECTION":
         return "REJECTION_PENDING", False, "PENDING"
     return "INTERACTION_PENDING", False, "PENDING"
 
@@ -199,11 +252,13 @@ def analyze_e4(snapshot=None, evidence_bus=None):
     result["scores_used"] = False
     result["score_used"] = False
 
+    event_class = _event_class(event)
     result["auction"] = {
         "state": state,
         "confirmed": confirmed,
         "follow_through_bars": follow.get("bars", 0),
         "lifecycle": lifecycle,
+        "event_class": event_class,
         "detail": follow,
     }
     result["auction_state"] = state
@@ -233,7 +288,12 @@ def analyze_e4(snapshot=None, evidence_bus=None):
 
     result["finding"] = finding
     result["analyst_conclusion"] = finding
-    result["auction_quality"] = "CONFIRMED" if confirmed else "INVALIDATED" if state == "INVALIDATED" else "EXPIRED" if state == "EXPIRED" else "PENDING"
+    result["auction_quality"] = (
+        "CONFIRMED" if confirmed
+        else "INVALIDATED" if state == "INVALIDATED"
+        else "EXPIRED" if state == "EXPIRED"
+        else "PENDING"
+    )
     result["reasons"] = reasons
     result["counter_evidence"] = [
         "POST_EVENT_RECLAMATION" if state == "INVALIDATED" else "NO_FOLLOW_THROUGH",
@@ -242,29 +302,37 @@ def analyze_e4(snapshot=None, evidence_bus=None):
     result["invalidation"] = [
         "newer causal liquidity event supersedes current event",
         "post-event close through defended liquidity level invalidates thesis before confirmation",
-        "event expiry without sufficient follow-through invalidates confirmation",
+        "event expiry without sufficient follow-through prevents confirmation",
     ]
 
     reasoning = result.get("professional_reasoning")
+    thesis_status = (
+        "CONFIRMED" if confirmed
+        else "INVALIDATED" if state == "INVALIDATED"
+        else "EXPIRED" if state == "EXPIRED"
+        else "UNRESOLVED"
+    )
     if isinstance(reasoning, dict):
-        reasoning["response"] = {"status": "CONFIRMED" if confirmed else lifecycle,
-                                  "direction": direction,
-                                  "actor": event.get("response_actor", "NONE")}
+        reasoning["response"] = {
+            "status": "CONFIRMED" if confirmed else lifecycle,
+            "direction": direction,
+            "actor": event.get("response_actor", "NONE"),
+        }
         reasoning["follow_through"] = {
             "confirmed": follow.get("present", False),
             "bars": follow.get("bars", 0),
             "required_bars": CONFIRM_BARS,
             "reason": follow.get("reason"),
         }
-        reasoning["thesis_status"] = "CONFIRMED" if confirmed else "INVALIDATED" if state == "INVALIDATED" else "EXPIRED" if state == "EXPIRED" else "UNRESOLVED"
+        reasoning["thesis_status"] = thesis_status
         reasoning["actor_identification"] = "INFERENCE_FROM_OHLC_ONLY"
-        reasoning["lifecycle_rule"] = "PENDING -> exactly one of CONFIRMED|INVALIDATED|EXPIRED"
+        reasoning["lifecycle_rule"] = "PENDING -> exactly one terminal state: CONFIRMED|INVALIDATED|EXPIRED"
     else:
         result["professional_reasoning"] = {
             "question": PROFESSIONAL_QUESTION,
-            "thesis_status": "CONFIRMED" if confirmed else "INVALIDATED" if state == "INVALIDATED" else "EXPIRED" if state == "EXPIRED" else "UNRESOLVED",
+            "thesis_status": thesis_status,
             "actor_identification": "INFERENCE_FROM_OHLC_ONLY",
-            "lifecycle_rule": "PENDING -> exactly one of CONFIRMED|INVALIDATED|EXPIRED",
+            "lifecycle_rule": "PENDING -> exactly one terminal state: CONFIRMED|INVALIDATED|EXPIRED",
         }
 
     audit = dict(result.get("audit") or {})
@@ -274,13 +342,15 @@ def analyze_e4(snapshot=None, evidence_bus=None):
         "actor_identification": "PRICE_ACTION_INFERENCE_ONLY",
         "actor_identification_limit": "OHLC_CANNOT_IDENTIFY_ACTUAL_PARTICIPANTS_OR_ORDER_FLOW",
         "auction_state": state,
+        "auction_event_class": event_class,
         "follow_through_bars": follow.get("bars", 0),
         "required_confirmation_bars": CONFIRM_BARS,
         "confirmation_horizon": follow.get("horizon_bars", 0),
         "sweep_confirmation_allowed": False,
         "direction_authority": "E4_AUCTION_EVIDENCE_ONLY",
-        "terminal_states": ["CONFIRMED", "INVALIDATED", "EXPIRED"],
+        "terminal_states": list(TERMINAL_STATES),
         "terminal_state_immutable": True,
+        "first_terminal_wins": True,
         "newer_event_precedence": "CAUSAL_TIME",
     })
     result["audit"] = audit
