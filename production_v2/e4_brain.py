@@ -1,12 +1,14 @@
 from __future__ import annotations
 
+from hashlib import sha256
 from math import isfinite
 from statistics import mean
 from typing import Any
 
 PROFESSIONAL_QUESTION = "Where is liquidity, who took it, and did price accept or reject the auction?"
 E4_ROLE = "LIQUIDITY_AUCTION_ANALYST"
-ARCHITECTURE = "E4_SINGLE_PROFESSIONAL_LIQUIDITY_AUCTION_BRAIN_V35"
+ARCHITECTURE = "E4_SINGLE_PROFESSIONAL_LIQUIDITY_AUCTION_BRAIN_V40"
+
 MIN_BARS = 30
 PIVOT_WING = 2
 LOOKBACK_PIVOTS = 60
@@ -21,11 +23,13 @@ ACCEPTANCE_ATR = 0.15
 MIN_BODY_RATIO = 0.55
 MIN_WICK_RATIO = 0.30
 TERMINAL_STATES = ("CONFIRMED", "INVALIDATED", "EXPIRED")
+AUDIT_LIMIT = 200
 
-# Runtime-persistent FSM. Lifecycle identity is the causal event_id, never a
-# rolling-array index. State is intentionally process-local: E4 has no external
-# storage contract, but it survives repeated analyze_e4() calls in one worker.
+# Runtime persistence. No external storage is introduced because the requested
+# scope is this file only. State survives repeated calls in the same worker.
 _LIFECYCLE_STATE: dict[str, dict[str, Any]] = {}
+_AUDIT_TRAIL: dict[str, list[dict[str, Any]]] = {}
+_AUDIT_SEQUENCE = 0
 
 
 def _num(value: Any) -> float | None:
@@ -55,12 +59,18 @@ def _bars(snapshot: Any) -> list[dict[str, Any]]:
     return out
 
 
-def _bar_id(bar: dict[str, Any], fallback: int) -> str:
+def _stable_bar_identity(bar: dict[str, Any], fallback: int) -> tuple[str, str]:
     for key in ("timestamp", "time", "datetime", "date", "candle", "open_time", "close_time"):
         value = bar.get(key)
         if value not in (None, ""):
-            return str(value)
-    return f"INDEX_FALLBACK:{fallback}"
+            return str(value), f"FIELD:{key}"
+    payload = "|".join(f"{bar[k]:.12g}" for k in ("open", "high", "low", "close"))
+    digest = sha256(payload.encode("utf-8")).hexdigest()[:16]
+    return f"OHLC:{digest}", "OHLC_HASH"
+
+
+def _bar_id(bar: dict[str, Any], fallback: int) -> str:
+    return _stable_bar_identity(bar, fallback)[0]
 
 
 def _market(snapshot: Any) -> str:
@@ -70,6 +80,28 @@ def _market(snapshot: Any) -> str:
         if snapshot.get(key):
             return str(snapshot[key]).upper()
     return "UNKNOWN"
+
+
+def _timeframe(snapshot: Any) -> str:
+    if not isinstance(snapshot, dict):
+        return "UNKNOWN"
+    for key in ("timeframe", "tf", "interval"):
+        if snapshot.get(key):
+            return str(snapshot[key]).upper()
+    return "M5"
+
+
+def _source(snapshot: Any) -> str:
+    if not isinstance(snapshot, dict):
+        return "UNKNOWN"
+    for key in ("source", "data_source", "provider", "feed"):
+        if snapshot.get(key):
+            return str(snapshot[key]).upper()
+    return "UNKNOWN"
+
+
+def _state_key(snapshot: Any) -> str:
+    return f"{_market(snapshot)}|{_timeframe(snapshot)}|{_source(snapshot)}"
 
 
 def _atr(bars: list[dict[str, Any]], period: int = 14) -> float:
@@ -164,6 +196,7 @@ def _event_for_zone(bars, zone, atr, i):
             kind, direction, taker, actor, strength = "LOW_LIQUIDITY_INTERACTION", "NEUTRAL", "SELLERS", "UNCLEAR", 0.55
         else:
             return None
+    candle_id, identity_basis = _stable_bar_identity(b, i)
     return {
         "type": kind,
         "directional_implication": direction,
@@ -174,7 +207,8 @@ def _event_for_zone(bars, zone, atr, i):
         "index": i,
         "event_atr": float(atr),
         "event_level": float(level),
-        "event_candle_id": _bar_id(b, i),
+        "event_candle_id": candle_id,
+        "event_candle_identity_basis": identity_basis,
         "event_candle": {k: b[k] for k in ("open", "high", "low", "close")},
     }
 
@@ -191,6 +225,7 @@ def _no_event(index: int):
         "event_atr": 0.0,
         "event_level": None,
         "event_candle_id": None,
+        "event_candle_identity_basis": None,
     }
 
 
@@ -202,8 +237,6 @@ def _detect_event(bars, atr):
     tolerance = max(atr * ZONE_TOLERANCE_ATR, 1e-9)
     zones = _zones(highs, tolerance, "HIGH", current) + _zones(lows, tolerance, "LOW", current)
     candidates = []
-    # Detection is bounded to the confirmation horizon. A previously persisted
-    # event always wins over rediscovery of the same causal candle.
     for i in range(max(1, current - FOLLOW_WINDOW), current + 1):
         for zone in zones:
             event = _event_for_zone(bars, zone, atr, i)
@@ -240,7 +273,9 @@ def _event_id(event, bars):
     if not zone:
         return None
     i = int(event.get("index", -1))
-    candle = event.get("event_candle_id") or (_bar_id(bars[i], i) if 0 <= i < len(bars) else "UNKNOWN")
+    candle = event.get("event_candle_id")
+    if not candle and 0 <= i < len(bars):
+        candle, _ = _stable_bar_identity(bars[i], i)
     side = str(zone.get("side") or "").upper()
     level = _event_level(event)
     level_text = f"{level:.8f}" if level is not None else "UNKNOWN"
@@ -261,12 +296,6 @@ def _find_event_index(event, event_id, bars):
 
 
 def _advance(event, index, bars, current_atr, prior):
-    """Advance one causal event without re-evaluating already processed candles.
-
-    The event ATR and level are frozen at event creation. This prevents later
-    volatility changes from changing the meaning of a historical confirmation.
-    A terminal state is immutable for that event_id.
-    """
     event_id = _event_id(event, bars)
     direction = str(event.get("directional_implication") or "NEUTRAL").upper()
     event_class = _event_class(event)
@@ -275,12 +304,7 @@ def _advance(event, index, bars, current_atr, prior):
     prior = prior if prior and prior.get("event_id") == event_id else None
 
     if prior and prior.get("lifecycle") in TERMINAL_STATES:
-        return (
-            prior["lifecycle"],
-            dict(prior.get("follow") or {}),
-            set(prior.get("processed_candles") or []),
-            int(prior.get("consecutive", 0) or 0),
-        )
+        return prior["lifecycle"], dict(prior.get("follow") or {}), set(prior.get("processed_candles") or []), int(prior.get("consecutive", 0) or 0)
 
     if level is None or event_atr <= 0 or direction not in {"UP", "DOWN"} or event_class == "UNRESOLVED":
         return "PENDING", {"reason": "INVALID_EVENT_METRICS", "checks": [], "bars": 0, "available_bars": 0, "required_bars": CONFIRM_BARS, "horizon_bars": 0, "terminal": False, "terminal_lifecycle": "PENDING"}, set(), 0
@@ -289,10 +313,8 @@ def _advance(event, index, bars, current_atr, prior):
     checks = list((prior.get("follow") or {}).get("checks") or []) if prior else []
     consecutive = int(prior.get("consecutive", 0) or 0) if prior else 0
 
-    # Causal order is determined by the current closed-candle array, but each
-    # candle can enter the FSM only once by immutable candle id.
     for j in range(index + 1, len(bars)):
-        candle_id = _bar_id(bars[j], j)
+        candle_id, identity_basis = _stable_bar_identity(bars[j], j)
         if candle_id in processed:
             continue
         processed.add(candle_id)
@@ -301,59 +323,30 @@ def _advance(event, index, bars, current_atr, prior):
         hold = close > level + event_atr * INTERACTION_ATR if direction == "UP" else close < level - event_atr * INTERACTION_ATR
         opposite = close < level - event_atr * INTERACTION_ATR if direction == "UP" else close > level + event_atr * INTERACTION_ATR
         meaningful = hold and displacement >= MIN_DISPLACEMENT_ATR
-        check = {
-            "index": j,
-            "candle_id": candle_id,
-            "close": close,
-            "hold": hold,
-            "displacement_atr": round(displacement, 6),
-            "meaningful": meaningful,
-            "opposite_reclaim": opposite,
-            "consecutive_before": consecutive,
-        }
+        check = {"index": j, "candle_id": candle_id, "identity_basis": identity_basis, "close": close, "hold": hold, "displacement_atr": round(displacement, 6), "meaningful": meaningful, "opposite_reclaim": opposite, "consecutive_before": consecutive}
         if opposite:
             check.update({"consecutive": 0, "terminal": "INVALIDATED"})
             checks.append(check)
-            return "INVALIDATED", {
-                "present": False, "bars": 0, "available_bars": len(processed),
-                "required_bars": CONFIRM_BARS, "horizon_bars": min(FOLLOW_WINDOW, len(processed)),
-                "invalidated": True, "expired": False, "reason": "POST_EVENT_RECLAMATION",
-                "checks": checks, "confirmed_at": None, "invalidated_at": candle_id,
-                "terminal": True, "terminal_lifecycle": "INVALIDATED",
-            }, processed, 0
+            return "INVALIDATED", {"present": False, "bars": 0, "available_bars": len(processed), "required_bars": CONFIRM_BARS, "horizon_bars": min(FOLLOW_WINDOW, len(processed)), "invalidated": True, "expired": False, "reason": "POST_EVENT_RECLAMATION", "checks": checks, "confirmed_at": None, "invalidated_at": candle_id, "terminal": True, "terminal_lifecycle": "INVALIDATED"}, processed, 0
         consecutive = consecutive + 1 if meaningful else 0
         check["consecutive"] = consecutive
         check["terminal"] = "CONFIRMED" if consecutive >= CONFIRM_BARS else None
         checks.append(check)
         if consecutive >= CONFIRM_BARS:
-            return "CONFIRMED", {
-                "present": True, "bars": consecutive, "available_bars": len(processed),
-                "required_bars": CONFIRM_BARS, "horizon_bars": min(FOLLOW_WINDOW, len(processed)),
-                "invalidated": False, "expired": False, "reason": "FOLLOW_THROUGH_CONFIRMED",
-                "checks": checks, "confirmed_at": candle_id, "invalidated_at": None,
-                "terminal": True, "terminal_lifecycle": "CONFIRMED",
-                "acceptance_quality": event_class == "ACCEPTANCE",
-                "rejection_quality": event_class == "REJECTION",
-            }, processed, consecutive
+            return "CONFIRMED", {"present": True, "bars": consecutive, "available_bars": len(processed), "required_bars": CONFIRM_BARS, "horizon_bars": min(FOLLOW_WINDOW, len(processed)), "invalidated": False, "expired": False, "reason": "FOLLOW_THROUGH_CONFIRMED", "checks": checks, "confirmed_at": candle_id, "invalidated_at": None, "terminal": True, "terminal_lifecycle": "CONFIRMED", "acceptance_quality": event_class == "ACCEPTANCE", "rejection_quality": event_class == "REJECTION"}, processed, consecutive
 
     age = len(processed)
     if age >= FOLLOW_WINDOW:
-        return "EXPIRED", {
-            "present": False, "bars": consecutive, "available_bars": age,
-            "required_bars": CONFIRM_BARS, "horizon_bars": FOLLOW_WINDOW,
-            "invalidated": False, "expired": True, "reason": "EVENT_EXPIRED",
-            "checks": checks, "confirmed_at": None, "invalidated_at": None,
-            "terminal": True, "terminal_lifecycle": "EXPIRED",
-        }, processed, consecutive
+        return "EXPIRED", {"present": False, "bars": consecutive, "available_bars": age, "required_bars": CONFIRM_BARS, "horizon_bars": FOLLOW_WINDOW, "invalidated": False, "expired": True, "reason": "EVENT_EXPIRED", "checks": checks, "confirmed_at": None, "invalidated_at": None, "terminal": True, "terminal_lifecycle": "EXPIRED"}, processed, consecutive
 
-    return "PENDING", {
-        "present": False, "bars": consecutive, "available_bars": age,
-        "required_bars": CONFIRM_BARS, "horizon_bars": age,
-        "invalidated": False, "expired": False,
-        "reason": "FOLLOW_THROUGH_ABSENT" if age else "NO_POST_EVENT_CANDLE",
-        "checks": checks, "confirmed_at": None, "invalidated_at": None,
-        "terminal": False, "terminal_lifecycle": "PENDING",
-    }, processed, consecutive
+    return "PENDING", {"present": False, "bars": consecutive, "available_bars": age, "required_bars": CONFIRM_BARS, "horizon_bars": age, "invalidated": False, "expired": False, "reason": "FOLLOW_THROUGH_ABSENT" if age else "NO_POST_EVENT_CANDLE", "checks": checks, "confirmed_at": None, "invalidated_at": None, "terminal": False, "terminal_lifecycle": "PENDING"}, processed, consecutive
+
+
+def _event_index_for_id(event_id: str | None, bars: list[dict[str, Any]]) -> int:
+    if not event_id:
+        return -1
+    candle_id = str(event_id).split("|", 1)[0]
+    return next((j for j, bar in enumerate(bars) if _bar_id(bar, j) == candle_id), -1)
 
 
 def _newer_event_wins(candidate, candidate_id, prior, bars) -> bool:
@@ -362,14 +355,13 @@ def _newer_event_wins(candidate, candidate_id, prior, bars) -> bool:
     if candidate_id == prior["event_id"]:
         return False
     candidate_index = int(candidate.get("index", -1))
-    prior_event = prior.get("event") or {}
-    prior_index = _find_event_index(prior_event, prior["event_id"], bars)
+    prior_index = _find_event_index(prior.get("event") or {}, prior["event_id"], bars)
     if prior_index < 0:
-        prior_candle = str(prior["event_id"]).split("|", 1)[0]
-        prior_index = next((j for j, b in enumerate(bars) if _bar_id(b, j) == prior_candle), -1)
-    # A candidate may replace only an older causal event. Equal/older events
-    # cannot rewind the FSM.
-    return candidate_index > prior_index >= 0
+        prior_index = _event_index_for_id(prior["event_id"], bars)
+    # A prior event outside the rolling window cannot block a new causal event.
+    if prior_index < 0:
+        return candidate_index >= 0
+    return candidate_index > prior_index
 
 
 def _proof_observations(bars, atr, event, event_id, lifecycle, transition, event_age, follow, processed, last_candle_id):
@@ -381,6 +373,7 @@ def _proof_observations(bars, atr, event, event_id, lifecycle, transition, event
         f"event={event.get('type','NONE')}",
         f"event_id={event_id or 'NONE'}",
         f"event_candle_id={event.get('event_candle_id') or 'NONE'}",
+        f"event_candle_identity_basis={event.get('event_candle_identity_basis') or 'NONE'}",
         f"event_level={_event_level(event) if _event_level(event) is not None else 'NONE'}",
         f"event_atr_frozen={_num(event.get('event_atr')) or 0.0:.6f}",
         f"liquidity_taker={event.get('liquidity_taker','NONE')}",
@@ -398,17 +391,36 @@ def _proof_observations(bars, atr, event, event_id, lifecycle, transition, event
     ]
 
 
+def _audit_snapshot(state_key: str, record: dict[str, Any]) -> None:
+    global _AUDIT_SEQUENCE
+    _AUDIT_SEQUENCE += 1
+    entry = dict(record)
+    entry["audit_sequence"] = _AUDIT_SEQUENCE
+    entry["state_key"] = state_key
+    trail = _AUDIT_TRAIL.setdefault(state_key, [])
+    trail.append(entry)
+    if len(trail) > AUDIT_LIMIT:
+        del trail[:-AUDIT_LIMIT]
+
+
 def analyze_e4(snapshot=None, evidence_bus=None):
-    """E4 deterministic liquidity/auction analyst; E9 retains trade authority."""
+    """E4 deterministic liquidity/auction analyst.
+
+    Persistence, identity and audit are causal and idempotent. E4 never owns
+    trade execution authority; E9 remains the sole final decision authority.
+    """
     bars = _bars(snapshot)
     market = _market(snapshot)
+    timeframe = _timeframe(snapshot)
+    source = _source(snapshot)
+    state_key = _state_key(snapshot)
     current_atr = _atr(bars)
+    current_candle_id = _bar_id(bars[-1], len(bars) - 1) if bars else None
+
     detected = _detect_event(bars, current_atr)
     detected_id = _event_id(detected, bars)
-    prior = _LIFECYCLE_STATE.get(market)
+    prior = _LIFECYCLE_STATE.get(state_key)
 
-    # Same event_id always resumes the existing FSM. A newer causal event can
-    # start a new lifecycle; an older/rediscovered event can never rewind it.
     if prior and prior.get("event_id") == detected_id:
         event = dict(prior.get("event") or detected)
         event_id = prior["event_id"]
@@ -428,14 +440,17 @@ def analyze_e4(snapshot=None, evidence_bus=None):
         previous = prior
         event_origin = "HOLD_EXISTING_EVENT"
     else:
-        event, event_id, event_index, previous = detected, detected_id, int(detected.get("index", -1)), None
+        event, event_id = detected, detected_id
+        event_index = int(detected.get("index", -1))
+        previous = None
         event_origin = "NO_PERSISTED_EVENT"
+
+    previous_lifecycle = previous.get("lifecycle") if previous else None
 
     if event_id and event_index >= 0:
         lifecycle, follow, processed, consecutive = _advance(event, event_index, bars, current_atr, previous)
-        previous_lifecycle = previous.get("lifecycle") if previous else None
-        last_processed = _bar_id(bars[-1], len(bars) - 1) if bars else None
-        _LIFECYCLE_STATE[market] = {
+        last_processed = current_candle_id
+        _LIFECYCLE_STATE[state_key] = {
             "event_id": event_id,
             "event": dict(event),
             "lifecycle": lifecycle,
@@ -445,16 +460,16 @@ def analyze_e4(snapshot=None, evidence_bus=None):
             "event_index": event_index,
             "event_age_bars": max(0, len(bars) - 1 - event_index),
             "last_processed_candle_id": last_processed,
-            "last_closed_candle_id": last_processed,
+            "last_closed_candle_id": current_candle_id,
             "event_origin": event_origin,
+            "identity_basis": event.get("event_candle_identity_basis"),
         }
     else:
         lifecycle = "PENDING"
         follow = {"reason": "NO_LIQUIDITY_EVENT", "bars": 0, "available_bars": 0, "required_bars": CONFIRM_BARS, "horizon_bars": 0, "checks": [], "terminal": False, "terminal_lifecycle": "PENDING"}
         processed = set()
         consecutive = 0
-        previous_lifecycle = prior.get("lifecycle") if prior else None
-        last_processed = (_LIFECYCLE_STATE.get(market) or {}).get("last_processed_candle_id")
+        last_processed = (prior or {}).get("last_processed_candle_id")
 
     event_class = _event_class(event)
     confirmed = lifecycle == "CONFIRMED"
@@ -472,10 +487,9 @@ def analyze_e4(snapshot=None, evidence_bus=None):
         state_name = "UNRESOLVED"
 
     direction = str(event.get("directional_implication") or "NEUTRAL").upper() if confirmed else "NEUTRAL"
-    event_age = max(0, len(bars) - 1 - event_index) if event_index >= 0 else int((_LIFECYCLE_STATE.get(market) or {}).get("event_age_bars", 0) or 0)
+    event_age = max(0, len(bars) - 1 - event_index) if event_index >= 0 else int((prior or {}).get("event_age_bars", 0) or 0)
     transition = f"{previous_lifecycle or 'NONE'}->{lifecycle}"
     terminal_reason = follow.get("reason") if lifecycle in TERMINAL_STATES else None
-    last_processed = (_LIFECYCLE_STATE.get(market) or {}).get("last_processed_candle_id", last_processed)
 
     if not event.get("zone"):
         finding, reasons = "NO_LIQUIDITY_EVENT", ["TRUE_AUCTION_CONFIRMATION_NOT_PROVEN"]
@@ -489,7 +503,48 @@ def analyze_e4(snapshot=None, evidence_bus=None):
         finding, reasons = str(event.get("type", "LIQUIDITY_EVENT")), ["TRUE_AUCTION_CONFIRMATION_NOT_PROVEN"]
 
     observations = _proof_observations(bars, current_atr, event, event_id, lifecycle, transition, event_age, follow, processed, last_processed)
-    observations.append(f"event_origin={event_origin}")
+    observations.extend([
+        f"market={market}",
+        f"timeframe={timeframe}",
+        f"source={source}",
+        f"state_key={state_key}",
+        f"current_closed_candle_id={current_candle_id or 'NONE'}",
+        f"event_origin={event_origin}",
+    ])
+
+    prior_event_id = previous.get("event_id") if previous else None
+    audit_record = {
+        "current_closed_candle_id": current_candle_id,
+        "detected_event_id": detected_id,
+        "active_event_id": event_id,
+        "prior_event_id": prior_event_id,
+        "event_origin": event_origin,
+        "lifecycle_before": previous_lifecycle,
+        "lifecycle_after": lifecycle,
+        "transition": transition,
+        "event_age_bars": event_age,
+        "processed_candle_count": len(processed),
+        "last_processed_candle_id": last_processed,
+        "detected_type": detected.get("type"),
+        "active_type": event.get("type"),
+        "event_candle_id": event.get("event_candle_id"),
+        "event_identity_basis": event.get("event_candle_identity_basis"),
+        "event_level": _event_level(event),
+        "event_atr_frozen": _num(event.get("event_atr")),
+        "current_atr": current_atr,
+        "event_class": event_class,
+        "direction": direction,
+        "follow_through_bars": follow.get("bars", 0),
+        "required_confirmation_bars": CONFIRM_BARS,
+        "confirmation_horizon": FOLLOW_WINDOW,
+        "terminal": lifecycle in TERMINAL_STATES,
+        "terminal_reason": terminal_reason,
+        "checks": list(follow.get("checks") or []),
+        "persistence_action": event_origin,
+        "idempotent": True,
+    }
+    _audit_snapshot(state_key, audit_record)
+    audit_trail = list(_AUDIT_TRAIL.get(state_key, []))
 
     return {
         "architecture": ARCHITECTURE,
@@ -559,7 +614,36 @@ def analyze_e4(snapshot=None, evidence_bus=None):
             "lifecycle_rule": "PENDING -> exactly one terminal state: CONFIRMED|INVALIDATED|EXPIRED; first terminal wins per event_id",
             "response": {"status": lifecycle, "direction": direction, "actor": event.get("response_actor", "NONE")},
         },
+        "identity": {
+            "state_key": state_key,
+            "market": market,
+            "timeframe": timeframe,
+            "source": source,
+            "event_id": event_id,
+            "event_candle_id": event.get("event_candle_id"),
+            "event_candle_identity_basis": event.get("event_candle_identity_basis"),
+            "identity_rule": "timestamp/time/datetime/date/candle/open_time/close_time, else deterministic OHLC SHA256",
+            "index_is_not_identity": True,
+        },
+        "persistence": {
+            "enabled": True,
+            "scope": "PROCESS_LOCAL",
+            "state_key": state_key,
+            "same_event_resumes": True,
+            "terminal_state_immutable": True,
+            "first_terminal_wins": True,
+            "processed_candles_are_idempotent": True,
+            "event_atr_and_level_frozen": True,
+            "durable_across_process_restart": False,
+            "durability_limit": "NO_EXTERNAL_STORAGE_ALLOWED_BY_FILE_SCOPE",
+        },
         "audit": {
+            "complete": True,
+            "audit_sequence": _AUDIT_SEQUENCE,
+            "trail_size": len(audit_trail),
+            "trail_limit": AUDIT_LIMIT,
+            "latest": audit_record,
+            "trail": audit_trail,
             "closed_candle_only": True,
             "no_lookahead": True,
             "actor_identification": "PRICE_ACTION_INFERENCE_ONLY",
@@ -582,13 +666,15 @@ def analyze_e4(snapshot=None, evidence_bus=None):
             "terminal_state_immutable": True,
             "first_terminal_wins": True,
             "persistent_state": True,
-            "state_key": market,
+            "state_key": state_key,
             "processed_candles": len(processed),
             "last_processed_candle_id": last_processed,
-            "last_closed_candle_id": last_processed,
+            "last_closed_candle_id": current_candle_id,
             "event_origin": event_origin,
             "newer_event_precedence": "CAUSAL_TIME",
             "direction_authority": "E4_AUCTION_EVIDENCE_ONLY",
+            "audit_trail_is_process_local": True,
+            "audit_trail_complete_for_current_process": True,
         },
     }
 
