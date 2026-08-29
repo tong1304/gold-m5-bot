@@ -59,13 +59,18 @@ def _has_any(o, *needles):
 
 
 def _market_control_brain(e1, e2, e3, e4, e5, e6, e7, e8, direction, setup, thesis):
-    """Interpret E1-E8 as a market-control/auction thesis, not a vote.
+    """Synthesize E1-E8 as a market-control thesis without inventing facts.
 
-    This layer does not create a setup or override domain ownership. It asks
-    who is currently advantaged, who may be trapped, where liquidity sits, and
-    whether the observed auction can plausibly produce directional repricing.
+    E9 is the master interpreter, not a ninth independent setup generator.
+    Liquidity and participant-response evidence receive the highest weight;
+    structure, location, confirmation and economics determine whether control
+    is merely forming or sufficiently proven to support execution.
     """
     obs = (e1, e2, e3, e4, e5, e6, e7, e8)
+    e1f, e2f, e3f, e4f, e5f, e6f, e7f, e8f = map(_finding, obs)
+    blobs = {i: " ".join([_finding(o), *_codes(o)]) for i, o in enumerate(obs, 1)}
+    e4blob, e5blob, e6blob, e7blob, e8blob = blobs[4], blobs[5], blobs[6], blobs[7], blobs[8]
+
     control = {
         "dominant_actor": "UNRESOLVED",
         "controlled_side": "NONE",
@@ -78,49 +83,71 @@ def _market_control_brain(e1, e2, e3, e4, e5, e6, e7, e8, direction, setup, thes
     evidence: list[str] = []
     warnings: list[str] = []
 
-    e1f, e2f, e3f, e4f, e5f, e6f, e7f, e8f = map(_finding, obs)
-    e4blob = " ".join([e4f, *_codes(e4)])
-    e5blob = " ".join([e5f, *_codes(e5)])
-    e6blob = " ".join([e6f, *_codes(e6)])
-    e7blob = " ".join([e7f, *_codes(e7)])
-    e8blob = " ".join([e8f, *_codes(e8)])
-
+    # These are observations/inferences, never claims of privileged knowledge.
+    buyers = "BUYERS" in e4blob
+    sellers = "SELLERS" in e4blob
     sweep = any(x in e4blob for x in ("SWEEP", "LIQUIDITY_TAKEN", "STOP_RUN"))
     rejection = any(x in e4blob for x in ("RECLAIM", "REJECTION", "FAILED_BREAK"))
     pending = "PENDING" in e4blob or "NOT_TERMINALLY_CONFIRMED" in e4blob
-    range_state = "RANGE" in e1f
-    transition = "TRANSITION" in e1f or "TRANSITION" in e3f
     failed_break = "FAILED_BOS" in e3f or "FAILED_BREAK" in e3f
+    range_state = "RANGE" in e1f
+    transition = "TRANSITION" in e1f or "TRANSITION" in e3f or "TRANSITION" in e2f
     favorable = "FAVORABLE" in e5f
     discount = "DISCOUNT" in e5blob
     premium = "PREMIUM" in e5blob
+    accepted_above = "ACCEPTED_ABOVE_VALUE" in e5blob
+    rejected_below = "REJECTED_BELOW_VALUE" in e5blob
     long_space = _score_num(e5.get("available_space_atr_long"), 0.0)
     short_space = _score_num(e5.get("available_space_atr_short"), 0.0)
     trigger_proven = any(x in e7blob for x in ("CONFIRMED", "PROVEN", "VALIDATED"))
     risk_ready = "RISK_READY" in e8blob or "ECONOMICALLY_ACCEPTABLE" in e8blob
     survival = not any(x in e8blob for x in ("SURVIVAL_NOT_PROVEN", "STRUCTURAL_SURVIVAL_NOT_PROVEN"))
 
-    # Liquidity/auction clues have the highest interpretive weight here.
+    # E4 gives the causal auction sequence: taker -> response -> acceptance/rejection.
+    liquidity_type = str(e4.get("liquidity_type") or e4.get("event") or "UNRESOLVED")
+    liquidity_level = e4.get("event_level", e4.get("level", e4.get("liquidity_level")))
+    response_actor = _text(e4.get("response_actor"))
+    taker = _text(e4.get("liquidity_taker"))
+
+    if liquidity_level is not None:
+        control["liquidity_target"] = liquidity_level
+    elif liquidity_type not in {"", "UNRESOLVED"}:
+        control["liquidity_target"] = liquidity_type
+
     if sweep and rejection:
-        evidence.append("LIQUIDITY_SWEEP_WITH_REJECTION")
         control["auction_phase"] = "POST_SWEEP_REJECTION"
-        control["dominant_actor"] = "RESPONDING_SIDE"
-        if "BUYERS" in e4blob and "SELLERS" in e4blob:
+        evidence.append("LIQUIDITY_SWEEP_WITH_REJECTION")
+        if response_actor in {"BUYERS", "SELLERS"}:
+            control["dominant_actor"] = response_actor
+        elif taker == "BUYERS" and sellers:
+            control["dominant_actor"] = "SELLERS"
+        elif taker == "SELLERS" and buyers:
+            control["dominant_actor"] = "BUYERS"
+
+        # A trap is inferred only when the liquidity taker and responding side
+        # are both explicit; this avoids the previous impossible double-check.
+        if taker == "BUYERS" and response_actor == "SELLERS":
             control["trapped_side"] = "BUYERS"
             control["controlled_side"] = "SELLERS"
             control["repricing_direction"] = "SELL"
-        elif "SELLERS" in e4blob and "BUYERS" in e4blob:
+            evidence.append("BUYERS_TAKEN_LIQUIDITY_SELLER_RESPONSE")
+        elif taker == "SELLERS" and response_actor == "BUYERS":
             control["trapped_side"] = "SELLERS"
             control["controlled_side"] = "BUYERS"
             control["repricing_direction"] = "BUY"
+            evidence.append("SELLERS_TAKEN_LIQUIDITY_BUYER_RESPONSE")
+        else:
+            warnings.append("PARTICIPANT_RESPONSE_NOT_EXPLICIT")
     elif failed_break or rejection:
-        evidence.append("FAILED_AUCTION_OR_REJECTION")
         control["auction_phase"] = "FAILED_AUCTION"
+        evidence.append("FAILED_AUCTION_OR_REJECTION")
         if direction in DIRECTIONS:
             control["controlled_side"] = direction + "_THESIS"
     elif range_state:
         control["auction_phase"] = "BALANCED_RANGE"
         warnings.append("RANGE_CONTROL_NOT_ESTABLISHED")
+    elif transition:
+        control["auction_phase"] = "TRANSITION_AUCTION"
 
     if pending:
         warnings.append("AUCTION_NOT_TERMINALLY_CONFIRMED")
@@ -132,9 +159,11 @@ def _market_control_brain(e1, e2, e3, e4, e5, e6, e7, e8, direction, setup, thes
         evidence.append("PRICE_IN_DISCOUNT")
     if premium:
         evidence.append("PRICE_IN_PREMIUM")
+    if accepted_above:
+        evidence.append("VALUE_ACCEPTANCE_ABOVE")
+    if rejected_below:
+        evidence.append("VALUE_REJECTION_BELOW")
 
-    # Space tells the master brain whether a theoretical control advantage has
-    # enough room to become actual repricing rather than a local reaction.
     if direction == "BUY":
         if 0 < long_space < 0.75:
             warnings.append("BUY_SPACE_CONSTRAINED")
@@ -155,26 +184,32 @@ def _market_control_brain(e1, e2, e3, e4, e5, e6, e7, e8, direction, setup, thes
     else:
         warnings.append("ECONOMIC_SURVIVAL_UNPROVEN")
 
-    if control["repricing_direction"] in DIRECTIONS:
-        control["market_intent"] = (
-            "FORCED_REPRICING_" + control["repricing_direction"]
-            if control["trapped_side"] in DIRECTIONS
-            else "POTENTIAL_REPRICING_" + control["repricing_direction"]
-        )
+    # E9 describes intent only when the participant-behavior chain supports it.
+    if control["trapped_side"] in DIRECTIONS:
+        control["market_intent"] = "FORCED_REPRICING_" + control["repricing_direction"]
+    elif control["controlled_side"] in {"BUY", "SELL"}:
+        control["market_intent"] = "POTENTIAL_REPRICING_" + control["controlled_side"]
     elif range_state:
         control["market_intent"] = "LIQUIDITY_SEEKING_WITHOUT_DIRECTIONAL_CONTROL"
+    elif transition:
+        control["market_intent"] = "DIRECTIONAL_INTENT_UNRESOLVED_DURING_TRANSITION"
+    else:
+        control["market_intent"] = "DIRECTIONAL_INTENT_UNPROVEN"
 
-    # A professional 'market-control' read requires multiple independent clues.
+    # Independent evidence strength. This is an interpretation score, not a
+    # probability of profit and never overrides E7/E8 hard gates.
     strength = 0.0
-    strength += 25.0 if sweep and rejection else 0.0
-    strength += 15.0 if failed_break else 0.0
-    strength += 15.0 if favorable else 0.0
-    strength += 15.0 if trigger_proven else 0.0
-    strength += 15.0 if risk_ready and survival else 0.0
-    strength += 10.0 if direction in DIRECTIONS and control["repricing_direction"] == direction else 0.0
+    strength += 30.0 if control["trapped_side"] in DIRECTIONS else 0.0
+    strength += 15.0 if sweep and rejection else 0.0
+    strength += 10.0 if failed_break else 0.0
+    strength += 10.0 if accepted_above or rejected_below else 0.0
+    strength += 10.0 if favorable else 0.0
+    strength += 10.0 if trigger_proven else 0.0
+    strength += 10.0 if risk_ready and survival else 0.0
+    strength += 5.0 if direction in DIRECTIONS and control["repricing_direction"] == direction else 0.0
     strength -= 15.0 if pending else 0.0
     strength -= 10.0 if transition else 0.0
-    strength -= 10.0 if range_state and not sweep else 0.0
+    strength -= 10.0 if range_state and control["trapped_side"] == "NONE" else 0.0
     strength = max(0.0, min(100.0, strength))
 
     if strength >= 75:
@@ -186,6 +221,26 @@ def _market_control_brain(e1, e2, e3, e4, e5, e6, e7, e8, direction, setup, thes
     else:
         regime = "CONTROL_UNPROVEN"
 
+    actor = control["dominant_actor"]
+    if actor == "BUYERS":
+        actor_reason = "BUYERS_HAVE_CURRENT_RESPONSE_CONTROL"
+    elif actor == "SELLERS":
+        actor_reason = "SELLERS_HAVE_CURRENT_RESPONSE_CONTROL"
+    else:
+        actor_reason = "NO_PARTICIPANT_HAS_PROVEN_CONTROL"
+
+    if control["trapped_side"] in DIRECTIONS:
+        interpretation = (
+            f"{actor_reason}; {control['trapped_side']} appear trapped after the observed liquidity event, "
+            f"supporting potential {control['repricing_direction']} repricing, but execution still requires E7/E8 proof."
+        )
+    elif control["market_intent"] == "LIQUIDITY_SEEKING_WITHOUT_DIRECTIONAL_CONTROL":
+        interpretation = "ตลาดยังอยู่ในสมดุลและกำลังค้นหาสภาพคล่อง ยังไม่มีฝ่ายใดควบคุมทิศทางอย่างพิสูจน์ได้"
+    elif transition:
+        interpretation = "ตลาดอยู่ใน Transition; มีเจตนาบางส่วนแต่ยังไม่มีหลักฐานเพียงพอว่าใครควบคุมการ Repricing"
+    else:
+        interpretation = "ยังไม่มี Participant-Control chain ที่สมบูรณ์ จึงยังไม่ควรอ้างว่าใครเป็นเจ้าตลาด"
+
     return {
         **control,
         "state": regime,
@@ -193,13 +248,14 @@ def _market_control_brain(e1, e2, e3, e4, e5, e6, e7, e8, direction, setup, thes
         "evidence": list(dict.fromkeys(evidence)),
         "warnings": list(dict.fromkeys(warnings)),
         "thesis": thesis,
-        "interpretation": (
-            "Liquidity and participant behavior imply a directional repricing thesis."
-            if control["market_intent"].startswith("FORCED_REPRICING")
-            else "Market-control thesis is forming but not sufficiently proven."
-            if strength >= 50
-            else "No sufficiently proven directional control; preserve capital."
-        ),
+        "participant_chain": {
+            "liquidity_taker": taker or "UNRESOLVED",
+            "response_actor": response_actor or "UNRESOLVED",
+            "liquidity_type": liquidity_type,
+            "event_level": liquidity_level,
+            "chain_complete": control["trapped_side"] in DIRECTIONS,
+        },
+        "interpretation": interpretation,
     }
 
 
@@ -262,7 +318,6 @@ def analyze_e9(snapshot: dict[str, Any], upstream: dict[str, EngineResult]) -> E
         if d in DIRECTIONS and direction in DIRECTIONS and d != direction:
             conflicts.append(f"{label}:DIRECTION_OPPOSES_E6")
 
-    # New master market-control interpretation uses all eight brains together.
     market_control = _market_control_brain(e1, e2, e3, e4, e5, e6, e7, e8, direction, setup, thesis)
     if market_control["state"] == "CONTROL_ESTABLISHED":
         supports.append("E9:MARKET_CONTROL_ESTABLISHED")
@@ -319,9 +374,6 @@ def analyze_e9(snapshot: dict[str, Any], upstream: dict[str, EngineResult]) -> E
     }
     hard_veto = bool(conflicts) or any(r in hard_reasons for r in reasons)
 
-    # Market-control intelligence is deliberately a confirming layer, not a
-    # bypass around E7 confirmation or E8 risk. It can strengthen a thesis,
-    # but cannot manufacture a trade that the evidence gates reject.
     market_control_veto = market_control["strength"] < 35 and market_control["market_intent"].startswith("FORCED_REPRICING")
     if market_control_veto:
         counter.append("E9:MARKET_CONTROL_THESIS_TOO_WEAK")
