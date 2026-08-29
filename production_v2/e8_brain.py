@@ -7,8 +7,8 @@ from .contracts import EngineResult
 
 NAME = "Trade Economics & Risk Brain"
 QUESTION = "Is the proposed trade economically attractive and structurally survivable?"
-ARCHITECTURE = "E8_PROFESSIONAL_TRADE_ECONOMICS_RISK_BRAIN_V4"
-VERSION = "4.0"
+ARCHITECTURE = "E8_PROFESSIONAL_TRADE_ECONOMICS_RISK_BRAIN_V5"
+VERSION = "5.0"
 MIN_BARS = 30
 MIN_RR = 1.50
 ATR_PERIOD = 14
@@ -19,6 +19,10 @@ MIN_STOP_ATR = 0.50
 MAX_STOP_ATR = 3.50
 MIN_SPACE_ATR = 0.75
 TP1_FRACTION = 0.50
+MAX_LIQUIDITY_RISK_R = 1.00
+MAX_EXECUTION_COST_ATR = 0.15
+MAX_LAST_RANGE_ATR = 2.50
+MIN_TARGET_CLEARANCE_ATR = 0.10
 
 
 def _num(value: Any, default: float = 0.0) -> float:
@@ -72,7 +76,7 @@ def _setup(e6: dict[str, Any]) -> str:
 
 
 def _confirmation(e7: dict[str, Any]) -> tuple[str, list[str]]:
-    """E7 is the confirmation authority; E8 only consumes explicit proof state."""
+    """Consume E7 proof only; an observed trigger is never promoted to proof."""
     observed: list[str] = []
     for key in ("confirmation", "confirmation_state", "trigger_state", "proof_state"):
         value = e7.get(key)
@@ -88,8 +92,6 @@ def _confirmation(e7: dict[str, Any]) -> tuple[str, list[str]]:
 
     proof = e7.get("proof_gates")
     if isinstance(proof, dict):
-        # Do not treat a trigger observation as confirmation. Only an explicit
-        # confirmation gate may make E8 regard entry as proven.
         for key in ("confirmation", "closed_candle_confirmation", "follow_through"):
             value = proof.get(key)
             if value in (True, "PASS", "CONFIRMED", "PROVEN", "VALID", "VALIDATED"):
@@ -123,13 +125,20 @@ def _atr(bars: list[dict[str, Any]], period: int = ATR_PERIOD) -> float:
     return mean(trs) if trs else 0.0
 
 
-def _levels(e3: dict[str, Any], e4: dict[str, Any], e5: dict[str, Any], bars: list[dict[str, Any]], direction: str, entry: float) -> dict[str, Any]:
+def _recent_structure(bars: list[dict[str, Any]]) -> dict[str, float | None]:
     recent = bars[-STRUCTURE_LOOKBACK:]
     highs = [_num(x.get("high")) for x in recent if _num(x.get("high")) > 0]
     lows = [_num(x.get("low")) for x in recent if _num(x.get("low")) > 0]
-    hi20 = max(highs) if highs else None
-    lo20 = min(lows) if lows else None
+    return {
+        "structure_high_20": max(highs) if highs else None,
+        "structure_low_20": min(lows) if lows else None,
+    }
 
+
+def _levels(e3: dict[str, Any], e4: dict[str, Any], e5: dict[str, Any], bars: list[dict[str, Any]], direction: str, entry: float) -> dict[str, Any]:
+    recent = _recent_structure(bars)
+    hi20 = recent["structure_high_20"]
+    lo20 = recent["structure_low_20"]
     protected_high = _first_num(e3, ("protected_high", "external_protected_high", "internal_protected_high"))
     protected_low = _first_num(e3, ("protected_low", "external_protected_low", "internal_protected_low"))
     resistance = _first_num(e5, ("next_resistance", "nearest_resistance", "resistance"))
@@ -137,25 +146,19 @@ def _levels(e3: dict[str, Any], e4: dict[str, Any], e5: dict[str, Any], bars: li
     event_level = _first_num(e4, ("event_level", "liquidity_level", "nearest_liquidity", "opposing_liquidity_level"))
 
     if direction == "BUY":
-        target_candidates = [
-            ("RESISTANCE", resistance),
-            ("PROTECTED_HIGH", protected_high),
-            ("LIQUIDITY_EVENT", event_level),
-            ("STRUCTURE_HIGH_20", hi20),
-        ]
-        target_candidates = [(name, level) for name, level in target_candidates if level is not None and level > entry]
-        target_name, target = min(target_candidates, key=lambda x: x[1]) if target_candidates else (None, None)
-        structural_invalidation = protected_low if protected_low is not None and protected_low < entry else lo20 if lo20 is not None and lo20 < entry else None
+        targets = [("RESISTANCE", resistance), ("PROTECTED_HIGH", protected_high), ("LIQUIDITY_EVENT", event_level), ("STRUCTURE_HIGH_20", hi20)]
+        targets = [(name, level) for name, level in targets if level is not None and level > entry]
+        target_name, target = min(targets, key=lambda x: x[1]) if targets else (None, None)
+        invalidations = [("PROTECTED_LOW", protected_low), ("STRUCTURE_LOW_20", lo20)]
+        invalidations = [(name, level) for name, level in invalidations if level is not None and level < entry]
+        invalidation_name, structural_invalidation = min(invalidations, key=lambda x: x[1], default=(None, None))
     else:
-        target_candidates = [
-            ("SUPPORT", support),
-            ("PROTECTED_LOW", protected_low),
-            ("LIQUIDITY_EVENT", event_level),
-            ("STRUCTURE_LOW_20", lo20),
-        ]
-        target_candidates = [(name, level) for name, level in target_candidates if level is not None and level < entry]
-        target_name, target = max(target_candidates, key=lambda x: x[1]) if target_candidates else (None, None)
-        structural_invalidation = protected_high if protected_high is not None and protected_high > entry else hi20 if hi20 is not None and hi20 > entry else None
+        targets = [("SUPPORT", support), ("PROTECTED_LOW", protected_low), ("LIQUIDITY_EVENT", event_level), ("STRUCTURE_LOW_20", lo20)]
+        targets = [(name, level) for name, level in targets if level is not None and level < entry]
+        target_name, target = max(targets, key=lambda x: x[1]) if targets else (None, None)
+        invalidations = [("PROTECTED_HIGH", protected_high), ("STRUCTURE_HIGH_20", hi20)]
+        invalidations = [(name, level) for name, level in invalidations if level is not None and level > entry]
+        invalidation_name, structural_invalidation = max(invalidations, key=lambda x: x[1], default=(None, None))
 
     return {
         "protected_high": protected_high,
@@ -166,6 +169,7 @@ def _levels(e3: dict[str, Any], e4: dict[str, Any], e5: dict[str, Any], bars: li
         "structure_high_20": hi20,
         "structure_low_20": lo20,
         "structural_invalidation": structural_invalidation,
+        "invalidation_source": invalidation_name,
         "target_level": target,
         "target_source": target_name,
     }
@@ -173,9 +177,10 @@ def _levels(e3: dict[str, Any], e4: dict[str, Any], e5: dict[str, Any], bars: li
 
 def _volatility_state(bars: list[dict[str, Any]], atr: float) -> dict[str, Any]:
     if atr <= 0 or len(bars) < 2:
-        return {"state": "INVALID", "last_range_atr": 0.0, "atr_ratio": 0.0}
-    last_range = max(0.0, _num(bars[-1].get("high")) - _num(bars[-1].get("low")))
-    previous_range = max(0.0, _num(bars[-2].get("high")) - _num(bars[-2].get("low")))
+        return {"state": "INVALID", "last_range_atr": 0.0, "expansion_ratio": 0.0, "atr_stability": "INVALID"}
+    ranges = [max(0.0, _num(x.get("high")) - _num(x.get("low"))) for x in bars[-ATR_PERIOD:] if _num(x.get("high")) > 0]
+    last_range = ranges[-1] if ranges else 0.0
+    previous_range = ranges[-2] if len(ranges) >= 2 else 0.0
     ratio = last_range / atr
     expansion_ratio = last_range / max(previous_range, 1e-9)
     if ratio >= 2.50:
@@ -186,11 +191,49 @@ def _volatility_state(bars: list[dict[str, Any]], atr: float) -> dict[str, Any]:
         state = "COMPRESSION"
     else:
         state = "NORMAL"
-    return {"state": state, "last_range_atr": ratio, "expansion_ratio": expansion_ratio}
+    med = mean(ranges) if ranges else 0.0
+    atr_stability = "STABLE" if med > 0 and 0.50 <= atr / med <= 2.00 else "UNSTABLE"
+    return {"state": state, "last_range_atr": ratio, "expansion_ratio": expansion_ratio, "atr_stability": atr_stability}
+
+
+def _execution_cost(snapshot: dict[str, Any], entry: float, atr: float) -> dict[str, Any]:
+    spread = _first_num(snapshot, ("spread", "spread_price", "current_spread")) or 0.0
+    slippage = _first_num(snapshot, ("slippage", "slippage_price", "expected_slippage")) or 0.0
+    total = spread + slippage
+    cost_atr = total / atr if atr > 0 else float("inf")
+    return {"spread": spread, "slippage": slippage, "total_cost": total, "cost_atr": cost_atr, "entry": entry}
+
+
+def _e4_liquidity_quality(e4: dict[str, Any]) -> dict[str, Any]:
+    quality = _first_num(e4, ("liquidity_quality",)) or 0.0
+    auction_quality = _first_num(e4, ("auction_quality",)) or 0.0
+    proximity = _text(e4.get("liquidity_proximity"))
+    externality = _text(e4.get("liquidity_externality"))
+    state = _text(e4.get("auction_state"))
+    information = _text(e4.get("auction_information"))
+    return {
+        "liquidity_quality": quality,
+        "auction_quality": auction_quality,
+        "proximity": proximity,
+        "externality": externality,
+        "auction_state": state,
+        "information": information,
+    }
+
+
+def _has_structural_breach(bars: list[dict[str, Any]], direction: str, structural: float | None) -> bool:
+    if structural is None or not bars:
+        return False
+    close = _num(bars[-1].get("close"))
+    if direction == "BUY":
+        return close <= structural
+    if direction == "SELL":
+        return close >= structural
+    return False
 
 
 def analyze_e8(snapshot: dict[str, Any], upstream: dict[str, EngineResult]) -> EngineResult:
-    """E8 audits trade survivability and economics; E9 retains final authority."""
+    """E8 validates survivability/economics; E9 remains final trade authority."""
     bars = list(snapshot.get("bars") or [])
     e3, e4, e5, e6, e7 = (_evidence(upstream.get(k)) for k in ("E3", "E4", "E5", "E6", "E7"))
     base = {
@@ -206,8 +249,13 @@ def analyze_e8(snapshot: dict[str, Any], upstream: dict[str, EngineResult]) -> E
 
     if len(bars) < MIN_BARS:
         return EngineResult("E8", NAME, False, 0.0, {
-            **base, "state": "UNRESOLVED", "economic_state": "UNRESOLVED", "risk_gate": "RISK_NOT_READY",
-            "trade_plan": {}, "supporting_evidence": [], "counter_evidence": ["INSUFFICIENT_CLOSED_CANDLE_DATA"],
+            **base,
+            "state": "UNRESOLVED",
+            "economic_state": "UNRESOLVED",
+            "risk_gate": "RISK_NOT_READY",
+            "trade_plan": {},
+            "supporting_evidence": [],
+            "counter_evidence": ["INSUFFICIENT_CLOSED_CANDLE_DATA"],
             "missing_evidence": ["SUFFICIENT_RISK_SAMPLE"],
         }, ("INSUFFICIENT_DATA",))
 
@@ -217,6 +265,8 @@ def analyze_e8(snapshot: dict[str, Any], upstream: dict[str, EngineResult]) -> E
     entry = _num(bars[-1].get("close"))
     atr = _atr(bars)
     volatility = _volatility_state(bars, atr)
+    execution = _execution_cost(snapshot, entry, atr)
+    liquidity_quality = _e4_liquidity_quality(e4)
 
     support: list[str] = []
     counter: list[str] = []
@@ -236,16 +286,20 @@ def analyze_e8(snapshot: dict[str, Any], upstream: dict[str, EngineResult]) -> E
     levels = _levels(e3, e4, e5, bars, direction, entry) if data_valid and direction in {"BUY", "SELL"} else {}
     structural = levels.get("structural_invalidation") if levels else None
 
-    # 8D: structural invalidation first, then a small volatility buffer beyond it.
+    # 8D — structural invalidation is the thesis boundary. ATR only provides survival clearance.
+    structural_breached = _has_structural_breach(bars, direction, structural)
+    if structural_breached:
+        counter.append("STRUCTURAL_INVALIDATION_BREACHED")
+
     if data_valid and direction in {"BUY", "SELL"}:
         if direction == "BUY":
             structural_stop = structural if structural is not None and structural < entry else None
             stop = structural_stop - RISK_ATR_BUFFER * atr if structural_stop is not None else entry - FALLBACK_STOP_ATR * atr
-            invalidation_basis = "PROTECTED_LOW_PLUS_ATR_BUFFER" if structural_stop is not None else "ATR_FALLBACK"
+            invalidation_basis = "STRUCTURAL_LEVEL_PLUS_ATR_BUFFER" if structural_stop is not None else "ATR_FALLBACK_LOWER_CONFIDENCE"
         else:
             structural_stop = structural if structural is not None and structural > entry else None
             stop = structural_stop + RISK_ATR_BUFFER * atr if structural_stop is not None else entry + FALLBACK_STOP_ATR * atr
-            invalidation_basis = "PROTECTED_HIGH_PLUS_ATR_BUFFER" if structural_stop is not None else "ATR_FALLBACK"
+            invalidation_basis = "STRUCTURAL_LEVEL_PLUS_ATR_BUFFER" if structural_stop is not None else "ATR_FALLBACK_LOWER_CONFIDENCE"
 
         risk = abs(entry - stop)
         stop_atr = risk / atr
@@ -273,6 +327,7 @@ def analyze_e8(snapshot: dict[str, Any], upstream: dict[str, EngineResult]) -> E
                 "stop_loss": stop,
                 "structural_stop": structural_stop,
                 "invalidation_basis": invalidation_basis,
+                "invalidation_source": levels.get("invalidation_source"),
                 "take_profit_1": tp1,
                 "take_profit_2": target,
                 "target_source": target_source,
@@ -287,18 +342,22 @@ def analyze_e8(snapshot: dict[str, Any], upstream: dict[str, EngineResult]) -> E
                 "rr_minimum": MIN_RR,
                 "stop_distance_atr": stop_atr,
                 "risk_buffer_atr": RISK_ATR_BUFFER,
+                "structural_breach": structural_breached,
             }
             support += [
-                f"entry={entry:.6f}", f"structural_stop={structural_stop if structural_stop is not None else 'NONE'}",
-                f"final_stop={stop:.6f}", f"target={target:.6f}", f"target_source={target_source}",
-                f"available_space_atr={space_atr:.3f}", f"real_rr={real_rr:.3f}", f"stop_distance_atr={stop_atr:.3f}",
+                f"entry={entry:.6f}",
+                f"structural_stop={structural_stop if structural_stop is not None else 'NONE'}",
+                f"final_stop={stop:.6f}",
+                f"target={target:.6f}",
+                f"target_source={target_source}",
+                f"available_space_atr={space_atr:.3f}",
+                f"real_rr={real_rr:.3f}",
+                f"stop_distance_atr={stop_atr:.3f}",
             ]
             if real_rr < MIN_RR:
                 counter.append("REAL_RR_BELOW_MINIMUM")
 
-    # 8E: only treat liquidity as a risk obstacle when it lies strictly between
-    # entry and the chosen target. A liquidity level that IS the target is not
-    # double-counted as an obstacle.
+    # 8E — liquidity is evaluated as path risk, not merely as a single event label.
     liquidity = levels.get("liquidity_event_level") if levels else None
     target = plan.get("take_profit_2")
     if liquidity is not None and target is not None:
@@ -307,56 +366,98 @@ def analyze_e8(snapshot: dict[str, Any], upstream: dict[str, EngineResult]) -> E
             liquidity_r = abs(liquidity - entry) / max(plan.get("risk_distance", atr), 1e-9)
             plan["opposing_liquidity"] = liquidity
             plan["opposing_liquidity_r"] = liquidity_r
-            if liquidity_r < MIN_RR:
-                counter.append("OPPOSING_LIQUIDITY_TOO_CLOSE")
+            if liquidity_r <= MAX_LIQUIDITY_RISK_R:
+                counter.append("OPPOSING_LIQUIDITY_PATH_RISK")
+            if liquidity_quality["externality"] == "INTERNAL":
+                support.append("internal_liquidity_has_lower_weight")
+            elif liquidity_quality["externality"] == "EXTERNAL":
+                counter.append("EXTERNAL_LIQUIDITY_PATH_RISK")
         else:
             plan["opposing_liquidity"] = None
             plan["opposing_liquidity_r"] = None
+    elif liquidity is None:
+        missing.append("LIQUIDITY_PATH_AUDIT")
+
+    if liquidity_quality["auction_state"] == "PENDING":
+        counter.append("LIQUIDITY_AUCTION_NOT_TERMINALLY_CONFIRMED")
+    if liquidity_quality["information"] == "LOW_INFORMATION":
+        counter.append("LOW_INFORMATION_LIQUIDITY_EVENT")
+
+    # 8F — space is the first credible opposing barrier, not an arbitrary distance.
+    e5_long = _num(e5.get("available_space_atr_long"))
+    e5_short = _num(e5.get("available_space_atr_short"))
+    e5_space = e5_long if direction == "BUY" else e5_short if direction == "SELL" else 0.0
+    computed_space = plan.get("available_space_atr", 0.0)
+    if e5_space > 0:
+        plan["e5_available_space_atr"] = e5_space
+        plan["space_consistency_delta_atr"] = computed_space - e5_space
+        effective_space = min(computed_space, e5_space) if computed_space > 0 else e5_space
+    else:
+        effective_space = computed_space
+    plan["effective_available_space_atr"] = effective_space
+    if effective_space < MIN_SPACE_ATR:
+        counter.append("EFFECTIVE_SPACE_BELOW_MINIMUM")
+    if effective_space > 0 and computed_space > 0 and abs(computed_space - effective_space) >= 1.0:
+        counter.append("SPACE_EVIDENCE_CONFLICT")
 
     structural_location = _text(e5.get("structural_location"))
-    if "SPACE_CONSTRAINED" in _text(e5.get("finding")) or "LONG_SPACE_CONSTRAINED" in " ".join(str(x) for x in (e5.get("reasons") or [])):
+    e5_reasons = [_text(x) for x in (e5.get("reasons") or [])]
+    if "SPACE_CONSTRAINED" in _text(e5.get("finding")) or "LONG_SPACE_CONSTRAINED" in e5_reasons or "SHORT_SPACE_CONSTRAINED" in e5_reasons:
         counter.append("LOCATION_SPACE_CONSTRAINED")
 
-    if volatility["state"] == "EXPANSION_EXTREME":
+    # 8G — dynamic target is deliberately the first credible opposing level.
+    # E8 must not leap over a nearer barrier just to manufacture a higher RR.
+    target_ok = bool(plan) and plan.get("take_profit_2") is not None and effective_space >= MIN_TARGET_CLEARANCE_ATR
+    if not target_ok:
+        counter.append("DYNAMIC_TARGET_NOT_USABLE")
+    elif plan.get("target_source") in {"STRUCTURE_HIGH_20", "STRUCTURE_LOW_20"}:
+        counter.append("TARGET_IS_STATISTICAL_STRUCTURE_FALLBACK")
+
+    # 8I — execution risk is assessed from current candle expansion and explicit costs.
+    if volatility["state"] == "EXPANSION_EXTREME" or volatility["last_range_atr"] > MAX_LAST_RANGE_ATR:
         counter.append("VOLATILITY_RISK_HIGH")
     elif volatility["state"] == "EXPANSION":
-        # Expansion is not automatic rejection, but it makes the economics conditional.
         counter.append("VOLATILITY_EXPANSION_RISK")
+    if volatility["atr_stability"] == "UNSTABLE":
+        counter.append("ATR_STABILITY_RISK")
+    if execution["cost_atr"] > MAX_EXECUTION_COST_ATR:
+        counter.append("EXECUTION_COST_TOO_HIGH")
 
-    # 8F/8G explicit gate: usable space must exist beyond entry and the target
-    # must be reachable before the structural economics are considered.
-    space_atr = plan.get("available_space_atr", 0.0)
-    space_ok = bool(plan) and space_atr >= MIN_SPACE_ATR
-    target_ok = bool(plan) and plan.get("take_profit_2") is not None
+    space_ok = bool(plan) and effective_space >= MIN_SPACE_ATR
     rr_ok = bool(plan) and plan.get("real_rr", 0.0) >= MIN_RR
     stop_ok = bool(plan) and MIN_STOP_ATR <= plan.get("stop_distance_atr", 0.0) <= MAX_STOP_ATR
-    liquidity_ok = "OPPOSING_LIQUIDITY_TOO_CLOSE" not in counter
-    volatility_ok = volatility["state"] not in {"EXPANSION_EXTREME"}
+    liquidity_ok = not any(x in counter for x in {"OPPOSING_LIQUIDITY_PATH_RISK", "EXTERNAL_LIQUIDITY_PATH_RISK"})
+    volatility_ok = volatility["state"] not in {"EXPANSION_EXTREME"} and volatility["atr_stability"] == "STABLE"
+    execution_ok = execution["cost_atr"] <= MAX_EXECUTION_COST_ATR
 
     critical = {
         "RISK_DATA_INVALID", "NO_VALID_DIRECTION", "VALID_SETUP_THESIS", "ENTRY_CONFIRMATION",
-        "STOP_TOO_TIGHT_FOR_VOLATILITY", "STOP_TOO_WIDE_FOR_ECONOMICS", "NO_USABLE_STRUCTURAL_TARGET",
-        "AVAILABLE_SPACE_BELOW_MINIMUM", "REAL_RR_BELOW_MINIMUM", "OPPOSING_LIQUIDITY_TOO_CLOSE",
-        "LOCATION_SPACE_CONSTRAINED", "VOLATILITY_RISK_HIGH",
+        "STRUCTURAL_INVALIDATION_BREACHED", "STOP_TOO_TIGHT_FOR_VOLATILITY", "STOP_TOO_WIDE_FOR_ECONOMICS",
+        "NO_USABLE_STRUCTURAL_TARGET", "AVAILABLE_SPACE_BELOW_MINIMUM", "EFFECTIVE_SPACE_BELOW_MINIMUM",
+        "SPACE_EVIDENCE_CONFLICT", "REAL_RR_BELOW_MINIMUM", "OPPOSING_LIQUIDITY_PATH_RISK",
+        "EXTERNAL_LIQUIDITY_PATH_RISK", "LOCATION_SPACE_CONSTRAINED", "VOLATILITY_RISK_HIGH",
+        "ATR_STABILITY_RISK", "EXECUTION_COST_TOO_HIGH", "DYNAMIC_TARGET_NOT_USABLE",
+        "LIQUIDITY_AUCTION_NOT_TERMINALLY_CONFIRMED", "LOW_INFORMATION_LIQUIDITY_EVENT",
     }
     counter = list(dict.fromkeys(counter))
     missing = list(dict.fromkeys(missing))
 
-    # 8J economics distinguishes an invalid trade from a merely conditional one.
     hard_failure = any(x in critical for x in counter) or bool(missing)
-    economics_ready = data_valid and direction in {"BUY", "SELL"} and bool(plan) and target_ok and space_ok and rr_ok and stop_ok and liquidity_ok and volatility_ok and not missing and not any(x in critical for x in counter)
+    economics_ready = (
+        data_valid and direction in {"BUY", "SELL"} and bool(plan) and target_ok and space_ok and rr_ok
+        and stop_ok and liquidity_ok and volatility_ok and execution_ok and not missing
+        and not hard_failure
+    )
 
     if economics_ready:
         economic_state = "ATTRACTIVE"
-    elif plan and any(x in counter for x in {"NO_USABLE_STRUCTURAL_TARGET", "AVAILABLE_SPACE_BELOW_MINIMUM", "REAL_RR_BELOW_MINIMUM", "STOP_TOO_WIDE_FOR_ECONOMICS", "STOP_TOO_TIGHT_FOR_VOLATILITY", "OPPOSING_LIQUIDITY_TOO_CLOSE"}):
+    elif plan and any(x in counter for x in critical):
         economic_state = "UNATTRACTIVE"
     elif plan:
         economic_state = "CONDITIONAL"
     else:
         economic_state = "UNRESOLVED"
 
-    # 8K is intentionally conjunctive: no single attractive metric can override
-    # a missing proof gate, structural invalidation problem, or poor execution economics.
     risk_ready = economics_ready
     score = 95.0 if risk_ready else 65.0 if economic_state == "CONDITIONAL" else 30.0 if economic_state == "UNATTRACTIVE" else 15.0
 
@@ -376,28 +477,39 @@ def analyze_e8(snapshot: dict[str, Any], upstream: dict[str, EngineResult]) -> E
             "volatility_state": volatility["state"],
             "last_range_atr": volatility.get("last_range_atr", 0.0),
             "expansion_ratio": volatility.get("expansion_ratio", 0.0),
+            "atr_stability": volatility.get("atr_stability"),
+            "spread": execution["spread"],
+            "slippage": execution["slippage"],
+            "execution_cost_atr": execution["cost_atr"],
             "structure_lookback": STRUCTURE_LOOKBACK,
             "min_stop_atr": MIN_STOP_ATR,
             "max_stop_atr": MAX_STOP_ATR,
             "min_space_atr": MIN_SPACE_ATR,
             "risk_buffer_atr": RISK_ATR_BUFFER,
+            "max_liquidity_risk_r": MAX_LIQUIDITY_RISK_R,
+            "max_execution_cost_atr": MAX_EXECUTION_COST_ATR,
         },
-        "structural_evidence": levels,
+        "structural_evidence": {
+            **levels,
+            "structural_breached": structural_breached,
+        },
+        "liquidity_evidence": liquidity_quality,
         "location_evidence": {
             "structural_location": structural_location,
-            "e5_available_space_long_atr": _num(e5.get("available_space_atr_long")),
-            "e5_available_space_short_atr": _num(e5.get("available_space_atr_short")),
+            "e5_available_space_long_atr": e5_long,
+            "e5_available_space_short_atr": e5_short,
+            "effective_available_space_atr": effective_space,
         },
         "gate_matrix": {
             "8A_data_integrity": "PASS" if data_valid else "FAIL",
             "8B_direction_validation": "PASS" if direction in {"BUY", "SELL"} else "FAIL",
             "8C_setup_confirmation_gate": "PASS" if confirmation == "CONFIRMED" else "FAIL",
-            "8D_structural_invalidation": "PASS" if structural is not None and plan.get("structural_stop") is not None else "PASS_FALLBACK_ATR" if plan else "FAIL",
-            "8E_liquidity_risk": "PASS" if liquidity_ok else "FAIL",
-            "8F_available_space": "PASS" if space_ok else "FAIL",
+            "8D_structural_invalidation": "FAIL" if structural_breached else "PASS" if structural is not None and plan.get("structural_stop") is not None else "PASS_FALLBACK_ATR" if plan else "FAIL",
+            "8E_liquidity_risk": "PASS" if liquidity_ok and liquidity_quality["auction_state"] != "PENDING" and liquidity_quality["information"] != "LOW_INFORMATION" else "FAIL",
+            "8F_available_space": "PASS" if space_ok and "SPACE_EVIDENCE_CONFLICT" not in counter else "FAIL",
             "8G_dynamic_target": "PASS" if target_ok and plan.get("target_source") else "FAIL",
             "8H_real_rr": "PASS" if rr_ok else "FAIL",
-            "8I_volatility_execution": "PASS" if volatility_ok and stop_ok else "FAIL",
+            "8I_volatility_execution": "PASS" if volatility_ok and execution_ok and stop_ok else "FAIL",
             "8J_trade_economics": economic_state,
             "8K_final_risk_gate": "RISK_READY" if risk_ready else "RISK_NOT_READY",
         },
@@ -407,22 +519,23 @@ def analyze_e8(snapshot: dict[str, Any], upstream: dict[str, EngineResult]) -> E
         "invalidation": [
             "closed-candle structural invalidation",
             "structural stop becomes economically excessive",
-            "available space collapses below minimum",
+            "effective available space collapses below minimum",
             "real RR falls below minimum",
-            "opposing liquidity blocks the path to target",
+            "opposing or external liquidity blocks the path to target",
             "volatility makes the stop non-survivable",
+            "execution cost becomes excessive",
             "entry confirmation is not proven",
         ],
         "professional_reasoning": {
             "8A_data_integrity": "PASS" if data_valid else "FAIL",
             "8B_direction_validation": "PASS" if direction in {"BUY", "SELL"} else "FAIL",
             "8C_setup_confirmation_gate": "PASS" if confirmation == "CONFIRMED" else "FAIL",
-            "8D_structural_invalidation": "Structural invalidation is the primary stop anchor; ATR is only the survival buffer." if structural is not None else "No valid protected level; ATR fallback is used and treated as lower-quality risk evidence.",
-            "8E_liquidity_risk": "Liquidity is a blocker only when it materially obstructs the path from entry to target; the selected target itself is not double-counted as an obstacle.",
-            "8F_available_space": f"usable_space_atr={space_atr:.3f} minimum={MIN_SPACE_ATR:.3f}",
-            "8G_dynamic_target": f"target_source={plan.get('target_source', 'NONE')} tp1={plan.get('take_profit_1', 'NONE')} tp2={plan.get('take_profit_2', 'NONE')}",
+            "8D_structural_invalidation": "The protected structural boundary is the thesis invalidation; ATR is only a survival buffer. A closed candle beyond it invalidates the trade thesis.",
+            "8E_liquidity_risk": "Liquidity is evaluated as a path obstacle using event level, auction quality, externality, information quality, and distance relative to trade risk.",
+            "8F_available_space": f"computed_space_atr={computed_space:.3f} e5_space_atr={e5_space:.3f} effective_space_atr={effective_space:.3f} minimum={MIN_SPACE_ATR:.3f}",
+            "8G_dynamic_target": f"first_credible_target={plan.get('take_profit_2', 'NONE')} source={plan.get('target_source', 'NONE')}; farther targets are not used to manufacture RR across a nearer barrier.",
             "8H_real_rr": f"real_rr={plan.get('real_rr', 0.0):.3f} minimum={MIN_RR:.3f}",
-            "8I_volatility_execution": f"volatility={volatility['state']} stop_atr={plan.get('stop_distance_atr', 0.0):.3f}",
+            "8I_volatility_execution": f"volatility={volatility['state']} atr_stability={volatility['atr_stability']} stop_atr={plan.get('stop_distance_atr', 0.0):.3f} execution_cost_atr={execution['cost_atr']:.3f}",
             "8J_trade_economics": economic_state,
             "8K_final_risk_gate": "RISK_READY" if risk_ready else "RISK_NOT_READY",
             "decision_path": "E8 validates survivability/economics only; E9 retains final trade authority.",
