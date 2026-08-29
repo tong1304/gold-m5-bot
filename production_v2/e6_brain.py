@@ -7,8 +7,8 @@ from .contracts import EngineResult
 
 NAME = "Setup Brain"
 QUESTION = "What setup is forming, in what direction, and at what stage?"
-ARCHITECTURE = "E6_PROFESSIONAL_SETUP_FORMATION_BRAIN_V2"
-VERSION = "2.0"
+ARCHITECTURE = "E6_PROFESSIONAL_SETUP_FORMATION_BRAIN_V3"
+VERSION = "3.0"
 MIN_BARS = 60
 ATR_PERIOD = 14
 EMA_FAST = 20
@@ -58,13 +58,11 @@ def _payload(upstream: dict[str, EngineResult], engine_id: str) -> dict[str, Any
 
 
 def _direction_context(e1: dict[str, Any], e2: dict[str, Any], e3: dict[str, Any]) -> tuple[str, list[str], list[str]]:
-    """Use upstream direction as context, never as the setup itself."""
     support: list[str] = []
     counter: list[str] = []
     e2_direction = _norm_direction(e2.get("direction"))
     e1_pressure = _norm_direction(e1.get("directional_pressure"))
     direction = e2_direction if e2_direction in {"BUY", "SELL"} else e1_pressure
-
     if direction in {"BUY", "SELL"}:
         support.append(f"DIRECTIONAL_CONTEXT={direction}")
     else:
@@ -86,18 +84,28 @@ def _direction_context(e1: dict[str, Any], e2: dict[str, Any], e3: dict[str, Any
         counter.append("EXTERNAL_STRUCTURE_COUNTERTREND")
     if direction == "SELL" and external == "UP":
         counter.append("EXTERNAL_STRUCTURE_COUNTERTREND")
+    if "FAILED_BOS" in finding:
+        counter.append("FAILED_STRUCTURE_BREAK")
     if "CHOCH" in finding or "CHOCH" in str(e3.get("external_bos", "")).upper():
         counter.append("STRUCTURE_TRANSITION_EVIDENCE")
-    return direction, support, counter
+    return direction, support, list(dict.fromkeys(counter))
 
 
 def _candle_behavior(bars: list[dict[str, Any]], atr: float, direction: str) -> dict[str, Any]:
     last = bars[-1]
-    body = abs(float(last["close"]) - float(last["open"]))
-    rng = max(float(last["high"]) - float(last["low"]), 1e-9)
-    close_position = (float(last["close"]) - float(last["low"])) / rng
+    open_ = float(last["open"])
+    close = float(last["close"])
+    high = float(last["high"])
+    low = float(last["low"])
+    body = abs(close - open_)
+    rng = max(high - low, 1e-9)
+    close_position = (close - low) / rng
     impulse = body >= 0.60 * atr
-    directional_close = close_position >= 0.65 if direction == "BUY" else close_position <= 0.35 if direction == "SELL" else False
+    directional_close = (
+        close_position >= 0.65 if direction == "BUY"
+        else close_position <= 0.35 if direction == "SELL"
+        else False
+    )
     return {
         "body_atr": round(body / max(atr, 1e-9), 4),
         "range_atr": round(rng / max(atr, 1e-9), 4),
@@ -109,40 +117,35 @@ def _candle_behavior(bars: list[dict[str, Any]], atr: float, direction: str) -> 
 
 def _trend_pullback(bars: list[dict[str, Any]], atr: float, direction: str, e3: dict[str, Any]) -> dict[str, Any]:
     if direction not in {"BUY", "SELL"} or len(bars) < EMA_SLOW + 5:
-        return {"candidate": False, "evidence": [], "missing": ["directional_context_or_history"]}
-
+        return {"candidate": False, "evidence": [], "missing": ["direction_or_history"]}
     closes = [float(b["close"]) for b in bars]
     e20 = _ema(closes, EMA_FAST)
     e50 = _ema(closes, EMA_SLOW)
-    price = closes[-1]
     recent = bars[-PULLBACK_LOOKBACK:]
     recent_low = min(float(b["low"]) for b in recent)
     recent_high = max(float(b["high"]) for b in recent)
+    price = closes[-1]
     distance = abs(price - e20) / max(atr, 1e-9)
-    trend_aligned = price > e20 > e50 if direction == "BUY" else price < e20 < e50
-    touched_mean = recent_low <= e20 + 0.25 * atr if direction == "BUY" else recent_high >= e20 - 0.25 * atr
+    aligned = price > e20 > e50 if direction == "BUY" else price < e20 < e50
+    touched = recent_low <= e20 + 0.25 * atr if direction == "BUY" else recent_high >= e20 - 0.25 * atr
     reclaimed = price >= e20 if direction == "BUY" else price <= e20
-    structure_ok = "MIXED" not in str(e3.get("finding", "")).upper()
-    candidate = trend_aligned and touched_mean and reclaimed and structure_ok
+    clean_structure = "MIXED" not in str(e3.get("finding", "")).upper()
     evidence: list[str] = []
     missing: list[str] = []
-    if trend_aligned:
-        evidence.append("TREND_ALIGNMENT_EMA20_EMA50")
-    else:
-        missing.append("trend_alignment")
-    if touched_mean:
-        evidence.append("RETRACEMENT_TOWARD_EMA20")
-    else:
-        missing.append("retracement_behavior")
-    if reclaimed:
-        evidence.append("RECLAIM_OR_HOLD_EMA20")
-    else:
-        missing.append("reclaim_or_hold")
-    if not structure_ok:
-        missing.append("clean_structure")
-    if distance > 1.25:
-        missing.append("controlled_distance_from_mean")
-    return {"candidate": candidate, "evidence": evidence, "missing": missing, "ema20": e20, "ema50": e50, "distance_atr": distance}
+    if aligned: evidence.append("TREND_ALIGNMENT_EMA20_EMA50")
+    else: missing.append("trend_alignment")
+    if touched: evidence.append("RETRACEMENT_TOWARD_EMA20")
+    else: missing.append("retracement_behavior")
+    if reclaimed: evidence.append("RECLAIM_OR_HOLD_EMA20")
+    else: missing.append("reclaim_or_hold")
+    if distance > 1.25: missing.append("controlled_distance_from_mean")
+    if not clean_structure: missing.append("clean_structure")
+    return {
+        "candidate": aligned and touched and reclaimed and clean_structure and distance <= 1.50,
+        "evidence": evidence,
+        "missing": missing,
+        "distance_atr": round(distance, 4),
+    }
 
 
 def _breakout(bars: list[dict[str, Any]], atr: float, direction: str) -> dict[str, Any]:
@@ -153,25 +156,22 @@ def _breakout(bars: list[dict[str, Any]], atr: float, direction: str) -> dict[st
     low = min(float(b["low"]) for b in prior)
     last = bars[-1]
     close = float(last["close"])
+    open_ = float(last["open"])
     rng = max(float(last["high"]) - float(last["low"]), 1e-9)
-    body = abs(close - float(last["open"]))
+    body = abs(close - open_)
     expansion = rng >= 0.80 * atr or body >= 0.60 * atr
-    if direction == "BUY":
-        broke = close > high
-        strong_close = (close - float(last["low"])) / rng >= 0.65
-    else:
-        broke = close < low
-        strong_close = (close - float(last["low"])) / rng <= 0.35
-    candidate = broke and expansion and strong_close
-    evidence = []
-    missing = []
+    broke = close > high if direction == "BUY" else close < low
+    close_position = (close - float(last["low"])) / rng
+    strong_close = close_position >= 0.65 if direction == "BUY" else close_position <= 0.35
+    evidence: list[str] = []
+    missing: list[str] = []
     if broke: evidence.append("CLOSED_RANGE_BREAK")
     else: missing.append("closed_break_of_range")
     if expansion: evidence.append("VOLATILITY_EXPANSION")
     else: missing.append("expansion")
     if strong_close: evidence.append("DIRECTIONAL_CLOSE")
     else: missing.append("directional_close")
-    return {"candidate": candidate, "evidence": evidence, "missing": missing, "prior_high": high, "prior_low": low}
+    return {"candidate": broke and expansion and strong_close, "evidence": evidence, "missing": missing}
 
 
 def _breakout_retest(bars: list[dict[str, Any]], atr: float, direction: str) -> dict[str, Any]:
@@ -187,76 +187,55 @@ def _breakout_retest(bars: list[dict[str, Any]], atr: float, direction: str) -> 
         for b in retest_bars
     )
     held = float(bars[-1]["close"]) >= level if direction == "BUY" else float(bars[-1]["close"]) <= level
-    candidate = broke and touched and held
-    evidence = []
-    missing = []
+    evidence: list[str] = []
+    missing: list[str] = []
     if broke: evidence.append("PRIOR_CLOSED_BREAKOUT")
     else: missing.append("prior_breakout")
     if touched: evidence.append("LEVEL_RETEST")
     else: missing.append("retest")
     if held: evidence.append("RETEST_HOLD")
     else: missing.append("retest_hold")
-    return {"candidate": candidate, "evidence": evidence, "missing": missing, "level": level}
+    return {"candidate": broke and touched and held, "evidence": evidence, "missing": missing, "level": level}
 
 
 def _impulse_continuation(bars: list[dict[str, Any]], atr: float, direction: str) -> dict[str, Any]:
     if direction not in {"BUY", "SELL"} or len(bars) < 5:
         return {"candidate": False, "evidence": [], "missing": ["impulse_history"]}
     recent = bars[-4:]
-    bodies = [abs(float(b["close"]) - float(b["open"])) for b in recent]
-    impulse = max(bodies[:-1]) >= 0.80 * atr
+    impulse_index = max(range(3), key=lambda i: abs(float(recent[i]["close"]) - float(recent[i]["open"])))
+    impulse_body = abs(float(recent[impulse_index]["close"]) - float(recent[impulse_index]["open"]))
+    impulse_direction = _norm_direction("BUY" if float(recent[impulse_index]["close"]) > float(recent[impulse_index]["open"]) else "SELL")
     last = recent[-1]
-    if direction == "BUY":
-        continuation = float(last["close"]) > float(last["open"])
-    else:
-        continuation = float(last["close"]) < float(last["open"])
-    candidate = impulse and continuation
-    evidence = ["PRIOR_IMPULSE"] if impulse else []
-    if continuation: evidence.append("DIRECTIONAL_FOLLOW_THROUGH")
-    missing = []
-    if not impulse: missing.append("meaningful_impulse")
-    if not continuation: missing.append("follow_through")
-    return {"candidate": candidate, "evidence": evidence, "missing": missing}
+    last_direction = _norm_direction("BUY" if float(last["close"]) > float(last["open"]) else "SELL")
+    impulse = impulse_body >= 0.80 * atr and impulse_direction == direction
+    follow_through = last_direction == direction
+    evidence: list[str] = []
+    missing: list[str] = []
+    if impulse: evidence.append("DIRECTIONAL_PRIOR_IMPULSE")
+    else: missing.append("meaningful_directional_impulse")
+    if follow_through: evidence.append("DIRECTIONAL_FOLLOW_THROUGH")
+    else: missing.append("follow_through")
+    return {"candidate": impulse and follow_through, "evidence": evidence, "missing": missing}
 
 
-def _score_setup(
+def _setup_output(
+    *,
+    state: str,
+    setup: str,
     direction: str,
-    formation: list[str],
-    context_support: list[str],
-    counter: list[str],
-    e4: dict[str, Any],
-    e5: dict[str, Any],
     stage: str,
-) -> tuple[float, list[str], list[str]]:
-    """Score evidence quality, not probability of profit."""
-    score = 0.0
-    support = list(formation) + list(context_support)
-    reasons = list(counter)
-    if formation:
-        score += min(0.50, 0.10 * len(formation))
-    if direction in {"BUY", "SELL"}:
-        score += 0.10
-    if stage in {"TESTING", "TRIGGER_PENDING"}:
-        score += 0.10
-    e4_text = str(e4).upper()
-    e5_text = str(e5).upper()
-    if "REJECTION" in e4_text or "SWEEP" in e4_text:
-        score += 0.10
-        support.append("E4_LIQUIDITY_CONTEXT_SUPPORT")
-    if "SPACE" in e5_text and "CONSTRAINED" not in e5_text:
-        score += 0.10
-        support.append("E5_LOCATION_SPACE_SUPPORT")
-    if any(x in e5_text for x in ("ADVERSE", "SPACE_CONSTRAINED", "VERY_CONSTRAINED")):
-        score -= 0.15
-        reasons.append("LOCATION_CONSTRAINT")
-    if any(x in counter for x in ("STRUCTURE_SLOPE_CONFLICT", "EXTERNAL_STRUCTURE_COUNTERTREND")):
-        score -= 0.25
-    if "STRUCTURE_MIXED" in counter:
-        score -= 0.15
-    return round(max(0.0, min(1.0, score)), 4), support, list(dict.fromkeys(reasons))
-
-
-def _incomplete(reason: str) -> EngineResult:
+    maturity: str,
+    thesis: str,
+    quality: float,
+    supporting: list[str],
+    counter: list[str],
+    missing: list[str],
+    next_required: list[str],
+    invalidation: list[str],
+    candidates: list[str],
+) -> EngineResult:
+    reasons = list(dict.fromkeys(counter + ([] if state in {"MATURE", "TRIGGER_PENDING"} else ["SETUP_NOT_MATURE"])))
+    gate = state == "MATURE"
     output = {
         "architecture": ARCHITECTURE,
         "version": VERSION,
@@ -264,43 +243,49 @@ def _incomplete(reason: str) -> EngineResult:
         "reasoning_role": "SETUP_ANALYST",
         "decision_authority": "E9",
         "trade_decision_authority": False,
-        "state": "WAIT",
-        "setup": "NONE",
-        "setup_family": "NONE",
-        "direction": "NEUTRAL",
-        "stage": "UNRESOLVED",
-        "maturity": "UNRESOLVED",
-        "thesis": "UNRESOLVED",
-        "setup_quality": 0.0,
-        "supporting_evidence": [],
-        "counter_evidence": [reason],
-        "missing_evidence": ["sufficient_closed_candle_data"],
-        "next_required_evidence": ["sufficient closed candles"],
-        "invalidation": ["new closed candle invalidates the premise"],
+        "state": state,
+        "setup": setup,
+        "setup_family": setup,
+        "direction": direction,
+        "stage": stage,
+        "maturity": maturity,
+        "thesis": thesis,
+        "setup_quality": round(quality, 4),
+        "candidate_setups": candidates,
+        "supporting_evidence": list(dict.fromkeys(supporting)),
+        "counter_evidence": list(dict.fromkeys(counter)),
+        "missing_evidence": list(dict.fromkeys(missing)),
+        "next_required_evidence": list(dict.fromkeys(next_required)),
+        "invalidation": invalidation,
     }
-    return EngineResult("E6", NAME, None, 0.0, output, ("INSUFFICIENT_DATA",))
+    return EngineResult("E6", NAME, gate, round(quality * 100.0, 2), output, tuple(reasons))
 
 
 def analyze_e6(snapshot: dict[str, Any], upstream: dict[str, EngineResult]) -> EngineResult:
-    """Professional setup formation analysis.
-
-    E6 owns setup identification and lifecycle only. It consumes E1-E5 as
-    evidence/context, does not override them, does not perform entry
-    confirmation, and never makes the final trade decision. E9 remains the
-    decision authority.
-    """
+    """E6 owns setup formation and lifecycle, not entry confirmation or trade decision."""
     bars = list(snapshot.get("bars") or [])
     if len(bars) < MIN_BARS:
-        return _incomplete(f"closed candles below minimum {MIN_BARS}")
+        return _setup_output(
+            state="WAIT", setup="NONE", direction="NEUTRAL", stage="UNRESOLVED", maturity="UNRESOLVED",
+            thesis="NO_SETUP: insufficient closed-candle history", quality=0.0,
+            supporting=[], counter=[f"CLOSED_CANDLES_BELOW_MINIMUM={MIN_BARS}"],
+            missing=["sufficient_closed_candle_data"], next_required=["more closed candles"],
+            invalidation=["new closed candle may change evidence"], candidates=[]
+        )
 
     try:
         atr = _atr(bars)
-        if atr <= 0:
-            return _incomplete("ATR_INVALID")
         closes = [float(b["close"]) for b in bars]
         price = closes[-1]
+        if atr <= 0 or price <= 0:
+            raise ValueError
     except (KeyError, TypeError, ValueError):
-        return _incomplete("INVALID_MARKET_DATA")
+        return _setup_output(
+            state="WAIT", setup="NONE", direction="NEUTRAL", stage="UNRESOLVED", maturity="UNRESOLVED",
+            thesis="NO_SETUP: invalid market data", quality=0.0,
+            supporting=[], counter=["INVALID_MARKET_DATA"], missing=["valid_ohlc_data"],
+            next_required=["valid closed candle"], invalidation=["new valid closed candle"], candidates=[]
+        )
 
     e1 = _payload(upstream, "E1")
     e2 = _payload(upstream, "E2")
@@ -315,130 +300,131 @@ def analyze_e6(snapshot: dict[str, Any], upstream: dict[str, EngineResult]) -> E
     retest = _breakout_retest(bars, atr, direction)
     impulse = _impulse_continuation(bars, atr, direction)
 
-    candidates = [
-        ("TREND_PULLBACK", pullback),
+    candidates: list[tuple[str, dict[str, Any]]] = [
         ("BREAKOUT_RETEST", retest),
         ("BREAKOUT", breakout),
+        ("TREND_PULLBACK", pullback),
         ("IMPULSE_CONTINUATION", impulse),
     ]
-    active = [(name, data) for name, data in candidates if data.get("candidate")]
+    viable = [(name, data) for name, data in candidates if data.get("candidate")]
+    candidate_names = [name for name, data in candidates if data.get("evidence")]
 
-    # Avoid manufacturing a setup from proximity to EMA or one large candle.
-    if not active:
-        setup = "NONE"
-        stage = "NONE"
-        maturity = "UNRESOLVED"
-        thesis = "NO_VALID_SETUP_FORMING"
-        setup_quality = 0.0
-        formation: list[str] = []
-        missing = list(dict.fromkeys(
-            pullback.get("missing", []) +
-            breakout.get("missing", []) +
-            retest.get("missing", []) +
-            impulse.get("missing", [])
-        ))
-    else:
-        # Prefer the most complete lifecycle state over generic impulse.
-        priority = {"BREAKOUT_RETEST": 4, "TREND_PULLBACK": 3, "BREAKOUT": 2, "IMPULSE_CONTINUATION": 1}
-        setup, data = max(active, key=lambda item: priority[item[0]])
-        formation = list(data.get("evidence", []))
-        if setup == "BREAKOUT_RETEST":
-            stage = "TRIGGER_PENDING"
-        elif setup in {"TREND_PULLBACK", "BREAKOUT"}:
-            stage = "TESTING"
-        else:
-            stage = "FORMING"
-        quality, support, scored_counter = _score_setup(
-            direction, formation, context_support, counter, e4, e5, stage
+    e2_opportunity = str(e2.get("opportunity", e2.get("opportunity_type", ""))).upper()
+    e2_phase = str(e2.get("phase", e2.get("opportunity_maturity", ""))).upper()
+    e2_thesis = str(e2.get("thesis", "")).upper()
+    e4_text = str(e4).upper()
+    e5_text = str(e5).upper()
+
+    supporting = list(context_support)
+    supporting.append(f"E2_OPPORTUNITY={e2_opportunity or 'UNSPECIFIED'}")
+    supporting.append(f"E2_PHASE={e2_phase or 'UNSPECIFIED'}")
+    supporting.append(f"CURRENT_CANDLE_BODY_ATR={behavior['body_atr']}")
+    supporting.append(f"CURRENT_CANDLE_DIRECTIONAL_CLOSE={behavior['directional_close']}")
+
+    if "REJECTION" in e4_text or "SWEEP" in e4_text:
+        supporting.append("E4_LIQUIDITY_EVENT_PRESENT")
+    if "ACCEPTED" in e5_text:
+        supporting.append("E5_LOCATION_ACCEPTANCE_CONTEXT")
+    if "CONSTRAINED" in e5_text or "ADVERSE" in e5_text:
+        counter.append("LOCATION_CONSTRAINT")
+    if "PENDING" in e4_text and ("SWEEP" in e4_text or "REJECTION" in e4_text):
+        counter.append("LIQUIDITY_EVENT_NOT_TERMINALLY_CONFIRMED")
+    if e2_phase in {"UNPROVEN", "WAIT", "UNRESOLVED"}:
+        counter.append("OPPORTUNITY_MATURITY_UNPROVEN")
+
+    # A professional setup must have its own price formation. Upstream direction
+    # alone can never manufacture a setup.
+    if not viable:
+        missing: list[str] = []
+        for _, data in candidates:
+            missing.extend(data.get("missing", []))
+        missing = list(dict.fromkeys(missing))
+        if not missing:
+            missing = ["setup_specific_price_formation"]
+        thesis = "NO_VALID_SETUP_FORMED"
+        if direction in {"BUY", "SELL"}:
+            thesis = f"{direction}: context exists, but no setup-specific formation is complete"
+        next_required = [
+            "a setup-specific price sequence on a closed candle",
+            "evidence that survives counter-evidence from E3-E5",
+            "clear setup maturation before E7 confirmation",
+        ]
+        return _setup_output(
+            state="WAIT", setup="NONE", direction=direction, stage="SEARCHING", maturity="UNRESOLVED",
+            thesis=thesis, quality=0.0 if direction == "NEUTRAL" else 0.20,
+            supporting=supporting, counter=counter, missing=missing,
+            next_required=next_required,
+            invalidation=["directional context reverses", "structure changes materially", "new closed candle invalidates the premise"],
+            candidates=candidate_names,
         )
-        setup_quality = quality
-        context_support = support
-        counter = scored_counter
-        missing = list(data.get("missing", []))
-        if setup == "IMPULSE_CONTINUATION":
-            missing.append("controlled_retracement_or_confirmation")
-        if setup == "BREAKOUT":
-            missing.append("retest_or_continuation_acceptance")
-        maturity = "MATURE" if setup_quality >= 0.70 and not any(
-            x in counter for x in ("STRUCTURE_SLOPE_CONFLICT", "EXTERNAL_STRUCTURE_COUNTERTREND", "STRUCTURE_MIXED", "LOCATION_CONSTRAINT")
-        ) else "DEVELOPING"
-        thesis = f"{direction}_{setup}" if direction in {"BUY", "SELL"} else "UNRESOLVED"
 
-    # E6 must never confuse confirmation with setup formation.
-    confirmation_boundary = (
-        "E7_OWNS_ENTRY_CONFIRMATION; E6_ONLY_DESCRIBES_SETUP"
+    # Select the most structurally complete formation. Retest outranks a raw
+    # breakout because it contains an additional cause/effect sequence.
+    setup, formation = viable[0]
+    formation_evidence = list(formation.get("evidence", []))
+    supporting.extend([f"FORMATION={x}" for x in formation_evidence])
+
+    hard_conflict = any(x in counter for x in {
+        "STRUCTURE_SLOPE_CONFLICT", "EXTERNAL_STRUCTURE_COUNTERTREND", "FAILED_STRUCTURE_BREAK"
+    })
+    mixed_structure = "STRUCTURE_MIXED" in counter
+    location_constrained = "LOCATION_CONSTRAINT" in counter
+    opportunity_unproven = "OPPORTUNITY_MATURITY_UNPROVEN" in counter
+    liquidity_pending = "LIQUIDITY_EVENT_NOT_TERMINALLY_CONFIRMED" in counter
+
+    # Formation is complete, but maturity depends on whether the environment
+    # can support it. E6 does not call this an entry confirmation.
+    if hard_conflict or mixed_structure or location_constrained:
+        stage = "FORMING" if not hard_conflict else "CONFLICTED"
+        maturity = "DEVELOPING" if not hard_conflict else "UNRESOLVED"
+        quality = 0.35 if not hard_conflict else 0.15
+        next_required = [
+            "resolution of structural conflict" if hard_conflict else "location/space improvement",
+            "closed-candle setup persistence",
+            "E7 confirmation only after E6 maturity improves",
+        ]
+        return _setup_output(
+            state="WAIT", setup=setup, direction=direction, stage=stage, maturity=maturity,
+            thesis=f"{direction}_{setup}: formation exists but is structurally/environmentally constrained",
+            quality=quality, supporting=supporting, counter=counter,
+            missing=["environmental_acceptance"], next_required=next_required,
+            invalidation=["setup formation fails", "structure confirms competing direction", "location becomes invalid"],
+            candidates=candidate_names,
+        )
+
+    if opportunity_unproven or liquidity_pending:
+        stage = "TESTING"
+        maturity = "DEVELOPING"
+        quality = 0.55
+        missing = []
+        if opportunity_unproven: missing.append("opportunity_maturity")
+        if liquidity_pending: missing.append("terminal_liquidity_confirmation")
+        return _setup_output(
+            state="DEVELOPING", setup=setup, direction=direction, stage=stage, maturity=maturity,
+            thesis=f"{direction}_{setup}: setup formation is present but auction context is not fully proven",
+            quality=quality, supporting=supporting, counter=counter, missing=missing,
+            next_required=["closed-candle persistence", "resolution of auction uncertainty", "E7 confirmation after maturity"],
+            invalidation=["setup price sequence fails", "direction reverses", "structure breaks against thesis"],
+            candidates=candidate_names,
+        )
+
+    # MATURE means the setup's own formation is complete and not vetoed by
+    # upstream evidence. It still does NOT mean entry is confirmed.
+    stage = "TRIGGER_PENDING"
+    maturity = "MATURE"
+    quality = 0.80
+    if len(formation_evidence) >= 3:
+        quality += 0.05
+    if behavior["directional_close"]:
+        quality += 0.05
+    quality = min(0.95, quality)
+    return _setup_output(
+        state="MATURE", setup=setup, direction=direction, stage=stage, maturity=maturity,
+        thesis=f"{direction}_{setup}: setup formation is mature; entry confirmation remains downstream",
+        quality=quality, supporting=supporting,
+        counter=counter,
+        missing=["entry_confirmation"],
+        next_required=["E7 closed-candle confirmation"],
+        invalidation=["setup sequence fails", "direction reverses", "structure confirms competing direction", "location becomes structurally constrained"],
+        candidates=candidate_names,
     )
-    if setup == "NONE":
-        gate = False
-        score = 15.0 if direction == "NEUTRAL" else 30.0
-        reasons = ["NO_VALID_SETUP_FORMING"]
-    else:
-        gate = maturity == "MATURE"
-        score = round(setup_quality * 100.0, 2)
-        reasons = [] if gate else ["SETUP_NOT_MATURE"]
-        reasons.extend(counter)
-
-    # Strong evidence of location/liquidity can support a setup, but cannot
-    # create one when the price-action formation itself is absent.
-    e4_support = "REJECTION" in str(e4).upper() or "SWEEP" in str(e4).upper()
-    e5_constrained = any(x in str(e5).upper() for x in ("ADVERSE", "SPACE_CONSTRAINED", "VERY_CONSTRAINED"))
-    supporting = list(dict.fromkeys(context_support + formation))
-    if e4_support:
-        supporting.append("E4_LIQUIDITY_CONTEXT_SUPPORT")
-    if not e5_constrained and setup != "NONE":
-        supporting.append("E5_LOCATION_NOT_OBVIOUSLY_BLOCKED")
-    supporting.append(confirmation_boundary)
-
-    invalidation = [
-        "directional thesis reverses",
-        "setup structure is broken",
-        "price accepts the counter-direction beyond the setup boundary",
-        "location or available space becomes structurally constrained",
-        "new closed candle invalidates the formation",
-    ]
-    next_required = []
-    if setup == "NONE":
-        next_required.append("clear price-action setup formation")
-    elif setup == "TREND_PULLBACK":
-        next_required.extend(["controlled rejection/hold from pullback area", "E7 confirmation"])
-    elif setup == "BREAKOUT":
-        next_required.extend(["acceptance above/below broken level or clean retest", "E7 confirmation"])
-    elif setup == "BREAKOUT_RETEST":
-        next_required.append("E7 confirmation of continuation")
-    elif setup == "IMPULSE_CONTINUATION":
-        next_required.extend(["controlled retracement or continuation structure", "E7 confirmation"])
-
-    output = {
-        "architecture": ARCHITECTURE,
-        "version": VERSION,
-        "question": QUESTION,
-        "reasoning_role": "SETUP_ANALYST",
-        "decision_authority": "E9",
-        "trade_decision_authority": False,
-        "state": maturity if setup != "NONE" else "WAIT",
-        "setup": setup,
-        "setup_family": setup,
-        "direction": direction,
-        "stage": stage,
-        "maturity": maturity,
-        "thesis": thesis,
-        "setup_quality": setup_quality,
-        "confidence": setup_quality,
-        "atr": round(atr, 6),
-        "price": price,
-        "price_behavior": behavior,
-        "formation_evidence": formation,
-        "supporting_evidence": supporting,
-        "counter_evidence": list(dict.fromkeys(counter)),
-        "missing_evidence": list(dict.fromkeys(missing)),
-        "next_required_evidence": list(dict.fromkeys(next_required)),
-        "candidate_setups": [name for name, data in candidates if data.get("candidate")],
-        "setup_selection_rule": "MOST_COMPLETE_VALID_LIFECYCLE_WITHOUT_OVERRIDING_UPSTREAM_CONFLICTS",
-        "upstream_context_used": ["E1", "E2", "E3", "E4", "E5"],
-        "upstream_decision_authority_preserved": True,
-        "confirmation_boundary": confirmation_boundary,
-        "invalidation": invalidation,
-        "gate_passed": gate,
-    }
-    reason_codes = tuple(dict.fromkeys(reasons))
-    return EngineResult("E6", NAME, gate, score, output, reason_codes)
