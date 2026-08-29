@@ -1,12 +1,198 @@
-# E5 professional location/value brain
+from __future__ import annotations
+
+"""E5 — Professional Location / Value Brain v9.0.
+
+E5 evaluates price geometry only: value, structure, liquidity, extension,
+available space, asymmetry, repricing and counter-evidence. E9 owns decisions.
+"""
+
+from math import isfinite
+from statistics import mean, median
 from typing import Any
 
-# This file is intentionally scoped to E5. Existing module helpers/constants
-# are retained by the surrounding production_v2 implementation.
+ARCHITECTURE = "E5_SINGLE_PROFESSIONAL_LOCATION_BRAIN_V9_0"
+VERSION = "9.0"
+QUESTION = "Is current location advantageous?"
+MIN_BARS, ATR_PERIOD = 80, 14
+VALUE_LOOKBACK, STRUCTURE_LOOKBACK, LIQUIDITY_LOOKBACK = 20, 60, 30
+PIVOT_WING = 2
+DISCOUNT, PREMIUM = 0.35, 0.65
+
+
+def _num(v: Any) -> float | None:
+    try:
+        x = float(v)
+    except (TypeError, ValueError):
+        return None
+    return x if isfinite(x) else None
+
+
+def _bars(s: dict[str, Any]) -> tuple[list[dict[str, float]], list[str]]:
+    out, problems = [], []
+    for i, raw in enumerate(s.get("bars") or []):
+        if not isinstance(raw, dict):
+            problems.append(f"BAR_{i}_INVALID"); continue
+        o, h, l, c = (_num(raw.get(k)) for k in ("open", "high", "low", "close"))
+        v = _num(raw.get("volume"))
+        if None in (o, h, l, c) or h < max(o, c) or l > min(o, c) or h < l:
+            problems.append(f"BAR_{i}_OHLC_INVALID"); continue
+        b = {"open": float(o), "high": float(h), "low": float(l), "close": float(c)}
+        if v is not None and v >= 0: b["volume"] = float(v)
+        out.append(b)
+    return out, problems
+
+
+def _atr(bars: list[dict[str, float]], period: int = ATR_PERIOD) -> float:
+    if len(bars) < 2: return 0.0
+    sample, trs = bars[-(period + 1):], []
+    for i, b in enumerate(sample):
+        if i == 0: trs.append(b["high"] - b["low"]); continue
+        pc = sample[i - 1]["close"]
+        trs.append(max(b["high"] - b["low"], abs(b["high"] - pc), abs(b["low"] - pc)))
+    return mean(trs[-period:]) if trs else 0.0
+
+
+def _range(bars: list[dict[str, float]], n: int) -> tuple[float, float]:
+    x = bars[-n:]
+    return min(b["low"] for b in x), max(b["high"] for b in x)
+
+
+def _value(bars: list[dict[str, float]]) -> tuple[float, str]:
+    x = bars[-VALUE_LOOKBACK:]
+    prices = [(b["high"] + b["low"] + 2*b["close"]) / 4 for b in x]
+    vols = [b.get("volume", 0.0) for b in x]
+    total = sum(v for v in vols if v > 0)
+    if total > 0:
+        return sum(p*v for p, v in zip(prices, vols) if v > 0) / total, "VOLUME_WEIGHTED_TYPICAL_PRICE"
+    return median(prices), "MEDIAN_TYPICAL_PRICE"
+
+
+def _pivots(bars: list[dict[str, float]]) -> tuple[list[float], list[float]]:
+    hi, lo = [], []
+    for i in range(PIVOT_WING, len(bars) - PIVOT_WING):
+        w = bars[i-PIVOT_WING:i+PIVOT_WING+1]
+        if bars[i]["high"] >= max(b["high"] for b in w): hi.append(bars[i]["high"])
+        if bars[i]["low"] <= min(b["low"] for b in w): lo.append(bars[i]["low"])
+    return hi[-20:], lo[-20:]
+
+
+def _above(price: float, levels: list[float], tol: float) -> float | None:
+    x = [v for v in levels if v > price + tol]
+    return min(x) if x else None
+
+
+def _below(price: float, levels: list[float], tol: float) -> float | None:
+    x = [v for v in levels if v < price - tol]
+    return max(x) if x else None
+
+
+def _atr_dist(price: float, level: float | None, atr: float) -> float | None:
+    return None if level is None or atr <= 0 else abs(price-level)/atr
+
+
+def _space_component(x: float | None) -> float:
+    if x is None or x >= 2: return 1.0
+    if x >= 1: return 0.70
+    if x >= 0.5: return 0.35
+    return 0.10
+
+
+def _space_label(x: float | None) -> str:
+    if x is None or x >= 2: return "OPEN"
+    if x >= 1: return "LIMITED"
+    if x >= 0.5: return "CONSTRAINED"
+    return "VERY_CONSTRAINED"
+
+
+def _extension(x: float) -> str:
+    if x < 0.75: return "NORMAL"
+    if x < 1.50: return "STRETCHED"
+    if x < 2.50: return "EXTENDED"
+    return "EXCESSIVE"
+
+
+def _context(permitted: dict[str, Any] | None) -> tuple[dict[str, Any], list[str], list[str]]:
+    ctx, evidence, conflicts = {}, [], []
+    for eid in ("E1", "E2", "E3", "E4"):
+        p = (permitted or {}).get(eid)
+        if not isinstance(p, dict): continue
+        e = p.get("evidence")
+        payload = e.get("output") if isinstance(e, dict) and isinstance(e.get("output"), dict) else e
+        if not isinstance(payload, dict): payload = p.get("output") or {}
+        if not isinstance(payload, dict): continue
+        ctx[eid] = dict(payload); evidence.append(f"{eid}_QUALITATIVE_CONTEXT_READ")
+        t = str(payload).upper()
+        if any(k in t for k in ("CONFLICT", "MIXED", "UNRESOLVED", "PENDING")):
+            conflicts.append(f"{eid}_CONTEXT_CONFLICT")
+    return ctx, evidence, conflicts
+
+
+def _fresh_sweeps(bars: list[dict[str, float]]) -> tuple[bool, bool, float, float]:
+    if len(bars) <= LIQUIDITY_LOOKBACK: return False, False, 0.0, 0.0
+    prior, last = bars[-(LIQUIDITY_LOOKBACK+1):-1], bars[-1]
+    ph, pl = max(b["high"] for b in prior), min(b["low"] for b in prior)
+    return last["high"] > ph and last["close"] < ph, last["low"] < pl and last["close"] > pl, ph, pl
+
+
+def _side(side: str, vp: float, vd: float, ext: str, blocked: bool, sweep: bool, space: float | None) -> dict[str, Any]:
+    long = side == "LONG"
+    fav = vp <= DISCOUNT if long else vp >= PREMIUM
+    adverse = vp >= PREMIUM if long else vp <= DISCOUNT
+    value = 1.0 if fav else 0.0 if adverse else 0.55
+    structure, liquidity = 0.0 if blocked else 1.0, 1.0 if sweep else 0.45
+    extension = {"NORMAL":1.0, "STRETCHED":0.65, "EXTENDED":0.30, "EXCESSIVE":0.05}[ext]
+    space_c = _space_component(space)
+    score = round(0.30*value + 0.15*structure + 0.15*liquidity + 0.20*extension + 0.20*space_c, 4)
+    evidence, counter = [], []
+    evidence.append("VALUE_FAVORABLE" if fav else "VALUE_NEUTRAL") if not adverse else counter.append("VALUE_ADVERSE")
+    evidence.append("STRUCTURAL_SPACE_AVAILABLE") if not blocked else counter.append("OPPOSING_STRUCTURE_NEARBY")
+    evidence.append("FRESH_LIQUIDITY_SWEEP_SUPPORTIVE") if sweep else counter.append("NO_FRESH_LIQUIDITY_CONFIRMATION")
+    evidence.append(f"EXTENSION_{ext}") if ext in {"NORMAL","STRETCHED"} else counter.append("EXTENSION_RISK")
+    if space is not None and space < 1: counter.append("SPACE_CONSTRAINED")
+    if space is not None and space < 0.5: counter.append("SPACE_VERY_CONSTRAINED")
+    quality = "HIGH" if score >= .72 else "ACCEPTABLE" if score >= .58 else "CONDITIONAL" if score >= .45 else "UNFAVORABLE"
+    return {"score":score,"quality":quality,"evidence":evidence,"counter_evidence":counter,
+            "components":{"value":value,"structure":structure,"liquidity":liquidity,"extension":extension,"space":space_c},
+            "value_distance_atr":round(vd,6),"available_space_atr":None if space is None else round(space,6)}
+
+
+def _repricing(side: str, vp: float, ext: str, space: float | None, blocked: bool, sweep: bool) -> dict[str, Any]:
+    c = []
+    if side == "LONG":
+        if vp > DISCOUNT: c.append("PRICE_REPRICES_TOWARD_DISCOUNT_OR_ACCEPTED_VALUE")
+        if blocked: c.append("CLEAR_OPPOSING_STRUCTURE")
+        if not sweep: c.append("FRESH_LOW_LIQUIDITY_REJECTION_OR_RECLAIM")
+    else:
+        if vp < PREMIUM: c.append("PRICE_REPRICES_TOWARD_PREMIUM_OR_ACCEPTED_VALUE")
+        if blocked: c.append("CLEAR_OPPOSING_STRUCTURE")
+        if not sweep: c.append("FRESH_HIGH_LIQUIDITY_REJECTION_OR_RECLAIM")
+    if ext in {"EXTENDED","EXCESSIVE"}: c.append("EXTENSION_NORMALIZES")
+    if space is not None and space < 1: c.append("AVAILABLE_SPACE_REOPENS")
+    return {"required_for_improvement":c,
+            "thesis_invalidators":["PRICE_ACCEPTS_DEEPER_COUNTER_VALUE","OPPOSING_STRUCTURE_BECOMES_IMMEDIATE"],
+            "is_prediction":False}
+
+
+def _incomplete(reason: str, problems: list[str]) -> dict[str, Any]:
+    e = problems or ["NO_RELIABLE_EVIDENCE"]
+    return {"architecture":ARCHITECTURE,"version":VERSION,"question":QUESTION,
+            "task":"ASSESS_PRICE_LOCATION_ONLY","location_state":"UNRESOLVED","location_quality":"UNRESOLVED",
+            "direction":"NEUTRAL","value_state":"UNKNOWN","structural_location":"UNKNOWN",
+            "liquidity_location":"UNKNOWN","extension_state":"UNKNOWN","available_space":"UNKNOWN",
+            "available_space_atr":None,"long_location_quality":"UNKNOWN","short_location_quality":"UNKNOWN",
+            "preferred_location":"NONE","confidence":0.0,"evidence":e,"observations":e,"counter_evidence":[],
+            "conflicts":problems,"reason_codes":["E5_DATA_INCOMPLETE"],
+            "reasoning_trace":[f"QUESTION -> {QUESTION}",f"DATA_QUALITY -> {reason}"],
+            "professional_reasoning":{"question":QUESTION,"thesis":reason,
+                "evidence_hierarchy":"VALUE -> STRUCTURE -> LIQUIDITY -> EXTENSION -> SPACE -> ASYMMETRY -> REPRICING_MAP -> COUNTER_EVIDENCE",
+                "upstream_decisions_used":False,"upstream_gates_used":False,"upstream_scores_used":False,
+                "upstream_direction_used_for_location_score":False,"decision_authority":"E9_ONLY"},
+            "trade_decision_authority":False,"decision_authority":"E9_ONLY","gate":None,"decision":None,
+            "specialist_gate":"NONE","specialists":{},"specialists_active":False,"specialists_status":"NOT_USED"}
 
 
 def analyze_e5(snapshot: dict[str, Any], permitted: dict[str, Any] | None = None) -> dict[str, Any]:
-    """Assess location/value only; E9 remains decision authority."""
+    """Professional E5 location/value analysis; E9 remains decision authority."""
     bars, problems = _bars(snapshot)
     if len(bars) < MIN_BARS:
         return _incomplete(f"reliable candles below minimum {MIN_BARS}", problems[:8])
@@ -36,8 +222,8 @@ def analyze_e5(snapshot: dict[str, Any], permitted: dict[str, Any] | None = None
     high_sweep, low_sweep, prior_high, prior_low = _fresh_sweeps(bars)
     liquidity = "BOTH_FRESH_SWEEPS" if high_sweep and low_sweep else "FRESH_HIGH_SWEEP" if high_sweep else "FRESH_LOW_SWEEP" if low_sweep else "NO_FRESH_SWEEP"
 
-    # Value response is deliberately closed-candle based. Location is not
-    # directional merely because price is cheap/expensive.
+    # Closed-candle value response: discount/premium is a location fact, not
+    # a reversal thesis. Acceptance and rejection must be observed first.
     lookback = min(5, len(bars) - 1)
     recent = bars[-lookback:]
     value_band = max(0.25 * atr, 0.10 * width)
@@ -61,17 +247,9 @@ def analyze_e5(snapshot: dict[str, Any], permitted: dict[str, Any] | None = None
         value_response = "UNRESOLVED_VALUE_RESPONSE"
 
     if value_state == "DISCOUNT":
-        repricing_state = {
-            "ACCEPTED_BELOW_VALUE": "REPRICING_ACTIVE",
-            "REJECTED_BELOW_VALUE": "REPRICING_FAILED",
-            "ACCEPTING_VALUE": "REPRICING_STARTING",
-        }.get(value_response, "NO_REPRICING")
+        repricing_state = {"ACCEPTED_BELOW_VALUE":"REPRICING_ACTIVE","REJECTED_BELOW_VALUE":"REPRICING_FAILED","ACCEPTING_VALUE":"REPRICING_STARTING"}.get(value_response,"NO_REPRICING")
     elif value_state == "PREMIUM":
-        repricing_state = {
-            "ACCEPTED_ABOVE_VALUE": "REPRICING_ACTIVE",
-            "REJECTED_ABOVE_VALUE": "REPRICING_FAILED",
-            "ACCEPTING_VALUE": "REPRICING_STARTING",
-        }.get(value_response, "NO_REPRICING")
+        repricing_state = {"ACCEPTED_ABOVE_VALUE":"REPRICING_ACTIVE","REJECTED_ABOVE_VALUE":"REPRICING_FAILED","ACCEPTING_VALUE":"REPRICING_STARTING"}.get(value_response,"NO_REPRICING")
     else:
         repricing_state = "REPRICING_ACCEPTED" if value_response == "ACCEPTING_VALUE" else "NO_REPRICING"
 
@@ -80,9 +258,8 @@ def analyze_e5(snapshot: dict[str, Any], permitted: dict[str, Any] | None = None
     long_side = _side("LONG", vp, vd, extension_state, long_blocked, low_sweep, long_space)
     short_side = _side("SHORT", vp, vd, extension_state, short_blocked, high_sweep, short_space)
 
-    # Professional rule: discount/premium is a location fact, not a reversal
-    # thesis. Continuation/acceptance without rejection reduces that side's
-    # value component; a closed-candle rejection is required to improve it.
+    # Professional correction: cheap/expensive without rejection is not an
+    # edge. Penalize continuation and reward only observed closed-candle rejection.
     if value_state == "DISCOUNT":
         if value_response in {"ACCEPTED_BELOW_VALUE", "UNRESOLVED_VALUE_RESPONSE"}:
             long_side["components"]["value"] *= .35
@@ -114,7 +291,11 @@ def analyze_e5(snapshot: dict[str, Any], permitted: dict[str, Any] | None = None
     else:
         preferred = "NONE"
 
-    location_state = "FAVORABLE_LOCATION" if preferred != "NONE" else "WAIT_REPRICING" if repricing_state != "REPRICING_FAILED" else "WAIT_CONFIRMATION"
+    if preferred == "NONE":
+        location_state = "WAIT_REPRICING" if repricing_state != "REPRICING_FAILED" else "WAIT_CONFIRMATION"
+    else:
+        location_state = "FAVORABLE_LOCATION"
+
     quality_score = max(long_side["score"], short_side["score"])
     confidence = round(max(0.0, min(1.0, quality_score)), 4)
 
