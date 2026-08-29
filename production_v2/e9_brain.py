@@ -53,6 +53,156 @@ def _score_num(v, default=0.0):
         return default
 
 
+def _has_any(o, *needles):
+    blob = " ".join([_text(o.get("finding")), *_codes(o)])
+    return any(n in blob for n in needles)
+
+
+def _market_control_brain(e1, e2, e3, e4, e5, e6, e7, e8, direction, setup, thesis):
+    """Interpret E1-E8 as a market-control/auction thesis, not a vote.
+
+    This layer does not create a setup or override domain ownership. It asks
+    who is currently advantaged, who may be trapped, where liquidity sits, and
+    whether the observed auction can plausibly produce directional repricing.
+    """
+    obs = (e1, e2, e3, e4, e5, e6, e7, e8)
+    control = {
+        "dominant_actor": "UNRESOLVED",
+        "controlled_side": "NONE",
+        "trapped_side": "NONE",
+        "liquidity_target": "UNRESOLVED",
+        "market_intent": "UNRESOLVED",
+        "auction_phase": "UNRESOLVED",
+        "repricing_direction": direction if direction in DIRECTIONS else "NEUTRAL",
+    }
+    evidence: list[str] = []
+    warnings: list[str] = []
+
+    e1f, e2f, e3f, e4f, e5f, e6f, e7f, e8f = map(_finding, obs)
+    e4blob = " ".join([e4f, *_codes(e4)])
+    e5blob = " ".join([e5f, *_codes(e5)])
+    e6blob = " ".join([e6f, *_codes(e6)])
+    e7blob = " ".join([e7f, *_codes(e7)])
+    e8blob = " ".join([e8f, *_codes(e8)])
+
+    sweep = any(x in e4blob for x in ("SWEEP", "LIQUIDITY_TAKEN", "STOP_RUN"))
+    rejection = any(x in e4blob for x in ("RECLAIM", "REJECTION", "FAILED_BREAK"))
+    pending = "PENDING" in e4blob or "NOT_TERMINALLY_CONFIRMED" in e4blob
+    range_state = "RANGE" in e1f
+    transition = "TRANSITION" in e1f or "TRANSITION" in e3f
+    failed_break = "FAILED_BOS" in e3f or "FAILED_BREAK" in e3f
+    favorable = "FAVORABLE" in e5f
+    discount = "DISCOUNT" in e5blob
+    premium = "PREMIUM" in e5blob
+    long_space = _score_num(e5.get("available_space_atr_long"), 0.0)
+    short_space = _score_num(e5.get("available_space_atr_short"), 0.0)
+    trigger_proven = any(x in e7blob for x in ("CONFIRMED", "PROVEN", "VALIDATED"))
+    risk_ready = "RISK_READY" in e8blob or "ECONOMICALLY_ACCEPTABLE" in e8blob
+    survival = not any(x in e8blob for x in ("SURVIVAL_NOT_PROVEN", "STRUCTURAL_SURVIVAL_NOT_PROVEN"))
+
+    # Liquidity/auction clues have the highest interpretive weight here.
+    if sweep and rejection:
+        evidence.append("LIQUIDITY_SWEEP_WITH_REJECTION")
+        control["auction_phase"] = "POST_SWEEP_REJECTION"
+        control["dominant_actor"] = "RESPONDING_SIDE"
+        if "BUYERS" in e4blob and "SELLERS" in e4blob:
+            control["trapped_side"] = "BUYERS"
+            control["controlled_side"] = "SELLERS"
+            control["repricing_direction"] = "SELL"
+        elif "SELLERS" in e4blob and "BUYERS" in e4blob:
+            control["trapped_side"] = "SELLERS"
+            control["controlled_side"] = "BUYERS"
+            control["repricing_direction"] = "BUY"
+    elif failed_break or rejection:
+        evidence.append("FAILED_AUCTION_OR_REJECTION")
+        control["auction_phase"] = "FAILED_AUCTION"
+        if direction in DIRECTIONS:
+            control["controlled_side"] = direction + "_THESIS"
+    elif range_state:
+        control["auction_phase"] = "BALANCED_RANGE"
+        warnings.append("RANGE_CONTROL_NOT_ESTABLISHED")
+
+    if pending:
+        warnings.append("AUCTION_NOT_TERMINALLY_CONFIRMED")
+    if transition:
+        warnings.append("MARKET_STATE_TRANSITION")
+    if favorable:
+        evidence.append("LOCATION_FAVORABLE")
+    if discount:
+        evidence.append("PRICE_IN_DISCOUNT")
+    if premium:
+        evidence.append("PRICE_IN_PREMIUM")
+
+    # Space tells the master brain whether a theoretical control advantage has
+    # enough room to become actual repricing rather than a local reaction.
+    if direction == "BUY":
+        if 0 < long_space < 0.75:
+            warnings.append("BUY_SPACE_CONSTRAINED")
+        elif long_space >= 0.75:
+            evidence.append("BUY_SPACE_AVAILABLE")
+    elif direction == "SELL":
+        if 0 < short_space < 0.75:
+            warnings.append("SELL_SPACE_CONSTRAINED")
+        elif short_space >= 0.75:
+            evidence.append("SELL_SPACE_AVAILABLE")
+
+    if trigger_proven:
+        evidence.append("CONFIRMATION_PROVEN")
+    else:
+        warnings.append("CONFIRMATION_NOT_PROVEN")
+    if risk_ready and survival:
+        evidence.append("ECONOMIC_SURVIVAL_READY")
+    else:
+        warnings.append("ECONOMIC_SURVIVAL_UNPROVEN")
+
+    if control["repricing_direction"] in DIRECTIONS:
+        control["market_intent"] = (
+            "FORCED_REPRICING_" + control["repricing_direction"]
+            if control["trapped_side"] in DIRECTIONS
+            else "POTENTIAL_REPRICING_" + control["repricing_direction"]
+        )
+    elif range_state:
+        control["market_intent"] = "LIQUIDITY_SEEKING_WITHOUT_DIRECTIONAL_CONTROL"
+
+    # A professional 'market-control' read requires multiple independent clues.
+    strength = 0.0
+    strength += 25.0 if sweep and rejection else 0.0
+    strength += 15.0 if failed_break else 0.0
+    strength += 15.0 if favorable else 0.0
+    strength += 15.0 if trigger_proven else 0.0
+    strength += 15.0 if risk_ready and survival else 0.0
+    strength += 10.0 if direction in DIRECTIONS and control["repricing_direction"] == direction else 0.0
+    strength -= 15.0 if pending else 0.0
+    strength -= 10.0 if transition else 0.0
+    strength -= 10.0 if range_state and not sweep else 0.0
+    strength = max(0.0, min(100.0, strength))
+
+    if strength >= 75:
+        regime = "CONTROL_ESTABLISHED"
+    elif strength >= 50:
+        regime = "CONTROL_FORMING"
+    elif range_state:
+        regime = "BALANCED_NO_CONTROL"
+    else:
+        regime = "CONTROL_UNPROVEN"
+
+    return {
+        **control,
+        "state": regime,
+        "strength": round(strength, 2),
+        "evidence": list(dict.fromkeys(evidence)),
+        "warnings": list(dict.fromkeys(warnings)),
+        "thesis": thesis,
+        "interpretation": (
+            "Liquidity and participant behavior imply a directional repricing thesis."
+            if control["market_intent"].startswith("FORCED_REPRICING")
+            else "Market-control thesis is forming but not sufficiently proven."
+            if strength >= 50
+            else "No sufficiently proven directional control; preserve capital."
+        ),
+    }
+
+
 def analyze_e9(snapshot: dict[str, Any], upstream: dict[str, EngineResult]) -> EngineResult:
     engines = [upstream.get(f"E{i}") for i in range(1, 9)]
     o = [_out(e) for e in engines]
@@ -78,15 +228,10 @@ def analyze_e9(snapshot: dict[str, Any], upstream: dict[str, EngineResult]) -> E
     plan = e8.get("trade_plan") or {}
 
     setup_ready = maturity == "MATURE" and setup != "NONE" and direction in DIRECTIONS
-    trigger_observed = bool(
-        e7.get("trigger_observed") or e7.get("closed_candle_trigger")
-        or e7.get("confirmation_proven")
-    )
+    trigger_observed = bool(e7.get("trigger_observed") or e7.get("closed_candle_trigger") or e7.get("confirmation_proven"))
     confirmation_ready = confirmation in {"CONFIRMED", "PROVEN", "VALIDATED"} and trigger_observed
     economics_ready = risk_gate in {"RISK_READY", "ECONOMICALLY_ACCEPTABLE"} and bool(plan.get("valid"))
 
-    # E1-E5 are context/structure evidence: absence is not a veto; explicit
-    # contradiction is. This preserves domain ownership while giving E9 veto power.
     for i, eo in enumerate(o[:5], 1):
         f = _finding(eo)
         codes = _codes(eo)
@@ -112,14 +257,19 @@ def analyze_e9(snapshot: dict[str, Any], upstream: dict[str, EngineResult]) -> E
     if _finding(e2) in {"UNRESOLVED", "UNPROVEN", "AMBIGUOUS"}:
         counter.append(f"E2:{_finding(e2)}")
 
-    # Explicit upstream directional disagreement is a thesis-level conflict.
     for label, eo in (("E1", e1), ("E2", e2), ("E3", e3), ("E4", e4), ("E5", e5)):
-        d = _direction(
-            eo.get("direction"), eo.get("directional_pressure"), eo.get("pressure"),
-            eo.get("opportunity_direction"), eo.get("thesis_direction")
-        )
+        d = _direction(eo.get("direction"), eo.get("directional_pressure"), eo.get("pressure"), eo.get("opportunity_direction"), eo.get("thesis_direction"))
         if d in DIRECTIONS and direction in DIRECTIONS and d != direction:
             conflicts.append(f"{label}:DIRECTION_OPPOSES_E6")
+
+    # New master market-control interpretation uses all eight brains together.
+    market_control = _market_control_brain(e1, e2, e3, e4, e5, e6, e7, e8, direction, setup, thesis)
+    if market_control["state"] == "CONTROL_ESTABLISHED":
+        supports.append("E9:MARKET_CONTROL_ESTABLISHED")
+    elif market_control["state"] in {"CONTROL_FORMING", "BALANCED_NO_CONTROL"}:
+        counter.extend(f"E9:{x}" for x in market_control["warnings"])
+    else:
+        counter.append("E9:MARKET_CONTROL_UNPROVEN")
 
     if direction == "NEUTRAL":
         reasons.append("DIRECTION_UNRESOLVED")
@@ -132,7 +282,6 @@ def analyze_e9(snapshot: dict[str, Any], upstream: dict[str, EngineResult]) -> E
     if not economics_ready:
         reasons.append("RISK_NOT_READY")
 
-    # E8 quantitative economics become explicit master-decision floors.
     rr = _score_num(e8.get("real_rr", e8.get("rr_used")), 0.0)
     edge = _score_num(e8.get("economic_edge_r", e8.get("expected_value_r")), 0.0)
     margin = _score_num(e8.get("economic_margin"), 0.0)
@@ -152,119 +301,66 @@ def analyze_e9(snapshot: dict[str, Any], upstream: dict[str, EngineResult]) -> E
         reasons.append("RISK_QUALITY_BELOW_DECISION_THRESHOLD")
 
     for c in _codes(e8):
-        if c in {
-            "REAL_RR_BELOW_MINIMUM", "EXECUTION_COST_TOO_HIGH",
-            "STRUCTURAL_SURVIVAL_NOT_PROVEN", "EFFECTIVE_SPACE_UNRELIABLE",
-            "EFFECTIVE_SPACE_BELOW_MINIMUM", "STRESSED_PROBABILITY_BELOW_MINIMUM",
-            "TARGET_REALISM_TOO_LOW", "STOP_QUALITY_TOO_LOW",
-            "PROBABILITY_EDGE_NOT_TRUSTWORTHY",
-        }:
+        if c in {"REAL_RR_BELOW_MINIMUM", "EXECUTION_COST_TOO_HIGH", "STRUCTURAL_SURVIVAL_NOT_PROVEN", "EFFECTIVE_SPACE_UNRELIABLE", "EFFECTIVE_SPACE_BELOW_MINIMUM", "STRESSED_PROBABILITY_BELOW_MINIMUM", "TARGET_REALISM_TOO_LOW", "STOP_QUALITY_TOO_LOW", "PROBABILITY_EDGE_NOT_TRUSTWORTHY"}:
             reasons.append(c)
-        elif c in {
-            "SURVIVAL_FRAGILE", "ECONOMICS_SENSITIVITY_FRAGILE",
-            "ECONOMIC_MARGIN_TOO_THIN", "PROBABILITY_EDGE_NOT_POSITIVE",
-        }:
+        elif c in {"SURVIVAL_FRAGILE", "ECONOMICS_SENSITIVITY_FRAGILE", "ECONOMIC_MARGIN_TOO_THIN", "PROBABILITY_EDGE_NOT_POSITIVE"}:
             counter.append(f"E8:{c}")
 
     def dedupe(items):
         return list(dict.fromkeys(str(x) for x in items if x))
 
-    conflicts = dedupe(conflicts)
-    counter = dedupe(counter)
-    supports = dedupe(supports)
-    reasons = dedupe(reasons)
-
+    conflicts, counter, supports, reasons = map(dedupe, (conflicts, counter, supports, reasons))
     hard_reasons = {
-        "DIRECTION_UNRESOLVED", "SETUP_NOT_ESTABLISHED", "SETUP_NOT_MATURE",
-        "ENTRY_CONFIRMATION_NOT_PROVEN", "RISK_NOT_READY",
-        "ECONOMIC_EDGE_RR_BELOW_PROFESSIONAL_MINIMUM", "ECONOMIC_EDGE_TOO_THIN",
-        "ECONOMIC_MARGIN_TOO_THIN", "STRESSED_PROBABILITY_BELOW_MINIMUM",
-        "RISK_QUALITY_BELOW_DECISION_THRESHOLD", "REAL_RR_BELOW_MINIMUM",
-        "EXECUTION_COST_TOO_HIGH", "STRUCTURAL_SURVIVAL_NOT_PROVEN",
-        "EFFECTIVE_SPACE_UNRELIABLE", "EFFECTIVE_SPACE_BELOW_MINIMUM",
-        "TARGET_REALISM_TOO_LOW", "STOP_QUALITY_TOO_LOW",
-        "PROBABILITY_EDGE_NOT_TRUSTWORTHY",
+        "DIRECTION_UNRESOLVED", "SETUP_NOT_ESTABLISHED", "SETUP_NOT_MATURE", "ENTRY_CONFIRMATION_NOT_PROVEN", "RISK_NOT_READY",
+        "ECONOMIC_EDGE_RR_BELOW_PROFESSIONAL_MINIMUM", "ECONOMIC_EDGE_TOO_THIN", "ECONOMIC_MARGIN_TOO_THIN",
+        "STRESSED_PROBABILITY_BELOW_MINIMUM", "RISK_QUALITY_BELOW_DECISION_THRESHOLD", "REAL_RR_BELOW_MINIMUM",
+        "EXECUTION_COST_TOO_HIGH", "STRUCTURAL_SURVIVAL_NOT_PROVEN", "EFFECTIVE_SPACE_UNRELIABLE", "EFFECTIVE_SPACE_BELOW_MINIMUM",
+        "TARGET_REALISM_TOO_LOW", "STOP_QUALITY_TOO_LOW", "PROBABILITY_EDGE_NOT_TRUSTWORTHY",
     }
     hard_veto = bool(conflicts) or any(r in hard_reasons for r in reasons)
+
+    # Market-control intelligence is deliberately a confirming layer, not a
+    # bypass around E7 confirmation or E8 risk. It can strengthen a thesis,
+    # but cannot manufacture a trade that the evidence gates reject.
+    market_control_veto = market_control["strength"] < 35 and market_control["market_intent"].startswith("FORCED_REPRICING")
+    if market_control_veto:
+        counter.append("E9:MARKET_CONTROL_THESIS_TOO_WEAK")
+        hard_veto = True
+
     decision = direction if not hard_veto else "NO_TRADE"
 
-    # Confidence is decision quality, not win probability and never 100/0.
-    evidence_quality = max(0.0, min(100.0, 35.0 + 8.0 * len(supports)
-                                      - 10.0 * len(counter) - 20.0 * len(conflicts)))
+    evidence_quality = max(0.0, min(100.0, 35.0 + 8.0 * len(supports) - 10.0 * len(counter) - 20.0 * len(conflicts)))
     gate_quality = 100.0 if setup_ready and confirmation_ready and economics_ready else 55.0
-    edge_quality = 50.0 + 15.0 * min(2.0, max(0.0, edge / 0.10))
-    edge_quality += 10.0 * min(2.0, max(0.0, margin / 0.05))
-    edge_quality += 10.0 if rr >= 1.50 else -20.0
+    edge_quality = 50.0 + 15.0 * min(2.0, max(0.0, edge / 0.10)) + 10.0 * min(2.0, max(0.0, margin / 0.05)) + (10.0 if rr >= 1.50 else -20.0)
     edge_quality = max(0.0, min(100.0, edge_quality))
-    score = max(0.0, min(100.0, 0.45 * evidence_quality + 0.30 * gate_quality + 0.25 * edge_quality))
+    score = max(0.0, min(100.0, 0.40 * evidence_quality + 0.25 * gate_quality + 0.20 * edge_quality + 0.15 * market_control["strength"]))
     if decision == "NO_TRADE":
         score = min(score, 64.0)
 
     authority_checks = {f"E{i}_finding": _finding(eo) for i, eo in enumerate(o, 1)}
-    authority_checks.update({
-        "E6_thesis": thesis, "E6_setup": setup, "E6_maturity": maturity,
-        "E7_confirmation": confirmation, "E8_risk_gate": risk_gate,
-    })
+    authority_checks.update({"E6_thesis": thesis, "E6_setup": setup, "E6_maturity": maturity, "E7_confirmation": confirmation, "E8_risk_gate": risk_gate})
 
     output = {
-        "question": QUESTION,
-        "decision": decision,
-        "direction": direction,
-        "thesis": thesis,
-        "setup": setup,
-        "maturity": maturity,
-        "confirmation": confirmation,
-        "risk_gate": risk_gate,
-        "setup_ready": setup_ready,
-        "confirmation_ready": confirmation_ready,
-        "economics_ready": economics_ready,
-        "trade_plan": plan,
-        "reasoning_role": "MASTER_DECISION_ANALYST",
-        "decision_authority": "E9",
-        "trade_decision_authority": True,
-        "architecture": "SINGLE_AXIS_E1_TO_E9",
-        "reconciliation": "EVIDENCE_HIERARCHY_PLUS_COUNTER_THESIS_NOT_VOTING",
-        "authority_checks": authority_checks,
-        "conflicts": conflicts,
-        "evidence_used": "E1_E2_E3_E4_E5_E6_E7_E8",
-        "supporting_evidence": supports,
-        "counter_evidence": counter,
-        "counter_thesis": counter,
-        "evidence_hierarchy": [
-            "E1_MARKET_CONTEXT", "E2_OPPORTUNITY", "E3_STRUCTURE", "E4_LIQUIDITY",
-            "E5_LOCATION", "E6_SETUP", "E7_CONFIRMATION", "E8_ECONOMICS",
-        ],
-        "evidence_quality": round(evidence_quality, 2),
-        "edge_quality": round(edge_quality, 2),
-        "decision_confidence": round(score, 2),
-        "decision_score": round(score, 2),
-        "quantitative_economics": {
-            "real_rr": rr,
-            "economic_edge_r": edge,
-            "economic_margin": margin,
-            "stress_probability": None if prob < 0 else prob,
-            "risk_quality": risk_quality,
-        },
-        "uncertainty": {
-            "state": "HIGH" if score < 55 else "MEDIUM" if score < 75 else "LOW",
-            "reasons": counter,
-        },
+        "question": QUESTION, "decision": decision, "direction": direction, "thesis": thesis, "setup": setup,
+        "maturity": maturity, "confirmation": confirmation, "risk_gate": risk_gate, "setup_ready": setup_ready,
+        "confirmation_ready": confirmation_ready, "economics_ready": economics_ready, "trade_plan": plan,
+        "reasoning_role": "MASTER_DECISION_ANALYST", "decision_authority": "E9", "trade_decision_authority": True,
+        "architecture": "SINGLE_AXIS_E1_TO_E9", "reconciliation": "EVIDENCE_HIERARCHY_PLUS_COUNTER_THESIS_PLUS_MARKET_CONTROL_NOT_VOTING",
+        "authority_checks": authority_checks, "conflicts": conflicts, "evidence_used": "E1_E2_E3_E4_E5_E6_E7_E8",
+        "supporting_evidence": supports, "counter_evidence": counter, "counter_thesis": counter,
+        "evidence_hierarchy": ["E1_MARKET_CONTEXT", "E2_OPPORTUNITY", "E3_STRUCTURE", "E4_LIQUIDITY", "E5_LOCATION", "E6_SETUP", "E7_CONFIRMATION", "E8_ECONOMICS"],
+        "market_control_brain": market_control,
+        "market_control_model": "LIQUIDITY -> PARTICIPANT_BEHAVIOR -> TRAP -> REPRICING -> TARGET",
+        "evidence_quality": round(evidence_quality, 2), "edge_quality": round(edge_quality, 2),
+        "decision_confidence": round(score, 2), "decision_score": round(score, 2),
+        "quantitative_economics": {"real_rr": rr, "economic_edge_r": edge, "economic_margin": margin, "stress_probability": None if prob < 0 else prob, "risk_quality": risk_quality},
+        "uncertainty": {"state": "HIGH" if score < 55 else "MEDIUM" if score < 75 else "LOW", "reasons": counter},
         "counter_evidence_vetoed": bool(conflicts),
-        "invalidation": [
-            "new closed-candle evidence changes a decisive prerequisite",
-            "thesis invalidation or explicit domain contradiction",
-            "economics edge falls below the professional decision floor",
-        ],
+        "invalidation": ["new closed-candle evidence changes a decisive prerequisite", "thesis invalidation or explicit domain contradiction", "economics edge falls below the professional decision floor", "market-control thesis loses its liquidity/participant-behavior chain"],
         "professional_reasoning": {
-            "conclusion": thesis,
-            "decision": decision,
-            "why_trade": supports,
-            "why_not_trade": dedupe(reasons + conflicts),
-            "what_can_disprove": dedupe(counter + conflicts),
-            "edge_assessment": edge,
-            "evidence_quality": evidence_quality,
-            "decision_confidence": score,
+            "conclusion": thesis, "decision": decision, "why_trade": supports, "why_not_trade": dedupe(reasons + conflicts),
+            "what_can_disprove": dedupe(counter + conflicts), "edge_assessment": edge, "evidence_quality": evidence_quality,
+            "decision_confidence": score, "market_control_conclusion": market_control["interpretation"],
         },
     }
-    return EngineResult("E9", NAME, decision in DIRECTIONS, score, output,
-                        tuple(dedupe(reasons + conflicts)))
+    return EngineResult("E9", NAME, decision in DIRECTIONS, score, output, tuple(dedupe(reasons + conflicts)))
