@@ -366,8 +366,6 @@ def analyze_e8(snapshot: dict[str, Any], upstream: dict[str, EngineResult]) -> E
     if volatility["atr_stability"] == "UNSTABLE": counter.append("ATR_STABILITY_RISK")
     if execution["cost_atr"] > MAX_EXECUTION_COST_ATR: counter.append("EXECUTION_COST_TOO_HIGH")
 
-    # Probability is tradeable only when it is historical, sufficiently sampled,
-    # and explicitly conditioned on the trade's causal setup/regime.
     if probability["state"] != "AVAILABLE":
         counter.append("PROBABILITY_UNQUANTIFIED")
     else:
@@ -377,8 +375,6 @@ def analyze_e8(snapshot: dict[str, Any], upstream: dict[str, EngineResult]) -> E
         if not probability.get("historical_evidence"): counter.append("PROBABILITY_NOT_CAUSALLY_GROUNDED")
         if probability.get("causal_basis") != "EXPLICIT": counter.append("PROBABILITY_CAUSAL_BASIS_WEAK")
 
-    # EV is valid only after probability provenance is valid.  This prevents a
-    # mathematically positive EV from becoming false confidence on weak P.
     probability_gate = (
         probability["state"] == "AVAILABLE"
         and probability.get("value") is not None
@@ -392,14 +388,14 @@ def analyze_e8(snapshot: dict[str, Any], upstream: dict[str, EngineResult]) -> E
         counter.append("EV_INPUT_PROBABILITY_NOT_TRUSTWORTHY")
     if economics["edge_class"] == "NEGATIVE_EXPECTANCY": counter.append("NEGATIVE_EXPECTANCY")
     if economics["state"] != "QUANTIFIED": counter.append("EXPECTED_VALUE_UNQUANTIFIED")
-    elif economics["expected_value_r"] < MIN_ECONOMIC_EDGE: counter.append("ECONOMIC_EDGE_BELOW_MINIMUM")
+    elif _num(economics.get("expected_value_r"), -999) < MIN_ECONOMIC_EDGE: counter.append("ECONOMIC_EDGE_BELOW_MINIMUM")
     if economics.get("probability_edge") is None or economics.get("probability_edge", -1) <= 0: counter.append("PROBABILITY_EDGE_NOT_POSITIVE")
-    if economics.get("effective_rr", 0) < MIN_RR: counter.append("EFFECTIVE_RR_BELOW_MINIMUM")
+    if _num(economics.get("effective_rr"), -999) < MIN_RR: counter.append("EFFECTIVE_RR_BELOW_MINIMUM")
     if economics.get("asymmetry") in {"WEAK", "INVALID", "UNQUANTIFIED"}: counter.append("ASYMMETRIC_PAYOFF_INSUFFICIENT")
     if sensitivity["state"] != "ROBUST": counter.append("ECONOMICS_SENSITIVITY_FRAGILE")
     if sensitivity.get("worst_ev_r") is None: counter.append("SENSITIVITY_EV_UNQUANTIFIED")
-    elif sensitivity.get("worst_ev_r", -999) < MIN_SENSITIVITY_EV: counter.append("WORST_CASE_EV_NEGATIVE")
-    if sensitivity.get("worst_effective_rr", 0) < MIN_RR: counter.append("WORST_CASE_ASYMMETRY_INSUFFICIENT")
+    elif _num(sensitivity.get("worst_ev_r"), -999) < MIN_SENSITIVITY_EV: counter.append("WORST_CASE_EV_NEGATIVE")
+    if _num(sensitivity.get("worst_effective_rr"), -999) < MIN_RR: counter.append("WORST_CASE_ASYMMETRY_INSUFFICIENT")
     if risk_budget["state"] == "INVALID": counter.append("RISK_BUDGET_INVALID")
     if risk_budget["state"] == "UNSPECIFIED": missing.append("RISK_BUDGET_REQUIRED")
     if risk_budget["state"] == "DEFINED_NOT_SIZED": counter.append("POSITION_SIZE_NOT_COMPUTABLE")
@@ -417,8 +413,8 @@ def analyze_e8(snapshot: dict[str, Any], upstream: dict[str, EngineResult]) -> E
         "RR": real_rr >= MIN_RR,
         "PROBABILITY": probability_gate,
         "EXPECTED_VALUE": probability_gate and economics["state"] == "QUANTIFIED" and _num(economics.get("expected_value_r"), -999) >= MIN_ECONOMIC_EDGE and _num(economics.get("probability_edge"), -999) > 0,
-        "ASYMMETRY": economics.get("asymmetry") in {"POSITIVE", "STRONG"} and economics.get("effective_rr", 0) >= MIN_RR,
-        "SENSITIVITY": sensitivity["state"] == "ROBUST" and _num(sensitivity.get("worst_ev_r"), -999) >= MIN_SENSITIVITY_EV and _num(sensitivity.get("worst_effective_rr"), 0) >= MIN_RR,
+        "ASYMMETRY": economics.get("asymmetry") in {"POSITIVE", "STRONG"} and _num(economics.get("effective_rr"), -999) >= MIN_RR,
+        "SENSITIVITY": sensitivity["state"] == "ROBUST" and _num(sensitivity.get("worst_ev_r"), -999) >= MIN_SENSITIVITY_EV and _num(sensitivity.get("worst_effective_rr"), -999) >= MIN_RR,
         "RISK_BUDGET": risk_budget["state"] == "WITHIN_BUDGET" and risk_budget.get("sizing_state") == "COMPUTABLE" and _num(risk_budget.get("position_size"), 0) > 0,
     }
     ready = all(gate.values())
@@ -432,7 +428,7 @@ def analyze_e8(snapshot: dict[str, Any], upstream: dict[str, EngineResult]) -> E
     observations = [
         f"direction={direction}", f"setup={setup}", f"confirmation={confirmation}", f"entry={entry:.6f}", f"atr={atr:.6f}",
         f"risk_distance_atr={stop_atr:.3f}", f"target={target.get('level') if target.get('level') is not None else 'NONE'}",
-        f"real_rr={real_rr:.3f}", f"effective_rr={economics.get('effective_rr', 0):.3f}",
+        f"real_rr={real_rr:.3f}", f"effective_rr={_num(economics.get('effective_rr'), 0):.3f}",
         f"probability={p_pct:.2f}%" if p_pct is not None else "probability=UNAVAILABLE",
         f"probability_quality={probability.get('quality', 0):.1f}", f"probability_sample={probability.get('sample_size')}",
         f"probability_historical={probability.get('historical_evidence')}", f"probability_causal_basis={probability.get('causal_basis')}",
