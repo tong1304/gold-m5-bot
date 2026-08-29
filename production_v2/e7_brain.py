@@ -7,8 +7,8 @@ from .contracts import EngineResult
 
 NAME = "Confirmation / Trigger Brain"
 QUESTION = "Does the setup have a valid closed-candle confirmation, or what is still missing?"
-ARCHITECTURE = "E7_PROFESSIONAL_SETUP_AWARE_CONFIRMATION_BRAIN_V6"
-VERSION = "6.0"
+ARCHITECTURE = "E7_PROFESSIONAL_SETUP_AWARE_CONFIRMATION_BRAIN_V7"
+VERSION = "7.0"
 ATR_PERIOD = 14
 MIN_BARS = 5
 FOLLOW_THROUGH_MAX_AGE = 3
@@ -111,9 +111,53 @@ def _base(snapshot: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _professional_reasoning(*, conclusion: str, thesis: str, observed: list[str], missing: list[str],
+                            support: list[str], counter: list[str], invalidation: list[str],
+                            lifecycle: Any, next_event: str, ledger: dict[str, Any],
+                            proof: dict[str, str]) -> dict[str, Any]:
+    states = [v.get("state") for v in ledger.values() if isinstance(v, dict)]
+    return {
+        "question": QUESTION,
+        "conclusion": conclusion,
+        "hypothesis": thesis,
+        "evidence": observed,
+        "observed_evidence": observed,
+        "missing_evidence": missing,
+        "supporting_evidence": support,
+        "counter_evidence": counter,
+        "invalidation": invalidation,
+        "confirmation_lifecycle": lifecycle,
+        "next_required_event": next_event,
+        "proof_gates": proof,
+        "evidence_ledger_summary": {
+            "total": len(states),
+            "pass": sum(s == "PASS" for s in states),
+            "fail": sum(s == "FAIL" for s in states),
+            "pending": sum(s == "PENDING" for s in states),
+            "unavailable": sum(s == "UNAVAILABLE" for s in states),
+        },
+        "decision_path": [
+            "E6 thesis is treated as a hypothesis, never as confirmation.",
+            "Only the latest closed candle is admitted; no lookahead.",
+            "Trigger evidence is explicitly separated from confirmation.",
+            "Setup-specific proof gates must pass before confirmation.",
+            "Follow-through is evaluated as sequential evidence.",
+            "Counter-evidence and invalidation override a positive trigger.",
+            "E7 reports proof; E9 retains trade-decision authority.",
+        ],
+        "reasoning_trace_version": "E7_V7_EXPLICIT_AUDIT",
+    }
+
+
 def _empty(snapshot: dict[str, Any], reason: str) -> EngineResult:
     observed = [f"context=INSUFFICIENT reason={reason}"]
     missing = ["valid directional setup thesis", "valid closed-candle confirmation"]
+    lifecycle = {
+        "state": "WAIT", "trigger": "NOT_OBSERVED", "confirmation": "NOT_PROVEN",
+        "follow_through": "UNAVAILABLE", "invalidation": "NONE",
+        "next_required_event": "E6_RESOLVED_THESIS_AND_CLOSED_CANDLE_PROOF",
+    }
+    ledger = {}
     out = {
         **_base(snapshot), "state": "WAIT", "confirmation": "UNRESOLVED",
         "trigger_status": "NOT_EVALUATED", "direction": "NEUTRAL", "setup": "NONE",
@@ -122,12 +166,17 @@ def _empty(snapshot: dict[str, Any], reason: str) -> EngineResult:
         "observed_evidence": observed, "missing_evidence": missing,
         "next_required_evidence": missing, "next_required_event": "E6_RESOLVED_THESIS_AND_CLOSED_CANDLE_PROOF",
         "invalidation": ["new closed candle invalidates or replaces the current thesis"],
-        "proof_gates": {}, "evidence_ledger": {}, "confirmation_lifecycle": "WAIT",
+        "proof_gates": {}, "evidence_ledger": ledger, "confirmation_lifecycle": lifecycle,
         "reasoning_trace": {"conclusion": "Confirmation cannot be evaluated from current context.",
                             "why_not_confirmed": missing,
                             "next_required_event": "E6_RESOLVED_THESIS_AND_CLOSED_CANDLE_PROOF"},
         "observations": observed,
     }
+    out["professional_reasoning"] = _professional_reasoning(
+        conclusion="Confirmation cannot be evaluated from current context.", thesis="",
+        observed=observed, missing=missing, support=[], counter=[reason],
+        invalidation=out["invalidation"], lifecycle=lifecycle,
+        next_event=out["next_required_event"], ledger=ledger, proof={})
     return EngineResult("E7", NAME, False, 0.0, out, ("INSUFFICIENT_CONTEXT",))
 
 
@@ -157,6 +206,9 @@ def analyze_e7(snapshot: dict[str, Any], upstream: dict[str, EngineResult]) -> E
             "state": "FAIL", "observed": "NEUTRAL", "required": "BUY or SELL",
             "interpretation": "E6 has not supplied a directional hypothesis that E7 can prove."
         }}
+        lifecycle = {"state": "UNRESOLVED", "trigger": "NOT_OBSERVED", "confirmation": "NOT_PROVEN",
+                     "follow_through": "UNAVAILABLE", "invalidation": "NONE",
+                     "next_required_event": "E6_RESOLVED_DIRECTIONAL_THESIS"}
         out = {
             **_base(snapshot), "state": "UNRESOLVED", "confirmation": "UNRESOLVED",
             "trigger_status": "NOT_EVALUATED", "direction": "NEUTRAL", "setup": setup,
@@ -168,11 +220,17 @@ def analyze_e7(snapshot: dict[str, Any], upstream: dict[str, EngineResult]) -> E
             "next_required_event": "E6_RESOLVED_DIRECTIONAL_THESIS",
             "invalidation": ["new closed candle changes the setup thesis"],
             "proof_gates": {"direction_resolved": "FAIL"}, "evidence_ledger": ledger,
-            "confirmation_lifecycle": "UNRESOLVED", "observations": observed,
+            "confirmation_lifecycle": lifecycle, "observations": observed,
             "reasoning_trace": {"conclusion": "No directional thesis can be confirmed.",
                                 "why_not_confirmed": missing,
                                 "next_required_event": "E6_RESOLVED_DIRECTIONAL_THESIS"},
         }
+        out["professional_reasoning"] = _professional_reasoning(
+            conclusion="No directional thesis can be confirmed.", thesis=thesis,
+            observed=observed, missing=missing, support=[],
+            counter=["SETUP_DIRECTION_UNRESOLVED"], invalidation=out["invalidation"],
+            lifecycle=lifecycle, next_event=out["next_required_event"], ledger=ledger,
+            proof=out["proof_gates"])
         return EngineResult("E7", NAME, False, 0.0, out, ("SETUP_DIRECTION_UNRESOLVED",))
 
     buy = direction == "BUY"
@@ -450,6 +508,12 @@ def analyze_e7(snapshot: dict[str, Any], upstream: dict[str, EngineResult]) -> E
             "next_required_event": next_event,
         },
     }
+    out["professional_reasoning"] = _professional_reasoning(
+        conclusion=reasoning["conclusion"], thesis=thesis or setup,
+        observed=observed, missing=missing_evidence,
+        support=unique_support, counter=unique_counter,
+        invalidation=out["invalidation"], lifecycle=lifecycle,
+        next_event=next_event, ledger=ledger, proof=proof)
 
     reasons = [
         "EVIDENCE_LEDGER_EVALUATED", "CLOSED_CANDLE_ONLY",
@@ -457,6 +521,7 @@ def analyze_e7(snapshot: dict[str, Any], upstream: dict[str, EngineResult]) -> E
         "MISSING_EVIDENCE_EXPOSED", "NEXT_REQUIRED_EVENT_EXPOSED",
         "SETUP_SPECIFIC_PROOF_EVALUATED", "COUNTER_EVIDENCE_EVALUATED",
         "INVALIDATION_EVALUATED", "CONFIRMATION_LIFECYCLE_EXPOSED",
+        "PROFESSIONAL_REASONING_EXPOSED",
     ]
     if invalidated:
         reasons += ["CONFIRMATION_INVALIDATED", "COUNTER_EVIDENCE_PRESENT"]
