@@ -7,8 +7,8 @@ from .contracts import EngineResult
 
 NAME = "Confirmation / Trigger Brain"
 QUESTION = "Does the setup have a valid closed-candle confirmation, or what is still missing?"
-ARCHITECTURE = "E7_PROFESSIONAL_SETUP_AWARE_CONFIRMATION_BRAIN_V10"
-VERSION = "10.0"
+ARCHITECTURE = "E7_PROFESSIONAL_SETUP_AWARE_CONFIRMATION_BRAIN_V11"
+VERSION = "11.0"
 ATR_PERIOD = 14
 MIN_BARS = 5
 FOLLOW_THROUGH_MAX_AGE = 3
@@ -110,14 +110,14 @@ def _reasoning(*, conclusion: str, thesis: str, observed: list[str], missing: li
             "E6 supplies the hypothesis; E7 never creates a new setup thesis.",
             "Only completed candles are admissible; the current open candle is excluded.",
             "A trigger is candidate evidence and never equals confirmation by itself.",
-            "Confirmation requires setup-specific proof plus closed-candle follow-through or terminal auction proof.",
-            "Follow-through is causal: a later closed candle must validate the earlier trigger.",
-            "Explicit invalidation outranks all positive confirmation evidence.",
-            "Counter-evidence is disclosed and weighted; a single opposite candle is not automatically invalidation.",
-            "Structural space is reported as downstream economic context, not as a confirmation generator.",
+            "Confirmation requires setup-specific proof plus causal closed-candle follow-through, or a setup-relevant terminal auction proof.",
+            "Follow-through validates the immediately preceding trigger; future candles are never borrowed.",
+            "Explicit invalidation has absolute priority over positive confirmation evidence.",
+            "Counter-evidence is disclosed and weighted; it becomes invalidation only when the thesis-specific invalidation rule is met.",
+            "Structural space is downstream economic context and never creates confirmation.",
             "E7 reports confirmation evidence; E9 retains trade-decision authority.",
         ],
-        "reasoning_trace_version": "E7_V10_EXPLICIT_AUDIT",
+        "reasoning_trace_version": "E7_V11_CAUSAL_CONFIRMATION_AUDIT",
     }
 
 
@@ -207,11 +207,18 @@ def analyze_e7(snapshot: dict[str, Any], upstream: dict[str, EngineResult]) -> E
     engulf = current["bullish_engulf"] if buy else current["bearish_engulf"]
     trigger = bool(directional and close_ok and (displacement or engulf))
 
+    previous_directional = previous["bullish"] if buy else previous["bearish"]
+    previous_close_ok = previous["close_position"] >= MIN_CLOSE_POSITION if buy else previous["close_position"] <= 1.0 - MIN_CLOSE_POSITION
+    previous_displacement = previous_directional and previous["body_atr"] >= MIN_DISPLACEMENT_ATR and previous_close_ok
+    previous_engulf = previous["bullish_engulf"] if buy else previous["bearish_engulf"]
+    previous_trigger = bool(previous_directional and previous_close_ok and (previous_displacement or previous_engulf))
+
     rec("directional_closed_candle", "PASS" if directional else "FAIL", directional, True, "Latest closed candle agrees with E6 direction.")
     rec("close_location", "PASS" if close_ok else "FAIL", round(current["close_position"], 4), ">=0.65 BUY / <=0.35 SELL", "The close must finish decisively on the thesis side.")
     rec("directional_displacement", "PASS" if displacement else "PENDING", round(current["body_atr"], 4), f">={MIN_DISPLACEMENT_ATR} ATR", "Displacement is trigger evidence, not confirmation alone.")
     rec("engulfing_response", "PASS" if engulf else "UNAVAILABLE", engulf, True, "Optional corroborating response; absence does not veto displacement.")
-    rec("closed_candle_trigger", "PASS" if trigger else "FAIL", trigger, True, "A trigger is a candidate event and is explicitly separated from confirmation.")
+    rec("closed_candle_trigger", "PASS" if trigger else "FAIL", trigger, True, "A trigger is candidate evidence and is never confirmation by itself.")
+    rec("prior_candle_trigger", "PASS" if previous_trigger else "PENDING", previous_trigger, "required for next-candle causal follow-through", "A later candle may confirm only an already-observed prior trigger.")
 
     protected_high = _num(e3o.get("protected_high")); protected_low = _num(e3o.get("protected_low"))
     structure_finding = _text(e3o.get("finding", e3o.get("structure_state")))
@@ -225,13 +232,12 @@ def analyze_e7(snapshot: dict[str, Any], upstream: dict[str, EngineResult]) -> E
         invalid.append(f"CLOSE_BELOW_PROTECTED_LOW={protected_low:.5f}")
     if not buy and protected_high and current["close"] > protected_high:
         invalid.append(f"CLOSE_ABOVE_PROTECTED_HIGH={protected_high:.5f}")
-    rec("thesis_invalidation", "FAIL" if invalid else "PASS", invalid[-1] if invalid else "NONE", "no protected-level invalidation", "A closed-candle protected-level break invalidates the thesis.")
+    rec("thesis_invalidation", "FAIL" if invalid else "PASS", invalid[-1] if invalid else "NONE", "no protected-level invalidation", "A closed-candle protected-level break invalidates the thesis and outranks positive evidence.")
 
-    # E5 space is explicitly downstream economic context. It must not manufacture confirmation.
     space = _num(e5o.get("available_space_atr_long" if buy else "available_space_atr_short"), 0.0)
     space_available = bool(e5o) and space > 0.0
     space_ok = space_available and space >= MIN_STRUCTURAL_SPACE_ATR
-    rec("structural_space", "PASS" if space_ok else "PENDING" if space_available else "UNAVAILABLE", round(space, 4), f">={MIN_STRUCTURAL_SPACE_ATR} ATR for downstream economics", "Space informs E8/E9 economics; it does not create confirmation.")
+    rec("structural_space", "PASS" if space_ok else "PENDING" if space_available else "UNAVAILABLE", round(space, 4), f">={MIN_STRUCTURAL_SPACE_ATR} ATR for downstream economics", "Space informs E8/E9 economics; it never creates confirmation.")
 
     event_direction_ok = auction["direction"] in {"NEUTRAL", direction}
     event_fresh = auction["age"] <= FOLLOW_THROUGH_MAX_AGE
@@ -241,6 +247,10 @@ def analyze_e7(snapshot: dict[str, Any], upstream: dict[str, EngineResult]) -> E
     rec("auction_freshness", "PASS" if event_fresh else "FAIL", auction["age"], f"<= {FOLLOW_THROUGH_MAX_AGE} bars", "Stale auction evidence cannot confirm a current setup.")
     rec("auction_event", "PASS" if event_present else "PENDING", auction["event"] or "NONE", "setup-relevant event", "The setup needs an identifiable causal event when its family requires one.")
 
+    # For a positive confirmation on the second candle, setup proof must be allowed
+    # to refer to the immediately preceding trigger. This closes the old asymmetry
+    # where confirmation could only succeed when the current candle itself was a trigger.
+    causal_trigger = trigger or previous_trigger
     setup_gates: dict[str, str] = {}
     if "AUCTION_ACCEPTANCE" in setup:
         acceptance_event = "ACCEPTANCE" in auction["event"]
@@ -248,52 +258,42 @@ def analyze_e7(snapshot: dict[str, Any], upstream: dict[str, EngineResult]) -> E
         setup_gates["auction_acceptance"] = rec("setup.auction_acceptance", "PASS" if acceptance_proof else "PENDING", {"event": auction["event"], "terminal": auction["terminal"], "response": response_present}, "acceptance event + directional response/terminal state", "Acceptance must be evidenced, not inferred from a touch.")
     elif "LIQUIDITY_REVERSAL" in setup:
         sweep = any(x in auction["event"] for x in ("SWEEP", "FAILED_BREAK_RECLAIM", "REJECTION"))
-        reclaim = trigger and event_direction_ok
+        reclaim = bool(causal_trigger and event_direction_ok)
         setup_gates["liquidity_sweep"] = rec("setup.liquidity_sweep", "PASS" if sweep else "PENDING", sweep, "sweep/rejection/failed-break event", "A reversal requires evidence that liquidity was actually taken.")
-        setup_gates["reclaim_response"] = rec("setup.reclaim_response", "PASS" if reclaim else "PENDING", reclaim, "closed-candle reclaim in thesis direction", "Reclaim separates reversal from a mere wick.")
+        setup_gates["reclaim_response"] = rec("setup.reclaim_response", "PASS" if reclaim else "PENDING", reclaim, "closed-candle reclaim in thesis direction", "Reclaim must be tied to a valid trigger/follow-through sequence.")
     elif "BREAKOUT_RETEST" in setup:
         bos = _text(e3o.get("bos", e3o.get("break_of_structure"))) in {"BREAK", "BOS", "YES", "CONFIRMED"} or "BREAK" in auction["event"]
         retest = "RETEST" in auction["event"]
         setup_gates["break_event"] = rec("setup.break_event", "PASS" if bos else "PENDING", bos, "confirmed break", "Retest reasoning is invalid without a causal break.")
-        setup_gates["retest_response"] = rec("setup.retest_response", "PASS" if (retest and trigger) else "PENDING", {"retest": retest, "trigger": trigger}, "retest + directional close", "The retest must hold/reject and continue.")
+        setup_gates["retest_response"] = rec("setup.retest_response", "PASS" if (retest and causal_trigger) else "PENDING", {"retest": retest, "causal_trigger": causal_trigger}, "retest + directional closed-candle response", "The retest must hold/reject and continue.")
     elif "BREAKOUT" in setup:
         bos = _text(e3o.get("bos", e3o.get("break_of_structure"))) in {"BREAK", "BOS", "YES", "CONFIRMED"} or "BREAK" in auction["event"]
-        setup_gates["break_event"] = rec("setup.break_event", "PASS" if bos else "PENDING", bos, "confirmed break", "A breakout requires a closed-candle break.")
-        setup_gates["expansion"] = rec("setup.expansion", "PASS" if (trigger and displacement) else "PENDING", {"trigger": trigger, "displacement": displacement}, "directional displacement", "Expansion demonstrates participation after the break.")
+        setup_gates["break_event"] = rec("setup.break_event", "PASS" if bos else "PENDING", bos, "confirmed break", "A breakout requires a causal closed-candle break.")
+        setup_gates["expansion"] = rec("setup.expansion", "PASS" if (causal_trigger and (displacement or previous_displacement)) else "PENDING", {"causal_trigger": causal_trigger, "displacement": displacement, "previous_displacement": previous_displacement}, "directional displacement", "Expansion demonstrates participation after the break.")
     elif "TREND_PULLBACK" in setup:
         pullback = "PULLBACK" in _text(thesis) or "PULLBACK" in setup
         setup_gates["pullback_context"] = rec("setup.pullback_context", "PASS" if pullback else "PENDING", pullback, "pullback context", "Continuation requires a genuine pullback context.")
-        setup_gates["continuation_close"] = rec("setup.continuation_close", "PASS" if (trigger and structure_aligned) else "PENDING", {"trigger": trigger, "structure_aligned": structure_aligned}, "closed-candle continuation", "Continuation must agree with direction and structure.")
+        setup_gates["continuation_close"] = rec("setup.continuation_close", "PASS" if (causal_trigger and structure_aligned) else "PENDING", {"causal_trigger": causal_trigger, "structure_aligned": structure_aligned}, "closed-candle continuation", "Continuation must agree with direction and structure.")
     elif "IMPULSE_CONTINUATION" in setup:
-        setup_gates["impulse"] = rec("setup.impulse", "PASS" if (displacement and directional) else "PENDING", {"displacement": displacement, "directional": directional}, "directional impulse", "An impulse must be demonstrated on a closed candle.")
-        setup_gates["continuation_close"] = rec("setup.continuation_close", "PASS" if trigger else "PENDING", trigger, "closed-candle continuation trigger", "Continuation must be confirmed by a valid close.")
+        setup_gates["impulse"] = rec("setup.impulse", "PASS" if ((displacement or previous_displacement) and (directional or previous_directional)) else "PENDING", {"displacement": displacement, "previous_displacement": previous_displacement, "directional": directional, "previous_directional": previous_directional}, "directional impulse", "An impulse must be demonstrated on a closed candle.")
+        setup_gates["continuation_close"] = rec("setup.continuation_close", "PASS" if causal_trigger else "PENDING", causal_trigger, "closed-candle continuation trigger", "Continuation must be tied to a valid causal trigger.")
     else:
-        setup_gates["generic_setup_proof"] = rec("setup.generic_setup_proof", "PASS" if trigger else "PENDING", trigger, "explicit closed-candle setup proof", "Unknown setup families require explicit proof and remain conservative.")
+        setup_gates["generic_setup_proof"] = rec("setup.generic_setup_proof", "PASS" if causal_trigger else "PENDING", causal_trigger, "explicit closed-candle setup proof", "Unknown setup families require explicit proof and remain conservative.")
 
-    # Causal two-candle follow-through. The latest candle may validate the immediately
-    # preceding trigger, but a trigger on the latest candle can never use future evidence.
-    previous_directional = previous["bullish"] if buy else previous["bearish"]
-    previous_close_ok = previous["close_position"] >= MIN_CLOSE_POSITION if buy else previous["close_position"] <= 1.0 - MIN_CLOSE_POSITION
-    previous_displacement = previous_directional and previous["body_atr"] >= MIN_DISPLACEMENT_ATR and previous_close_ok
-    previous_engulf = previous["bullish_engulf"] if buy else previous["bearish_engulf"]
-    previous_trigger = bool(previous_directional and previous_close_ok and (previous_displacement or previous_engulf))
     current_follow = bool(previous_trigger and directional and close_ok and not invalid)
-    follow_distance = 1 if previous_trigger else None
-
     if trigger:
         follow_state = "PENDING_NEXT_CLOSED_CANDLE"
         rec("follow_through", "PENDING", "TRIGGER_ON_LATEST_CLOSED_CANDLE", "subsequent closed candle", "The next candle does not exist yet; future evidence cannot be borrowed.")
         next_event = "NEXT_CLOSED_CANDLE_THESIS_FOLLOW_THROUGH"
     elif current_follow:
         follow_state = "PROVEN_ON_CURRENT_CLOSED_CANDLE"
-        rec("follow_through", "PASS", {"previous_trigger": True, "bars_after_trigger": follow_distance}, "current candle follows previous trigger", "The current closed candle confirms continuation after the immediately preceding trigger.")
+        rec("follow_through", "PASS", {"previous_trigger": True, "bars_after_trigger": 1}, "current candle follows previous trigger", "The current closed candle causally validates the immediately preceding trigger.")
         next_event = "MONITOR_CONFIRMED_THESIS_INVALIDATION"
     else:
         follow_state = "NOT_PROVEN"
         rec("follow_through", "PENDING", "NOT_OBSERVED", "closed-candle follow-through", "Follow-through must be observed after a setup-specific trigger.")
         next_event = "VALID_CLOSED_CANDLE_TRIGGER"
 
-    # Counter-evidence is informational unless it becomes explicit thesis invalidation.
     if structure_conflict:
         counter.append("STRUCTURE_COUNTER_EVIDENCE")
     if auction["pending"] and not auction["terminal"]:
@@ -310,20 +310,28 @@ def analyze_e7(snapshot: dict[str, Any], upstream: dict[str, EngineResult]) -> E
     all_setup_pass = bool(setup_gates) and all(v == "PASS" for v in setup_gates.values())
     hard_structure_conflict = structure_conflict
     follow_proven = current_follow
-    terminal_auction_proof = bool(auction["terminal"] and event_direction_ok and event_fresh and event_present and response_present)
-    confirmation_allowed = (
+    auction_setup = "AUCTION_ACCEPTANCE" in setup or "LIQUIDITY_REVERSAL" in setup
+    terminal_auction_proof = bool(auction_setup and auction["terminal"] and event_direction_ok and event_fresh and event_present and response_present)
+
+    # Confirmation paths are deliberately explicit:
+    # A) current candle is a valid trigger and setup-specific proof is complete,
+    #    then terminal auction proof may confirm immediately when the setup family supports it.
+    # B) previous candle was the valid trigger and the current closed candle follows through,
+    #    with setup-specific proof still complete. This is the normal causal confirmation path.
+    causal_confirmation = bool(
         not invalidated
         and all_setup_pass
         and not hard_structure_conflict
-        and not any(x.startswith("CLOSE_") for x in invalid)
         and follow_proven
-    ) or (
+    )
+    terminal_confirmation = bool(
         not invalidated
         and all_setup_pass
         and not hard_structure_conflict
         and terminal_auction_proof
         and trigger
     )
+    confirmation_allowed = causal_confirmation or terminal_confirmation
 
     if invalidated:
         state = "INVALIDATED"; confirmation = "INVALIDATED"; trigger_status = "INVALIDATED"; score = 0.0
@@ -344,9 +352,10 @@ def analyze_e7(snapshot: dict[str, Any], upstream: dict[str, EngineResult]) -> E
     proof = dict(setup_gates)
     proof.update({
         "trigger": "PASS" if trigger else "FAIL",
+        "prior_trigger": "PASS" if previous_trigger else "PENDING",
         "structure_alignment": "PASS" if structure_aligned else "FAIL",
         "structural_space": "PASS" if space_ok else "PENDING" if space_available else "UNAVAILABLE",
-        "auction_terminal": "PASS" if auction["terminal"] else "PENDING",
+        "auction_terminal": "PASS" if terminal_auction_proof else "PENDING",
         "follow_through": "PASS" if follow_proven else "PENDING",
         "invalidation": "FAIL" if invalidated else "PASS",
     })
@@ -359,6 +368,7 @@ def analyze_e7(snapshot: dict[str, Any], upstream: dict[str, EngineResult]) -> E
         f"auction_state={auction['state'] or 'NONE'}", f"auction_age_bars={auction['age']}",
         f"current_body_atr={current['body_atr']:.4f}", f"current_close_position={current['close_position']:.4f}",
         f"proof_pass_ratio={proof_pass}/{proof_total}", f"terminal_auction_proof={terminal_auction_proof}",
+        f"causal_confirmation={causal_confirmation}", f"terminal_confirmation={terminal_confirmation}",
     ])
     missing = _dedupe(missing); support = _dedupe(support); invalid = _dedupe(invalid); next_required = _dedupe(missing)
     lifecycle = {
@@ -366,13 +376,14 @@ def analyze_e7(snapshot: dict[str, Any], upstream: dict[str, EngineResult]) -> E
         "follow_through": follow_state, "invalidation": invalid or "NONE", "next_required_event": next_event,
         "setup": setup, "direction": direction, "event_age_bars": auction["age"],
         "maturity": e6_maturity, "terminal_auction_proof": terminal_auction_proof,
+        "causal_confirmation": causal_confirmation, "terminal_confirmation": terminal_confirmation,
     }
     conclusion = "Closed-candle evidence confirms the setup." if confirmation == "CONFIRMED" else "Closed-candle evidence invalidates the current setup thesis." if confirmation == "INVALIDATED" else "The thesis remains a hypothesis; required proof is incomplete."
     reasons: list[str] = []
     if confirmation == "CONFIRMED": reasons.append("CONFIRMATION_PROVEN")
     elif confirmation == "INVALIDATED": reasons.append("CONFIRMATION_INVALIDATED")
     else: reasons.append("PROOF_GATES_INCOMPLETE")
-    reasons.append("TRIGGER_OBSERVED_NOT_AUTOMATIC_CONFIRMATION" if trigger else "VALID_CLOSED_CANDLE_TRIGGER_MISSING")
+    reasons.append("CAUSAL_FOLLOW_THROUGH_PROVEN" if causal_confirmation else "TRIGGER_OBSERVED_NOT_AUTOMATIC_CONFIRMATION" if trigger else "VALID_CLOSED_CANDLE_TRIGGER_MISSING")
     if missing: reasons.append("MISSING_EVIDENCE_EXPOSED")
     if counter: reasons.append("COUNTER_EVIDENCE_PRESENT")
     if terminal_auction_proof: reasons.append("TERMINAL_AUCTION_PROOF_PRESENT")
