@@ -68,18 +68,41 @@ class LiveService:
         slot = now.strftime("%Y%m%d%H%M")
         if slot == self._last_no_trade_slot:
             return
+
         symbols = self.data.symbols()
-        if set(self._latest_results) != set(symbols):
-            return
-        market_open = {alias: self.data.market_is_open(alias, now) for alias in symbols}
-        if not any(market_open.values()):
+        market_open = {}
+        for alias in symbols:
+            try:
+                market_open[alias] = self.data.market_is_open(alias, now)
+            except Exception as exc:
+                market_open[alias] = False
+                self._runtime_errors[alias] = f"market status: {exc}"
+
+        # Only markets that are currently open and have completed an E1-E9
+        # evaluation participate in the NO_TRADE decision. A closed market
+        # must not block notification for another open market.
+        active_results = {
+            alias: result
+            for alias, result in self._latest_results.items()
+            if alias in symbols and market_open.get(alias, False)
+        }
+        if not active_results:
+            # Nothing is tradable now; let the normal market-status alert
+            # report MARKET_CLOSED instead of emitting a misleading NO_TRADE.
             self._last_no_trade_slot = slot
             return
-        if any(getattr(r, "decision", None) in {"BUY", "SELL"} and bool(getattr(r, "gate_passed", False)) for r in self._latest_results.values()):
+
+        # A real authorized trade takes precedence over NO_TRADE.
+        if any(
+            getattr(result, "decision", None) in {"BUY", "SELL"}
+            and bool(getattr(result, "gate_passed", False))
+            for result in active_results.values()
+        ):
             self._last_no_trade_slot = slot
             return
+
         try:
-            send_no_trade(dict(self._latest_results), now)
+            send_no_trade(dict(active_results), now)
             self._last_no_trade_slot = slot
         except Exception as exc:
             print(f"[PRODUCTION V2] Telegram no-trade error: {exc}", flush=True)
@@ -100,7 +123,6 @@ class LiveService:
         output = engine.output or {}
         reasoning = output.get("professional_reasoning") or {}
         specialists = output.get("specialists") or {}
-
         if engine.engine_id == "E1":
             market_state = reasoning.get("market_state") or output.get("market_state") or "UNCLEAR"
             volatility = reasoning.get("volatility_state") or output.get("volatility_state") or "UNKNOWN"
@@ -125,7 +147,6 @@ class LiveService:
                     if not isinstance(item, dict): continue
                     observations.extend(str(x) for x in (item.get("observations") or []) if x)
             return {"question": reasoning.get("question") or output.get("question") or output.get("specialist_question"), "conclusion": str(conclusion), "observations": list(dict.fromkeys(observations))[:12], "reasons": sorted(set(str(x) for x in (engine.reason_codes or [])))[:16], "role": "MARKET_STATE_ANALYST"}
-
         if engine.engine_id == "E2":
             core_observations = output.get("observations") or []
             evidence = output.get("evidence") or []
@@ -141,7 +162,6 @@ class LiveService:
             observations.extend(f"missing_evidence={x}" for x in missing if x)
             if not reasons and output.get("opportunity_decision"): reasons.append(str(output["opportunity_decision"]))
             return {"question": reasoning.get("question") or output.get("question") or "What opportunity is the market offering right now?", "conclusion": str(reasoning.get("conclusion") or output.get("thesis") or "UNRESOLVED"), "observations": list(dict.fromkeys(observations))[:12], "reasons": sorted(set(str(x) for x in reasons if str(x).strip()))[:16], "role": output.get("reasoning_role", "OPPORTUNITY_REGIME_ANALYST")}
-
         if engine.engine_id == "E3":
             e3_question = reasoning.get("question") or output.get("question") or "What is price structure communicating?"
             e3_finding = reasoning.get("finding") or reasoning.get("conclusion") or output.get("finding") or "STRUCTURE_UNRESOLVED"
@@ -152,7 +172,6 @@ class LiveService:
             reasons.extend(reasoning.get("reason_codes") or [])
             reasons.extend(output.get("reasons") or [])
             return {"question": e3_question, "conclusion": str(e3_finding), "observations": list(dict.fromkeys(observations))[:12], "reasons": sorted(set(str(x) for x in reasons if str(x).strip()))[:16], "role": "MARKET_STRUCTURE_ANALYST"}
-
         if engine.engine_id == "E4":
             e4_question = reasoning.get("question") or output.get("question") or "Where is liquidity, who took it, and did price accept or reject the auction?"
             e4_finding = reasoning.get("conclusion") or output.get("analyst_conclusion") or output.get("finding") or "UNRESOLVED"
@@ -165,7 +184,6 @@ class LiveService:
             reasons = list(engine.reason_codes or [])
             reasons.extend(output.get("reasons") or [])
             return {"question": e4_question, "conclusion": str(e4_finding), "observations": list(dict.fromkeys(observations))[:20], "reasons": sorted(set(str(x) for x in reasons if str(x).strip()))[:20], "role": "LIQUIDITY_AUCTION_ANALYST"}
-
         if engine.engine_id == "E5":
             e5_state = output.get("location_state") or reasoning.get("thesis") or "E5_DATA_UNRESOLVED"
             e5_direction = output.get("direction") or "NEUTRAL"
@@ -180,7 +198,6 @@ class LiveService:
             reasons = list(engine.reason_codes or [])
             reasons.extend(output.get("counter_evidence") or [])
             return {"question": question, "conclusion": str(e5_state), "observations": list(dict.fromkeys(str(x) for x in observations if str(x)))[:16], "reasons": sorted(set(str(x) for x in reasons if str(x).strip()))[:20], "role": "LOCATION_VALUE_ANALYST"}
-
         conclusion = reasoning.get("conclusion") or output.get("analyst_conclusion") or output.get("finding") or "UNRESOLVED"
         question = reasoning.get("question") or output.get("question") or output.get("specialist_question")
         observations = []
