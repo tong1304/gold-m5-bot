@@ -119,7 +119,7 @@ def _context(permitted: dict[str, Any] | None) -> tuple[dict[str, Any], list[str
         p = (permitted or {}).get(eid)
         if not isinstance(p, dict): continue
         e = p.get("evidence")
-        payload = e.get("output") if isinstance(e, dict) else e
+        payload = e.get("output") if isinstance(e, dict) and isinstance(e.get("output"), dict) else e
         if not isinstance(payload, dict): payload = p.get("output") or {}
         if not isinstance(payload, dict): continue
         ctx[eid] = dict(payload); evidence.append(f"{eid}_QUALITATIVE_CONTEXT_READ")
@@ -233,8 +233,13 @@ def analyze_e5(snapshot: dict[str, Any], permitted: dict[str, Any] | None = None
     le = _side("LONG",vp,vd,extension_state,near_r,low_sweep,long_space)
     se = _side("SHORT",vp,vd,extension_state,near_s,high_sweep,short_space)
     gap = round(abs(le["score"]-se["score"]),4)
-    preferred = "LONG" if gap >= .12 and le["score"] > se["score"] and max(le["score"],se["score"]) >= .45 else \
-                "SHORT" if gap >= .12 and se["score"] > le["score"] and max(le["score"],se["score"]) >= .45 else \
+    # Qualitative direction may constrain a preferred-location label, but it
+    # never changes either side's location score. Counter-direction preference
+    # requires fresh current-candle liquidity evidence.
+    short_allowed = not (qualitative_direction == "UP" and not high_sweep)
+    long_allowed = not (qualitative_direction == "DOWN" and not low_sweep)
+    preferred = "LONG" if long_allowed and gap >= .12 and le["score"] > se["score"] and max(le["score"],se["score"]) >= .45 else \
+                "SHORT" if short_allowed and gap >= .12 and se["score"] > le["score"] and max(le["score"],se["score"]) >= .45 else \
                 "BOTH_CONDITIONAL" if max(le["score"],se["score"]) >= .45 else "NONE"
     best = le["score"] if preferred=="LONG" else se["score"] if preferred=="SHORT" else max(le["score"],se["score"])
 
@@ -247,7 +252,8 @@ def analyze_e5(snapshot: dict[str, Any], permitted: dict[str, Any] | None = None
     if extension_state in {"EXTENDED","EXCESSIVE"}: hard.append("EXTENSION_RISK")
     if value_state=="EQUILIBRIUM": hard.append("VALUE_NOT_DIRECTIONALLY_FAVORABLE")
 
-    state = "WAIT_REPRICING" if preferred=="NONE" else "SPACE_CONSTRAINED" if hard else \
+    state = "WAIT_REPRICING" if preferred=="NONE" or extension_state in {"EXTENDED","EXCESSIVE"} else \
+            "SPACE_CONSTRAINED" if hard else \
             "ADVANTAGEOUS" if best >= .72 else "ACCEPTABLE" if best >= .58 else "WAIT_REPRICING"
     quality = "HIGH" if best>=.72 else "ACCEPTABLE" if best>=.58 else "CONDITIONAL" if best>=.45 else "UNFAVORABLE"
 
