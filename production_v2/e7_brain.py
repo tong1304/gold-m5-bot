@@ -5,7 +5,6 @@ from typing import Any
 
 from .contracts import EngineResult
 
-
 NAME = "Confirmation / Trigger Brain"
 QUESTION = "Does the setup have a valid closed-candle confirmation, or what is still missing?"
 ARCHITECTURE = "E7_PROFESSIONAL_SETUP_AWARE_CONFIRMATION_BRAIN_V2"
@@ -58,17 +57,18 @@ def _candle(bar: dict[str, Any], previous: dict[str, Any], atr: float) -> dict[s
     rng = max(h - l, 1e-9)
     body = abs(c - o)
     pos = (c - l) / rng
+    a = max(atr, 1e-9)
     return {
         "open": o, "high": h, "low": l, "close": c,
         "prev_open": po, "prev_high": ph, "prev_low": pl, "prev_close": pc,
-        "range": rng, "body": body, "body_atr": body / max(atr, 1e-9),
+        "range": rng, "body": body, "body_atr": body / a,
         "close_position": pos,
         "upper_wick": h - max(o, c), "lower_wick": min(o, c) - l,
         "bullish": c > o, "bearish": c < o,
         "bullish_engulf": o <= pc and c >= po and c > o,
         "bearish_engulf": o >= pc and c <= po and c < o,
-        "bullish_displacement": c > o and body / max(atr, 1e-9) >= 0.55 and pos >= 0.65,
-        "bearish_displacement": c < o and body / max(atr, 1e-9) >= 0.55 and pos <= 0.35,
+        "bullish_displacement": c > o and body / a >= 0.55 and pos >= 0.65,
+        "bearish_displacement": c < o and body / a >= 0.55 and pos <= 0.35,
         "higher_close": c > pc, "lower_close": c < pc,
     }
 
@@ -117,8 +117,7 @@ def _empty_result(snapshot: dict[str, Any], reason: str) -> EngineResult:
         "missing_evidence": ["valid setup thesis", "valid closed-candle confirmation"],
         "next_required_evidence": ["a valid closed candle proving the setup thesis"],
         "invalidation": ["new closed candle invalidates or replaces the current thesis"],
-        "proof_gates": {},
-        "reasoning_trace": {"conclusion": "Confirmation cannot be evaluated from current context."},
+        "proof_gates": {}, "reasoning_trace": {"conclusion": "Confirmation cannot be evaluated from current context."},
     }
     return EngineResult("E7", NAME, False, 0.0, output, ("INSUFFICIENT_CONTEXT",))
 
@@ -141,7 +140,7 @@ def analyze_e7(snapshot: dict[str, Any], upstream: dict[str, EngineResult]) -> E
     thesis = str(e6o.get("candidate_setup_thesis") or e6o.get("thesis") or "")
     atr = max(_atr(bars), 1e-9)
     c = _candle(bars[-1], bars[-2], atr)
-    prev = _candle(bars[-2], bars[-3], atr) if len(bars) >= 3 else c
+    prev = _candle(bars[-2], bars[-3], atr)
     auction = _e4_context(e4o)
 
     supporting: list[str] = []
@@ -181,13 +180,12 @@ def analyze_e7(snapshot: dict[str, Any], upstream: dict[str, EngineResult]) -> E
 
     internal = _direction(e3o.get("internal_state", e3o.get("internal_count_state")))
     external = _direction(e3o.get("external_state", e3o.get("external_count_state")))
-    structure_finding = _text(e3o.get("finding", e3o.get("structure_state")))
+    finding = _text(e3o.get("finding", e3o.get("structure_state")))
     if internal == direction: supporting.append("INTERNAL_STRUCTURE_CORROBORATES")
     elif internal != "NEUTRAL": counter.append("INTERNAL_STRUCTURE_CONFLICT")
     if external == direction: supporting.append("EXTERNAL_STRUCTURE_CORROBORATES")
     elif external != "NEUTRAL": counter.append("EXTERNAL_STRUCTURE_CONFLICT")
-    if "MIXED" in structure_finding or "TRANSITION" in structure_finding:
-        counter.append("STRUCTURE_NOT_RESOLVED")
+    if "MIXED" in finding or "TRANSITION" in finding: counter.append("STRUCTURE_NOT_RESOLVED")
 
     space = _num(e5o.get("available_space_atr_long" if bullish else "available_space_atr_short"))
     if space > 0 and space >= 0.75:
@@ -208,9 +206,9 @@ def analyze_e7(snapshot: dict[str, Any], upstream: dict[str, EngineResult]) -> E
         event_ok = bool(auction["event"] and any(x in auction["event"] for x in ("SWEEP_REJECTION", "FAILED_BREAK_RECLAIM")))
         gate("liquidity_event", event_ok, "liquidity_sweep_or_failed_break_reclaim")
         response_ok = auction["direction"] == direction
+        setup_proof["liquidity_response"] = "PASS" if response_ok else ("FAIL" if auction["direction"] in {"BUY", "SELL"} else "PENDING")
         if response_ok: supporting.append("LIQUIDITY_RESPONSE_ALIGNS")
         elif auction["direction"] in {"BUY", "SELL"}: counter.append("LIQUIDITY_RESPONSE_CONFLICT")
-        setup_proof["liquidity_response"] = "PASS" if response_ok else ("FAIL" if auction["direction"] in {"BUY", "SELL"} else "PENDING")
         if auction["pending"] and not auction["terminal"]:
             counter.append("AUCTION_CONFIRMATION_PENDING")
             missing.append("terminal_auction_confirmation")
@@ -218,7 +216,7 @@ def analyze_e7(snapshot: dict[str, Any], upstream: dict[str, EngineResult]) -> E
         else:
             setup_proof["auction_terminality"] = "PASS" if auction["terminal"] else "FAIL"
         if auction["level"]:
-            reclaimed = c["close"] < auction["level"] if not bullish else c["close"] > auction["level"]
+            reclaimed = c["close"] > auction["level"] if bullish else c["close"] < auction["level"]
             setup_proof["level_reclaim"] = "PASS" if reclaimed else "FAIL"
             if reclaimed: supporting.append("LIQUIDITY_LEVEL_RECLAIMED_BY_CLOSE")
             else: missing.append("closed_candle_reclaim_of_liquidity_level")
@@ -249,13 +247,9 @@ def analyze_e7(snapshot: dict[str, Any], upstream: dict[str, EngineResult]) -> E
         counter.append("UNKNOWN_SETUP_CONFIRMATION_RULE")
         setup_proof["setup_definition"] = "FAIL"
 
-    # Confirmation lifecycle: the latest candle can be the trigger, but it cannot also be
-    # treated as its own future follow-through. Follow-through requires a subsequent close.
-    previous_trigger = bool(
-        prev["bullish"] if bullish else prev["bearish"
-    ]) and bool(prev["close_position"] >= 0.65 if bullish else prev["close_position"] <= 0.35) and bool(
-        prev["bullish_displacement"] if bullish else prev["bearish_displacement"]
-    )
+    previous_trigger = bool(prev["bullish"] if bullish else prev["bearish"]) and bool(
+        prev["close_position"] >= 0.65 if bullish else prev["close_position"] <= 0.35
+    ) and bool(prev["bullish_displacement"] if bullish else prev["bearish_displacement"])
     if previous_trigger and directional_close:
         follow_state = "PASS"
         supporting.append("FOLLOW_THROUGH_CONFIRMED")
@@ -288,9 +282,7 @@ def analyze_e7(snapshot: dict[str, Any], upstream: dict[str, EngineResult]) -> E
         "INTERNAL_STRUCTURE_CONFLICT", "EXTERNAL_STRUCTURE_CONFLICT",
     ))
     invalidated = bool(invalidation) or hard_conflict
-
-    # Hard proof is intentionally stricter than trigger detection. A trigger is not a confirmation.
-    setup_specific = all(v == "PASS" for v in setup_proof.values()) if setup_proof else False
+    setup_specific = bool(setup_proof) and all(v == "PASS" for v in setup_proof.values())
     confirmed = bool(trigger_observed and setup_specific and follow_state == "PASS" and not invalidated)
 
     support_count = len(_dedupe(supporting))
@@ -313,10 +305,7 @@ def analyze_e7(snapshot: dict[str, Any], upstream: dict[str, EngineResult]) -> E
         state, trigger_status, strength = "UNRESOLVED", "NOT_CONFIRMED", "NONE"
 
     required_missing = _dedupe(missing)
-    next_required = required_missing[:]
-    if not confirmed and not next_required:
-        next_required = ["closed-candle evidence completing the setup-specific proof gates"]
-
+    next_required = required_missing[:] or (["closed-candle evidence completing the setup-specific proof gates"] if not confirmed else [])
     reasons: list[str] = []
     if confirmed: reasons.append("SETUP_SPECIFIC_CONFIRMATION_PROVEN")
     else:
