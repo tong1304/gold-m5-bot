@@ -7,8 +7,8 @@ from .contracts import EngineResult
 
 NAME = "Setup Brain"
 QUESTION = "What setup is forming, in what direction, and at what stage?"
-ARCHITECTURE = "E6_PROFESSIONAL_SETUP_FORMATION_BRAIN_V10"
-VERSION = "10.0"
+ARCHITECTURE = "E6_PROFESSIONAL_SETUP_FORMATION_BRAIN_V11"
+VERSION = "11.0"
 MIN_BARS = 60
 ATR_PERIOD = 14
 EMA_FAST = 20
@@ -82,7 +82,9 @@ def _auction_direction(event: str) -> str:
     return "NEUTRAL"
 
 
-def _evidence_direction(e1: dict[str, Any], e2: dict[str, Any], e3: dict[str, Any], e4: dict[str, Any]) -> tuple[str, list[str], list[str], str]:
+def _evidence_direction(
+    e1: dict[str, Any], e2: dict[str, Any], e3: dict[str, Any], e4: dict[str, Any]
+) -> tuple[str, list[str], list[str], str]:
     supporting: list[str] = []
     counter: list[str] = []
 
@@ -96,16 +98,12 @@ def _evidence_direction(e1: dict[str, Any], e2: dict[str, Any], e3: dict[str, An
     event = _text(e4.get("event", e4.get("finding")))
     auction = _auction_direction(event)
 
-    # Direction is evidence-ranked. A raw E4 event is not allowed to
-    # overrule a resolved E2 thesis by itself.
     if e2_resolved and len(set(e2_dirs)) == 1:
         direction, source = e2_dirs[0], "E2_RESOLVED"
     elif pressure != "NEUTRAL" and external != "NEUTRAL" and pressure == external:
         direction, source = pressure, "E1_E3_ALIGNMENT"
     elif external != "NEUTRAL" and auction == external:
         direction, source = external, "E3_E4_ALIGNMENT"
-    elif auction != "NEUTRAL" and external == "NEUTRAL":
-        direction, source = auction, "E4_AUCTION_EVENT"
     elif external != "NEUTRAL":
         direction, source = external, "E3_STRUCTURE"
     elif pressure != "NEUTRAL":
@@ -143,7 +141,7 @@ def _auction(e4: dict[str, Any]) -> tuple[str, bool, bool, int]:
     state = _text(e4.get("auction_state", e4.get("state")))
     event = _text(e4.get("event", e4.get("finding")))
     terminal = state in {"CONFIRMED", "TERMINALLY_CONFIRMED", "ACCEPTED", "REJECTED"} or "TERMINAL" in state
-    pending = state == "PENDING" or "PENDING" in _text(e4)
+    pending = state == "PENDING" or "PENDING" in event
     try:
         age = max(0, int(e4.get("event_age_bars", 0) or 0))
     except (TypeError, ValueError):
@@ -172,102 +170,115 @@ def _candidate_scan(
     bars: list[dict[str, Any]],
     atr: float,
     direction: str,
+    e1: dict[str, Any],
     e3: dict[str, Any],
     e4: dict[str, Any],
-    terminal: bool = False,
+    e5: dict[str, Any],
+    terminal: bool,
 ) -> tuple[list[dict[str, Any]], list[str]]:
+    """Find causal setup hypotheses; never let a raw local pattern become a trade setup."""
     if direction == "NEUTRAL":
         return [], [f"{name}:direction_missing" for name in SETUP_FAMILIES]
 
     found: list[dict[str, Any]] = []
     rejected: list[str] = []
     event = _text(e4.get("event", e4.get("finding")))
-    finding = _text(e3.get("finding", e3.get("structure_state")))
     response = _norm(e4.get("response_actor"))
+    e1_state = _text(e1.get("trend_state", e1.get("finding", "")))
+    e3_finding = _text(e3.get("finding", e3.get("structure_state")))
+    external = _norm(e3.get("external_state", e3.get("external_count_state")))
+    bos = _text(e3.get("bos", e3.get("break_of_structure", "")))
+    long_space, short_space, location_constraint = _location(e5)
+    usable_space = short_space if direction == "SELL" else long_space
     b = bars[-1]
     o, h, l, c = map(float, (b["open"], b["high"], b["low"], b["close"]))
     rng = max(h - l, 1e-9)
     pos = (c - l) / rng
+    dclose = pos >= 0.65 if direction == "BUY" else pos <= 0.35
 
-    # Liquidity reversal is a formation sequence: liquidity event -> actor
-    # response -> rejection/acceptance on closed candles. A pending event is
-    # a FORMING candidate, never a mature setup.
+    # 1. Liquidity reversal: event -> response -> rejection -> terminal auction.
     liquidity_event = any(x in event for x in ("SWEEP_REJECTION", "FAILED_BREAK_RECLAIM"))
-    high_event = "HIGH_" in event
-    low_event = "LOW_" in event
-    reversal_dir = "SELL" if high_event else "BUY" if low_event else "NEUTRAL"
+    reversal_dir = "SELL" if "HIGH_" in event else "BUY" if "LOW_" in event else "NEUTRAL"
     rejection_close = pos <= 0.40 if reversal_dir == "SELL" else pos >= 0.60 if reversal_dir == "BUY" else False
     if liquidity_event and reversal_dir == direction:
         evidence = ["E4_LIQUIDITY_EVENT", f"EVENT={event}"]
         if response == direction:
             evidence.append("RESPONSE_ACTOR_ALIGNED")
+        else:
+            evidence.append("RESPONSE_ACTOR_NOT_ALIGNED")
         if rejection_close:
             evidence.append("CURRENT_CLOSED_CANDLE_REJECTION")
         else:
             evidence.append("CLOSED_CANDLE_REJECTION_NOT_YET_PROVEN")
-        if terminal and response == direction and rejection_close:
+        if terminal and response == direction and rejection_close and usable_space >= MIN_SPACE_ATR and not location_constraint:
             strength = 92
+            stage = "MATURE"
         elif response == direction and rejection_close:
-            strength = 82
+            strength = 78
+            stage = "FORMING"
         else:
-            strength = 68
-        found.append({
-            "name": "LIQUIDITY_REVERSAL",
-            "evidence": evidence,
-            "strength": strength,
-            "price_response": rejection_close,
-            "formation_stage": "MATURE" if terminal and response == direction and rejection_close else "FORMING",
-        })
+            strength = 62
+            stage = "FORMING"
+        found.append({"name": "LIQUIDITY_REVERSAL", "evidence": evidence, "strength": strength, "price_response": rejection_close, "formation_stage": stage})
     elif liquidity_event:
         rejected.append("LIQUIDITY_REVERSAL:event_direction_conflict")
 
+    # 2. Breakout-retest: closed break -> retest -> hold. E3 failed break is a veto.
     if len(bars) >= BREAKOUT_LOOKBACK + 4:
         before = bars[-(BREAKOUT_LOOKBACK + 3) : -3]
         level = max(float(x["high"]) for x in before) if direction == "BUY" else min(float(x["low"]) for x in before)
         prior_break = float(bars[-3]["close"]) > level if direction == "BUY" else float(bars[-3]["close"]) < level
         retest = any(float(x["low"]) <= level + 0.25 * atr for x in bars[-2:]) if direction == "BUY" else any(float(x["high"]) >= level - 0.25 * atr for x in bars[-2:])
         hold = c >= level if direction == "BUY" else c <= level
-        if prior_break and retest and hold:
-            found.append({"name": "BREAKOUT_RETEST", "evidence": ["PRIOR_CLOSED_BREAKOUT", "LEVEL_RETEST", "RETEST_HOLD"], "strength": 88, "price_response": True, "formation_stage": "MATURE"})
+        if prior_break and retest and hold and "FAILED_BOS" not in e3_finding:
+            stage = "MATURE" if external == direction and usable_space >= MIN_SPACE_ATR and not location_constraint else "FORMING"
+            strength = 88 if stage == "MATURE" else 72
+            found.append({"name": "BREAKOUT_RETEST", "evidence": ["PRIOR_CLOSED_BREAKOUT", "LEVEL_RETEST", "RETEST_HOLD"], "strength": strength, "price_response": True, "formation_stage": stage})
         else:
-            missing = []
-            if not prior_break: missing.append("prior_breakout")
-            if not retest: missing.append("retest")
-            if not hold: missing.append("retest_hold")
-            rejected.append("BREAKOUT_RETEST:sequence_incomplete:" + ",".join(missing))
+            rejected.append("BREAKOUT_RETEST:sequence_incomplete")
 
+    # 3. Trend pullback: actual trend context + retracement + continuation, not EMA geometry alone.
     closes = [float(x["close"]) for x in bars]
     ema20, ema50, price = _ema(closes, EMA_FAST), _ema(closes, EMA_SLOW), closes[-1]
     recent = bars[-PULLBACK_LOOKBACK:]
     touched = min(float(x["low"]) for x in recent) <= ema20 + 0.25 * atr if direction == "BUY" else max(float(x["high"]) for x in recent) >= ema20 - 0.25 * atr
     aligned = price > ema20 > ema50 if direction == "BUY" else price < ema20 < ema50
     held = price >= ema20 if direction == "BUY" else price <= ema20
-    mixed = "MIXED" in finding
-    if aligned and touched and held and not mixed and abs(price - ema20) <= 1.5 * atr:
-        found.append({"name": "TREND_PULLBACK", "evidence": ["EMA20_EMA50_ALIGNMENT", "RETRACEMENT_TO_EMA20", "RECLAIM_OR_HOLD_EMA20"], "strength": 80, "price_response": True, "formation_stage": "MATURE"})
+    trend_context = any(x in e1_state for x in ("UP", "DOWN", "TREND")) and "NONE" not in e1_state
+    mixed = "MIXED" in e3_finding
+    if aligned and touched and held and trend_context and external == direction and not mixed and "FAILED_BOS" not in e3_finding and abs(price - ema20) <= 1.5 * atr:
+        stage = "MATURE" if usable_space >= MIN_SPACE_ATR and not location_constraint else "FORMING"
+        strength = 84 if stage == "MATURE" else 70
+        found.append({"name": "TREND_PULLBACK", "evidence": ["TREND_CONTEXT", "EMA20_EMA50_ALIGNMENT", "RETRACEMENT_TO_EMA20", "RECLAIM_OR_HOLD_EMA20"], "strength": strength, "price_response": True, "formation_stage": stage})
     else:
         rejected.append("TREND_PULLBACK:formation_incomplete")
 
+    # 4. Breakout: E3 must independently say a real break happened. E6 never invents BOS.
     prior = bars[-(BREAKOUT_LOOKBACK + 1) : -1]
     rh, rl = max(float(x["high"]) for x in prior), min(float(x["low"]) for x in prior)
     broke = c > rh if direction == "BUY" else c < rl
     expansion = h - l >= 0.8 * atr or abs(c - o) >= 0.6 * atr
-    dclose = pos >= 0.65 if direction == "BUY" else pos <= 0.35
-    if broke and expansion and dclose:
-        found.append({"name": "BREAKOUT", "evidence": ["CLOSED_RANGE_BREAK", "VOLATILITY_EXPANSION", "DIRECTIONAL_CLOSE"], "strength": 84, "price_response": True, "formation_stage": "MATURE"})
+    if broke and expansion and dclose and external == direction and any(x in bos for x in ("BREAK", "BOS")) and "NO_BREAK" not in bos and "FAILED_BOS" not in e3_finding:
+        stage = "MATURE" if usable_space >= MIN_SPACE_ATR and not location_constraint else "FORMING"
+        strength = 86 if stage == "MATURE" else 68
+        found.append({"name": "BREAKOUT", "evidence": ["E3_CONFIRMED_BOS", "CLOSED_RANGE_BREAK", "VOLATILITY_EXPANSION", "DIRECTIONAL_CLOSE"], "strength": strength, "price_response": True, "formation_stage": stage})
     else:
-        rejected.append("BREAKOUT:formation_incomplete")
+        rejected.append("BREAKOUT:formation_incomplete_or_E3_BOS_missing")
 
+    # 5. Impulse continuation: requires directional impulse plus context, not one large candle.
     recent4 = bars[-4:]
     bodies = [abs(float(x["close"]) - float(x["open"])) for x in recent4[:3]]
     idx = max(range(len(bodies)), key=bodies.__getitem__)
     impulse = recent4[idx]
     impulse_dir = "BUY" if float(impulse["close"]) > float(impulse["open"]) else "SELL"
     follow_dir = "BUY" if c > o else "SELL"
-    if bodies[idx] >= 0.8 * atr and impulse_dir == direction and follow_dir == direction and dclose:
-        found.append({"name": "IMPULSE_CONTINUATION", "evidence": ["DIRECTIONAL_PRIOR_IMPULSE", "DIRECTIONAL_FOLLOW_THROUGH"], "strength": 76, "price_response": True, "formation_stage": "MATURE"})
+    if bodies[idx] >= 0.8 * atr and impulse_dir == direction and follow_dir == direction and dclose and external == direction and trend_context:
+        stage = "MATURE" if usable_space >= MIN_SPACE_ATR and not location_constraint else "FORMING"
+        strength = 80 if stage == "MATURE" else 65
+        found.append({"name": "IMPULSE_CONTINUATION", "evidence": ["TREND_CONTEXT", "DIRECTIONAL_PRIOR_IMPULSE", "DIRECTIONAL_FOLLOW_THROUGH"], "strength": strength, "price_response": True, "formation_stage": stage})
     else:
         rejected.append("IMPULSE_CONTINUATION:sequence_incomplete")
+
     return found, rejected
 
 
@@ -342,7 +353,7 @@ def _result(
 
 
 def analyze_e6(snapshot: dict[str, Any], upstream: dict[str, EngineResult]) -> EngineResult:
-    """Identify, stage, invalidate and grade setup formations; never authorize entry."""
+    """Reason about setup formation and lifecycle; E6 never authorizes entry."""
     bars = list(snapshot.get("bars") or [])
     if len(bars) < MIN_BARS:
         return _result(
@@ -375,6 +386,7 @@ def analyze_e6(snapshot: dict[str, Any], upstream: dict[str, EngineResult]) -> E
     opportunity = _text(e2.get("finding", e2.get("state", "")))
     e3_finding = _text(e3.get("finding", e3.get("structure_state")))
     e3_internal = _text(e3.get("internal_state", e3.get("internal_count_state")))
+    e3_external = _norm(e3.get("external_state", e3.get("external_count_state")))
 
     if event:
         supporting += [f"E4_EVENT={event}", f"E4_EVENT_AGE_BARS={event_age}"]
@@ -397,25 +409,41 @@ def analyze_e6(snapshot: dict[str, Any], upstream: dict[str, EngineResult]) -> E
         f"CURRENT_CANDLE_CLOSE_POSITION={candle_pos:.3f}",
     ]
 
-    formations, rejected = _candidate_scan(bars, atr, direction, e3, e4, terminal)
+    formations, rejected = _candidate_scan(bars, atr, direction, e1, e3, e4, e5, terminal)
     counter = list(dict.fromkeys(counter))
+
+    # A professional setup brain separates hypothesis formation from trade readiness.
+    # Upstream unresolved/conflicted evidence can keep a real candidate FORMING,
+    # but can never be silently converted into MATURE.
+    hard_blockers = {
+        "OPPORTUNITY_MATURITY_UNPROVEN",
+        "DIRECTIONAL_EVIDENCE_CONFLICT",
+        "EXTERNAL_STRUCTURE_COUNTERTREND",
+        "FAILED_STRUCTURE_BREAK",
+        "STRUCTURE_MIXED",
+        "LIQUIDITY_EVENT_PENDING",
+        "LOCATION_CONSTRAINT",
+    }
+
     formations.sort(key=lambda x: (x.get("strength", 0), x.get("price_response", False)), reverse=True)
     candidates = [x["name"] for x in formations]
 
     trace = {
         "direction_source": direction_source,
         "e1_state": _text(e1.get("finding", e1.get("state", ""))),
+        "e1_trend_state": _text(e1.get("trend_state", "")),
         "e2_state": opportunity,
         "e3_state": e3_finding,
+        "e3_external": e3_external,
+        "e3_bos": _text(e3.get("bos", e3.get("break_of_structure", ""))),
         "e4_event": event,
         "e4_auction_state": _text(e4.get("auction_state", e4.get("state", ""))),
         "e4_event_age_bars": event_age,
         "e4_event_id": e4.get("event_id") or e4.get("event_candle_id"),
         "e5_state": _text(e5.get("finding", e5.get("state", ""))),
-        "e3_protected_high": e3.get("protected_high"),
-        "e3_protected_low": e3.get("protected_low"),
         "closed_candle_only": True,
         "lookahead": False,
+        "hard_blockers": sorted(x for x in counter if x in hard_blockers),
     }
 
     if not formations:
@@ -431,18 +459,15 @@ def analyze_e6(snapshot: dict[str, Any], upstream: dict[str, EngineResult]) -> E
             next_required.append("usable short structural space")
         if "OPPORTUNITY_MATURITY_UNPROVEN" in counter:
             next_required.append("closed-candle opportunity acceptance/follow-through")
-        state = "NO_SETUP"
-        stage = "SEARCHING"
-        if counter:
-            state = "FORMING" if event and direction != "NEUTRAL" else "NO_SETUP"
-            stage = "FORMING" if state == "FORMING" else "SEARCHING"
+        state = "FORMING" if direction != "NEUTRAL" and counter else "NO_SETUP"
+        stage = "FORMING" if state == "FORMING" else "SEARCHING"
         thesis = (
-            "NO_SETUP: no approved setup sequence is present"
+            "NO_SETUP: no causal setup sequence is established"
             if state == "NO_SETUP"
-            else f"{direction}: market is forming evidence, but no complete setup archetype is established"
+            else f"{direction}: setup hypothesis is not yet established; upstream evidence still blocks formation"
         )
-        quality = 12.0 if state == "FORMING" else 0.0
-        confidence = 86.0 if state == "NO_SETUP" else 78.0
+        quality = 10.0 if state == "FORMING" else 0.0
+        confidence = 86.0 if state == "NO_SETUP" else 80.0
         return _result(
             state, "NONE", direction, stage, "UNRESOLVED", thesis, quality,
             supporting, counter, missing, next_required,
@@ -473,30 +498,38 @@ def analyze_e6(snapshot: dict[str, Any], upstream: dict[str, EngineResult]) -> E
     if "STRUCTURE_MIXED" in counter:
         missing.append("structural_alignment")
         next_required.append("clear protected-level structural confirmation")
+    if "FAILED_STRUCTURE_BREAK" in counter:
+        missing.append("failed_structure_break_resolution")
+        next_required.append("new closed-candle structure proving continuation or reversal")
+    if "LOCATION_CONSTRAINT" in counter:
+        missing.append("location_quality")
+        next_required.append("usable structural space")
     if setup == "LIQUIDITY_REVERSAL" and not selected.get("price_response", False):
         missing.append("directional_rejection_close")
         next_required.append("directional closed-candle rejection")
 
-    hard_conflict = any(x in counter for x in ("EXTERNAL_STRUCTURE_COUNTERTREND", "FAILED_STRUCTURE_BREAK"))
-    formation_stage = _text(selected.get("formation_stage", "MATURE"))
-    if hard_conflict:
-        state, stage, maturity, quality = "FORMING", "CONFLICTED", "DEVELOPING", min(58.0, strength)
-        thesis = f"{direction}_{setup}: candidate formation exists, but structural counter-evidence prevents progression"
-    elif missing or formation_stage != "MATURE":
-        state, stage, maturity, quality = "FORMING", "DEVELOPING", "DEVELOPING", min(78.0, strength)
-        thesis = f"{direction}_{setup}: formation is present; {', '.join(missing) if missing else 'confirmation sequence'} remains unresolved"
-    else:
+    blockers = [x for x in counter if x in hard_blockers]
+    formation_stage = _text(selected.get("formation_stage", "FORMING"))
+    if not missing and not blockers and formation_stage == "MATURE":
         state, stage, maturity, quality = "MATURE", "TRIGGER_PENDING", "MATURE", min(92.0, strength)
-        thesis = f"{direction}_{setup}: setup formation is mature; E7 must independently prove entry confirmation"
+        thesis = f"{direction}_{setup}: causal setup formation is mature; E7 must independently prove entry confirmation"
+    elif blockers or missing or formation_stage != "MATURE":
+        state, stage, maturity, quality = "FORMING", "DEVELOPING", "DEVELOPING", min(82.0, strength)
+        blocker_text = ", ".join(dict.fromkeys(blockers + missing))
+        thesis = f"{direction}_{setup}: formation exists as a hypothesis, but progression is blocked by {blocker_text or 'setup-specific confirmation'}"
+    else:
+        state, stage, maturity, quality = "FORMING", "DEVELOPING", "DEVELOPING", min(82.0, strength)
+        thesis = f"{direction}_{setup}: formation is developing; setup lifecycle is not yet mature"
 
     next_required.append("E7 closed-candle entry confirmation")
     invalidation = [
         "setup-specific formation failure on a subsequent closed candle",
         "protected-level break against the setup thesis",
-        "auction response changes from acceptance/rejection to contrary acceptance",
+        "auction response changes to contrary acceptance",
         "directional evidence becomes structurally contradictory",
+        "location loses sufficient structural space",
     ]
-    confidence = min(96.0, max(55.0, strength + (8.0 if len(selected.get("evidence", [])) >= 3 else 0.0) - 8.0 * len(counter)))
+    confidence = min(96.0, max(55.0, strength + (8.0 if len(selected.get("evidence", [])) >= 3 else 0.0) - 7.0 * len(blockers)))
     return _result(
         state, setup, direction, stage, maturity, thesis, quality,
         supporting, counter, missing, next_required, invalidation,
