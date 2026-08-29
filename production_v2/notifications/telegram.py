@@ -31,8 +31,7 @@ def _analysis_status(engine: Any) -> str:
     r = engine.output.get("professional_reasoning", {}) or {}
     status = engine.output.get("analysis_status", "")
     reasons = set(engine.output.get("analysis_reason_codes", ()) or engine.reason_codes or ())
-    if eid == "E9":
-        return "🟢" if engine.output.get("decision") in {"BUY", "SELL"} else "🔴"
+    if eid == "E9": return "🟢" if engine.output.get("decision") in {"BUY", "SELL"} else "🔴"
     if eid == "E1":
         market_state = r.get("market_state") or engine.output.get("market_state")
         return "🟢" if market_state and market_state != "UNCLEAR" else "🟡"
@@ -60,11 +59,33 @@ def _engine_answer(engine: Any) -> str:
     elif e == "E8":
         p = r.get("trade_plan") or {}
         answer = f"RR 1:{float(p.get('rr_tp2',0)):.1f}" if p.get("valid") else _fmt(p.get("reason"))
-    elif e == "E9":
-        decision = engine.output.get("decision")
-        answer = "BUY" if decision == "BUY" else "SELL" if decision == "SELL" else "NO_TRADE"
+    elif e == "E9": answer = str(engine.output.get("decision", "NO_TRADE"))
     else: answer = "ไม่พบข้อมูล"
     return f"{_analysis_status(engine)} {e} — {ENGINE_THAI_NAMES.get(e, e)}\nคำตอบ: {answer}"
+
+
+def _e9_control_lines(result: DecisionResult) -> list[str]:
+    e9 = next((e for e in result.engines if e.engine_id == "E9"), None)
+    if e9 is None: return []
+    r = e9.output.get("professional_reasoning", {}) or {}
+    control = r.get("market_control") or r.get("market_control_thesis") or {}
+    if not isinstance(control, dict): control = {}
+    def pick(*keys):
+        for key in keys:
+            if control.get(key) is not None: return control[key]
+            if r.get(key) is not None: return r[key]
+            if e9.output.get(key) is not None: return e9.output[key]
+        return "ไม่พบข้อมูล"
+    return [
+        "", "━━━━━━━━━━━━━━━━━━", "🧠 มุมมอง MARKET-CONTROL ของ E9", "━━━━━━━━━━━━━━━━━━",
+        f"เจตนาของตลาด: {_fmt(pick('market_intent','intent'))}",
+        f"ฝ่ายที่ได้เปรียบ: {_fmt(pick('dominant_side','dominant'))}",
+        f"ฝ่ายที่ถูกควบคุม: {_fmt(pick('controlled_side'))}",
+        f"ฝ่ายที่ติดกับ: {_fmt(pick('trapped_side'))}",
+        f"เป้าหมาย LIQUIDITY: {_fmt(pick('liquidity_target'))}",
+        f"ทิศทาง REPRICING: {_fmt(pick('repricing_direction','repricing_thesis'))}",
+        f"ความแข็งแรงของการควบคุม: {_fmt(pick('control_strength','market_control_strength'))}",
+    ]
 
 
 def format_decision(result: DecisionResult) -> str:
@@ -72,24 +93,27 @@ def format_decision(result: DecisionResult) -> str:
     plan = result.trade_plan; required = ("entry", "stop_loss", "take_profit_1", "take_profit_2", "rr_tp2")
     if not plan.get("valid") or any(k not in plan for k in required): raise ValueError("Actionable E9 decision requires a complete E8 trade plan")
     direction = "ซื้อ" if result.decision == "BUY" else "ขาย"
-    lines = [f"{'🟢 BUY' if result.decision=='BUY' else '🔴 SELL'} — {direction}", "", f"📊 สินทรัพย์: {result.symbol}", f"⏱ Timeframe: {result.timeframe}", "🧠 E1-E8 วิเคราะห์หลักฐานเฉพาะด้าน → E9 เป็นผู้ตัดสินใจเทรดเท่านั้น", "", "━━━━━━━━━━━━━━━━━━", "🧠 คำตอบสั้นจากแต่ละ Engine", "━━━━━━━━━━━━━━━━━━"]
+    lines = [f"{'🟢 BUY' if result.decision=='BUY' else '🔴 SELL'} — {direction}", "", f"📊 สินทรัพย์: {result.symbol}", f"⏱ Timeframe: {result.timeframe}", "🧠 E1-E8 ให้หลักฐาน → E9 เป็น Final Decision Authority", "", "━━━━━━━━━━━━━━━━━━", "🧠 สรุปจากแต่ละ Engine", "━━━━━━━━━━━━━━━━━━"]
     for engine in result.engines: lines += ["", _engine_answer(engine)]
+    lines += _e9_control_lines(result)
     lines += ["", "━━━━━━━━━━━━━━━━━━", "🎯 FINAL DECISION", "━━━━━━━━━━━━━━━━━━", f"🟢 E9 อนุมัติการออกออเดอร์: {result.decision}", "", "━━━━━━━━━━━━━━━━━━", "📋 Trade Plan", "━━━━━━━━━━━━━━━━━━", f"📍 Entry: {plan['entry']}", f"🛑 Stop Loss: {plan['stop_loss']}", f"🎯 Take Profit 1: {plan['take_profit_1']}", f"🎯 Take Profit 2: {plan['take_profit_2']}", f"📐 RR: 1:{plan['rr_tp2']:.1f}"]
     return _validate("\n".join(lines))
 
 
 def format_startup(symbols: list[str]) -> str:
-    return _validate("\n".join(["✅ ระบบ 9-Engine เริ่มทำงาน", "", "⚙️ ระบบ: PRODUCTION-V2", "🧠 โครงสร้าง: E1 → E2 → E3 → E4 → E5 → E6 → E7 → E8 → E9", f"📊 สินทรัพย์: {', '.join(symbols)}", "⏱ Timeframe: M5", "", "🔄 ทุกแท่ง M5 ที่ปิดจะเริ่มวิเคราะห์ใหม่ตั้งแต่ E1", "🎯 E9 เท่านั้นที่มีสิทธิ์ตัดสิน BUY / SELL / NO_TRADE", "✅ ระบบพร้อมทำงาน"]))
+    return _validate("\n".join(["🟢 ระบบ PRODUCTION-V2 เริ่มทำงาน", "", "🧠 โครงสร้าง: E1 → E2 → E3 → E4 → E5 → E6 → E7 → E8 → E9", f"📊 สินทรัพย์: {', '.join(symbols)}", "⏱ Timeframe: M5", "🧠 E9: Final Decision Authority + MARKET-CONTROL", "", "🔄 ทุกแท่ง M5 ที่ปิดจะเริ่มวิเคราะห์ใหม่ตั้งแต่ E1", "🎯 E9 เท่านั้นที่มีสิทธิ์ตัดสิน BUY / SELL / NO_TRADE", "📡 Telegram: พร้อมส่งสถานะ, NO_TRADE และ Trade Alert", "", "✅ ระบบพร้อมทำงาน"]))
 
 
 def format_status(status: dict[str, Any]) -> str:
-    timestamp = status.get("timestamp"); timestamp_text = timestamp.strftime("%d/%m/%Y %H:%M:00") if isinstance(timestamp, datetime) else str(timestamp or datetime.now().strftime("%d/%m/%Y %H:%M:00")); prices = status.get("prices", {})
+    timestamp = status.get("timestamp"); timestamp_text = timestamp.strftime("%d/%m/%Y %H:%M:00") if isinstance(timestamp, datetime) else str(timestamp or datetime.now().strftime("%d/%m/%Y %H:%M:00")); prices = status.get("prices", {}); market_states = status.get("market_states", {})
     def price_text(symbol: str) -> str:
+        state = market_states.get(symbol)
+        if state == "MARKET_CLOSED": return "🔴 ตลาดปิด"
         value = prices.get(symbol)
         if value is None: return "ไม่พร้อมใช้งาน"
         try: return f"{float(value):,.2f}"
         except (TypeError, ValueError): return str(value)
-    return _validate("\n".join(["✅ สถานะระบบ PRODUCTION-V2", "", "🧠 โครงสร้าง: E1 → E2 → E3 → E4 → E5 → E6 → E7 → E8 → E9", "⏱ Timeframe: M5", "", f"🚨 เวลาแจ้งเตือน: {timestamp_text} (ประเทศไทย)", "", "📡 ราคาปัจจุบัน:", f"🌕 GOLD: {price_text('GOLD')}", f"🪙 BTC: {price_text('BTC')}", "", "🎯 E9 เท่านั้นเป็น Final Decision Authority", "", "✅ ระบบทำงานปกติ"]))
+    return _validate("\n".join(["✅ สถานะระบบ PRODUCTION-V2", "", "🧠 โครงสร้าง: E1 → E2 → E3 → E4 → E5 → E6 → E7 → E8 → E9", "⏱ Timeframe: M5", "", f"🚨 เวลาแจ้งเตือน: {timestamp_text} (ประเทศไทย)", "", "📡 สถานะตลาด/ราคาปัจจุบัน:", f"🌕 GOLD: {price_text('GOLD')}", f"🪙 BTC: {price_text('BTC')}", "", "🎯 E9 เท่านั้นเป็น Final Decision Authority", "", "✅ ระบบทำงานปกติ"]))
 
 
 def format_critical(message: str, component: str) -> str:
