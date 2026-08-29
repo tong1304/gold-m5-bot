@@ -7,8 +7,8 @@ from .contracts import EngineResult
 
 NAME = "Setup Brain"
 QUESTION = "What setup is forming, in what direction, and at what stage?"
-ARCHITECTURE = "E6_PROFESSIONAL_SETUP_FORMATION_BRAIN_V23"
-VERSION = "23.0"
+ARCHITECTURE = "E6_PROFESSIONAL_SETUP_FORMATION_BRAIN_V24"
+VERSION = "24.0"
 MIN_BARS = 60
 ATR_PERIOD = 14
 MIN_SPACE_ATR = 0.75
@@ -96,7 +96,6 @@ def _auction(e4: dict[str, Any]) -> dict[str, Any]:
 def _direction_thesis(
     e1: dict[str, Any], e2: dict[str, Any], e3: dict[str, Any], e4: dict[str, Any]
 ) -> tuple[str, list[str], list[str], str]:
-    """Build a directional hypothesis without treating mixed structure as a vote."""
     auction = _auction(e4)
     pressure = _norm(e1.get("directional_pressure", e1.get("pressure")))
     external = _norm(e3.get("external_state", e3.get("external_count_state")))
@@ -133,10 +132,7 @@ def _direction_thesis(
     else:
         direction = "NEUTRAL"
         source = "NO_DIRECTIONAL_CONVERGENCE"
-        if len(unique) > 1:
-            counter.append("DIRECTIONAL_EVIDENCE_CONFLICT")
-        else:
-            counter.append("INSUFFICIENT_DIRECTIONAL_EVIDENCE")
+        counter.append("DIRECTIONAL_EVIDENCE_CONFLICT" if len(unique) > 1 else "INSUFFICIENT_DIRECTIONAL_EVIDENCE")
 
     e2_finding = _text(e2.get("finding", e2.get("state")))
     e2_direction = _norm(e2.get("direction", e2.get("opportunity_direction")))
@@ -197,6 +193,30 @@ def _build_result(
         f"invalidation={' | '.join(invalidation) or 'NONE'}",
         f"reasoning_trace={trace.get('summary', 'NONE')}",
     ]
+
+    professional = {
+        "conclusion": thesis,
+        "what_is_forming": setup,
+        "candidate_identity": trace.get("candidate_identity"),
+        "directional_thesis": thesis,
+        "direction_source": trace.get("direction_source"),
+        "why_it_is_forming": supporting,
+        "what_is_wrong_with_the_thesis": counter,
+        "what_is_missing": missing,
+        "what_must_happen_next": next_required,
+        "what_invalidates_it": invalidation,
+        "formation_stage": stage,
+        "maturity": maturity,
+        "setup_quality": round(quality, 2),
+        "confidence": round(confidence, 2),
+        "decision_boundary": "E6 describes and stages the setup; E9 alone decides whether a trade is permitted.",
+    }
+    specialist_observations = observations + [
+        f"candidate_count={len(candidates)}",
+        f"rejected_setups={','.join(_dedupe(rejected)) or 'NONE'}",
+    ]
+    specialist_reasons = _dedupe(counter + ([] if ready else ["SETUP_NOT_TRADE_READY"]))
+
     output = {
         "architecture": ARCHITECTURE,
         "version": VERSION,
@@ -237,24 +257,34 @@ def _build_result(
         "evidence_ledger": ledger,
         "observations": observations,
         "reasoning_trace": trace,
-        "professional_reasoning": {
-            "what_is_forming": setup,
-            "candidate_identity": trace.get("candidate_identity"),
-            "directional_thesis": thesis,
-            "why_it_is_forming": supporting,
-            "what_is_wrong_with_the_thesis": counter,
-            "what_is_missing": missing,
-            "what_must_happen_next": next_required,
-            "what_invalidates_it": invalidation,
-            "decision_boundary": "E6 describes and stages the setup; E9 alone decides whether a trade is permitted.",
+        "professional_reasoning": professional,
+        "specialists": {
+            "setup_formation": {
+                "role": "SETUP_FORMATION_REASONER",
+                "question": QUESTION,
+                "conclusion": thesis,
+                "observations": specialist_observations,
+                "reason_codes": specialist_reasons,
+                "candidate_setup": setup,
+                "candidate_setup_identity": trace.get("candidate_identity"),
+                "direction": direction,
+                "direction_thesis": thesis,
+                "supporting_evidence": supporting,
+                "counter_evidence": counter,
+                "missing_evidence": missing,
+                "next_required_evidence": next_required,
+                "invalidation": invalidation,
+                "formation_stage": stage,
+                "maturity": maturity,
+            }
         },
-        "reason_codes": counter + ([] if ready else ["SETUP_NOT_TRADE_READY"]),
+        "reason_codes": specialist_reasons,
     }
-    return EngineResult("E6", NAME, False, quality, output, tuple(_dedupe(output["reason_codes"])))
+    return EngineResult("E6", NAME, False, quality, output, tuple(specialist_reasons))
 
 
 def analyze_e6(snapshot: dict[str, Any], upstream: dict[str, EngineResult]) -> EngineResult:
-    """Professional setup formation reasoning; E6 never manufactures an execution decision."""
+    """Reason about setup formation without manufacturing an execution decision."""
     bars = list(snapshot.get("bars") or [])
     if len(bars) < MIN_BARS:
         return _build_result(
@@ -340,16 +370,7 @@ def analyze_e6(snapshot: dict[str, Any], upstream: dict[str, EngineResult]) -> E
     anchor = auction["level"] if auction["level"] > 0 else (protected_low if direction == "BUY" else protected_high)
     sequence_tail = sequence.split("→")[-1].strip() if sequence else "UNKNOWN"
 
-    def add(
-        name: str,
-        stage: str,
-        strength: float,
-        support: list[str],
-        missing: list[str],
-        next_required: list[str],
-        invalidation: list[str],
-        identity_reason: str,
-    ) -> None:
+    def add(name: str, stage: str, strength: float, support: list[str], missing: list[str], next_required: list[str], invalidation: list[str], identity_reason: str) -> None:
         identity = f"{name}:{direction}:anchor={anchor:.5f}:structure={sequence_tail}"
         candidates.append({
             "name": name,
@@ -473,14 +494,9 @@ def analyze_e6(snapshot: dict[str, Any], upstream: dict[str, EngineResult]) -> E
 
     maturity = "MATURE" if stage == "MATURE" else "VALIDATING" if stage == "VALIDATING" else "FORMING"
     ready = (
-        exists
-        and setup not in {"NONE", "AMBIGUOUS"}
-        and stage == "MATURE"
-        and direction != "NEUTRAL"
-        and space >= MIN_SPACE_ATR
-        and not auction["pending"]
-        and not opportunity_unresolved
-        and not mixed
+        exists and setup not in {"NONE", "AMBIGUOUS"} and stage == "MATURE"
+        and direction != "NEUTRAL" and space >= MIN_SPACE_ATR
+        and not auction["pending"] and not opportunity_unresolved and not mixed
     )
 
     invalidation: list[str] = []
@@ -507,18 +523,10 @@ def analyze_e6(snapshot: dict[str, Any], upstream: dict[str, EngineResult]) -> E
         "selection_confidence": round(confidence, 2),
         "auction": auction,
         "structure": {
-            "finding": structure or "UNKNOWN",
-            "internal": internal,
-            "external": external,
-            "bos": bos or "UNKNOWN",
-            "sequence": sequence or "UNKNOWN",
-            "mixed": mixed,
+            "finding": structure or "UNKNOWN", "internal": internal, "external": external,
+            "bos": bos or "UNKNOWN", "sequence": sequence or "UNKNOWN", "mixed": mixed,
         },
-        "location": {
-            "space_atr": round(space, 4),
-            "minimum_space_atr": MIN_SPACE_ATR,
-            "value_response": value_response or "UNKNOWN",
-        },
+        "location": {"space_atr": round(space, 4), "minimum_space_atr": MIN_SPACE_ATR, "value_response": value_response or "UNKNOWN"},
         "opportunity": {"finding": opportunity or "UNKNOWN", "resolved": not opportunity_unresolved},
         "hypothesis_count": len(candidates),
         "selection_rule": "causal evidence -> direction -> candidate identity -> support/counter -> missing proof -> lifecycle -> invalidation",
