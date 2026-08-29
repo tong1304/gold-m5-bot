@@ -1,26 +1,26 @@
 from __future__ import annotations
 
-"""E5 — Professional Location / Value Brain v5.1.
+"""E5 — Professional Location / Value Brain v6.0.
 
-E5 answers one question only: "Is current location advantageous?"
-It evaluates LONG and SHORT independently from price/location evidence.
-Upstream engines are context/counter-evidence only; E5 never creates orders,
-gates execution, or overrides E9.
+Single responsibility: determine whether current price location offers
+favorable asymmetry for LONG, SHORT, BOTH conditionally, or neither.
+E1–E4 are qualitative context only. E5 never creates orders, gates execution,
+or overrides E9.
 """
 
 from math import isfinite
 from statistics import mean
 from typing import Any
 
-ARCHITECTURE = "E5_SINGLE_PROFESSIONAL_LOCATION_BRAIN_V5_1"
-VERSION = "5.1"
+ARCHITECTURE = "E5_SINGLE_PROFESSIONAL_LOCATION_BRAIN_V6_0"
+VERSION = "6.0"
 QUESTION = "Is current location advantageous?"
 MIN_BARS = 80
 ATR_PERIOD = 14
 VALUE_LOOKBACK = 20
 STRUCTURE_LOOKBACK = 60
 LIQUIDITY_LOOKBACK = 30
-EXTENSION_LOOKBACK = 20
+PIVOT_WING = 2
 
 
 def _num(v: Any) -> float | None:
@@ -57,11 +57,15 @@ def _atr(bars: list[dict[str, float]], period: int = ATR_PERIOD) -> float:
     trs: list[float] = []
     for i, b in enumerate(sample):
         prev = sample[i - 1]["close"] if i else None
-        tr = b["high"] - b["low"] if prev is None else max(
+        trs.append(b["high"] - b["low"] if prev is None else max(
             b["high"] - b["low"], abs(b["high"] - prev), abs(b["low"] - prev)
-        )
-        trs.append(tr)
+        ))
     return mean(trs[-period:]) if trs else 0.0
+
+
+def _range(bars: list[dict[str, float]], lookback: int) -> tuple[float, float]:
+    sample = bars[-lookback:]
+    return min(b["low"] for b in sample), max(b["high"] for b in sample)
 
 
 def _value_price(bars: list[dict[str, float]]) -> tuple[float, str]:
@@ -77,12 +81,7 @@ def _value_price(bars: list[dict[str, float]]) -> tuple[float, str]:
     )
 
 
-def _range(bars: list[dict[str, float]], lookback: int) -> tuple[float, float]:
-    sample = bars[-lookback:]
-    return min(b["low"] for b in sample), max(b["high"] for b in sample)
-
-
-def _pivots(bars: list[dict[str, float]], wing: int = 2) -> tuple[list[float], list[float]]:
+def _pivots(bars: list[dict[str, float]], wing: int = PIVOT_WING) -> tuple[list[float], list[float]]:
     highs: list[float] = []
     lows: list[float] = []
     for i in range(wing, len(bars) - wing):
@@ -141,9 +140,10 @@ def _sweeps(bars: list[dict[str, float]], ctx: dict[str, Any]) -> tuple[bool, bo
     high_sweep = last["high"] > rh and last["close"] < rh
     low_sweep = last["low"] < rl and last["close"] > rl
     e4 = str(ctx.get("E4", {})).upper()
-    high_sweep = high_sweep or "SWEEP_HIGH" in e4 or "HIGH_SWEEP" in e4
-    low_sweep = low_sweep or "SWEEP_LOW" in e4 or "LOW_SWEEP" in e4
-    return high_sweep, low_sweep
+    return (
+        high_sweep or "SWEEP_HIGH" in e4 or "HIGH_SWEEP" in e4,
+        low_sweep or "SWEEP_LOW" in e4 or "LOW_SWEEP" in e4,
+    )
 
 
 def _incomplete(reason: str, problems: list[str]) -> dict[str, Any]:
@@ -158,8 +158,7 @@ def _incomplete(reason: str, problems: list[str]) -> dict[str, Any]:
         "counter_evidence": [], "conflicts": problems, "reason_codes": ["E5_DATA_INCOMPLETE"],
         "reasoning_trace": [f"QUESTION -> {QUESTION}", f"DATA_QUALITY -> {reason}"],
         "professional_reasoning": {
-            "question": QUESTION,
-            "thesis": reason,
+            "question": QUESTION, "thesis": reason,
             "evidence_hierarchy": "VALUE -> STRUCTURE -> LIQUIDITY -> EXTENSION -> SPACE -> ASYMMETRY -> COUNTER_EVIDENCE",
             "upstream_decisions_used": False, "upstream_gates_used": False, "decision_authority": "E9_ONLY",
         },
@@ -204,7 +203,6 @@ def analyze_e5(snapshot: dict[str, Any], permitted: dict[str, Any] | None = None
         "STRETCHED" if extension_atr < 1.5 else
         "EXTENDED" if extension_atr < 2.5 else "EXCESSIVE"
     )
-    impulse_displacement_atr = abs(price - bars[-EXTENSION_LOOKBACK]["close"]) / atr
 
     def side(name: str) -> tuple[float, list[str], dict[str, float]]:
         is_long = name == "LONG"
@@ -213,14 +211,12 @@ def analyze_e5(snapshot: dict[str, Any], permitted: dict[str, Any] | None = None
         opposing_structure = near_high if is_long else near_low
         supportive_sweep = sweep_low if is_long else sweep_high
         space = up_space if is_long else down_space
-
         value_component = 1.0 if favorable_value else 0.55 if not adverse_value else 0.10
         structure_component = 0.20 if opposing_structure else 0.85
         liquidity_component = 1.0 if supportive_sweep else 0.55
         extension_component = {"NORMAL": 1.0, "STRETCHED": 0.70, "EXTENDED": 0.40, "EXCESSIVE": 0.15}[extension_state]
         space_component = 1.0 if space is None or space >= 2.0 else 0.65 if space >= 1.0 else 0.10
         context_component = 0.65 if ((context_direction == "UP" and not is_long) or (context_direction == "DOWN" and is_long)) else 1.0
-
         score = round(
             0.25 * value_component + 0.15 * structure_component + 0.20 * liquidity_component +
             0.20 * extension_component + 0.15 * space_component + 0.05 * context_component, 4
@@ -242,27 +238,23 @@ def analyze_e5(snapshot: dict[str, Any], permitted: dict[str, Any] | None = None
     long_q, long_reasons, long_components = side("LONG")
     short_q, short_reasons, short_components = side("SHORT")
 
-    # Professional location logic: never use UNRESOLVED merely because upstream engines disagree.
-    # UNRESOLVED is reserved for missing/invalid market data above.
     if context_direction == "UP":
         preferred = "LONG" if long_q >= 0.45 else "NONE"
-    elif context_direction == "DOWN":
-        preferred = "SHORT" if short_q >= 0.45 else "NONE"
-    elif abs(long_q - short_q) >= 0.08 and max(long_q, short_q) >= 0.45:
-        preferred = "LONG" if long_q > short_q else "SHORT"
-    elif max(long_q, short_q) >= 0.45:
-        preferred = "BOTH_CONDITIONAL"
-    else:
-        preferred = "NONE"
-
-    if context_direction == "UP":
         aligned_q, aligned_space = long_q, up_space
     elif context_direction == "DOWN":
+        preferred = "SHORT" if short_q >= 0.45 else "NONE"
         aligned_q, aligned_space = short_q, down_space
-    else:
+    elif abs(long_q - short_q) >= 0.08 and max(long_q, short_q) >= 0.45:
+        preferred = "LONG" if long_q > short_q else "SHORT"
         aligned_q = max(long_q, short_q)
-        spaces = [x for x in (up_space, down_space) if x is not None]
-        aligned_space = max(spaces) if spaces else None
+        aligned_space = up_space if long_q > short_q else down_space
+    elif max(long_q, short_q) >= 0.45:
+        preferred = "BOTH_CONDITIONAL"
+        aligned_q = max(long_q, short_q)
+        aligned_space = max([x for x in (up_space, down_space) if x is not None], default=None)
+    else:
+        preferred = "NONE"
+        aligned_q, aligned_space = max(long_q, short_q), None
 
     if context_direction in {"UP", "DOWN"} and extension_state in {"EXTENDED", "EXCESSIVE"} and aligned_q < 0.72:
         state = "WAIT_REPRICING"
@@ -288,97 +280,71 @@ def analyze_e5(snapshot: dict[str, Any], permitted: dict[str, Any] | None = None
         "AT_SUPPORT" if near_low else "INSIDE_STRUCTURE"
     )
     liquidity_location = (
-        "SELL_SIDE_LIQUIDITY_SWEPT" if sweep_low else
-        "BUY_SIDE_LIQUIDITY_SWEPT" if sweep_high else
-        "NEAR_RESISTANCE" if near_high else
-        "NEAR_SUPPORT" if near_low else "LIQUIDITY_UNCLEAR"
+        "BOTH_SWEEPS" if sweep_high and sweep_low else
+        "HIGH_SWEEP" if sweep_high else "LOW_SWEEP" if sweep_low else "NO_FRESH_SWEEP"
     )
-    space_long_state = "OPEN" if up_space is None or up_space >= 2 else "MODERATE" if up_space >= 1 else "TIGHT"
-    space_short_state = "OPEN" if down_space is None or down_space >= 2 else "MODERATE" if down_space >= 1 else "TIGHT"
-    available_space = {"LONG": space_long_state, "SHORT": space_short_state}
+    location_quality = label(aligned_q)
+    direction = "LONG" if preferred == "LONG" else "SHORT" if preferred == "SHORT" else "NEUTRAL"
 
-    counter: list[str] = []
-    if context_direction == "UP" and short_q > long_q:
-        counter.append("COUNTERTREND_SHORT_NOT_PROMOTED")
-    if context_direction == "DOWN" and long_q > short_q:
-        counter.append("COUNTERTREND_LONG_NOT_PROMOTED")
-    if near_high:
-        counter.append("LONG_NEAR_RESISTANCE")
-    if near_low:
-        counter.append("SHORT_NEAR_SUPPORT")
-    if extension_state in {"EXTENDED", "EXCESSIVE"}:
-        counter.append("PRICE_STRETCHED_FROM_VALUE")
-    if up_space is not None and up_space < 1.0:
-        counter.append("LONG_SPACE_CONSTRAINED")
-    if down_space is not None and down_space < 1.0:
-        counter.append("SHORT_SPACE_CONSTRAINED")
+    # Confidence is certainty of the location assessment, not probability of profit.
+    confidence = 0.55 + min(0.45, abs(long_q - short_q) * 1.8)
+    if value_state == "EQUILIBRIUM":
+        confidence *= 0.90
     if conflicts:
-        counter.append("UPSTREAM_CONFLICT_IS_CONTEXT_ONLY")
+        confidence *= max(0.55, 1.0 - 0.10 * len(conflicts))
+    confidence = round(max(0.0, min(1.0, confidence)), 4)
 
-    long_asym = None if up_space is None else round(up_space / max(down_space or up_space, 0.25), 3)
-    short_asym = None if down_space is None else round(down_space / max(up_space or down_space, 0.25), 3)
-    best_q = max(long_q, short_q)
-    confidence = round(max(0.0, min(0.99, 0.30 + 0.60 * best_q)), 3)
-    observations = [
-        f"price={round(price, 6)}", f"atr14={round(atr, 6)}", f"value={round(value, 6)}",
-        f"value_method={value_method}", f"value_position={round(value_position, 4)}",
-        f"value_distance_atr={round(value_distance_atr, 4)}", f"context_direction={context_direction}",
-        f"up_space_atr={None if up_space is None else round(up_space, 4)}",
-        f"down_space_atr={None if down_space is None else round(down_space, 4)}",
-        f"impulse_displacement_atr={round(impulse_displacement_atr, 4)}",
-        f"long_score={long_q}", f"short_score={short_q}", f"long_asymmetry={long_asym}", f"short_asymmetry={short_asym}",
+    evidence = [
+        f"PRICE={price:.5f}", f"ATR={atr:.5f}", f"VALUE={value:.5f}", f"VALUE_METHOD={value_method}",
+        f"VALUE_STATE={value_state}", f"VALUE_DISTANCE_ATR={value_distance_atr:.3f}",
+        f"STRUCTURE_HIGH={struct_high:.5f}", f"STRUCTURE_LOW={struct_low:.5f}",
+        f"UP_SPACE_ATR={up_space if up_space is not None else 'UNKNOWN'}",
+        f"DOWN_SPACE_ATR={down_space if down_space is not None else 'UNKNOWN'}",
+        f"EXTENSION_ATR={extension_atr:.3f}", f"CONTEXT_DIRECTION={context_direction}", *upstream_evidence,
     ]
+    observations = [
+        f"LONG_LOCATION={long_q:.3f}/{label(long_q)}", f"SHORT_LOCATION={short_q:.3f}/{label(short_q)}",
+        f"STRUCTURAL_LOCATION={structural_location}", f"LIQUIDITY_LOCATION={liquidity_location}",
+        f"EXTENSION_STATE={extension_state}",
+        f"AVAILABLE_SPACE_LONG={up_space if up_space is not None else 'UNKNOWN'}",
+        f"AVAILABLE_SPACE_SHORT={down_space if down_space is not None else 'UNKNOWN'}",
+    ]
+    counter_evidence = list(dict.fromkeys(long_reasons + short_reasons + conflicts))
+    reason_codes = [f"LOCATION_STATE_{state}", f"VALUE_{value_state}", f"EXTENSION_{extension_state}"]
+    if sweep_low: reason_codes.append("LOW_LIQUIDITY_SWEEP")
+    if sweep_high: reason_codes.append("HIGH_LIQUIDITY_SWEEP")
+    if up_space is not None and up_space < 1.0: reason_codes.append("LONG_SPACE_CONSTRAINED")
+    if down_space is not None and down_space < 1.0: reason_codes.append("SHORT_SPACE_CONSTRAINED")
+    if conflicts: reason_codes.append("UPSTREAM_CONTEXT_CONFLICT")
+
     trace = [
-        f"QUESTION -> {QUESTION}",
-        f"VALUE -> {value_state}",
-        f"STRUCTURE -> {structural_location}",
-        f"LIQUIDITY -> {liquidity_location}",
-        f"EXTENSION -> {extension_state}",
-        f"SPACE -> LONG={space_long_state},SHORT={space_short_state}",
-        f"ASYMMETRY -> LONG={long_asym},SHORT={short_asym}",
-        f"COUNTER_EVIDENCE -> {','.join(counter) if counter else 'NONE'}",
-        f"LOCATION_DECISION -> {state}",
+        f"QUESTION -> {QUESTION}", f"VALUE -> {value_state} distance={value_distance_atr:.3f}ATR",
+        f"STRUCTURE -> {structural_location}", f"LIQUIDITY -> {liquidity_location}",
+        f"EXTENSION -> {extension_state} distance={extension_atr:.3f}ATR",
+        f"SPACE -> LONG={up_space if up_space is not None else 'UNKNOWN'}ATR / SHORT={down_space if down_space is not None else 'UNKNOWN'}ATR",
+        f"ASYMMETRY -> LONG={long_q:.3f} SHORT={short_q:.3f}",
+        f"COUNTER_EVIDENCE -> {counter_evidence or 'NONE'}", f"CONCLUSION -> {state}",
     ]
 
     return {
-        "architecture": ARCHITECTURE,
-        "version": VERSION,
-        "question": QUESTION,
-        "task": "ASSESS_PRICE_LOCATION_ONLY",
-        "location_state": state,
-        "location_quality": label(best_q),
-        "direction": preferred if preferred in {"LONG", "SHORT"} else "NEUTRAL",
-        "value_state": value_state,
-        "structural_location": structural_location,
-        "liquidity_location": liquidity_location,
+        "architecture": ARCHITECTURE, "version": VERSION, "question": QUESTION,
+        "task": "ASSESS_PRICE_LOCATION_ONLY", "location_state": state,
+        "location_quality": location_quality, "direction": direction, "value_state": value_state,
+        "structural_location": structural_location, "liquidity_location": liquidity_location,
         "extension_state": extension_state,
-        "available_space": available_space,
-        "long_location_quality": label(long_q),
-        "short_location_quality": label(short_q),
-        "preferred_location": preferred,
-        "confidence": confidence,
-        "evidence": upstream_evidence,
-        "observations": observations,
-        "counter_evidence": counter,
-        "conflicts": conflicts,
-        "reason_codes": sorted(set(long_reasons + short_reasons + counter)),
-        "reasoning_trace": trace,
+        "available_space": {"long_atr": up_space, "short_atr": down_space, "next_resistance": next_high, "next_support": next_low},
+        "long_location_quality": label(long_q), "short_location_quality": label(short_q),
+        "long_location_score": round(long_q, 4), "short_location_score": round(short_q, 4),
+        "preferred_location": preferred, "confidence": confidence,
+        "evidence": evidence, "observations": observations, "counter_evidence": counter_evidence,
+        "conflicts": conflicts, "reason_codes": list(dict.fromkeys(reason_codes)), "reasoning_trace": trace,
         "professional_reasoning": {
-            "question": QUESTION,
-            "thesis": state,
+            "question": QUESTION, "thesis": state,
             "evidence_hierarchy": "VALUE -> STRUCTURE -> LIQUIDITY -> EXTENSION -> SPACE -> ASYMMETRY -> COUNTER_EVIDENCE",
-            "long": {"score": long_q, "quality": label(long_q), "reasons": long_reasons, "components": long_components, "asymmetry": long_asym},
-            "short": {"score": short_q, "quality": label(short_q), "reasons": short_reasons, "components": short_components, "asymmetry": short_asym},
-            "upstream_context": context_direction,
-            "upstream_decisions_used": False,
-            "upstream_gates_used": False,
-            "decision_authority": "E9_ONLY",
+            "long_thesis": {"quality": label(long_q), "score": round(long_q, 4), "reasons": long_reasons, "counter_evidence": long_counter if False else [], "components": long_components},
+            "short_thesis": {"quality": label(short_q), "score": round(short_q, 4), "reasons": short_reasons, "counter_evidence": [], "components": short_components},
+            "upstream_decisions_used": False, "upstream_gates_used": False, "decision_authority": "E9_ONLY",
         },
-        "trade_decision_authority": False,
-        "decision_authority": "E9_ONLY",
-        "gate": None,
-        "specialist_gate": "NONE",
-        "specialists": {},
-        "specialists_active": False,
-        "specialists_status": "NOT_USED",
+        "trade_decision_authority": False, "decision_authority": "E9_ONLY", "gate": None,
+        "specialist_gate": "NONE", "specialists": {}, "specialists_active": False, "specialists_status": "NOT_USED",
     }
