@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-"""E5 — Professional Location / Value Brain v9.0.
+"""E5 — Professional Location / Value Brain v9.1.
 
 E5 evaluates price geometry only: value, structure, liquidity, extension,
 available space, asymmetry, repricing and counter-evidence. E9 owns decisions.
@@ -10,8 +10,8 @@ from math import isfinite
 from statistics import mean, median
 from typing import Any
 
-ARCHITECTURE = "E5_SINGLE_PROFESSIONAL_LOCATION_BRAIN_V9_0"
-VERSION = "9.0"
+ARCHITECTURE = "E5_SINGLE_PROFESSIONAL_LOCATION_BRAIN_V9_1"
+VERSION = "9.1"
 QUESTION = "Is current location advantageous?"
 MIN_BARS, ATR_PERIOD = 80, 14
 VALUE_LOOKBACK, STRUCTURE_LOOKBACK, LIQUIDITY_LOOKBACK = 20, 60, 30
@@ -156,21 +156,53 @@ def _side(side: str, vp: float, vd: float, ext: str, blocked: bool, sweep: bool,
             "value_distance_atr":round(vd,6),"available_space_atr":None if space is None else round(space,6)}
 
 
-def _repricing(side: str, vp: float, ext: str, space: float | None, blocked: bool, sweep: bool) -> dict[str, Any]:
+def _repricing(side: str, vp: float, ext: str, space: float | None, blocked: bool, sweep: bool, value_response: str) -> dict[str, Any]:
+    """Describe what would improve location; never predict a reversal.
+
+    Acceptance beyond value is continuation evidence, not repricing. Repricing
+    becomes active only when price is actually moving back toward accepted value.
+    """
     c = []
+    accepted_counter_value = value_response in {"ACCEPTED_ABOVE_VALUE", "ACCEPTED_BELOW_VALUE"}
+    rejection = value_response in {"REJECTED_ABOVE_VALUE", "REJECTED_BELOW_VALUE"}
+
     if side == "LONG":
-        if vp > DISCOUNT: c.append("PRICE_REPRICES_TOWARD_DISCOUNT_OR_ACCEPTED_VALUE")
-        if blocked: c.append("CLEAR_OPPOSING_STRUCTURE")
-        if not sweep: c.append("FRESH_LOW_LIQUIDITY_REJECTION_OR_RECLAIM")
+        if vp > DISCOUNT:
+            c.append("PRICE_REPRICES_TOWARD_DISCOUNT_OR_ACCEPTED_VALUE")
+        if value_response == "REJECTED_BELOW_VALUE":
+            c.append("LOW_VALUE_REJECTION_CONFIRMED")
+        elif value_response == "ACCEPTED_BELOW_VALUE":
+            c.append("DISCOUNT_ACCEPTED_CONTINUATION_RISK")
+        elif not sweep:
+            c.append("FRESH_LOW_LIQUIDITY_REJECTION_OR_RECLAIM")
     else:
-        if vp < PREMIUM: c.append("PRICE_REPRICES_TOWARD_PREMIUM_OR_ACCEPTED_VALUE")
-        if blocked: c.append("CLEAR_OPPOSING_STRUCTURE")
-        if not sweep: c.append("FRESH_HIGH_LIQUIDITY_REJECTION_OR_RECLAIM")
+        if vp < PREMIUM:
+            c.append("PRICE_REPRICES_TOWARD_PREMIUM_OR_ACCEPTED_VALUE")
+        if value_response == "REJECTED_ABOVE_VALUE":
+            c.append("HIGH_VALUE_REJECTION_CONFIRMED")
+        elif value_response == "ACCEPTED_ABOVE_VALUE":
+            c.append("PREMIUM_ACCEPTED_CONTINUATION_RISK")
+        elif not sweep:
+            c.append("FRESH_HIGH_LIQUIDITY_REJECTION_OR_RECLAIM")
+
     if ext in {"EXTENDED","EXCESSIVE"}: c.append("EXTENSION_NORMALIZES")
     if space is not None and space < 1: c.append("AVAILABLE_SPACE_REOPENS")
-    return {"required_for_improvement":c,
-            "thesis_invalidators":["PRICE_ACCEPTS_DEEPER_COUNTER_VALUE","OPPOSING_STRUCTURE_BECOMES_IMMEDIATE"],
-            "is_prediction":False}
+
+    if rejection:
+        mode = "REJECTION_CONFIRMED"
+    elif accepted_counter_value:
+        mode = "ACCEPTANCE_CONTINUATION"
+    elif abs(vp - 0.5) <= 0.15:
+        mode = "VALUE_REBALANCING"
+    else:
+        mode = "WAIT_FOR_REPRICING"
+
+    return {
+        "required_for_improvement": c,
+        "thesis_invalidators":["PRICE_ACCEPTS_DEEPER_COUNTER_VALUE","OPPOSING_STRUCTURE_BECOMES_IMMEDIATE"],
+        "mode": mode,
+        "is_prediction": False,
+    }
 
 
 def _incomplete(reason: str, problems: list[str]) -> dict[str, Any]:
@@ -184,7 +216,7 @@ def _incomplete(reason: str, problems: list[str]) -> dict[str, Any]:
             "conflicts":problems,"reason_codes":["E5_DATA_INCOMPLETE"],
             "reasoning_trace":[f"QUESTION -> {QUESTION}",f"DATA_QUALITY -> {reason}"],
             "professional_reasoning":{"question":QUESTION,"thesis":reason,
-                "evidence_hierarchy":"VALUE -> STRUCTURE -> LIQUIDITY -> EXTENSION -> SPACE -> ASYMMETRY -> REPRICING_MAP -> COUNTER_EVIDENCE",
+                "evidence_hierarchy":"VALUE -> VALUE_RESPONSE -> STRUCTURE -> LIQUIDITY -> EXTENSION -> SPACE -> ASYMMETRY -> REPRICING_MAP -> COUNTER_EVIDENCE",
                 "upstream_decisions_used":False,"upstream_gates_used":False,"upstream_scores_used":False,
                 "upstream_direction_used_for_location_score":False,"decision_authority":"E9_ONLY"},
             "trade_decision_authority":False,"decision_authority":"E9_ONLY","gate":None,"decision":None,
@@ -246,20 +278,29 @@ def analyze_e5(snapshot: dict[str, Any], permitted: dict[str, Any] | None = None
     else:
         value_response = "UNRESOLVED_VALUE_RESPONSE"
 
-    if value_state == "DISCOUNT":
-        repricing_state = {"ACCEPTED_BELOW_VALUE":"REPRICING_ACTIVE","REJECTED_BELOW_VALUE":"REPRICING_FAILED","ACCEPTING_VALUE":"REPRICING_STARTING"}.get(value_response,"NO_REPRICING")
-    elif value_state == "PREMIUM":
-        repricing_state = {"ACCEPTED_ABOVE_VALUE":"REPRICING_ACTIVE","REJECTED_ABOVE_VALUE":"REPRICING_FAILED","ACCEPTING_VALUE":"REPRICING_STARTING"}.get(value_response,"NO_REPRICING")
+    # Acceptance beyond value means the auction is being accepted there; it is
+    # not evidence that price is already repricing back. Repricing is a state
+    # only when the observed response supports movement toward value.
+    if value_response == "REJECTED_BELOW_VALUE":
+        repricing_state = "REPRICING_FAILED"
+    elif value_response == "REJECTED_ABOVE_VALUE":
+        repricing_state = "REPRICING_FAILED"
+    elif value_response == "ACCEPTED_BELOW_VALUE":
+        repricing_state = "ACCEPTANCE_BELOW_VALUE"
+    elif value_response == "ACCEPTED_ABOVE_VALUE":
+        repricing_state = "ACCEPTANCE_ABOVE_VALUE"
+    elif value_response == "ACCEPTING_VALUE":
+        repricing_state = "REPRICING_STARTING"
     else:
-        repricing_state = "REPRICING_ACCEPTED" if value_response == "ACCEPTING_VALUE" else "NO_REPRICING"
+        repricing_state = "NO_REPRICING"
 
     long_blocked = long_space is not None and long_space < .5
     short_blocked = short_space is not None and short_space < .5
     long_side = _side("LONG", vp, vd, extension_state, long_blocked, low_sweep, long_space)
     short_side = _side("SHORT", vp, vd, extension_state, short_blocked, high_sweep, short_space)
 
-    # Professional correction: cheap/expensive without rejection is not an
-    # edge. Penalize continuation and reward only observed closed-candle rejection.
+    # Professional rule: cheap/expensive without rejection is not a reversal
+    # edge. Acceptance is explicitly treated as continuation evidence.
     if value_state == "DISCOUNT":
         if value_response in {"ACCEPTED_BELOW_VALUE", "UNRESOLVED_VALUE_RESPONSE"}:
             long_side["components"]["value"] *= .35
@@ -284,6 +325,8 @@ def analyze_e5(snapshot: dict[str, Any], permitted: dict[str, Any] | None = None
     recompute(long_side)
     recompute(short_side)
 
+    # E5 may describe a preferred location only when the location evidence is
+    # asymmetric. Acceptance at premium/discount alone cannot create reversal bias.
     if long_side["score"] >= .58 and long_side["score"] > short_side["score"] + .05:
         preferred = "LONG"
     elif short_side["score"] >= .58 and short_side["score"] > long_side["score"] + .05:
@@ -292,7 +335,14 @@ def analyze_e5(snapshot: dict[str, Any], permitted: dict[str, Any] | None = None
         preferred = "NONE"
 
     if preferred == "NONE":
-        location_state = "WAIT_REPRICING" if repricing_state != "REPRICING_FAILED" else "WAIT_CONFIRMATION"
+        if value_response in {"ACCEPTED_ABOVE_VALUE", "ACCEPTED_BELOW_VALUE"}:
+            location_state = "ACCEPTED_AUCTION_NO_REVERSAL_EDGE"
+        elif value_response == "ACCEPTING_VALUE":
+            location_state = "WAIT_REPRICING"
+        elif repricing_state == "REPRICING_FAILED":
+            location_state = "WAIT_CONFIRMATION"
+        else:
+            location_state = "WAIT_REPRICING"
     else:
         location_state = "FAVORABLE_LOCATION"
 
@@ -306,13 +356,16 @@ def analyze_e5(snapshot: dict[str, Any], permitted: dict[str, Any] | None = None
     if short_space is not None and short_space < 1: counter_evidence.append("SHORT_SPACE_CONSTRAINED")
     if value_state == "DISCOUNT" and value_response != "REJECTED_BELOW_VALUE": counter_evidence.append("DISCOUNT_NOT_PROVEN_AS_REVERSAL")
     if value_state == "PREMIUM" and value_response != "REJECTED_ABOVE_VALUE": counter_evidence.append("PREMIUM_NOT_PROVEN_AS_REVERSAL")
+    if value_response == "ACCEPTED_ABOVE_VALUE": counter_evidence.append("PREMIUM_ACCEPTED_CONTINUATION_RISK")
+    if value_response == "ACCEPTED_BELOW_VALUE": counter_evidence.append("DISCOUNT_ACCEPTED_CONTINUATION_RISK")
 
     repricing = _repricing(
         preferred if preferred != "NONE" else ("LONG" if value_state == "DISCOUNT" else "SHORT" if value_state == "PREMIUM" else "LONG"),
         vp, extension_state,
         long_space if preferred == "LONG" else short_space if preferred == "SHORT" else None,
         long_blocked if preferred == "LONG" else short_blocked if preferred == "SHORT" else False,
-        low_sweep if preferred == "LONG" else high_sweep if preferred == "SHORT" else (low_sweep or high_sweep),
+        low_sweep if preferred == "LONG' else high_sweep if preferred == "SHORT" else (low_sweep or high_sweep),
+        value_response,
     )
 
     ctx, upstream_evidence, conflicts = _context(permitted)
