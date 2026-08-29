@@ -39,39 +39,60 @@ class LiveService:
         threading.Thread(target=self._loop, name="production-v2-scheduler", daemon=True).start()
 
     def _send_status(self, now: datetime) -> None:
-        send(format_status({"prices": dict(self._last_prices), "timeframe": "M5", "timestamp": now, "architecture": "E1 -> E2 -> E3 -> E4 -> E5 -> E6 -> E7 -> E8 -> E9"}))
+        market_states = {}
+        for alias in self.data.symbols():
+            try:
+                market_states[alias] = "MARKET_OPEN" if self.data.market_is_open(alias, now) else "MARKET_CLOSED"
+            except Exception as exc:
+                market_states[alias] = "MARKET_STATUS_UNKNOWN"
+                self._runtime_errors[alias] = f"market status: {exc}"
+        send(format_status({"prices": dict(self._last_prices), "market_states": market_states, "timeframe": "M5", "timestamp": now, "architecture": "E1 -> E2 -> E3 -> E4 -> E5 -> E6 -> E7 -> E8 -> E9"}))
         self._last_status_slot = now.strftime("%Y%m%d%H%M")
 
     def _send_aligned_status(self) -> None:
         now = datetime.now(BANGKOK_TZ)
-        if now.minute % 15 != 0: return
+        if now.minute % 15 != 0:
+            return
         slot = now.strftime("%Y%m%d%H%M")
-        if slot == self._last_status_slot: return
-        try: self._send_status(now)
-        except Exception as exc: print(f"[PRODUCTION V2] Telegram status error: {exc}", flush=True)
+        if slot == self._last_status_slot:
+            return
+        try:
+            self._send_status(now)
+        except Exception as exc:
+            print(f"[PRODUCTION V2] Telegram status error: {exc}", flush=True)
 
     def _send_aligned_no_trade(self) -> None:
         now = datetime.now(BANGKOK_TZ)
-        if now.minute % 10 != 0: return
+        if now.minute % 10 != 0:
+            return
         slot = now.strftime("%Y%m%d%H%M")
-        if slot == self._last_no_trade_slot: return
+        if slot == self._last_no_trade_slot:
+            return
         symbols = self.data.symbols()
-        if set(self._latest_results) != set(symbols): return
+        if set(self._latest_results) != set(symbols):
+            return
+        market_open = {alias: self.data.market_is_open(alias, now) for alias in symbols}
+        if not any(market_open.values()):
+            self._last_no_trade_slot = slot
+            return
         if any(getattr(r, "decision", None) in {"BUY", "SELL"} and bool(getattr(r, "gate_passed", False)) for r in self._latest_results.values()):
             self._last_no_trade_slot = slot
             return
         try:
             send_no_trade(dict(self._latest_results), now)
             self._last_no_trade_slot = slot
-        except Exception as exc: print(f"[PRODUCTION V2] Telegram no-trade error: {exc}", flush=True)
+        except Exception as exc:
+            print(f"[PRODUCTION V2] Telegram no-trade error: {exc}", flush=True)
 
     @staticmethod
     def _candle_age_seconds(candle: str) -> float | None:
         try:
             timestamp = datetime.fromisoformat(candle.replace("Z", "+00:00"))
-            if timestamp.tzinfo is None: timestamp = timestamp.replace(tzinfo=timezone.utc)
+            if timestamp.tzinfo is None:
+                timestamp = timestamp.replace(tzinfo=timezone.utc)
             return max(0.0, (datetime.now(timezone.utc) - timestamp).total_seconds())
-        except (TypeError, ValueError): return None
+        except (TypeError, ValueError):
+            return None
 
     @staticmethod
     def _reasoning(engine) -> dict:
@@ -90,12 +111,15 @@ class LiveService:
             conclusion = f"MARKET_STATE={market_state}; VOLATILITY={volatility}; STRUCTURE={structure}; PRESSURE={pressure}; TREND_STATE={trend_state}; TRANSITION={transition}"
             observations = []
             brain_evidence = output.get("evidence") or reasoning.get("evidence") or []
-            if isinstance(brain_evidence, (list, tuple)): observations.extend(str(x) for x in brain_evidence if x)
+            if isinstance(brain_evidence, (list, tuple)):
+                observations.extend(str(x) for x in brain_evidence if x)
             trace = output.get("reasoning_trace") or []
-            if isinstance(trace, (list, tuple)): observations.extend(str(x) for x in trace if x)
+            if isinstance(trace, (list, tuple)):
+                observations.extend(str(x) for x in trace if x)
             for key in ("directional_pressure", "trend_state", "volatility_state", "structure_state", "compression", "expansion", "transition"):
                 value = reasoning.get(key) or output.get(key)
-                if value is not None: observations.append(f"{key}={value}")
+                if value is not None:
+                    observations.append(f"{key}={value}")
             if isinstance(specialists, dict):
                 for item in specialists.values():
                     if not isinstance(item, dict): continue
@@ -130,8 +154,6 @@ class LiveService:
             return {"question": e3_question, "conclusion": str(e3_finding), "observations": list(dict.fromkeys(observations))[:12], "reasons": sorted(set(str(x) for x in reasons if str(x).strip()))[:16], "role": "MARKET_STRUCTURE_ANALYST"}
 
         if engine.engine_id == "E4":
-            # E4 is a standalone auction brain. Its observations must be
-            # emitted directly; it intentionally has no peer specialist.
             e4_question = reasoning.get("question") or output.get("question") or "Where is liquidity, who took it, and did price accept or reject the auction?"
             e4_finding = reasoning.get("conclusion") or output.get("analyst_conclusion") or output.get("finding") or "UNRESOLVED"
             observations = []
@@ -196,7 +218,12 @@ class LiveService:
                         self._last_prices[alias] = payload["bars"][-1]["close"]; store.update_price(alias, self._last_prices[alias])
                     candle = payload.get("candle_close_timestamp") or ""
                     if not candle:
-                        self._runtime_errors[alias] = "ไม่พบ candle timestamp"; continue
+                        if raw.get("market_state") == "MARKET_CLOSED":
+                            self._runtime_errors.pop(alias, None)
+                            print(f"[PRODUCTION V2] {alias} MARKET_CLOSED action=SKIP_EVALUATION", flush=True)
+                        else:
+                            self._runtime_errors[alias] = "ไม่พบ candle timestamp"
+                        continue
                     age = self._candle_age_seconds(candle)
                     if age is not None and age > self.max_candle_age_seconds:
                         print(f"[PRODUCTION V2] {alias} STALE_CANDLE candle={candle} age_seconds={int(age)} action=SKIP_EVALUATION", flush=True); self._runtime_errors[alias] = f"stale candle: {candle}"; continue
