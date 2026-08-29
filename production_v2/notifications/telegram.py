@@ -113,7 +113,7 @@ def format_status(status: dict[str, Any]) -> str:
         if value is None: return "ไม่พร้อมใช้งาน"
         try: return f"{float(value):,.2f}"
         except (TypeError, ValueError): return str(value)
-    return _validate("\n".join(["✅ สถานะระบบ PRODUCTION-V2", "", "🧠 โครงสร้าง: E1 → E2 → E3 → E4 → E5 → E6 → E7 → E8 → E9", "⏱ Timeframe: M5", "", f"🚨 เวลาแจ้งเตือน: {timestamp_text} (ประเทศไทย)", "", "📡 สถานะตลาด/ราคาปัจจุบัน:", f"🌕 GOLD: {price_text('GOLD')}", f"🪙 BTC: {price_text('BTC')}", "", "🎯 E9 เท่านั้นเป็น Final Decision Authority", "", "✅ ระบบทำงานปกติ"]))
+    return _validate("\n".join(["✅ สถานะระบบ PRODUCTION-V2", "", "🧠 โครงสร้าง: E1 → E2 → E3 → E4 → E5 → E6 → E7 → E8 → E9", "⏱ Timeframe: M5", "", f"🚨 เวลาแจ้งเตือน: {timestamp_text} (ประเทศไทย)", "", "📡 สถานะตลาด/ราคาเปิดแท่ง M5:", f"🌕 GOLD: {price_text('GOLD')}", f"🪙 BTC: {price_text('BTC')}", "", "🎯 E9 เท่านั้นเป็น Final Decision Authority", "", "✅ ระบบทำงานปกติ"]))
 
 
 def format_critical(message: str, component: str) -> str:
