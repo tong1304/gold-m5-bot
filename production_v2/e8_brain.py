@@ -421,7 +421,7 @@ def analyze_e8(snapshot: dict[str, Any], upstream: dict[str, EngineResult]) -> E
         if opposing_liquidity_on_path:
             plan_liquidity_reason = "OPPOSING_LIQUIDITY_ON_TARGET_PATH"
             counter.append(plan_liquidity_reason)
-            if liquidity_r <= MAX_LIQUIDITY_R_R:
+            if liquidity_r <= MAX_LIQUIDITY_RISK_R:
                 counter.append("OPPOSING_LIQUIDITY_PATH_RISK")
             if liquidity_quality["externality"] == "EXTERNAL":
                 counter.append("EXTERNAL_LIQUIDITY_PATH_RISK")
@@ -577,7 +577,7 @@ def analyze_e8(snapshot: dict[str, Any], upstream: dict[str, EngineResult]) -> E
             "min_space_atr": MIN_SPACE_ATR,
             "min_rr": MIN_RR,
             "risk_buffer_atr": RISK_ATR_BUFFER,
-            "max_liquidity_risk_r": MAX_LIQUIDITY_R_R,
+            "max_liquidity_risk_r": MAX_LIQUIDITY_RISK_R,
             "max_execution_cost_atr": MAX_EXECUTION_COST_ATR,
         },
         "structural_evidence": {
