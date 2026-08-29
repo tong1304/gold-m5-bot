@@ -7,8 +7,8 @@ from .contracts import EngineResult
 
 NAME = "Trade Economics & Risk Brain"
 QUESTION = "Is the proposed trade economically attractive and structurally survivable?"
-ARCHITECTURE = "E8_PROFESSIONAL_TRADE_ECONOMICS_RISK_BRAIN_V19"
-VERSION = "19.0"
+ARCHITECTURE = "E8_PROFESSIONAL_TRADE_ECONOMICS_RISK_BRAIN_V20"
+VERSION = "20.0"
 
 MIN_BARS = 30
 ATR_PERIOD = 14
@@ -61,7 +61,7 @@ def _first_num(m: dict[str, Any], keys: tuple[str, ...]) -> float | None:
             if x == x and x > 0:
                 return x
         except (KeyError, TypeError, ValueError):
-            pass
+            continue
     return None
 
 
@@ -89,7 +89,7 @@ def _setup(e6: dict[str, Any]) -> str:
 
 
 def _confirmation(e7: dict[str, Any]) -> tuple[str, list[str]]:
-    trace: list[str] = []
+    trace = []
     for key in ("confirmation", "confirmation_state", "trigger_state", "proof_state"):
         if e7.get(key) not in (None, ""):
             trace.append(_text(e7[key]))
@@ -163,16 +163,19 @@ def _target(levels, direction, entry, atr, e4):
         if level is None or not (level > entry if direction == "BUY" else level < entry):
             continue
         d, da, rejection = abs(level - entry), abs(level - entry) / max(atr, 1e-9), []
-        if da < MIN_TARGET_CLEARANCE_ATR: rejection.append("CLEARANCE_TOO_SMALL")
-        if da > MAX_TARGET_EXTENSION_ATR: rejection.append("EXTENSION_TOO_FAR")
-        if source.startswith("STRUCTURE_"): quality = min(quality, SECONDARY_TARGET_QUALITY)
+        if da < MIN_TARGET_CLEARANCE_ATR:
+            rejection.append("CLEARANCE_TOO_SMALL")
+        if da > MAX_TARGET_EXTENSION_ATR:
+            rejection.append("EXTENSION_TOO_FAR")
+        if source.startswith("STRUCTURE_"):
+            quality = min(quality, SECONDARY_TARGET_QUALITY)
         if source == "LIQUIDITY_EVENT":
             ext, state, info = _text(e4.get("liquidity_externality")), _text(e4.get("auction_state")), _text(e4.get("auction_information"))
             if ext == "EXTERNAL": quality += 5
             elif ext == "INTERNAL": quality -= 10
             if state == "PENDING": rejection.append("AUCTION_PENDING")
             if info == "LOW_INFORMATION": rejection.append("LOW_INFORMATION_LIQUIDITY")
-        quality = max(0, min(100, quality))
+        quality = max(0.0, min(100.0, quality))
         candidates.append({"hierarchy_rank": rank, "source": source, "level": level, "distance": d, "distance_atr": da, "quality": quality, "credible": quality >= TARGET_QUALITY_MIN and not rejection, "rejection": rejection})
     credible = [x for x in candidates if x["credible"]]
     if not credible:
@@ -187,7 +190,9 @@ def _space(e5, target, direction):
     vals = [v for v in (e5s, ts) if v > 0]
     if not vals:
         return {"state": "UNAVAILABLE", "e5_available_space_atr": e5s, "target_barrier_space_atr": ts, "effective_available_space_atr": 0.0, "space_consistency_delta_atr": None, "space_source": "NO_USABLE_SPACE_EVIDENCE", "space_ok": False, "space_conflict": False}
-    effective = min(vals); delta = abs(e5s - ts) if e5s > 0 and ts > 0 else None; conflict = delta is not None and delta >= SPACE_CONFLICT_ATR
+    effective = min(vals)
+    delta = abs(e5s - ts) if e5s > 0 and ts > 0 else None
+    conflict = delta is not None and delta >= SPACE_CONFLICT_ATR
     state = "CONFLICTED" if conflict else "CONSTRAINED" if effective < MIN_SPACE_ATR else "USABLE"
     return {"state": state, "e5_available_space_atr": e5s, "target_barrier_space_atr": ts, "effective_available_space_atr": effective, "space_consistency_delta_atr": delta, "space_source": "MIN(E5_LOCATION,TARGET_BARRIER)" if len(vals) == 2 else "AVAILABLE_EVIDENCE", "space_ok": state == "USABLE", "space_conflict": conflict}
 
@@ -213,8 +218,13 @@ def _survival(bars, entry, direction, atr, risk):
     window = bars[-min(len(bars), MAE_LOOKBACK):]
     if not window or atr <= 0:
         return {"state": "UNAVAILABLE", "max_adverse_excursion_atr": None, "median_adverse_excursion_atr": None, "p95_adverse_excursion_atr": None, "survival_margin_atr": None, "window_bars": 0}
-    adverse = [(max(0, entry - _num(b.get("low"))) if direction == "BUY" else max(0, _num(b.get("high")) - entry)) / atr for b in window]
-    adverse.sort(); p95 = adverse[min(len(adverse) - 1, int((len(adverse) - 1) * 0.95))]; margin = risk / max(atr, 1e-9) - p95
+    adverse = []
+    for b in window:
+        adverse_price = max(0.0, entry - _num(b.get("low"))) if direction == "BUY" else max(0.0, _num(b.get("high")) - entry)
+        adverse.append(adverse_price / atr)
+    adverse.sort()
+    p95 = adverse[min(len(adverse) - 1, int((len(adverse) - 1) * 0.95))]
+    margin = risk / max(atr, 1e-9) - p95
     return {"state": "ROBUST" if margin >= MIN_SURVIVAL_MARGIN_ATR else "FRAGILE" if margin >= 0 else "NON_SURVIVABLE", "max_adverse_excursion_atr": max(adverse), "median_adverse_excursion_atr": median(adverse), "p95_adverse_excursion_atr": p95, "survival_margin_atr": margin, "window_bars": len(window)}
 
 
@@ -229,96 +239,186 @@ def _volatility(bars, atr):
     series = _atr_series(bars)
     if atr <= 0 or len(series) < 2:
         return {"state": "INVALID", "last_range_atr": 0.0, "expansion_ratio": 0.0, "atr_stability": "INVALID", "atr_drift": 0.0}
-    lr = max(0.0, _num(bars[-1].get("high")) - _num(bars[-1].get("low"))); pr = max(0.0, _num(bars[-2].get("high")) - _num(bars[-2].get("low")))
-    recent = mean(series[-5:]) if len(series) >= 5 else mean(series); baseline = mean(series[-min(len(series), ATR_PERIOD):]); drift = recent / max(baseline, 1e-9)
-    return {"state": "EXPANSION_EXTREME" if lr / atr >= 2.5 else "EXPANSION" if lr / atr >= 1.75 or lr / max(pr, 1e-9) >= 2 else "COMPRESSION" if lr / atr <= 0.6 else "NORMAL", "last_range_atr": lr / atr, "expansion_ratio": lr / max(pr, 1e-9), "atr_stability": "STABLE" if 0.65 <= drift <= 1.5 else "UNSTABLE", "atr_drift": drift}
+    lr = max(0.0, _num(bars[-1].get("high")) - _num(bars[-1].get("low")))
+    pr = max(0.0, _num(bars[-2].get("high")) - _num(bars[-2].get("low")))
+    recent = mean(series[-5:]) if len(series) >= 5 else mean(series)
+    baseline = mean(series[-min(len(series), ATR_PERIOD):])
+    drift = recent / max(baseline, 1e-9)
+    state = "EXPANSION_EXTREME" if lr / atr >= 2.5 else "EXPANSION" if lr / atr >= 1.75 or lr / max(pr, 1e-9) >= 2 else "COMPRESSION" if lr / atr <= 0.6 else "NORMAL"
+    return {"state": state, "last_range_atr": lr / atr, "expansion_ratio": lr / max(pr, 1e-9), "atr_stability": "STABLE" if 0.65 <= drift <= 1.5 else "UNSTABLE", "atr_drift": drift}
 
 
 def _probability(*sources):
+    """Select only a setup/regime-conditioned probability with auditable provenance.
+
+    A raw probability is never treated as trustworthy merely because a field exists.
+    Historical sample, explicit causal conditioning and confidence are scored separately.
+    Conflicting candidates are not averaged; the strongest provenance wins.
+    """
     keys = ("historical_probability", "win_probability", "success_probability", "trade_probability", "probability", "estimated_probability")
     candidates = []
     for source, data in sources:
+        if not isinstance(data, dict):
+            continue
+        source_u = _text(source)
         for key in keys:
-            if key not in data:
+            if key not in data or data.get(key) in (None, ""):
                 continue
-            raw = _num(data.get(key), -1)
-            if not 0 <= raw <= 100:
+            raw = _num(data.get(key), -1.0)
+            if raw < 0 or raw > 100:
                 continue
-            p = raw if raw <= 1 else raw / 100
+            p = raw if raw <= 1.0 else raw / 100.0
             sample = _first_num(data, ("sample_size", "historical_sample", "samples", "n"))
-            confidence = _num(data.get("probability_confidence", data.get("confidence", 0)))
-            if 0 < confidence <= 1: confidence *= 100
-            wins = _first_num(data, ("wins", "historical_wins", "winning_trades")); losses = _first_num(data, ("losses", "historical_losses", "losing_trades"))
-            if sample is None and wins is not None and losses is not None: sample = wins + losses
-            quality = 30.0 + (25.0 if sample is not None and sample >= 100 else 15.0 if sample is not None and sample >= MIN_PROBABILITY_SAMPLE else 0.0) + min(20.0, confidence * 0.20)
-            historical = "histor" in key or _text(source) in {"BACKTEST", "HISTORY"}
-            if historical: quality += 20.0
-            if _text(source) == "SNAPSHOT": quality -= 20.0
-            causal = any(data.get(k) not in (None, "", False) for k in ("causal_basis", "probability_basis", "setup_conditioned", "regime_conditioned"))
-            causal_detail = data.get("causal_basis") or data.get("probability_basis") or ("SETUP_AND_REGIME_CONDITIONED" if data.get("setup_conditioned") and data.get("regime_conditioned") else None)
-            if causal: quality += 10.0
+            wins = _first_num(data, ("wins", "historical_wins", "winning_trades"))
+            losses = _first_num(data, ("losses", "historical_losses", "losing_trades"))
+            if sample is None and wins is not None and losses is not None:
+                sample = wins + losses
+            confidence = _num(data.get("probability_confidence", data.get("confidence", 0.0)))
+            if 0 < confidence <= 1:
+                confidence *= 100.0
+            historical = "histor" in key or source_u in {"BACKTEST", "HISTORY", "HISTORICAL"}
+            causal_detail = data.get("causal_basis") or data.get("probability_basis")
+            setup_cond = bool(data.get("setup_conditioned"))
+            regime_cond = bool(data.get("regime_conditioned"))
+            if causal_detail in (None, "") and setup_cond and regime_cond:
+                causal_detail = "SETUP_AND_REGIME_CONDITIONED"
+            explicit_causal = causal_detail not in (None, "", False)
+            if source_u == "SNAPSHOT":
+                historical = False
+            quality = 20.0
+            if historical:
+                quality += 25.0
+            if sample is not None:
+                quality += 20.0 if sample >= 100 else 15.0 if sample >= MIN_PROBABILITY_SAMPLE else 5.0
+            quality += min(15.0, max(0.0, confidence) * 0.15)
+            if setup_cond:
+                quality += 5.0
+            if regime_cond:
+                quality += 5.0
+            if explicit_causal:
+                quality += 10.0
+            if source_u == "SNAPSHOT":
+                quality -= 20.0
             quality = max(0.0, min(100.0, quality))
-            candidates.append((quality, historical, sample or 0, source, key, p, confidence or None, causal, causal_detail))
+            candidates.append({
+                "quality": quality,
+                "historical": historical,
+                "sample": int(sample) if sample is not None else None,
+                "source": source,
+                "key": key,
+                "value": p,
+                "confidence": confidence if confidence > 0 else None,
+                "causal": explicit_causal,
+                "causal_detail": causal_detail,
+                "setup_conditioned": setup_cond,
+                "regime_conditioned": regime_cond,
+            })
     if not candidates:
-        return {"state": "UNAVAILABLE", "value": None, "percent": None, "source": None, "sample_size": None, "confidence_percent": None, "quality": 0.0, "quality_state": "UNAVAILABLE", "historical_evidence": False, "causal_basis": None, "causal_detail": None}
-    quality, historical, sample, source, key, p, confidence, causal, causal_detail = max(candidates, key=lambda x: (x[0], x[1], x[2]))
-    return {"state": "AVAILABLE", "value": p, "percent": p * 100, "source": f"{source}.{key}", "sample_size": sample or None, "confidence_percent": confidence, "quality": quality, "quality_state": "STRONG" if quality >= 80 else "ADEQUATE" if quality >= MIN_PROBABILITY_QUALITY else "WEAK", "historical_evidence": historical, "causal_basis": "EXPLICIT" if causal else "INFERRED_SOURCE_ONLY", "causal_detail": causal_detail}
+        return {"state": "UNAVAILABLE", "value": None, "percent": None, "source": None, "sample_size": None, "confidence_percent": None, "quality": 0.0, "quality_state": "UNAVAILABLE", "historical_evidence": False, "causal_basis": None, "causal_detail": None, "setup_conditioned": False, "regime_conditioned": False}
+    chosen = max(candidates, key=lambda x: (x["quality"], bool(x["historical"]), x["sample"] or 0, bool(x["causal"])))
+    quality = chosen["quality"]
+    return {
+        "state": "AVAILABLE",
+        "value": chosen["value"],
+        "percent": chosen["value"] * 100.0,
+        "source": f"{chosen['source']}.{chosen['key']}",
+        "sample_size": chosen["sample"],
+        "confidence_percent": chosen["confidence"],
+        "quality": quality,
+        "quality_state": "STRONG" if quality >= 80 else "ADEQUATE" if quality >= MIN_PROBABILITY_QUALITY else "WEAK",
+        "historical_evidence": chosen["historical"],
+        "causal_basis": "EXPLICIT" if chosen["causal"] else "UNPROVEN",
+        "causal_detail": chosen["causal_detail"],
+        "setup_conditioned": chosen["setup_conditioned"],
+        "regime_conditioned": chosen["regime_conditioned"],
+    }
 
 
 def _economics(risk, reward, execution_cost, probability):
+    """Compute net expectancy after execution cost; never infer EV from missing P."""
+    p = probability.get("value") if isinstance(probability, dict) else None
     if risk <= 0 or reward <= 0:
-        return {"state": "UNRESOLVED", "probability": probability.get("value"), "gross_reward_r": 0.0, "execution_cost_r": 0.0, "effective_reward_r": 0.0, "effective_rr": 0.0, "break_even_probability": 1.0, "probability_edge": None, "expected_value_r": None, "expected_value_price": None, "edge_class": "UNRESOLVED", "asymmetry": "INVALID", "asymmetry_ratio": None, "payoff_skew_r": None}
-    gross = reward / risk; cost_r = execution_cost / risk; effective = max(0.0, gross - cost_r); be = 1.0 / (1.0 + effective); p = probability.get("value")
+        return {"state": "UNRESOLVED", "probability": p, "gross_reward_r": 0.0, "execution_cost_r": 0.0, "effective_reward_r": 0.0, "effective_rr": 0.0, "break_even_probability": None, "probability_edge": None, "expected_value_r": None, "expected_value_price": None, "edge_class": "UNRESOLVED", "asymmetry": "INVALID", "asymmetry_ratio": None, "payoff_skew_r": None}
+    gross = reward / risk
+    cost_r = max(0.0, execution_cost) / risk
+    effective = max(0.0, gross - cost_r)
+    be = 1.0 / (1.0 + effective) if effective > 0 else 1.0
     if p is None:
         return {"state": "UNQUANTIFIED", "probability": None, "gross_reward_r": gross, "execution_cost_r": cost_r, "effective_reward_r": effective, "effective_rr": effective, "break_even_probability": be, "probability_edge": None, "expected_value_r": None, "expected_value_price": None, "edge_class": "PROBABILITY_UNAVAILABLE", "asymmetry": "UNQUANTIFIED", "asymmetry_ratio": effective, "payoff_skew_r": None}
-    ev = p * effective - (1 - p); ev_price = p * max(0.0, reward - execution_cost) - (1 - p) * risk; edge = p - be
-    asym_ratio = effective; payoff_skew = p * effective - (1 - p)
+    p = max(0.0, min(1.0, _num(p)))
+    net_reward_price = max(0.0, reward - max(0.0, execution_cost))
+    ev_r = p * effective - (1.0 - p)
+    ev_price = p * net_reward_price - (1.0 - p) * risk
+    edge = p - be
     asym = "STRONG" if effective >= 2.0 else "POSITIVE" if effective >= MIN_RR else "WEAK"
-    return {"state": "QUANTIFIED", "probability": p, "gross_reward_r": gross, "execution_cost_r": cost_r, "effective_reward_r": effective, "effective_rr": effective, "break_even_probability": be, "probability_edge": edge, "expected_value_r": ev, "expected_value_price": ev_price, "edge_class": "POSITIVE_EXPECTANCY" if ev >= MIN_ECONOMIC_EDGE and edge > 0 else "MARGINAL_EXPECTANCY" if ev >= 0 else "NEGATIVE_EXPECTANCY", "asymmetry": asym, "asymmetry_ratio": asym_ratio, "payoff_skew_r": payoff_skew}
+    edge_class = "POSITIVE_EXPECTANCY" if ev_r >= MIN_ECONOMIC_EDGE and edge > 0 else "MARGINAL_EXPECTANCY" if ev_r >= 0 else "NEGATIVE_EXPECTANCY"
+    return {"state": "QUANTIFIED", "probability": p, "gross_reward_r": gross, "execution_cost_r": cost_r, "effective_reward_r": effective, "effective_rr": effective, "break_even_probability": be, "probability_edge": edge, "expected_value_r": ev_r, "expected_value_price": ev_price, "edge_class": edge_class, "asymmetry": asym, "asymmetry_ratio": effective, "payoff_skew_r": ev_r}
 
 
 def _sensitivity(entry, stop, target, atr, direction, probability, cost):
-    p = probability.get("value")
-    if p is None or atr <= 0 or stop is None or target is None:
+    """Stress execution geometry and probability together; worst case must remain viable."""
+    p = probability.get("value") if isinstance(probability, dict) else None
+    if p is None or atr <= 0 or stop is None or target is None or direction not in {"BUY", "SELL"}:
         return {"state": "UNAVAILABLE", "scenarios": [], "worst_ev_r": None, "worst_effective_rr": None, "worst_probability": None, "fragility": "UNAVAILABLE", "scenario_count": 0}
-    cases = (("BASELINE", 0, 0, 0, 0), ("ENTRY_WORST", 1, 0, 0, PROBABILITY_STRESS), ("ENTRY_BEST", -1, 0, 0, 0), ("STOP_WORST", 0, 1, 0, PROBABILITY_STRESS), ("STOP_BEST", 0, -1, 0, 0), ("TARGET_WORST", 0, 0, -1, PROBABILITY_STRESS), ("TARGET_BEST", 0, 0, 1, 0), ("COMBINED_WORST", 1, 1, -1, PROBABILITY_STRESS * 1.5))
+    p = max(0.0, min(1.0, _num(p)))
+    cases = (
+        ("BASELINE", 0, 0, 0, 0.0),
+        ("ENTRY_WORST", 1, 0, 0, PROBABILITY_STRESS),
+        ("ENTRY_BEST", -1, 0, 0, 0.0),
+        ("STOP_WORST", 0, 1, 0, PROBABILITY_STRESS),
+        ("STOP_BEST", 0, -1, 0, 0.0),
+        ("TARGET_WORST", 0, 0, -1, PROBABILITY_STRESS),
+        ("TARGET_BEST", 0, 0, 1, 0.0),
+        ("COMBINED_WORST", 1, 1, -1, PROBABILITY_STRESS * 1.5),
+    )
     scenarios = []
     for name, es, ss, ts, ps in cases:
         en = entry + (es * SENSITIVITY_ENTRY_ATR * atr if direction == "BUY" else -es * SENSITIVITY_ENTRY_ATR * atr)
         st = stop - (ss * SENSITIVITY_STOP_ATR * atr if direction == "BUY" else -ss * SENSITIVITY_STOP_ATR * atr)
         tp = target - (ts * SENSITIVITY_TARGET_ATR * atr if direction == "BUY" else -ts * SENSITIVITY_TARGET_ATR * atr)
         valid = (st < en < tp) if direction == "BUY" else (tp < en < st)
-        r, rw = abs(en - st), abs(tp - en); p_case = max(0.0, min(1.0, p - ps))
-        if not valid or r <= 0 or rw <= 0:
-            scenarios.append({"scenario": name, "valid_geometry": False, "risk_atr": r / atr, "reward_atr": rw / atr, "effective_rr": 0.0, "probability": p_case, "expected_value_r": None})
+        risk = abs(en - st)
+        reward = abs(tp - en)
+        p_case = max(0.0, min(1.0, p - max(0.0, ps)))
+        if not valid or risk <= 0 or reward <= 0:
+            scenarios.append({"scenario": name, "valid_geometry": False, "risk_atr": risk / atr, "reward_atr": reward / atr, "effective_rr": 0.0, "probability": p_case, "expected_value_r": None})
             continue
-        eff = max(0.0, rw / r - cost / r); ev = p_case * eff - (1 - p_case)
-        scenarios.append({"scenario": name, "valid_geometry": True, "risk_atr": r / atr, "reward_atr": rw / atr, "effective_rr": eff, "probability": p_case, "expected_value_r": ev})
-    valid_evs = [x["expected_value_r"] for x in scenarios if x["expected_value_r"] is not None]; worst = min(valid_evs) if valid_evs else None
-    worst_rr = min(x["effective_rr"] for x in scenarios); worst_p = min(x["probability"] for x in scenarios)
-    robust = worst is not None and worst >= MIN_SENSITIVITY_EV and all(x["valid_geometry"] for x in scenarios)
-    return {"state": "ROBUST" if robust else "FRAGILE", "scenarios": scenarios, "worst_ev_r": worst, "worst_effective_rr": worst_rr, "worst_probability": worst_p, "fragility": "ROBUST" if robust else "ECONOMICS_SENSITIVITY_FRAGILE", "scenario_count": len(scenarios), "probability_stress_rule": "ADVERSE_SCENARIOS_HAIRCUT_P_BY_3_PERCENTAGE_POINTS", "worst_case_rule": "MIN_SCENARIO_EV_AND_NO_GEOMETRY_BREAK"}
+        effective_rr = max(0.0, reward / risk - max(0.0, cost) / risk)
+        ev = p_case * effective_rr - (1.0 - p_case)
+        scenarios.append({"scenario": name, "valid_geometry": True, "risk_atr": risk / atr, "reward_atr": reward / atr, "effective_rr": effective_rr, "probability": p_case, "expected_value_r": ev})
+    valid_evs = [x["expected_value_r"] for x in scenarios if x["expected_value_r"] is not None]
+    worst = min(valid_evs) if valid_evs else None
+    worst_rr = min((x["effective_rr"] for x in scenarios), default=None)
+    worst_p = min((x["probability"] for x in scenarios), default=None)
+    robust = bool(scenarios) and worst is not None and worst >= MIN_SENSITIVITY_EV and all(x["valid_geometry"] for x in scenarios) and (worst_rr is not None and worst_rr >= MIN_RR)
+    return {"state": "ROBUST" if robust else "FRAGILE", "scenarios": scenarios, "worst_ev_r": worst, "worst_effective_rr": worst_rr, "worst_probability": worst_p, "fragility": "ROBUST" if robust else "ECONOMICS_SENSITIVITY_FRAGILE", "scenario_count": len(scenarios), "probability_stress_rule": "ADVERSE_SCENARIOS_HAIRCUT_P_BY_3_PERCENTAGE_POINTS", "worst_case_rule": "MIN_SCENARIO_EV_AND_NO_GEOMETRY_BREAK_AND_MIN_RR"}
 
 
 def _risk_budget(snapshot, risk):
-    budget = _first_num(snapshot, ("risk_budget", "max_risk_cash", "max_risk_amount")); pct = _first_num(snapshot, ("risk_percent", "risk_pct", "max_risk_percent")); capital = _first_num(snapshot, ("capital", "account_equity", "equity"))
-    if budget is None and pct is not None and capital is not None: budget = capital * pct / 100.0
+    """Convert an explicit account risk budget into size without ever exceeding it."""
+    budget = _first_num(snapshot, ("risk_budget", "max_risk_cash", "max_risk_amount"))
+    pct = _first_num(snapshot, ("risk_percent", "risk_pct", "max_risk_percent"))
+    capital = _first_num(snapshot, ("capital", "account_equity", "equity"))
+    if budget is None and pct is not None and capital is not None:
+        budget = capital * pct / 100.0
     if budget is None:
         return {"state": "UNSPECIFIED", "budget": None, "risk_distance": risk, "utilization": None, "position_size": None, "sizing_state": "NOT_COMPUTABLE", "reason": "NO_RISK_BUDGET", "remaining_budget": None}
-    if risk <= 0:
-        return {"state": "INVALID", "budget": budget, "risk_distance": risk, "utilization": None, "position_size": None, "sizing_state": "INVALID_RISK", "reason": "NON_POSITIVE_RISK_DISTANCE", "remaining_budget": budget}
+    if budget <= 0 or risk <= 0:
+        return {"state": "INVALID", "budget": budget, "risk_distance": risk, "utilization": None, "position_size": None, "sizing_state": "INVALID_RISK_BUDGET", "reason": "NON_POSITIVE_BUDGET_OR_RISK", "remaining_budget": budget}
     point_value = _first_num(snapshot, ("point_value", "contract_value_per_price_unit", "value_per_price_unit", "unit_value"))
     if point_value is None:
         return {"state": "DEFINED_NOT_SIZED", "budget": budget, "risk_distance": risk, "utilization": None, "position_size": None, "sizing_state": "MISSING_POINT_VALUE", "reason": "POSITION_SIZE_REQUIRES_INSTRUMENT_VALUE_PER_PRICE_UNIT", "remaining_budget": budget}
     risk_per_unit = risk * point_value
     if risk_per_unit <= 0:
         return {"state": "INVALID", "budget": budget, "risk_distance": risk, "risk_per_unit": risk_per_unit, "utilization": None, "position_size": None, "sizing_state": "INVALID_UNIT_RISK", "reason": "NON_POSITIVE_UNIT_RISK", "remaining_budget": budget}
-    size = budget / risk_per_unit
-    return {"state": "WITHIN_BUDGET", "budget": budget, "risk_distance": risk, "point_value": point_value, "risk_per_unit": risk_per_unit, "utilization": 1.0, "position_size": size, "sizing_state": "COMPUTABLE", "reason": "RISK_BUDGET_DIVIDED_BY_UNIT_RISK", "remaining_budget": 0.0}
+    size = max(0.0, budget / risk_per_unit)
+    actual_risk = size * risk_per_unit
+    utilization = actual_risk / budget if budget > 0 else None
+    return {"state": "WITHIN_BUDGET" if utilization is not None and utilization <= 1.0 + 1e-9 else "OVER_BUDGET", "budget": budget, "risk_distance": risk, "point_value": point_value, "risk_per_unit": risk_per_unit, "actual_risk": actual_risk, "utilization": utilization, "position_size": size, "sizing_state": "COMPUTABLE" if size > 0 else "INVALID_SIZE", "reason": "RISK_BUDGET_DIVIDED_BY_UNIT_RISK", "remaining_budget": max(0.0, budget - actual_risk)}
 
 
 def analyze_e8(snapshot: dict[str, Any], upstream: dict[str, EngineResult]) -> EngineResult:
-    """E8 validates probability, EV, payoff asymmetry, sensitivity and risk budget; E9 retains final authority."""
+    """E8 validates Probability -> EV -> Asymmetry -> Sensitivity -> Risk Budget; E9 retains final authority."""
     bars = list(snapshot.get("bars") or [])
     e3, e4, e5, e6, e7 = (_evidence(upstream.get(k)) for k in ("E3", "E4", "E5", "E6", "E7"))
     base = {"architecture": ARCHITECTURE, "version": VERSION, "question": QUESTION, "reasoning_role": "TRADE_ECONOMICS_RISK_ANALYST", "decision_authority": "E9", "trade_decision_authority": False, "closed_candle_only": True, "lookahead": False}
@@ -369,33 +469,37 @@ def analyze_e8(snapshot: dict[str, Any], upstream: dict[str, EngineResult]) -> E
     if probability["state"] != "AVAILABLE":
         counter.append("PROBABILITY_UNQUANTIFIED")
     else:
-        if probability["value"] < MIN_PROBABILITY: counter.append("PROBABILITY_BELOW_MINIMUM")
-        if probability.get("quality", 0) < MIN_PROBABILITY_QUALITY: counter.append("PROBABILITY_QUALITY_WEAK")
-        if probability.get("sample_size") is None or probability.get("sample_size", 0) < MIN_PROBABILITY_SAMPLE: counter.append("PROBABILITY_SAMPLE_INSUFFICIENT")
+        if probability.get("value") is None or _num(probability.get("value"), -1) < MIN_PROBABILITY: counter.append("PROBABILITY_BELOW_MINIMUM")
+        if _num(probability.get("quality"), 0) < MIN_PROBABILITY_QUALITY: counter.append("PROBABILITY_QUALITY_WEAK")
+        sample = probability.get("sample_size")
+        if sample is None or _num(sample, 0) < MIN_PROBABILITY_SAMPLE: counter.append("PROBABILITY_SAMPLE_INSUFFICIENT")
         if not probability.get("historical_evidence"): counter.append("PROBABILITY_NOT_CAUSALLY_GROUNDED")
         if probability.get("causal_basis") != "EXPLICIT": counter.append("PROBABILITY_CAUSAL_BASIS_WEAK")
+        if not probability.get("setup_conditioned") or not probability.get("regime_conditioned"): counter.append("PROBABILITY_CONDITIONING_INCOMPLETE")
 
     probability_gate = (
         probability["state"] == "AVAILABLE"
         and probability.get("value") is not None
-        and probability.get("value", 0) >= MIN_PROBABILITY
-        and probability.get("quality", 0) >= MIN_PROBABILITY_QUALITY
-        and (probability.get("sample_size") or 0) >= MIN_PROBABILITY_SAMPLE
-        and probability.get("historical_evidence", False)
+        and _num(probability.get("value"), 0) >= MIN_PROBABILITY
+        and _num(probability.get("quality"), 0) >= MIN_PROBABILITY_QUALITY
+        and _num(probability.get("sample_size"), 0) >= MIN_PROBABILITY_SAMPLE
+        and bool(probability.get("historical_evidence"))
         and probability.get("causal_basis") == "EXPLICIT"
+        and bool(probability.get("setup_conditioned"))
+        and bool(probability.get("regime_conditioned"))
     )
-    if not probability_gate:
-        counter.append("EV_INPUT_PROBABILITY_NOT_TRUSTWORTHY")
+    if not probability_gate: counter.append("EV_INPUT_PROBABILITY_NOT_TRUSTWORTHY")
     if economics["edge_class"] == "NEGATIVE_EXPECTANCY": counter.append("NEGATIVE_EXPECTANCY")
     if economics["state"] != "QUANTIFIED": counter.append("EXPECTED_VALUE_UNQUANTIFIED")
     elif _num(economics.get("expected_value_r"), -999) < MIN_ECONOMIC_EDGE: counter.append("ECONOMIC_EDGE_BELOW_MINIMUM")
-    if economics.get("probability_edge") is None or economics.get("probability_edge", -1) <= 0: counter.append("PROBABILITY_EDGE_NOT_POSITIVE")
+    if economics.get("probability_edge") is None or _num(economics.get("probability_edge"), -1) <= 0: counter.append("PROBABILITY_EDGE_NOT_POSITIVE")
     if _num(economics.get("effective_rr"), -999) < MIN_RR: counter.append("EFFECTIVE_RR_BELOW_MINIMUM")
     if economics.get("asymmetry") in {"WEAK", "INVALID", "UNQUANTIFIED"}: counter.append("ASYMMETRIC_PAYOFF_INSUFFICIENT")
     if sensitivity["state"] != "ROBUST": counter.append("ECONOMICS_SENSITIVITY_FRAGILE")
     if sensitivity.get("worst_ev_r") is None: counter.append("SENSITIVITY_EV_UNQUANTIFIED")
     elif _num(sensitivity.get("worst_ev_r"), -999) < MIN_SENSITIVITY_EV: counter.append("WORST_CASE_EV_NEGATIVE")
-    if _num(sensitivity.get("worst_effective_rr"), -999) < MIN_RR: counter.append("WORST_CASE_ASYMMETRY_INSUFFICIENT")
+    if sensitivity.get("worst_effective_rr") is None: counter.append("WORST_CASE_ASYMMETRY_UNQUANTIFIED")
+    elif _num(sensitivity.get("worst_effective_rr"), -999) < MIN_RR: counter.append("WORST_CASE_ASYMMETRY_INSUFFICIENT")
     if risk_budget["state"] == "INVALID": counter.append("RISK_BUDGET_INVALID")
     if risk_budget["state"] == "UNSPECIFIED": missing.append("RISK_BUDGET_REQUIRED")
     if risk_budget["state"] == "DEFINED_NOT_SIZED": counter.append("POSITION_SIZE_NOT_COMPUTABLE")
@@ -424,14 +528,18 @@ def analyze_e8(snapshot: dict[str, Any], upstream: dict[str, EngineResult]) -> E
     counter, missing = list(dict.fromkeys(counter)), list(dict.fromkeys(missing))
     score = 100.0 if ready else max(0.0, 100.0 - 4.0 * len(counter) - 3.0 * len(missing))
     state = "ATTRACTIVE" if ready else "UNRESOLVED"
-    p_pct, ev_r, ev_price, be = probability.get("percent"), economics.get("expected_value_r"), economics.get("expected_value_price"), economics.get("break_even_probability")
+    p_pct = probability.get("percent")
+    ev_r = economics.get("expected_value_r")
+    ev_price = economics.get("expected_value_price")
+    be = economics.get("break_even_probability")
     observations = [
         f"direction={direction}", f"setup={setup}", f"confirmation={confirmation}", f"entry={entry:.6f}", f"atr={atr:.6f}",
         f"risk_distance_atr={stop_atr:.3f}", f"target={target.get('level') if target.get('level') is not None else 'NONE'}",
         f"real_rr={real_rr:.3f}", f"effective_rr={_num(economics.get('effective_rr'), 0):.3f}",
         f"probability={p_pct:.2f}%" if p_pct is not None else "probability=UNAVAILABLE",
-        f"probability_quality={probability.get('quality', 0):.1f}", f"probability_sample={probability.get('sample_size')}",
+        f"probability_quality={_num(probability.get('quality'), 0):.1f}", f"probability_sample={probability.get('sample_size')}",
         f"probability_historical={probability.get('historical_evidence')}", f"probability_causal_basis={probability.get('causal_basis')}",
+        f"probability_setup_conditioned={probability.get('setup_conditioned')}", f"probability_regime_conditioned={probability.get('regime_conditioned')}",
         f"expected_value_r={ev_r if ev_r is not None else 'UNAVAILABLE'}", f"break_even_probability={be*100:.2f}%" if be is not None else "break_even_probability=UNAVAILABLE",
         f"probability_edge={economics.get('probability_edge')}", f"asymmetry={economics.get('asymmetry')}",
         f"sensitivity={sensitivity.get('state')}", f"worst_sensitivity_ev_r={sensitivity.get('worst_ev_r')}",
@@ -454,7 +562,7 @@ def analyze_e8(snapshot: dict[str, Any], upstream: dict[str, EngineResult]) -> E
         "max_adverse_excursion_atr": survival.get("max_adverse_excursion_atr"), "p95_adverse_excursion_atr": survival.get("p95_adverse_excursion_atr"),
         "survival_margin_atr": survival.get("survival_margin_atr"), "survival_state": survival.get("state"),
     }
-    causal = f"SETUP={setup}->CONFIRMATION={confirmation}->ENTRY={entry:.6f}->STOP={stop if stop is not None else 'NONE'}->TARGET={target.get('level') if target.get('level') is not None else 'NONE'}->REAL_RR={real_rr:.3f}->P={p_pct if p_pct is not None else 'NA'}->EV_R={ev_r if ev_r is not None else 'NA'}->ASYMMETRY={economics.get('asymmetry')}->WORST_EV_R={sensitivity.get('worst_ev_r')}->SENSITIVITY={sensitivity.get('state')}->RISK_BUDGET={risk_budget.get('state')}->POSITION_SIZE={risk_budget.get('position_size')}"
+    causal = f"SETUP={setup}->CONFIRMATION={confirmation}->ENTRY={entry:.6f}->STOP={stop if stop is not None else 'NONE'}->TARGET={target.get('level') if target.get('level') is not None else 'NONE'}->REAL_RR={real_rr:.3f}->P={p_pct if p_pct is not None else 'NA'}->EV_R={ev_r if ev_r is not None else 'NA'}->ASYMMETRY={economics.get('asymmetry')}->WORST_EV_R={sensitivity.get('worst_ev_r')}->WORST_RR={sensitivity.get('worst_effective_rr')}->SENSITIVITY={sensitivity.get('state')}->RISK_BUDGET={risk_budget.get('state')}->POSITION_SIZE={risk_budget.get('position_size')}"
     output = {
         **base, "state": state, "economic_state": state, "risk_gate": lifecycle[final_key], "direction": direction, "setup": setup,
         "confirmation": confirmation, "confirmation_trace": confirmation_trace, "trade_plan": trade_plan,
@@ -465,8 +573,8 @@ def analyze_e8(snapshot: dict[str, Any], upstream: dict[str, EngineResult]) -> E
         "professional_reasoning": {
             "causal_chain": causal,
             "economic_reasoning": f"P={p_pct if p_pct is not None else 'UNAVAILABLE'}%;Effective_RR={economics.get('effective_rr')};BE_P={be};EV_R={ev_r};ProbabilityEdge={economics.get('probability_edge')};Asymmetry={economics.get('asymmetry')};WorstSensitivityEV={sensitivity.get('worst_ev_r')};WorstSensitivityRR={sensitivity.get('worst_effective_rr')}",
-            "probability_reasoning": f"source={probability.get('source')};quality={probability.get('quality')};sample={probability.get('sample_size')};historical={probability.get('historical_evidence')};causal_basis={probability.get('causal_basis')};causal_detail={probability.get('causal_detail')}",
-            "risk_budget_reasoning": f"state={risk_budget.get('state')};budget={risk_budget.get('budget')};risk_distance={risk};point_value={risk_budget.get('point_value')};risk_per_unit={risk_budget.get('risk_per_unit')};position_size={risk_budget.get('position_size')}",
+            "probability_reasoning": f"source={probability.get('source')};quality={probability.get('quality')};sample={probability.get('sample_size')};historical={probability.get('historical_evidence')};causal_basis={probability.get('causal_basis')};causal_detail={probability.get('causal_detail')};setup_conditioned={probability.get('setup_conditioned')};regime_conditioned={probability.get('regime_conditioned')}",
+            "risk_budget_reasoning": f"state={risk_budget.get('state')};budget={risk_budget.get('budget')};risk_distance={risk};point_value={risk_budget.get('point_value')};risk_per_unit={risk_budget.get('risk_per_unit')};position_size={risk_budget.get('position_size')};utilization={risk_budget.get('utilization')}",
             "sensitivity_reasoning": f"state={sensitivity.get('state')};worst_ev_r={sensitivity.get('worst_ev_r')};worst_rr={sensitivity.get('worst_effective_rr')};worst_probability={sensitivity.get('worst_probability')};scenarios={sensitivity.get('scenario_count')}",
             "causal_risk_reasoning": ";".join(counter + missing) if (counter or missing) else "NO_RISK_VETO",
             "risk_veto": "PASS" if ready else "VETO: " + ";".join(counter + missing + ["ECONOMICS_NOT_READY"]),
