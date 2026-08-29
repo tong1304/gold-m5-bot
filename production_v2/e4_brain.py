@@ -7,16 +7,15 @@ from .professional_e4_brain_v18 import analyze_e4 as _base_analyze_e4
 
 PROFESSIONAL_QUESTION = "Where is liquidity, who took it, and did price accept or reject the auction?"
 E4_ROLE = "LIQUIDITY_AUCTION_ANALYST"
-ARCHITECTURE = "E4_SINGLE_PROFESSIONAL_LIQUIDITY_AUCTION_BRAIN_V32"
+ARCHITECTURE = "E4_SINGLE_PROFESSIONAL_LIQUIDITY_AUCTION_BRAIN_V33"
 CONFIRM_BARS = 2
 MAX_CONFIRM_BARS = 5
 INTERACTION_ATR = 0.05
 MIN_DISPLACEMENT_ATR = 0.20
 TERMINAL_STATES = ("CONFIRMED", "INVALIDATED", "EXPIRED")
 
-# Process-local state is deliberately limited to E4.  The key is the market
-# identity plus the causal event identity, so a rolling 200-bar window cannot
-# reset event age back to zero merely because its array index moved.
+# E4 owns only its own lifecycle state.  State is keyed by market and causal
+# event id, not by the rolling-window array position.
 _LIFECYCLE_STATE: dict[str, dict[str, Any]] = {}
 
 
@@ -100,8 +99,6 @@ def _find_event_index(event_id: str, event: dict[str, Any], bars: list[dict[str,
     index = int(event.get("index", -1))
     if 0 <= index < len(bars) and _event_id(event, bars) == event_id:
         return index
-    # Event index changes as the rolling window advances; timestamp identity is
-    # the causal anchor.  Never use a future bar to reconstruct the event.
     timestamp = event_id.split("|", 1)[0] if "|" in event_id else ""
     if timestamp and not timestamp.startswith("INDEX_FALLBACK:"):
         for i, bar in enumerate(bars):
@@ -142,37 +139,35 @@ def _empty_follow(reason="NO_POST_EVENT_CANDLE"):
 
 
 def _evaluate_new_candles(event: dict[str, Any], event_index: int, bars: list[dict[str, Any]], atr: float, prior: dict[str, Any] | None):
-    """Deterministic event FSM. Only newly closed candles after event are evaluated."""
+    """Deterministic E4 FSM; only unseen closed candles after the event are evaluated."""
     event_id = _event_id(event, bars)
     event_class = _event_class(event)
     direction = _event_direction(event)
     level = _event_level(event)
 
     if level is None or atr <= 0 or event_class == "UNRESOLVED" or direction not in {"UP", "DOWN"}:
-        out = _empty_follow("INVALID_EVENT_METRICS" if level is None or atr <= 0 else "DIRECTIONAL_RESPONSE_NOT_ESTABLISHED")
         if prior and prior.get("lifecycle") in TERMINAL_STATES:
-            return dict(prior["follow"])
-        return out
+            return dict(prior.get("follow") or _empty_follow("TERMINAL_STATE_RETAINED")), str(prior["lifecycle"]), set(prior.get("processed_candles") or []), int(prior.get("consecutive", 0) or 0)
+        return _empty_follow("INVALID_EVENT_METRICS" if level is None or atr <= 0 else "DIRECTIONAL_RESPONSE_NOT_ESTABLISHED"), "PENDING", set((prior or {}).get("processed_candles") or []), int((prior or {}).get("consecutive", 0) or 0)
 
     prior = prior or {}
     if prior.get("event_id") != event_id:
         prior = {}
 
-    # Terminal state is immutable for this exact causal event.
+    # First terminal transition wins forever for this exact causal event.
     if prior.get("lifecycle") in TERMINAL_STATES:
-        return dict(prior.get("follow") or _empty_follow("TERMINAL_STATE_RETAINED"))
+        return dict(prior.get("follow") or _empty_follow("TERMINAL_STATE_RETAINED")), str(prior["lifecycle"]), set(prior.get("processed_candles") or []), int(prior.get("consecutive", 0) or 0)
 
-    start_index = event_index + 1
-    prior_processed = set(prior.get("processed_candles") or [])
+    processed = set(prior.get("processed_candles") or [])
     consecutive = int(prior.get("consecutive", 0) or 0)
     follow = dict(prior.get("follow") or _empty_follow())
     follow["checks"] = list(follow.get("checks") or [])
 
-    for j in range(start_index, len(bars)):
+    for j in range(event_index + 1, len(bars)):
         candle_id = _bar_identity(bars[j], j)
-        if candle_id in prior_processed:
+        if candle_id in processed:
             continue
-        prior_processed.add(candle_id)
+        processed.add(candle_id)
 
         close = bars[j]["close"]
         if direction == "UP":
@@ -185,47 +180,45 @@ def _evaluate_new_candles(event: dict[str, Any], event_index: int, bars: list[di
             opposite = close > level + atr * INTERACTION_ATR
         meaningful = hold and displacement >= MIN_DISPLACEMENT_ATR
 
-        if opposite:
-            follow["checks"].append({
-                "index": j,
-                "candle_id": candle_id,
-                "close": close,
-                "hold": hold,
-                "displacement_atr": round(displacement, 6),
-                "meaningful": meaningful,
-                "opposite_reclaim": True,
-                "consecutive": 0,
-                "terminal": "INVALIDATED",
-            })
-            follow.update({
-                "invalidated": True,
-                "terminal": True,
-                "invalidated_at": candle_id,
-                "bars": 0,
-                "consecutive": False,
-                "reason": "POST_EVENT_RECLAMATION",
-                "terminal_lifecycle": "INVALIDATED",
-            })
-            return follow, "INVALIDATED", prior_processed, 0
-
-        consecutive = consecutive + 1 if meaningful else 0
-        follow["checks"].append({
+        check = {
             "index": j,
             "candle_id": candle_id,
             "close": close,
             "hold": hold,
             "displacement_atr": round(displacement, 6),
             "meaningful": meaningful,
-            "opposite_reclaim": False,
-            "consecutive": consecutive,
-            "terminal": "CONFIRMED" if consecutive >= CONFIRM_BARS else None,
-        })
+            "opposite_reclaim": opposite,
+            "consecutive_before": consecutive,
+        }
+
+        if opposite:
+            check.update({"consecutive": 0, "terminal": "INVALIDATED"})
+            follow["checks"].append(check)
+            follow.update({
+                "invalidated": True,
+                "terminal": True,
+                "invalidated_at": candle_id,
+                "bars": 0,
+                "consecutive": 0,
+                "reason": "POST_EVENT_RECLAMATION",
+                "terminal_lifecycle": "INVALIDATED",
+                "available_bars": len(processed),
+                "horizon_bars": min(MAX_CONFIRM_BARS, len(processed)),
+            })
+            return follow, "INVALIDATED", processed, 0
+
+        consecutive = consecutive + 1 if meaningful else 0
+        check["consecutive"] = consecutive
+        check["terminal"] = "CONFIRMED" if consecutive >= CONFIRM_BARS else None
+        follow["checks"].append(check)
 
         if consecutive >= CONFIRM_BARS:
             follow.update({
                 "present": True,
                 "terminal": True,
                 "bars": consecutive,
+                "available_bars": len(processed),
+                "horizon_bars": min(MAX_CONFIRM_BARS, len(processed)),
                 "confirmed_at": candle_id,
                 "consecutive": True,
                 "reason": "FOLLOW_THROUGH_CONFIRMED",
@@ -233,13 +226,13 @@ def _evaluate_new_candles(event: dict[str, Any], event_index: int, bars: list[di
                 "acceptance_quality": event_class == "ACCEPTANCE",
                 "rejection_quality": event_class == "REJECTION",
             })
-            return follow, "CONFIRMED", prior_processed, consecutive
+            return follow, "CONFIRMED", processed, consecutive
 
-    processed_after_event = len(prior_processed)
-    age = processed_after_event
+    age = len(processed)
     follow["available_bars"] = age
     follow["horizon_bars"] = min(MAX_CONFIRM_BARS, age)
     follow["bars"] = consecutive
+    follow["consecutive"] = consecutive > 0
 
     if age >= MAX_CONFIRM_BARS:
         follow.update({
@@ -248,10 +241,10 @@ def _evaluate_new_candles(event: dict[str, Any], event_index: int, bars: list[di
             "reason": "EVENT_EXPIRED",
             "terminal_lifecycle": "EXPIRED",
         })
-        return follow, "EXPIRED", prior_processed, consecutive
+        return follow, "EXPIRED", processed, consecutive
 
     follow["reason"] = "FOLLOW_THROUGH_ABSENT" if age else "NO_POST_EVENT_CANDLE"
-    return follow, "PENDING", prior_processed, consecutive
+    return follow, "PENDING", processed, consecutive
 
 
 def _auction_state(event, lifecycle):
@@ -282,6 +275,10 @@ def _get_atr(result):
     return 0.0
 
 
+def _transition(previous: str | None, current: str) -> str:
+    return f"{previous or 'NONE'}->{current}"
+
+
 def analyze_e4(snapshot=None, evidence_bus=None):
     """E4-only liquidity/auction analysis with persistent deterministic FSM."""
     result = dict(_base_analyze_e4(snapshot, evidence_bus))
@@ -289,12 +286,13 @@ def analyze_e4(snapshot=None, evidence_bus=None):
     atr = _get_atr(result)
     detected_event = dict(result.get("event") or {})
     market = _market_key(snapshot)
-
-    detected_id = _event_id(detected_event, bars) if detected_event.get("zone") else None
     state = _LIFECYCLE_STATE.get(market)
 
-    # A detected event is authoritative only for its own causal timestamp.
-    # If no new event exists, continue the prior event against newly closed bars.
+    detected_id = _event_id(detected_event, bars) if detected_event.get("zone") else None
+
+    # A newly detected causal event supersedes an older lifecycle.  Otherwise
+    # the stored event remains authoritative and is advanced only by unseen
+    # closed candles.  No future candle is synthesized.
     if detected_event.get("zone") and detected_id:
         if state is None or detected_id != state.get("event_id"):
             event = detected_event
@@ -317,24 +315,40 @@ def analyze_e4(snapshot=None, evidence_bus=None):
         event_index = -1
         prior = None
 
-    # If the causal event has fallen out of the rolling window, preserve the
-    # terminal result; for a still-pending event we cannot invent unseen bars.
-    if event_id and event_index < 0 and prior and prior.get("lifecycle") in TERMINAL_STATES:
-        follow = dict(prior.get("follow") or _empty_follow("TERMINAL_STATE_RETAINED"))
-        lifecycle = str(prior.get("lifecycle"))
-    elif event_id and event_index >= 0:
+    previous_lifecycle = str(prior.get("lifecycle")) if prior else None
+
+    if event_id and event_index >= 0:
         follow, lifecycle, processed, consecutive = _evaluate_new_candles(event, event_index, bars, atr, prior)
+        previous_event_state = state if state and state.get("event_id") == event_id else None
+        previous_terminal = previous_event_state and previous_event_state.get("lifecycle") in TERMINAL_STATES
+        if previous_terminal:
+            lifecycle = str(previous_event_state["lifecycle"])
+            follow = dict(previous_event_state.get("follow") or follow)
+            processed = set(previous_event_state.get("processed_candles") or processed)
+            consecutive = int(previous_event_state.get("consecutive", consecutive) or 0)
         _LIFECYCLE_STATE[market] = {
             "event_id": event_id,
             "event": dict(event),
             "lifecycle": lifecycle,
-            "processed_candles": processed,
+            "processed_candles": set(processed),
             "consecutive": consecutive,
             "follow": dict(follow),
+            "last_processed_candle_id": _bar_identity(bars[-1], len(bars) - 1) if bars else None,
+            "event_age_bars": max(0, len(bars) - 1 - event_index),
         }
+        prior_for_transition = previous_event_state
+    elif event_id and prior and prior.get("lifecycle") in TERMINAL_STATES:
+        follow = dict(prior.get("follow") or _empty_follow("TERMINAL_STATE_RETAINED"))
+        lifecycle = str(prior["lifecycle"])
+        processed = set(prior.get("processed_candles") or [])
+        consecutive = int(prior.get("consecutive", 0) or 0)
+        prior_for_transition = prior
     else:
         follow = _empty_follow("NO_LIQUIDITY_EVENT")
         lifecycle = "PENDING"
+        processed = set()
+        consecutive = 0
+        prior_for_transition = prior
 
     state_name, confirmed = _auction_state(event, lifecycle)
     direction = _event_direction(event) if confirmed else "NEUTRAL"
@@ -346,7 +360,7 @@ def analyze_e4(snapshot=None, evidence_bus=None):
 
     event_class = _event_class(event)
     terminal_reason = follow.get("reason") if lifecycle in TERMINAL_STATES else None
-    transition = f"{str(prior.get('lifecycle', 'NONE') if prior else 'NONE')}->{lifecycle}"
+    transition = _transition(str(prior_for_transition.get("lifecycle")) if prior_for_transition else None, lifecycle)
 
     result["architecture"] = ARCHITECTURE
     result["professional_brain"] = True
@@ -374,6 +388,8 @@ def analyze_e4(snapshot=None, evidence_bus=None):
         "transition": transition,
         "terminal": lifecycle in TERMINAL_STATES,
         "terminal_reason": terminal_reason,
+        "processed_candles": len(processed),
+        "last_processed_candle_id": _LIFECYCLE_STATE.get(market, {}).get("last_processed_candle_id"),
         "detail": follow,
     }
     result["auction_state"] = state_name
@@ -427,13 +443,13 @@ def analyze_e4(snapshot=None, evidence_bus=None):
         reasoning["follow_through"] = {"confirmed": confirmed, "bars": follow.get("bars", 0), "required_bars": CONFIRM_BARS, "reason": follow.get("reason")}
         reasoning["thesis_status"] = lifecycle
         reasoning["actor_identification"] = "INFERENCE_FROM_OHLC_ONLY"
-        reasoning["lifecycle_rule"] = "PENDING -> exactly one terminal state: CONFIRMED|INVALIDATED|EXPIRED"
+        reasoning["lifecycle_rule"] = "PENDING -> exactly one terminal state: CONFIRMED|INVALIDATED|EXPIRED; first terminal wins"
     else:
         result["professional_reasoning"] = {
             "question": PROFESSIONAL_QUESTION,
             "thesis_status": lifecycle,
             "actor_identification": "INFERENCE_FROM_OHLC_ONLY",
-            "lifecycle_rule": "PENDING -> exactly one terminal state: CONFIRMED|INVALIDATED|EXPIRED",
+            "lifecycle_rule": "PENDING -> exactly one terminal state: CONFIRMED|INVALIDATED|EXPIRED; first terminal wins",
         }
 
     audit = dict(result.get("audit") or {})
@@ -449,6 +465,7 @@ def analyze_e4(snapshot=None, evidence_bus=None):
         "lifecycle": lifecycle,
         "lifecycle_transition": transition,
         "follow_through_bars": follow.get("bars", 0),
+        "available_post_event_bars": follow.get("available_bars", 0),
         "required_confirmation_bars": CONFIRM_BARS,
         "confirmation_horizon": min(MAX_CONFIRM_BARS, event_age),
         "terminal_states": list(TERMINAL_STATES),
@@ -456,6 +473,8 @@ def analyze_e4(snapshot=None, evidence_bus=None):
         "first_terminal_wins": True,
         "persistent_state": True,
         "state_key": market,
+        "processed_candles": len(processed),
+        "last_processed_candle_id": _LIFECYCLE_STATE.get(market, {}).get("last_processed_candle_id"),
         "newer_event_precedence": "CAUSAL_TIME",
         "direction_authority": "E4_AUCTION_EVIDENCE_ONLY",
     })
