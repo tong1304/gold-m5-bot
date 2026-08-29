@@ -7,8 +7,8 @@ from .contracts import EngineResult
 
 NAME = "Trade Economics & Risk Brain"
 QUESTION = "Is the proposed trade economically attractive, structurally survivable, and robust to execution uncertainty?"
-ARCHITECTURE = "E8_PROFESSIONAL_TRADE_ECONOMICS_RISK_BRAIN_V23"
-VERSION = "23.0"
+ARCHITECTURE = "E8_PROFESSIONAL_TRADE_ECONOMICS_RISK_BRAIN_V24"
+VERSION = "24.0"
 
 # E8 is an economics/risk gate only. It never creates a setup or changes direction.
 MIN_BARS = 30
@@ -19,7 +19,9 @@ MAX_STOP_ATR = 3.50
 RISK_ATR_BUFFER = 0.20
 FALLBACK_STOP_ATR = 1.20
 STRUCTURE_LOOKBACK = 20
-MAE_LOOKBACK = 20
+MAE_LOOKBACK = 100
+MAE_HORIZON_BARS = 12
+MIN_MAE_SAMPLES = 30
 MIN_SPACE_ATR = 0.75
 MIN_TARGET_CLEARANCE_ATR = 0.10
 MAX_TARGET_EXTENSION_ATR = 3.50
@@ -38,6 +40,9 @@ SPACE_CONFLICT_ATR = 0.75
 ROBUSTNESS_MIN_MARGIN = 0.05
 MIN_TARGET_REALISM = 0.60
 MIN_STOP_QUALITY = 70.0
+RISK_CLASS_A = 0.78
+RISK_CLASS_B = 0.68
+RISK_CLASS_C = 0.58
 
 
 def _num(v: Any, default: float = 0.0) -> float:
@@ -121,15 +126,25 @@ def _confirmation(e7: dict[str, Any]) -> tuple[str, list[str]]:
     return state, trace + reasons
 
 
-def _atr(bars: list[dict[str, Any]], period: int = ATR_PERIOD) -> float:
-    trs: list[float] = []
-    start = max(1, len(bars) - period)
-    for i in range(start, len(bars)):
-        h, l = _num(bars[i].get("high")), _num(bars[i].get("low"))
-        pc = _num(bars[i - 1].get("close"))
-        if h > 0 and l >= 0 and pc > 0:
-            trs.append(max(h - l, abs(h - pc), abs(l - pc)))
+def _true_range(bars: list[dict[str, Any]], i: int) -> float:
+    if i <= 0 or i >= len(bars):
+        return 0.0
+    h, l = _num(bars[i].get("high")), _num(bars[i].get("low"))
+    pc = _num(bars[i - 1].get("close"))
+    if h <= 0 or l < 0 or pc <= 0:
+        return 0.0
+    return max(h - l, abs(h - pc), abs(l - pc))
+
+
+def _atr_at(bars: list[dict[str, Any]], index: int, period: int = ATR_PERIOD) -> float:
+    start = max(1, index - period + 1)
+    trs = [_true_range(bars, i) for i in range(start, index + 1)]
+    trs = [x for x in trs if x > 0]
     return mean(trs) if trs else 0.0
+
+
+def _atr(bars: list[dict[str, Any]], period: int = ATR_PERIOD) -> float:
+    return _atr_at(bars, len(bars) - 1, period) if bars else 0.0
 
 
 def _levels(e3: dict[str, Any], e4: dict[str, Any], e5: dict[str, Any], bars: list[dict[str, Any]]) -> dict[str, Any]:
@@ -149,18 +164,18 @@ def _levels(e3: dict[str, Any], e4: dict[str, Any], e5: dict[str, Any], bars: li
 
 def _target(levels: dict[str, Any], direction: str, entry: float, atr: float, e4: dict[str, Any]) -> dict[str, Any]:
     raw = ([
-        ("RESISTANCE", levels.get("next_resistance"), 92.0, 1),
-        ("PROTECTED_HIGH", levels.get("protected_high"), 90.0, 2),
-        ("LIQUIDITY_EVENT", levels.get("liquidity_event_level"), 80.0, 3),
-        ("STRUCTURE_HIGH_20", levels.get("structure_high_20"), 70.0, 4),
+        ("RESISTANCE", levels.get("next_resistance"), 92.0),
+        ("PROTECTED_HIGH", levels.get("protected_high"), 90.0),
+        ("LIQUIDITY_EVENT", levels.get("liquidity_event_level"), 80.0),
+        ("STRUCTURE_HIGH_20", levels.get("structure_high_20"), 70.0),
     ] if direction == "BUY" else [
-        ("SUPPORT", levels.get("next_support"), 92.0, 1),
-        ("PROTECTED_LOW", levels.get("protected_low"), 90.0, 2),
-        ("LIQUIDITY_EVENT", levels.get("liquidity_event_level"), 80.0, 3),
-        ("STRUCTURE_LOW_20", levels.get("structure_low_20"), 70.0, 4),
+        ("SUPPORT", levels.get("next_support"), 92.0),
+        ("PROTECTED_LOW", levels.get("protected_low"), 90.0),
+        ("LIQUIDITY_EVENT", levels.get("liquidity_event_level"), 80.0),
+        ("STRUCTURE_LOW_20", levels.get("structure_low_20"), 70.0),
     ] if direction == "SELL" else [])
     candidates: list[dict[str, Any]] = []
-    for source, level, quality, rank in raw:
+    for source, level, quality in raw:
         if level is None or not (level > entry if direction == "BUY" else level < entry):
             continue
         distance = abs(level - entry)
@@ -186,24 +201,17 @@ def _target(levels: dict[str, Any], direction: str, entry: float, atr: float, e4
                 rejection.append("LOW_INFORMATION_LIQUIDITY")
         quality = max(0.0, min(100.0, quality))
         candidates.append({
-            "hierarchy_rank": rank, "source": source, "level": level,
-            "distance": distance, "distance_atr": distance_atr,
+            "source": source, "level": level, "distance": distance, "distance_atr": distance_atr,
             "quality": quality, "credible": quality >= TARGET_QUALITY_MIN and not rejection,
             "rejection": rejection,
         })
     credible = [x for x in candidates if x["credible"]]
     if not credible:
-        return {
-            "source": None, "level": None, "distance": 0.0, "distance_atr": 0.0,
-            "quality": 0.0, "hierarchy_rank": None, "credible": False,
-            "rejection": ["NO_CREDIBLE_OPPOSING_BARRIER"], "candidate_trace": candidates,
-            "selection_rule": "HIERARCHY_THEN_NEAREST_CREDIBLE_BARRIER",
-        }
-    return {
-        **min(credible, key=lambda x: (x["hierarchy_rank"], x["distance"])),
-        "candidate_trace": candidates,
-        "selection_rule": "HIERARCHY_THEN_NEAREST_CREDIBLE_BARRIER",
-    }
+        return {"source": None, "level": None, "distance": 0.0, "distance_atr": 0.0,
+                "quality": 0.0, "credible": False, "rejection": ["NO_CREDIBLE_OPPOSING_BARRIER"],
+                "candidate_trace": candidates, "selection_rule": "NEAREST_CREDIBLE_OPPOSING_BARRIER"}
+    selected = min(credible, key=lambda x: (x["distance_atr"], -x["quality"]))
+    return {**selected, "candidate_trace": candidates, "selection_rule": "NEAREST_CREDIBLE_OPPOSING_BARRIER"}
 
 
 def _space(e5: dict[str, Any], target: dict[str, Any], direction: str) -> dict[str, Any]:
@@ -212,23 +220,18 @@ def _space(e5: dict[str, Any], target: dict[str, Any], direction: str) -> dict[s
     target_space = _num(target.get("distance_atr")) if target.get("credible") else 0.0
     vals = [v for v in (e5_space, target_space) if v > 0]
     if not vals:
-        return {
-            "state": "UNAVAILABLE", "e5_available_space_atr": e5_space,
-            "target_barrier_space_atr": target_space, "effective_available_space_atr": 0.0,
-            "space_consistency_delta_atr": None, "space_source": "NO_USABLE_SPACE_EVIDENCE",
-            "space_ok": False, "space_conflict": False,
-        }
+        return {"state": "UNAVAILABLE", "e5_available_space_atr": e5_space,
+                "target_barrier_space_atr": target_space, "effective_available_space_atr": 0.0,
+                "space_consistency_delta_atr": None, "space_source": "NO_USABLE_SPACE_EVIDENCE",
+                "space_ok": False, "space_conflict": False}
     effective = min(vals)
     delta = abs(e5_space - target_space) if e5_space > 0 and target_space > 0 else None
     conflict = delta is not None and delta >= SPACE_CONFLICT_ATR
     state = "CONFLICTED" if conflict else ("CONSTRAINED" if effective < MIN_SPACE_ATR else "USABLE")
-    return {
-        "state": state, "e5_available_space_atr": e5_space,
-        "target_barrier_space_atr": target_space, "effective_available_space_atr": effective,
-        "space_consistency_delta_atr": delta,
-        "space_source": "MIN(E5_LOCATION,TARGET_BARRIER)" if len(vals) == 2 else "AVAILABLE_EVIDENCE",
-        "space_ok": state == "USABLE", "space_conflict": conflict,
-    }
+    return {"state": state, "e5_available_space_atr": e5_space, "target_barrier_space_atr": target_space,
+            "effective_available_space_atr": effective, "space_consistency_delta_atr": delta,
+            "space_source": "MIN(E5_LOCATION,TARGET_BARRIER)" if len(vals) == 2 else "AVAILABLE_EVIDENCE",
+            "space_ok": state == "USABLE", "space_conflict": conflict}
 
 
 def _stop(direction: str, entry: float, atr: float, levels: dict[str, Any]) -> dict[str, Any]:
@@ -243,36 +246,54 @@ def _stop(direction: str, entry: float, atr: float, levels: dict[str, Any]) -> d
                   ((direction == "BUY" and x[1] < entry) or (direction == "SELL" and x[1] > entry))]
     if not candidates:
         fallback = entry - FALLBACK_STOP_ATR * atr if direction == "BUY" else entry + FALLBACK_STOP_ATR * atr
-        return {"source": None, "level": None, "stop": fallback,
-                "basis": "ATR_FALLBACK_LOWER_CONFIDENCE", "quality": 0.0,
-                "candidate_trace": [], "structural": False}
+        return {"source": None, "level": None, "stop": fallback, "basis": "ATR_FALLBACK_LOWER_CONFIDENCE",
+                "quality": 0.0, "candidate_trace": [], "structural": False}
     source, level, quality = min(candidates, key=lambda x: abs(entry - x[1]))
     stop = level - RISK_ATR_BUFFER * atr if direction == "BUY" else level + RISK_ATR_BUFFER * atr
-    return {"source": source, "level": level, "stop": stop,
-            "basis": "STRUCTURAL_LEVEL_PLUS_ATR_BUFFER", "quality": quality,
-            "candidate_trace": candidates, "structural": True}
+    return {"source": source, "level": level, "stop": stop, "basis": "STRUCTURAL_LEVEL_PLUS_ATR_BUFFER",
+            "quality": quality, "candidate_trace": candidates, "structural": True}
 
 
-def _survival(bars: list[dict[str, Any]], entry: float, direction: str, atr: float, risk: float) -> dict[str, Any]:
-    window = bars[-min(len(bars), MAE_LOOKBACK):]
-    if not window or atr <= 0:
-        return {"state": "UNAVAILABLE", "max_adverse_excursion_atr": None,
+def _historical_mae(bars: list[dict[str, Any]], direction: str) -> dict[str, Any]:
+    """Compute MAE from completed historical hypothetical entries, never from candles before current entry."""
+    end = len(bars) - MAE_HORIZON_BARS - 1
+    start = max(ATR_PERIOD + 1, len(bars) - MAE_LOOKBACK - MAE_HORIZON_BARS - 1)
+    values: list[float] = []
+    if end >= start:
+        for i in range(start, end + 1):
+            a = _atr_at(bars, i)
+            entry = _num(bars[i].get("close"))
+            if a <= 0 or entry <= 0:
+                continue
+            adverse = 0.0
+            for j in range(i + 1, min(len(bars), i + 1 + MAE_HORIZON_BARS)):
+                low, high = _num(bars[j].get("low")), _num(bars[j].get("high"))
+                adverse_price = max(0.0, entry - low) if direction == "BUY" else max(0.0, high - entry)
+                adverse = max(adverse, adverse_price / a)
+            values.append(adverse)
+    if len(values) < MIN_MAE_SAMPLES:
+        return {"state": "UNAVAILABLE", "sample": len(values), "window_bars": MAE_LOOKBACK,
+                "horizon_bars": MAE_HORIZON_BARS, "max_adverse_excursion_atr": None,
                 "median_adverse_excursion_atr": None, "p95_adverse_excursion_atr": None,
-                "survival_margin_atr": None, "window_bars": 0}
-    adverse: list[float] = []
-    for b in window:
-        low, high = _num(b.get("low")), _num(b.get("high"))
-        adverse_price = max(0.0, entry - low) if direction == "BUY" else max(0.0, high - entry)
-        adverse.append(adverse_price / atr)
-    adverse.sort()
-    p95 = adverse[min(len(adverse) - 1, int((len(adverse) - 1) * 0.95))]
-    median_mae = median(adverse)
-    risk_atr = risk / max(atr, 1e-9)
+                "survival_margin_atr": None, "risk_atr": None,
+                "method": "HISTORICAL_HYPOTHETICAL_ENTRY_MAE"}
+    values.sort()
+    p95 = values[min(len(values) - 1, int((len(values) - 1) * 0.95))]
+    return {"state": "CALCULATED", "sample": len(values), "window_bars": MAE_LOOKBACK,
+            "horizon_bars": MAE_HORIZON_BARS, "max_adverse_excursion_atr": max(values),
+            "median_adverse_excursion_atr": median(values), "p95_adverse_excursion_atr": p95,
+            "historical_mae_p95_atr": p95, "risk_atr": None, "survival_margin_atr": None,
+            "method": "HISTORICAL_HYPOTHETICAL_ENTRY_MAE"}
+
+
+def _survival(mae: dict[str, Any], risk_atr: float) -> dict[str, Any]:
+    if mae.get("state") != "CALCULATED" or risk_atr <= 0:
+        return {**mae, "state": "UNAVAILABLE", "risk_atr": risk_atr}
+    p95 = _num(mae.get("p95_adverse_excursion_atr"), 0.0)
     margin = risk_atr - p95
-    return {"state": "ROBUST" if margin >= MIN_SURVIVAL_MARGIN_ATR else "FRAGILE" if margin >= 0 else "NON_SURVIVABLE",
-            "max_adverse_excursion_atr": max(adverse), "median_adverse_excursion_atr": median_mae,
-            "p95_adverse_excursion_atr": p95, "survival_margin_atr": margin, "risk_atr": risk_atr,
-            "tail_excursion_ratio": max(adverse) / max(risk_atr, 1e-9), "window_bars": len(window)}
+    state = "ROBUST" if margin >= MIN_SURVIVAL_MARGIN_ATR else "FRAGILE" if margin >= 0 else "NON_SURVIVABLE"
+    return {**mae, "state": state, "risk_atr": risk_atr, "survival_margin_atr": margin,
+            "tail_excursion_ratio": _num(mae.get("max_adverse_excursion_atr")) / max(risk_atr, 1e-9)}
 
 
 def _execution(snapshot: dict[str, Any], atr: float) -> dict[str, Any]:
@@ -280,11 +301,58 @@ def _execution(snapshot: dict[str, Any], atr: float) -> dict[str, Any]:
     slippage = _first_num(snapshot, ("slippage", "slippage_price", "expected_slippage")) or 0.0
     total = max(0.0, spread + slippage)
     cost_atr = total / atr if atr > 0 else float("inf")
-    return {"spread": spread, "slippage": slippage, "total_cost": total,
-            "cost_atr": cost_atr, "cost_ok": atr > 0 and cost_atr <= MAX_EXECUTION_COST_ATR}
+    return {"spread": spread, "slippage": slippage, "total_cost": total, "cost_atr": cost_atr,
+            "cost_ok": atr > 0 and cost_atr <= MAX_EXECUTION_COST_ATR}
 
 
-def _probability(e7: dict[str, Any], snapshot: dict[str, Any]) -> dict[str, Any]:
+def _historical_probability(snapshot: dict[str, Any], direction: str, setup: str) -> dict[str, Any]:
+    records = snapshot.get("historical_outcomes") or snapshot.get("setup_history") or snapshot.get("historical_trades")
+    if not isinstance(records, list):
+        return {"state": "UNQUANTIFIED", "probability": None, "quality": None, "sample": 0,
+                "source": None, "source_engine": None, "stress_probability": None, "trusted": False,
+                "minimum_probability": MIN_PROBABILITY, "method": "NO_SETUP_HISTORY_AVAILABLE"}
+    matches: list[dict[str, Any]] = []
+    for row in records:
+        if not isinstance(row, dict):
+            continue
+        rdir = _text(row.get("direction") or row.get("side"))
+        rsetup = _text(row.get("setup") or row.get("setup_family") or row.get("setup_type"))
+        if rdir and rdir != direction:
+            continue
+        if rsetup and setup != "UNKNOWN" and rsetup != _text(setup):
+            continue
+        matches.append(row)
+    wins = losses = 0
+    for row in matches:
+        result = row.get("win")
+        if result is None:
+            result = row.get("outcome")
+        if isinstance(result, str):
+            result = _text(result) in {"WIN", "WON", "PROFIT", "TP", "SUCCESS"}
+            if _text(row.get("outcome")) in {"LOSS", "LOST", "SL", "FAIL"}:
+                result = False
+        if isinstance(result, bool):
+            wins += int(result)
+            losses += int(not result)
+    n = wins + losses
+    if n == 0:
+        return {"state": "UNQUANTIFIED", "probability": None, "quality": None, "sample": 0,
+                "source": "historical_outcomes", "source_engine": "SNAPSHOT", "stress_probability": None,
+                "trusted": False, "minimum_probability": MIN_PROBABILITY, "method": "NO_RESOLVED_OUTCOMES"}
+    p = (wins + 1.0) / (n + 2.0)
+    quality = min(100.0, 55.0 + 45.0 * min(1.0, n / 100.0))
+    trusted = quality >= MIN_PROBABILITY_QUALITY and n >= MIN_PROBABILITY_SAMPLE
+    return {"state": "TRUSTED" if trusted else "UNTRUSTED", "probability": p, "quality": quality,
+            "sample": n, "wins": wins, "losses": losses, "source": "historical_outcomes",
+            "source_engine": "SNAPSHOT", "stress_probability": max(0.0, p - PROBABILITY_STRESS),
+            "trusted": trusted, "minimum_probability": MIN_PROBABILITY,
+            "method": "SETUP_DIRECTION_CONDITIONED_LAPLACE"}
+
+
+def _probability(e7: dict[str, Any], snapshot: dict[str, Any], direction: str, setup: str) -> dict[str, Any]:
+    hist = _historical_probability(snapshot, direction, setup)
+    if hist.get("trusted") or hist.get("sample", 0) > 0:
+        return hist
     for source_name, source in (("E7", e7), ("SNAPSHOT", snapshot)):
         for key in ("historical_probability", "win_probability", "probability", "estimated_probability"):
             if key not in source:
@@ -296,14 +364,11 @@ def _probability(e7: dict[str, Any], snapshot: dict[str, Any]) -> dict[str, Any]
                 q = _num(source.get("probability_quality"), 0.0)
                 n = int(_num(source.get("probability_sample"), 0.0))
                 trusted = q >= MIN_PROBABILITY_QUALITY and n >= MIN_PROBABILITY_SAMPLE
-                stress = max(0.0, p - PROBABILITY_STRESS)
                 return {"state": "TRUSTED" if trusted else "UNTRUSTED", "probability": p,
                         "quality": q, "sample": n, "source": key, "source_engine": source_name,
-                        "stress_probability": stress, "trusted": trusted,
-                        "minimum_probability": MIN_PROBABILITY}
-    return {"state": "UNQUANTIFIED", "probability": None, "quality": None, "sample": None,
-            "source": None, "source_engine": None, "stress_probability": None, "trusted": False,
-            "minimum_probability": MIN_PROBABILITY}
+                        "stress_probability": max(0.0, p - PROBABILITY_STRESS), "trusted": trusted,
+                        "minimum_probability": MIN_PROBABILITY, "method": "UPSTREAM_PROBABILITY_FALLBACK"}
+    return hist
 
 
 def _geometry(direction: str, entry: float, stop: float, target: float, atr: float, cost_atr: float) -> dict[str, Any]:
@@ -323,11 +388,12 @@ def _geometry(direction: str, entry: float, stop: float, target: float, atr: flo
 def _target_realism(target: dict[str, Any], space: dict[str, Any], survival: dict[str, Any],
                     geometry: dict[str, Any], e4: dict[str, Any]) -> dict[str, Any]:
     q = _num(target.get("quality"), 0.0) / 100.0
-    space_ratio = min(1.0, _num(space.get("effective_available_space_atr")) /
-                      max(_num(target.get("distance_atr")), 1e-9)) if target.get("credible") else 0.0
+    target_distance = _num(target.get("distance_atr"))
+    available = _num(space.get("effective_available_space_atr"))
+    space_ratio = min(1.0, available / max(target_distance, 1e-9)) if target.get("credible") else 0.0
     p95 = _num(survival.get("p95_adverse_excursion_atr"), 0.0)
     risk_atr = max(_num(geometry.get("risk_atr")), 1e-9)
-    survival_ratio = max(0.0, min(1.0, 1.0 - p95 / risk_atr))
+    survival_ratio = max(0.0, min(1.0, 1.0 - p95 / risk_atr)) if survival.get("state") != "UNAVAILABLE" else 0.0
     auction_penalty = 0.15 if _text(e4.get("auction_state")) == "PENDING" else 0.0
     realism = max(0.0, min(1.0, 0.45 * q + 0.30 * space_ratio + 0.25 * survival_ratio - auction_penalty))
     return {"score": realism, "state": "REALISTIC" if realism >= MIN_TARGET_REALISM else "UNREALISTIC",
@@ -344,8 +410,8 @@ def _stop_quality(stop_plan: dict[str, Any], survival: dict[str, Any], geometry:
     width = _num(geometry.get("risk_atr"), 0.0)
     width_component = 100.0 if MIN_STOP_ATR <= width <= MAX_STOP_ATR else 0.0
     score = 0.55 * base + 0.30 * survival_component + 0.15 * width_component
-    return {"score": max(0.0, min(100.0, score)),
-            "state": "QUALITY" if score >= MIN_STOP_QUALITY else "WEAK", "structural": True}
+    return {"score": max(0.0, min(100.0, score)), "state": "QUALITY" if score >= MIN_STOP_QUALITY else "WEAK",
+            "structural": True}
 
 
 def _economic(geometry: dict[str, Any], probability: dict[str, Any], execution: dict[str, Any],
@@ -371,9 +437,7 @@ def _economic(geometry: dict[str, Any], probability: dict[str, Any], execution: 
     if stop_quality.get("state") != "QUALITY":
         reasons.append("STOP_QUALITY_TOO_LOW")
 
-    ev = None
-    breakeven = None
-    margin = None
+    ev = breakeven = margin = None
     stress_p = probability.get("stress_probability")
     if probability.get("trusted") and stress_p is not None:
         p = _num(stress_p)
@@ -397,8 +461,8 @@ def _economic(geometry: dict[str, Any], probability: dict[str, Any], execution: 
     state = "NOT_EVALUABLE" if not probability.get("trusted") else (
         "ECONOMICALLY_INVALID" if any(x in hard for x in reasons) else
         "FRAGILE" if reasons else "ECONOMICALLY_ACCEPTABLE")
-    return {"state": state, "expected_value_r": ev, "economic_edge_r": ev,
-            "rr_used": rr, "stress_probability": stress_p, "breakeven_probability": breakeven,
+    return {"state": state, "expected_value_r": ev, "economic_edge_r": ev, "rr_used": rr,
+            "stress_probability": stress_p, "breakeven_probability": breakeven,
             "economic_margin": margin, "effective_reward_r": max(0.0, rr - cost_atr),
             "effective_risk_r": 1.0 + cost_atr, "reasons": reasons}
 
@@ -429,9 +493,37 @@ def _sensitivity(direction: str, entry: float, stop: float, target: float, atr: 
             "stop_shock_atr": SENSITIVITY_STOP_ATR, "target_shock_atr": SENSITIVITY_TARGET_ATR}
 
 
+def _risk_quality(economics: dict[str, Any], survival: dict[str, Any], sensitivity: dict[str, Any],
+                  target: dict[str, Any], target_realism: dict[str, Any], stop_quality: dict[str, Any],
+                  execution: dict[str, Any], probability: dict[str, Any], confirmation: str) -> dict[str, Any]:
+    parts = [
+        _num(target.get("quality")) / 100.0,
+        _num(target_realism.get("score")),
+        _num(stop_quality.get("score")) / 100.0,
+        1.0 if survival.get("state") == "ROBUST" else 0.5 if survival.get("state") == "FRAGILE" else 0.0,
+        1.0 if sensitivity.get("state") == "ROBUST" else 0.5 if sensitivity.get("state") == "FRAGILE" else 0.0,
+        1.0 if economics.get("state") == "ECONOMICALLY_ACCEPTABLE" else 0.5 if economics.get("state") == "FRAGILE" else 0.0,
+        max(0.0, 1.0 - min(1.0, _num(execution.get("cost_atr"), 1.0) / max(MAX_EXECUTION_COST_ATR, 1e-9))),
+        min(1.0, _num(probability.get("quality"), 0.0) / 100.0),
+        1.0 if confirmation == "CONFIRMED" else 0.0,
+    ]
+    score = sum(parts) / len(parts)
+    if score >= RISK_CLASS_A:
+        cls = "A"
+    elif score >= RISK_CLASS_B:
+        cls = "B"
+    elif score >= RISK_CLASS_C:
+        cls = "C"
+    else:
+        cls = "NO_TRADE"
+    return {"score": score, "class": cls, "components": parts,
+            "budget_guidance": {"A": "FULL_ALLOWED_RISK", "B": "REDUCED_RISK",
+                                 "C": "MINIMAL_RISK_ONLY", "NO_TRADE": "NO_RISK"}[cls]}
+
+
 def _confidence(economics: dict[str, Any], survival: dict[str, Any], sensitivity: dict[str, Any],
                 target: dict[str, Any], target_realism: dict[str, Any], stop_quality: dict[str, Any],
-                execution: dict[str, Any], confirmation: str) -> float:
+                execution: dict[str, Any], confirmation: str, probability: dict[str, Any]) -> float:
     components = [
         _num(target.get("quality")) / 100.0,
         _num(target_realism.get("score")),
@@ -440,6 +532,7 @@ def _confidence(economics: dict[str, Any], survival: dict[str, Any], sensitivity
         1.0 if sensitivity.get("state") == "ROBUST" else 0.5 if sensitivity.get("state") == "FRAGILE" else 0.0,
         1.0 if economics.get("state") == "ECONOMICALLY_ACCEPTABLE" else 0.5 if economics.get("state") == "FRAGILE" else 0.0,
         max(0.0, 1.0 - min(1.0, _num(execution.get("cost_atr"), 1.0) / max(MAX_EXECUTION_COST_ATR, 1e-9))),
+        min(1.0, _num(probability.get("quality"), 0.0) / 100.0),
         1.0 if confirmation == "CONFIRMED" else 0.0,
     ]
     return sum(components) / len(components)
@@ -447,15 +540,13 @@ def _confidence(economics: dict[str, Any], survival: dict[str, Any], sensitivity
 
 def _unresolved(direction: str, setup: str, confirmation: str, bars: int, atr: float,
                 reasons: list[str]) -> EngineResult:
-    output = {
-        "engine_id": "E8", "role": "TRADE_ECONOMICS_RISK_ANALYST", "question": QUESTION,
-        "architecture": ARCHITECTURE, "version": VERSION, "finding": "UNRESOLVED",
-        "direction": direction, "setup": setup, "confirmation": confirmation,
-        "economic_state": "NOT_EVALUABLE", "gate_passed": False, "risk_ready": False,
-        "observations": [f"valid_candles={bars}", f"atr14={atr:.6f}"],
-        "reasons": reasons, "reason_codes": reasons,
-        "professional_rule": "E8_ECONOMICS_ONLY_E9_FINAL_AUTHORITY", "decision_authority": "E9",
-    }
+    output = {"engine_id": "E8", "role": "TRADE_ECONOMICS_RISK_ANALYST", "question": QUESTION,
+              "architecture": ARCHITECTURE, "version": VERSION, "finding": "UNRESOLVED",
+              "direction": direction, "setup": setup, "confirmation": confirmation,
+              "economic_state": "NOT_EVALUABLE", "gate_passed": False, "risk_ready": False,
+              "observations": [f"valid_candles={bars}", f"atr14={atr:.6f}"],
+              "reasons": reasons, "reason_codes": reasons,
+              "professional_rule": "E8_ECONOMICS_ONLY_E9_FINAL_AUTHORITY", "decision_authority": "E9"}
     return EngineResult("E8", NAME, False, 0.0, output, tuple(reasons))
 
 
@@ -492,7 +583,6 @@ def analyze_e8(snapshot: dict[str, Any], results: dict[str, EngineResult]) -> En
         "real_rr": 0.0, "effective_reward_atr": 0.0, "effective_risk_atr": 0.0}
     if not geometry["side_valid"]:
         reasons.append("INVALID_TRADE_GEOMETRY")
-
     risk_atr = geometry["risk_atr"]
     if risk_atr < MIN_STOP_ATR:
         reasons.append("STOP_TOO_TIGHT")
@@ -504,12 +594,15 @@ def analyze_e8(snapshot: dict[str, Any], results: dict[str, EngineResult]) -> En
     space = _space(e5, target, direction)
     if space["state"] == "CONFLICTED":
         reasons.append("SPACE_CONFLICT")
-    survival = _survival(bars, entry, direction, atr, geometry["risk_price"])
-    probability = _probability(e7, snapshot)
+
+    mae = _historical_mae(bars, direction)
+    survival = _survival(mae, risk_atr)
+    probability = _probability(e7, snapshot, direction, setup)
     target_realism = _target_realism(target, space, survival, geometry, e4)
     stop_quality = _stop_quality(stop_plan, survival, geometry)
     economics = _economic(geometry, probability, execution, survival, space, target_realism, stop_quality)
     sensitivity = _sensitivity(direction, entry, stop, target_level, atr, probability, execution["cost_atr"]) if target_valid else {"state": "UNQUANTIFIED"}
+    risk_quality = _risk_quality(economics, survival, sensitivity, target, target_realism, stop_quality, execution, probability, confirmation)
 
     if confirmation != "CONFIRMED":
         reasons.append("ENTRY_CONFIRMATION")
@@ -524,8 +617,7 @@ def analyze_e8(snapshot: dict[str, Any], results: dict[str, EngineResult]) -> En
         "EFFECTIVE_SPACE_BELOW_MINIMUM", "SPACE_CONFLICT", "STOP_TOO_TIGHT", "STOP_TOO_WIDE",
         "STRUCTURAL_SURVIVAL_NOT_PROVEN", "EXECUTION_COST_TOO_HIGH", "ENTRY_CONFIRMATION",
         "STRESSED_PROBABILITY_BELOW_MINIMUM", "EFFECTIVE_SPACE_UNRELIABLE",
-        "TARGET_REALISM_TOO_LOW", "STOP_QUALITY_TOO_LOW",
-    })
+        "TARGET_REALISM_TOO_LOW", "STOP_QUALITY_TOO_LOW"})
     risk_ready = bool(
         confirmation == "CONFIRMED" and target_valid and geometry["side_valid"]
         and MIN_STOP_ATR <= risk_atr <= MAX_STOP_ATR
@@ -533,8 +625,8 @@ def analyze_e8(snapshot: dict[str, Any], results: dict[str, EngineResult]) -> En
         and survival["state"] == "ROBUST" and execution["cost_ok"]
         and probability["trusted"] and economics["state"] == "ECONOMICALLY_ACCEPTABLE"
         and sensitivity.get("state") == "ROBUST" and target_realism["state"] == "REALISTIC"
-        and stop_quality["state"] == "QUALITY" and not hard_fail
-    )
+        and stop_quality["state"] == "QUALITY" and risk_quality["class"] in {"A", "B"}
+        and not hard_fail)
 
     if risk_ready:
         finding, gate = "ECONOMICALLY_ACCEPTABLE", True
@@ -543,52 +635,50 @@ def analyze_e8(snapshot: dict[str, Any], results: dict[str, EngineResult]) -> En
     else:
         finding, gate = ("ECONOMICALLY_INVALID" if hard_fail or economics["state"] == "ECONOMICALLY_INVALID" else "FRAGILE"), False
 
-    confidence = _confidence(economics, survival, sensitivity, target, target_realism, stop_quality, execution, confirmation)
+    confidence = _confidence(economics, survival, sensitivity, target, target_realism, stop_quality, execution, confirmation, probability)
     if risk_ready:
         confidence = max(confidence, 0.70)
 
     primary_veto = reasons[0] if reasons else "NONE"
     observations = [
-        f"bars={len(bars)}", f"atr14={atr:.6f}", f"entry={entry:.8f}",
-        f"risk_atr={risk_atr:.6f}", f"nominal_rr={geometry['nominal_rr']:.6f}",
-        f"real_rr={geometry['real_rr']:.6f}", f"target={target.get('source') or 'NONE'}",
+        f"bars={len(bars)}", f"atr14={atr:.6f}", f"entry={entry:.8f}", f"risk_atr={risk_atr:.6f}",
+        f"nominal_rr={geometry['nominal_rr']:.6f}", f"real_rr={geometry['real_rr']:.6f}",
+        f"target={target.get('source') or 'NONE'}", f"target_selection={target.get('selection_rule')}",
         f"target_realism={target_realism['score']:.6f}", f"stop_quality={stop_quality['score']:.6f}",
         f"space={space['state']}", f"survival={survival['state']}",
+        f"mae_method={survival.get('method')}", f"mae_samples={survival.get('sample', 0)}",
         f"execution_cost_atr={execution['cost_atr']:.6f}",
         f"probability={probability.get('probability') if probability.get('probability') is not None else 'UNQUANTIFIED'}",
+        f"probability_sample={probability.get('sample', 0)}", f"probability_method={probability.get('method')}",
         f"stress_probability={probability.get('stress_probability') if probability.get('stress_probability') is not None else 'UNQUANTIFIED'}",
         f"breakeven_probability={economics.get('breakeven_probability') if economics.get('breakeven_probability') is not None else 'UNQUANTIFIED'}",
         f"economic_margin={economics.get('economic_margin') if economics.get('economic_margin') is not None else 'UNQUANTIFIED'}",
         f"economic_state={economics['state']}", f"sensitivity={sensitivity.get('state', 'UNQUANTIFIED')}",
-        f"primary_veto={primary_veto}",
-    ]
+        f"risk_quality={risk_quality['score']:.6f}", f"risk_class={risk_quality['class']}", f"primary_veto={primary_veto}"]
 
-    trade_plan = {
-        "valid": risk_ready, "direction": direction, "setup": setup, "entry": entry,
-        "stop": stop if risk_ready else None, "target": target_level if risk_ready else None,
-        "risk_price": geometry["risk_price"], "risk_atr": risk_atr,
-        "reward_price": geometry["reward_price"], "rr": geometry["real_rr"],
-        "nominal_rr": geometry["nominal_rr"], "real_rr": geometry["real_rr"],
-        "target_source": target.get("source"), "stop_source": stop_plan.get("source"),
-        "economic_state": economics["state"], "expected_value_r": economics["expected_value_r"],
-        "breakeven_probability": economics.get("breakeven_probability"),
-        "economic_margin": economics.get("economic_margin"), "robustness": sensitivity.get("state", "UNQUANTIFIED"),
-        "target_realism": target_realism["score"], "stop_quality": stop_quality["score"],
-    }
+    trade_plan = {"valid": risk_ready, "direction": direction, "setup": setup, "entry": entry,
+                  "stop": stop if risk_ready else None, "target": target_level if risk_ready else None,
+                  "risk_price": geometry["risk_price"], "risk_atr": risk_atr,
+                  "reward_price": geometry["reward_price"], "rr": geometry["real_rr"],
+                  "nominal_rr": geometry["nominal_rr"], "real_rr": geometry["real_rr"],
+                  "target_source": target.get("source"), "stop_source": stop_plan.get("source"),
+                  "economic_state": economics["state"], "expected_value_r": economics["expected_value_r"],
+                  "breakeven_probability": economics.get("breakeven_probability"),
+                  "economic_margin": economics.get("economic_margin"), "robustness": sensitivity.get("state", "UNQUANTIFIED"),
+                  "target_realism": target_realism["score"], "stop_quality": stop_quality["score"],
+                  "risk_quality": risk_quality["score"], "risk_class": risk_quality["class"]}
 
-    output = {
-        "engine_id": "E8", "role": "TRADE_ECONOMICS_RISK_ANALYST", "question": QUESTION,
-        "architecture": ARCHITECTURE, "version": VERSION, "finding": finding,
-        "direction": direction, "setup": setup, "confirmation": confirmation,
-        "confirmation_trace": confirmation_trace, "entry": entry, "atr14": atr,
-        "risk_atr": risk_atr, "rr": geometry["real_rr"], "real_rr": geometry["real_rr"],
-        "nominal_rr": geometry["nominal_rr"], "target": target, "stop_plan": stop_plan,
-        "geometry": geometry, "space": space, "survival": survival, "execution": execution,
-        "probability": probability, "target_realism": target_realism, "stop_quality": stop_quality,
-        "economics": economics, "sensitivity": sensitivity, "economic_state": economics["state"],
-        "risk_ready": risk_ready, "gate_passed": gate, "trade_plan": trade_plan,
-        "observations": observations, "reasons": reasons, "reason_codes": reasons,
-        "confidence": confidence, "primary_veto": primary_veto,
-        "professional_rule": "E8_ECONOMICS_ONLY_E9_FINAL_AUTHORITY", "decision_authority": "E9",
-    }
+    output = {"engine_id": "E8", "role": "TRADE_ECONOMICS_RISK_ANALYST", "question": QUESTION,
+              "architecture": ARCHITECTURE, "version": VERSION, "finding": finding,
+              "direction": direction, "setup": setup, "confirmation": confirmation,
+              "confirmation_trace": confirmation_trace, "entry": entry, "atr14": atr,
+              "risk_atr": risk_atr, "rr": geometry["real_rr"], "real_rr": geometry["real_rr"],
+              "nominal_rr": geometry["nominal_rr"], "target": target, "stop_plan": stop_plan,
+              "geometry": geometry, "space": space, "survival": survival, "execution": execution,
+              "probability": probability, "target_realism": target_realism, "stop_quality": stop_quality,
+              "economics": economics, "sensitivity": sensitivity, "risk_quality": risk_quality,
+              "economic_state": economics["state"], "risk_ready": risk_ready, "gate_passed": gate,
+              "trade_plan": trade_plan, "observations": observations, "reasons": reasons,
+              "reason_codes": reasons, "confidence": confidence, "primary_veto": primary_veto,
+              "professional_rule": "E8_ECONOMICS_ONLY_E9_FINAL_AUTHORITY", "decision_authority": "E9"}
     return EngineResult("E8", NAME, gate, confidence * 100.0, output, tuple(reasons))
