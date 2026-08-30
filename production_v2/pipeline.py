@@ -12,6 +12,7 @@ from .e6_brain import analyze_e6
 from .e7_brain import analyze_e7
 from .e8_brain import analyze_e8
 from .e9_brain import analyze_e9
+from .nine_brain_profit_opportunity import synthesize_profit_opportunity
 from .opportunity_layer import enrich_opportunity, recover_e9
 from .professional_governance import audit_engines, enforce_final_authority
 from .professional_opportunity import consolidate, enrich_engine
@@ -104,6 +105,14 @@ class ProductionPipeline:
             recovery["e9_exception"] = str(exc)
             recovered = _dict_result("E9", enrich_opportunity("E9", recovery, snapshot))
             e9 = EngineResult(recovered.engine_id, recovered.name, recovered.gate_passed, recovered.score, enrich_engine("E9", recovered.output), recovered.reason_codes)
+
+        # Nine-brain opportunity synthesis is advisory. It exposes a conditional
+        # profit path even when execution is blocked, but it can never authorize
+        # execution independently of E8 economics and E9 final authority.
+        profit_opportunity = synthesize_profit_opportunity({**results, "E9": e9})
+        e9_output = dict(e9.output)
+        e9_output["profit_opportunity"] = profit_opportunity
+        e9 = EngineResult(e9.engine_id, e9.name, e9.gate_passed, e9.score, e9_output, e9.reason_codes)
         results["E9"] = e9
 
         governance = audit_engines(results)
@@ -140,6 +149,7 @@ class ProductionPipeline:
             "wait_bars": 0,
             "decision_reasons": list(e9.reason_codes),
             "opportunity_radar": radar,
+            "profit_opportunity": e9.output.get("profit_opportunity"),
             "opportunity_summary": {e: {"direction": results[e].output.get("opportunity_direction"), "state": results[e].output.get("opportunity_state"), "stage": results[e].output.get("opportunity_stage"), "score": results[e].output.get("opportunity_score"), "next_event": results[e].output.get("opportunity_next_event")} for e in ENGINE_ORDER},
         }
         return DecisionResult(str(snapshot.get("symbol") or "UNKNOWN"), str(snapshot.get("timeframe") or "M5"), decision, approved, e9.score, engines, risk, tuple(e9.reason_codes))
