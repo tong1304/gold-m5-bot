@@ -64,17 +64,21 @@ def _scalarize(value: Any) -> str:
 
 
 def _prepare_e9_boundary(results: dict[str, EngineResult]) -> None:
-    e4 = results.get("E4")
-    if not e4 or not isinstance(e4.output, dict):
-        return
-    output = dict(e4.output)
-    for key in ("event", "auction_event", "liquidity_event"):
-        value = output.get(key)
-        if isinstance(value, (dict, list, tuple, set)):
-            output.setdefault("event_detail", value)
-            output[key] = _scalarize(value)
-    output = harden_engine("E4", output)
-    results["E4"] = EngineResult(e4.engine_id, e4.name, e4.gate_passed, e4.score, output, e4.reason_codes)
+    """Expose only current evidence to E9; preserve future failure rules separately."""
+    for engine_id, engine in tuple(results.items()):
+        if not engine or not isinstance(engine.output, dict):
+            continue
+        output = harden_engine(engine_id, dict(engine.output))
+        # E9 must never interpret a catalogue of future invalidation conditions as
+        # current evidence. The full catalogue remains auditable in the separate field.
+        output["invalidations"] = list(output.get("active_invalidations") or [])
+        if engine_id == "E4":
+            for key in ("event", "auction_event", "liquidity_event"):
+                value = output.get(key)
+                if isinstance(value, (dict, list, tuple, set)):
+                    output.setdefault("event_detail", value)
+                    output[key] = _scalarize(value)
+        results[engine_id] = EngineResult(engine.engine_id, engine.name, engine.gate_passed, engine.score, output, engine.reason_codes)
 
 
 class ProductionPipeline:
