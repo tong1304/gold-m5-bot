@@ -144,6 +144,7 @@ def analyze_e1_professional_v14(bars):
     else: state, transition, phase = "UNCLEAR", "WATCH", "TRANSITION_WATCH"
     volatility = "EXPANDING" if atr/atr50 > 1.20 else "CONTRACTING" if atr/atr50 < .78 else "NORMAL"
     support = min(1.0,.45*long_cons+.30*long_persist+.25*st["quality"]) if dominant in DIRECTIONS else 0.0; stability = min(1.0,.50*persistence+.50*float(structural_persist)); confidence = min(1.0,.55*support+.25*stability+.20*(1-counter_strength)) if dominant in DIRECTIONS else 0.0
+    counter_pressure = "PULLBACK_WITHIN_TREND" if dominant in DIRECTIONS and recent == counter_dir and sd == dominant else counter_dir if items != ["NO_MATERIAL_COUNTER_EVIDENCE"] else "NONE"
     reasons = (["COUNTER_TREND_STRUCTURE_CANNOT_AUTO_FLIP_STATE"] if align=="COUNTER_TREND" else []) + (["SINGLE_COUNTER_MOVE_CANNOT_COMMIT_TRANSITION"] if dominant in DIRECTIONS and recent == counter_dir and not transition_confirmed else []) + [f"DOMINANT_BASIS={basis}","DATA_INTEGRITY_VALIDATED","EMA_AS_CONTEXT_NOT_AUTHORITY"] + (["LONG_HORIZON_PERSISTENCE_CONFIRMED"] if persistent_long else []) + (["VOLATILITY_COMPRESSION_DETECTED"] if volatility=="CONTRACTING" else []) + (["PERSISTENT_STRUCTURAL_REPRICING_CONFIRMED"] if transition_confirmed else ["TRANSITION_REQUIRES_PERSISTENT_REPRICING"])
     obs = [f"valid_candles={len(good)}",f"invalid_candles={bad}",f"ema20_vs_ema50={ema}",f"ema_gap_atr={ema_gap:.3f}"] + [f"price_slope_{n}_atr={s:.3f}" for n,s in zip(ns,slopes)] + [f"multi_horizon={','.join(states)}",f"directional_consensus={consensus:.3f}",f"long_horizon_direction={long_dir}",f"long_horizon_consensus={long_cons:.3f}",f"long_horizon_persistence={long_persist:.3f}"]
     thesis_dir = dominant if dominant in DIRECTIONS else pressure if pressure in DIRECTIONS else "NEUTRAL"
@@ -151,7 +152,7 @@ def analyze_e1_professional_v14(bars):
     return {
         "question":QUESTION,"reasoning_role":"MARKET_STATE_ANALYST","trade_decision_authority":False,"decision_authority":"E9_ONLY","architecture":"E1_SINGLE_PROFESSIONAL_BRAIN_V14",
         "market_state":state,"trend_state":dominant if dominant in DIRECTIONS else "NONE","volatility_state":volatility,"structure_state":st["state"],"structure_quality":st["quality"],"structure_alignment":align,
-        "directional_pressure":pressure,"current_pressure":recent,"counter_pressure":counter_dir if items != ["NO_MATERIAL_COUNTER_EVIDENCE"] else "NONE","dominant_direction":dominant,"directional_state":state,"market_phase":phase,
+        "directional_pressure":pressure,"current_pressure":recent,"counter_pressure":counter_pressure,"dominant_direction":dominant,"directional_state":state,"market_phase":phase,
         "transition":transition,"transition_status":transition,"transition_confirmed":transition_confirmed,"transition_committed":transition_confirmed,"structural_persistence":structural_persist,"confidence":confidence,"evidence_strength":confidence,
         "observations":obs,"evidence":obs,"reasons":reasons,"reason_codes":reasons,"conflicts":items if items != ["NO_MATERIAL_COUNTER_EVIDENCE"] else [],
         "counter_evidence":{"direction":counter_dir,"strength":counter_strength,"items":items},"transition_commitment":{"required":dominant in DIRECTIONS,"confirmed":transition_confirmed,"missing":missing},
