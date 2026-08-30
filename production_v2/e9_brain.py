@@ -6,8 +6,8 @@ from .contracts import EngineResult
 
 NAME = "Master Decision Brain"
 QUESTION = "Who controls the auction, where is liquidity, and should this trade be taken after reconciling all evidence?"
-ARCHITECTURE = "E9_MASTER_DECISION_MARKET_CONTROL_V54"
-VERSION = "54.0"
+ARCHITECTURE = "E9_MASTER_DECISION_MARKET_CONTROL_V55"
+VERSION = "55.0"
 DIRECTIONS = {"BUY", "SELL"}
 
 HARD_CONFLICT_CODES = {
@@ -17,6 +17,7 @@ HARD_CONFLICT_CODES = {
     "STRUCTURE_INVALIDATED", "BULLISH_STRUCTURE_INVALIDATED", "BEARISH_STRUCTURE_INVALIDATED",
     "E3_STRUCTURE_INVALIDATED", "E3_THESIS_INVALIDATED",
 }
+
 ECONOMIC_BLOCKERS = {
     "INVALID_TRADE_GEOMETRY", "INVALID_RISK_GEOMETRY", "RISK_GEOMETRY_INVALID",
     "REAL_RR_BELOW_MINIMUM", "EXECUTION_COST_TOO_HIGH", "STRUCTURAL_SURVIVAL_NOT_PROVEN",
@@ -25,6 +26,7 @@ ECONOMIC_BLOCKERS = {
     "PROBABILITY_EDGE_NOT_TRUSTWORTHY", "NO_USABLE_STRUCTURAL_TARGET",
     "RISK_QUALITY_BELOW_DECISION_THRESHOLD",
 }
+
 BLOCKER_PRIORITY = (
     "THESIS_INVALIDATED", "E6_THESIS_INVALIDATED", "E7_CONFIRMATION_INVALIDATED",
     "E8_RISK_INVALIDATED", "E3_STRUCTURE_INVALIDATED", "STRUCTURE_INVALIDATED",
@@ -37,9 +39,11 @@ BLOCKER_PRIORITY = (
     "PROBABILITY_EDGE_NOT_TRUSTWORTHY", "NO_USABLE_STRUCTURAL_TARGET", "ENTRY_CONFIRMATION_NOT_PROVEN",
     "SETUP_NOT_MATURE", "RISK_NOT_READY", "RISK_QUALITY_BELOW_DECISION_THRESHOLD", "DIRECTION_UNRESOLVED",
 )
+
 CONFIRMATION_PROVEN = {"PROVEN", "CONFIRMED", "VALIDATED", "TRADE_READY"}
 MATURITY_READY = {"MATURE", "TRADE_READY", "VALIDATED", "CONFIRMED"}
 RISK_READY_STATES = {"READY", "RISK_READY", "ECONOMICALLY_ACCEPTABLE", "TRADE_READY", "VALIDATED", "PASS", "PASSED", "COMPLETE"}
+TERMINAL_AUCTION = {"CONFIRMED", "TERMINALLY_CONFIRMED", "RECLAIMED"}
 
 
 def _out(engine: EngineResult | None) -> dict[str, Any]:
@@ -226,113 +230,107 @@ def _first(output: dict[str, Any], keys: tuple[str, ...], default: Any = "UNKNOW
     return default
 
 
-def _market_control(upstream: dict[str, EngineResult], e6: dict[str, Any], direction: str) -> dict[str, Any]:
-    """Synthesize market-control from upstream evidence only; never invent an auction event."""
-    e1 = _out(upstream.get("E1")); e3 = _out(upstream.get("E3")); e4 = _out(upstream.get("E4")); e5 = _out(upstream.get("E5"))
-    e2 = _out(upstream.get("E2")); e7 = _out(upstream.get("E7"))
+def _market_control(upstream: dict[str, EngineResult], e6: dict[str, Any]) -> dict[str, Any]:
+    """Build an auditable owner-of-auction view from E1-E8 only; never invent an event."""
+    e1 = _out(upstream.get("E1"))
+    e2 = _out(upstream.get("E2"))
+    e3 = _out(upstream.get("E3"))
+    e4 = _out(upstream.get("E4"))
+    e5 = _out(upstream.get("E5"))
+    e7 = _out(upstream.get("E7"))
+    e8 = _out(upstream.get("E8"))
 
-    e4_event = _first(e4, ("event", "auction_event", "liquidity_event"), "NONE")
+    event = _first(e4, ("event", "auction_event", "liquidity_event"), "NONE")
     taker = _first(e4, ("liquidity_taker", "taker", "auction_taker"), "UNKNOWN")
     responder = _first(e4, ("response_actor", "responder", "auction_responder"), "UNKNOWN")
     auction_state = _first(e4, ("auction_state", "state"), "UNKNOWN")
     liquidity_type = _first(e4, ("liquidity_type",), "UNKNOWN")
-    liquidity_level = _first(e4, ("event_level", "liquidity_level", "level"), None)
+    level = _first(e4, ("event_level", "liquidity_level", "level"), None)
     liquidity_quality = _first(e4, ("liquidity_quality",), None)
     auction_quality = _first(e4, ("auction_quality",), None)
+    repricing_state = _first(e5, ("repricing_state", "repricing_direction", "value_response"), "UNKNOWN")
 
-    repricing = _first(e5, ("repricing_state", "repricing_direction", "value_response"), "UNKNOWN")
-    structural_direction = _direction(e3.get("structure_direction"), e3.get("external_state"), e3.get("internal_state"), e3.get("finding"))
     market_direction = _direction(e1.get("market_state"), e1.get("trend_state"), e1.get("pressure"), e1.get("structure"), e1.get("finding"))
+    structure_direction = _direction(e3.get("structure_direction"), e3.get("external_state"), e3.get("internal_state"), e3.get("finding"))
     setup_direction = _direction(e6.get("direction"), e6.get("direction_thesis"), e6.get("selected_direction"), e6.get("finding"))
-
-    side_votes = [x for x in (market_direction, structural_direction, setup_direction) if x in DIRECTIONS]
-    if side_votes:
-        buy_votes = side_votes.count("BUY")
-        sell_votes = side_votes.count("SELL")
-        dominant_side = "BUY" if buy_votes > sell_votes else "SELL" if sell_votes > buy_votes else "CONFLICTED"
-    else:
+    votes = [x for x in (market_direction, structure_direction, setup_direction) if x in DIRECTIONS]
+    buy_votes = votes.count("BUY")
+    sell_votes = votes.count("SELL")
+    if not votes:
         dominant_side = "UNKNOWN"
+    elif buy_votes == sell_votes:
+        dominant_side = "CONFLICTED"
+    else:
+        dominant_side = "BUY" if buy_votes > sell_votes else "SELL"
+    consensus = round(max(buy_votes, sell_votes) / len(votes) * 100.0, 2) if votes else 0.0
 
     taker_side = _direction(taker)
     responder_side = _direction(responder)
     controlled_side = responder_side if taker_side in DIRECTIONS and responder_side in DIRECTIONS and taker_side != responder_side else "UNKNOWN"
     trapped_side = taker_side if controlled_side in DIRECTIONS else "UNKNOWN"
 
-    if "FAILED_BREAK" in _text(e4_event) and responder_side in DIRECTIONS:
-        intent = "LIQUIDITY_HUNT_REJECTED" if auction_state in {"CONFIRMED", "TERMINALLY_CONFIRMED", "RECLAIMED"} else "LIQUIDITY_TEST_PENDING"
-    elif auction_state in {"CONFIRMED", "TERMINALLY_CONFIRMED", "RECLAIMED"} and taker_side in DIRECTIONS:
+    if "FAILED_BREAK" in _text(event) and responder_side in DIRECTIONS:
+        intent = "LIQUIDITY_HUNT_REJECTED" if auction_state in TERMINAL_AUCTION else "LIQUIDITY_TEST_PENDING"
+    elif auction_state in TERMINAL_AUCTION and taker_side in DIRECTIONS:
         intent = "AUCTION_CONFIRMED"
     elif taker_side in DIRECTIONS:
         intent = "LIQUIDITY_INTERACTION_PENDING"
     else:
         intent = "UNRESOLVED"
 
-    if _text(repricing) in {"ACCEPTANCE_ABOVE_VALUE", "ABOVE_VALUE", "UP", "BULLISH"}:
-        repricing_direction = "UP"
-    elif _text(repricing) in {"ACCEPTANCE_BELOW_VALUE", "BELOW_VALUE", "DOWN", "BEARISH"}:
-        repricing_direction = "DOWN"
-    else:
-        repricing_direction = "UNKNOWN"
-
-    agreement = 0.0
-    if side_votes:
-        agreement = round(max(side_votes.count("BUY"), side_votes.count("SELL")) / len(side_votes) * 100.0, 2)
-    evidence_count = sum(bool(x not in (None, "", "UNKNOWN", "NONE")) for x in (e4_event, taker, responder, repricing, structural_direction, market_direction))
+    r = _text(repricing_state)
+    repricing_direction = "UP" if r in {"ACCEPTANCE_ABOVE_VALUE", "ABOVE_VALUE", "UP", "BULLISH"} else "DOWN" if r in {"ACCEPTANCE_BELOW_VALUE", "BELOW_VALUE", "DOWN", "BEARISH"} else "UNKNOWN"
     confirmation = _confirmation_state(e7)
-
-    if auction_state in {"CONFIRMED", "TERMINALLY_CONFIRMED", "RECLAIMED"} and controlled_side in DIRECTIONS:
-        control_state = "CONFIRMED"
-    elif taker_side in DIRECTIONS or e4_event not in (None, "", "UNKNOWN", "NONE"):
-        control_state = "PENDING"
-    else:
-        control_state = "UNRESOLVED"
-
-    strength_parts = [agreement, float(liquidity_quality) if isinstance(liquidity_quality, (int, float)) else 0.0, float(auction_quality) if isinstance(auction_quality, (int, float)) else 0.0]
-    control_strength = round(sum(strength_parts) / 3.0 if evidence_count else 0.0, 2)
+    control_state = "CONFIRMED" if auction_state in TERMINAL_AUCTION and controlled_side in DIRECTIONS else "PENDING" if event not in {None, "", "UNKNOWN", "NONE"} or taker_side in DIRECTIONS else "UNRESOLVED"
+    evidence_count = sum(x not in (None, "", "UNKNOWN", "NONE") for x in (event, taker, responder, repricing_state, market_direction, structure_direction))
+    numeric = [float(x) for x in (liquidity_quality, auction_quality) if isinstance(x, (int, float))]
+    control_strength = round((consensus + sum(numeric)) / (1 + len(numeric)), 2) if evidence_count else 0.0
 
     reasons = ["E9_MARKET_CONTROL_SYNTHESIS", "UPSTREAM_EVIDENCE_ONLY", "NO_INVENTED_AUCTION"]
-    if auction_state not in {"CONFIRMED", "TERMINALLY_CONFIRMED", "RECLAIMED"}:
+    if auction_state not in TERMINAL_AUCTION:
         reasons.append("AUCTION_CONFIRMATION_PENDING")
     if confirmation != "PROVEN":
         reasons.append("ENTRY_CONFIRMATION_NOT_PROVEN")
     if dominant_side == "CONFLICTED":
         reasons.append("DIRECTIONAL_CONTROL_CONFLICT")
+    if controlled_side == "UNKNOWN":
+        reasons.append("CONTROL_OWNER_NOT_PROVEN")
 
     return {
         "market_intent": intent,
         "dominant_side": dominant_side,
         "controlled_side": controlled_side,
         "trapped_side": trapped_side,
-        "liquidity_target": liquidity_level,
+        "liquidity_target": level,
         "liquidity_type": liquidity_type,
         "liquidity_taker": taker,
         "response_actor": responder,
-        "auction_event": e4_event,
+        "auction_event": event,
         "auction_state": auction_state,
         "auction_quality": auction_quality,
         "liquidity_quality": liquidity_quality,
         "repricing_direction": repricing_direction,
-        "repricing_state": repricing,
+        "repricing_state": repricing_state,
         "market_direction": market_direction,
-        "structure_direction": structural_direction,
+        "structure_direction": structure_direction,
         "setup_direction": setup_direction,
-        "direction_consensus": agreement,
+        "direction_consensus": consensus,
         "control_strength": control_strength,
         "control_state": control_state,
         "confirmation_state": confirmation,
         "evidence_count": evidence_count,
         "evidence_sources": ["E1", "E2", "E3", "E4", "E5", "E6", "E7", "E8"],
-        "evidence_basis": {"E1": market_direction, "E2": _first(e2, ("finding", "regime", "opportunity"), "UNKNOWN"), "E3": structural_direction, "E4": e4_event, "E5": repricing, "E6": setup_direction, "E7": confirmation, "E8": _first(_out(upstream.get("E8")), ("risk_state", "economic_state"), "UNKNOWN")},
+        "evidence_basis": {"E1": market_direction, "E2": _first(e2, ("finding", "regime", "opportunity"), "UNKNOWN"), "E3": structure_direction, "E4": event, "E5": repricing_state, "E6": setup_direction, "E7": confirmation, "E8": _first(e8, ("risk_state", "economic_state"), "UNKNOWN")},
         "reason_codes": reasons,
         "authority": "E9",
+        "authority_scope": "MARKET_CONTROL_SYNTHESIS_AND_FINAL_DECISION",
     }
 
 
 def _invalidation_lifecycle(conflicts: list[str], confirmation: str, economic: list[str], maturity: str) -> dict[str, Any]:
     if conflicts:
         state = "INVALIDATED" if any("INVALIDAT" in c for c in conflicts) else "CONFLICTED"
-        event = "HARD_INVALIDATION" if state == "INVALIDATED" else "HARD_CONFLICT"
-        return {"state": state, "event": event, "active": True, "recovery": "NEW_CLOSED_CANDLE_MUST_RESOLVE_THE_DECISIVE_CONFLICT"}
+        return {"state": state, "event": "HARD_INVALIDATION" if state == "INVALIDATED" else "HARD_CONFLICT", "active": True, "recovery": "NEW_CLOSED_CANDLE_MUST_RESOLVE_THE_DECISIVE_CONFLICT"}
     if confirmation == "INVALIDATED":
         return {"state": "INVALIDATED", "event": "CONFIRMATION_INVALIDATED", "active": True, "recovery": "E7_MUST_REBUILD_AND_REPROVE_SETUP_CONFIRMATION"}
     if economic:
@@ -370,23 +368,20 @@ def _resolve(direction: str, setup: str, thesis: str, e6: dict[str, Any], e7: di
     all_pass = direction_ready and setup_ready and confirmation_ready and risk_ready and not conflicts and not economic
 
     if all_pass:
-        decision, decision_state = direction, "EXECUTE"
-        master_state = "EXECUTE"
+        decision, decision_state, master_state = direction, "EXECUTE", "EXECUTE"
         thesis_state, setup_state = "ESTABLISHED", "TRADE_READY"
         confirmation_final, risk_final, execution_state = "PROVEN", "READY", "READY"
         next_event = "NONE"
     elif conflicts:
-        decision, decision_state = "NO_TRADE", "REJECT"
-        master_state = "REJECTED_HARD_CONFLICT"
+        decision, decision_state, master_state = "NO_TRADE", "REJECT", "REJECTED_HARD_CONFLICT"
         thesis_state = "INVALIDATED" if any("INVALIDAT" in c for c in conflicts) else "CONFLICTED"
         setup_state = confirmation_final = risk_final = execution_state = "BLOCKED"
         next_event = lifecycle["recovery"]
     else:
-        decision, decision_state = "NO_TRADE", "WAIT_FOR_PROOF"
-        master_state = "WAIT_FOR_PROOF"
+        decision, decision_state, master_state = "NO_TRADE", "WAIT_FOR_PROOF", "WAIT_FOR_PROOF"
         thesis_state = "ESTABLISHED" if direction_ready and setup_known else "UNRESOLVED"
         setup_state = "TRADE_READY" if setup_ready else (maturity if maturity not in {"", "UNKNOWN", "UNRESOLVED", "NONE"} else "FORMING") if setup_known else "UNRESOLVED"
-        confirmation_final = "PROVEN" if confirmation_ready else confirmation if confirmation == "INVALIDATED" else "PENDING"
+        confirmation_final = "PROVEN" if confirmation_ready else "PENDING"
         risk_final = "READY" if risk_ready else "BLOCKED"
         execution_state = "BLOCKED"
         next_event = {
@@ -399,48 +394,31 @@ def _resolve(direction: str, setup: str, thesis: str, e6: dict[str, Any], e7: di
             next_event = lifecycle["recovery"]
 
     return {
-        "decision": decision,
-        "decision_state": decision_state,
-        "master_state": master_state,
-        "thesis_state": thesis_state,
-        "setup_state": setup_state,
-        "confirmation_state": confirmation_final,
-        "risk_state": risk_final,
-        "execution_state": execution_state,
-        "primary_blocker": primary,
-        "secondary_blockers": [c for c in blockers if c != primary],
-        "next_required_event": next_event,
-        "all_gates_pass": all_pass,
-        "hard_conflict": bool(conflicts),
-        "resolved_conflicts": conflicts,
-        "counter_evidence": [],
-        "direction": direction,
-        "setup": setup,
-        "thesis": thesis,
-        "e6_maturity": maturity,
-        "e6_identity_resolved": direction_ready and setup_known,
+        "decision": decision, "decision_state": decision_state, "master_state": master_state,
+        "thesis_state": thesis_state, "setup_state": setup_state, "confirmation_state": confirmation_final,
+        "risk_state": risk_final, "execution_state": execution_state, "primary_blocker": primary,
+        "secondary_blockers": [c for c in blockers if c != primary], "next_required_event": next_event,
+        "all_gates_pass": all_pass, "hard_conflict": bool(conflicts), "resolved_conflicts": conflicts,
+        "counter_evidence": [], "direction": direction, "setup": setup, "thesis": thesis,
+        "e6_maturity": maturity, "e6_identity_resolved": direction_ready and setup_known,
         "e6_maturity_known": maturity not in {"", "UNKNOWN", "UNRESOLVED", "NONE"},
-        "e7_confirmation": confirmation,
-        "e7_trigger_observed": trigger,
-        "e8_risk_state": risk_state,
-        "e8_plan_valid": _plan_valid(plan, direction),
-        "e8_economic_blockers": economic,
-        "trade_plan": plan if _plan_valid(plan, direction) else {},
-        "invalidation_lifecycle": lifecycle,
-        "authority": {"thesis": "E6", "confirmation": "E7", "economics_risk": "E8", "final_decision": "E9"},
+        "e7_confirmation": confirmation, "e7_trigger_observed": trigger, "e8_risk_state": risk_state,
+        "e8_plan_valid": _plan_valid(plan, direction), "e8_economic_blockers": economic,
+        "trade_plan": plan if _plan_valid(plan, direction) else {}, "invalidation_lifecycle": lifecycle,
+        "authority": {"thesis": "E6", "confirmation": "E7", "economics_risk": "E8", "market_control": "E9", "final_decision": "E9"},
         "resolution_order": ["THESIS_IDENTITY", "MARKET_CONTROL", "HARD_CONFLICT", "SETUP_MATURITY", "CONFIRMATION", "RISK_ECONOMICS", "EXECUTION"],
     }
 
 
 def analyze_e9(snapshot: dict[str, Any], upstream: dict[str, EngineResult]) -> EngineResult:
-    """E9 is the market-control master: synthesize upstream auction evidence, then arbitrate execution."""
+    """E9 master: determine market-control from evidence, then arbitrate final execution."""
     del snapshot
     e6 = _out(upstream.get("E6"))
     e7 = _out(upstream.get("E7"))
     e8 = upstream.get("E8")
     direction, setup, thesis = _e6_identity(e6)
     resolved = _resolve(direction, setup, thesis, e6, e7, e8, upstream)
-    market_control = _market_control(upstream, e6, direction)
+    market_control = _market_control(upstream, e6)
 
     readiness_score = round(sum((
         25.0 if direction in DIRECTIONS else 0.0,
@@ -468,26 +446,43 @@ def analyze_e9(snapshot: dict[str, Any], upstream: dict[str, EngineResult]) -> E
         "execution": {"state": resolved["execution_state"], "decision_state": resolved["decision_state"]},
         "confirmation": {"state": resolved["confirmation_state"], "trigger_observed": resolved["e7_trigger_observed"]},
         "risk": {"state": resolved["risk_state"], "economic_blockers": resolved["e8_economic_blockers"]},
-        "invalidation": lifecycle,
-        "conflicts": resolved["resolved_conflicts"],
+        "invalidation": lifecycle, "conflicts": resolved["resolved_conflicts"],
         "hard_invalidations": [c for c in resolved["resolved_conflicts"] if "INVALIDAT" in c],
-        "primary_blocker": resolved["primary_blocker"],
-        "next_required_event": resolved["next_required_event"],
-        "closed_candle_only": True,
-        "no_lookahead": True,
-        "authority": resolved["authority"],
+        "primary_blocker": resolved["primary_blocker"], "next_required_event": resolved["next_required_event"],
+        "closed_candle_only": True, "no_lookahead": True, "authority": resolved["authority"],
     }
 
     reason_codes = _dedupe(
         ([resolved["primary_blocker"]] if resolved["primary_blocker"] != "NONE" else ["MASTER_GATES_PASSED"])
-        + resolved["secondary_blockers"]
-        + resolved["resolved_conflicts"]
-        + market_control["reason_codes"]
+        + resolved["secondary_blockers"] + resolved["resolved_conflicts"] + market_control["reason_codes"]
         + (["E9_HARD_CONFLICT"] if resolved["hard_conflict"] else [])
     )
 
+    # Flatten the market-control contract for Telegram/report consumers.
+    # The nested market_control object remains the canonical structured payload.
+    report_fields = {
+        "market_intent": market_control["market_intent"],
+        "dominant_side": market_control["dominant_side"],
+        "controlled_side": market_control["controlled_side"],
+        "trapped_side": market_control["trapped_side"],
+        "liquidity_target": market_control["liquidity_target"],
+        "repricing_direction": market_control["repricing_direction"],
+        "repricing_state": market_control["repricing_state"],
+        "control_strength": market_control["control_strength"],
+        "control_state": market_control["control_state"],
+        "liquidity_taker": market_control["liquidity_taker"],
+        "response_actor": market_control["response_actor"],
+        "auction_event": market_control["auction_event"],
+        "auction_state": market_control["auction_state"],
+        "liquidity_type": market_control["liquidity_type"],
+        "auction_quality": market_control["auction_quality"],
+        "liquidity_quality": market_control["liquidity_quality"],
+        "direction_consensus": market_control["direction_consensus"],
+    }
+
     output = {
         **resolved,
+        **report_fields,
         "market_control": market_control,
         "master_resolution": "EXECUTE" if resolved["all_gates_pass"] else "REJECT" if resolved["decision_state"] == "REJECT" else "WAIT_FOR_PROOF",
         "readiness_score": readiness_score,
@@ -505,6 +500,7 @@ def analyze_e9(snapshot: dict[str, Any], upstream: dict[str, EngineResult]) -> E
             "E9_does_not_override_E8_economics": True,
             "E9_synthesizes_market_control_from_upstream_only": True,
             "E9_does_not_invent_liquidity_events": True,
+            "E9_market_control_is_reportable_at_top_level": True,
             "closed_candle_only": True,
             "counter_evidence_does_not_equal_hard_conflict": True,
             "master_state_machine": True,
