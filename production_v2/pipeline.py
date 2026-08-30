@@ -12,6 +12,7 @@ from .e6_brain import analyze_e6
 from .e7_brain import analyze_e7
 from .e8_brain import analyze_e8
 from .e9_brain import analyze_e9
+from .nine_brain_surgery import harden_engine
 from .opportunity_layer import enrich_opportunity, recover_e9
 from .professional_governance import audit_engines, enforce_final_authority
 from .professional_opportunity import consolidate, enrich_engine
@@ -50,6 +51,7 @@ def _dict_result(engine_id: str, output: dict[str, Any]) -> EngineResult:
 def _enrich(engine_id: str, result: EngineResult, snapshot: dict[str, Any]) -> EngineResult:
     output = enrich_opportunity(engine_id, result.output, snapshot)
     output = enrich_engine(engine_id, output)
+    output = harden_engine(engine_id, output)
     return EngineResult(result.engine_id, result.name, result.gate_passed, result.score, output, result.reason_codes)
 
 
@@ -71,6 +73,7 @@ def _prepare_e9_boundary(results: dict[str, EngineResult]) -> None:
         if isinstance(value, (dict, list, tuple, set)):
             output.setdefault("event_detail", value)
             output[key] = _scalarize(value)
+    output = harden_engine("E4", output)
     results["E4"] = EngineResult(e4.engine_id, e4.name, e4.gate_passed, e4.score, output, e4.reason_codes)
 
 
@@ -103,14 +106,15 @@ class ProductionPipeline:
             recovery["e9_exception_type"] = type(exc).__name__
             recovery["e9_exception"] = str(exc)
             recovered = _dict_result("E9", enrich_opportunity("E9", recovery, snapshot))
-            e9 = EngineResult(recovered.engine_id, recovered.name, recovered.gate_passed, recovered.score, enrich_engine("E9", recovered.output), recovered.reason_codes)
+            recovered_output = harden_engine("E9", enrich_engine("E9", recovered.output))
+            e9 = EngineResult(recovered.engine_id, recovered.name, recovered.gate_passed, recovered.score, recovered_output, recovered.reason_codes)
         results["E9"] = e9
 
         governance = audit_engines(results)
         decision, approved, governance_reasons = enforce_final_authority(e9.output, governance)
         if governance_reasons:
             merged_reasons = tuple(dict.fromkeys((*e9.reason_codes, *governance_reasons)))
-            e9_output = dict(e9.output)
+            e9_output = harden_engine("E9", dict(e9.output))
             e9_output["governance"] = governance
             e9_output["decision"] = decision
             e9_output["execution"] = "APPROVED" if approved else "BLOCKED"
