@@ -4,14 +4,19 @@ from typing import Any
 
 ENGINE_ORDER = ("E1", "E2", "E3", "E4", "E5", "E6", "E7", "E8", "E9")
 
-# Governance is a read-only contract. It never creates market evidence and never
-# grants trade authority to E1-E8.
+# Governance is read-only: it classifies evidence and enforces final authority.
+# It never creates market evidence and never grants trade authority to E1-E8.
 HARD_BLOCKER_KEYS = (
     "hard_veto",
     "hard_vetoes",
     "vetoes",
     "blocking_reasons",
+    "invalidations",
 )
+PENDING_STATES = {
+    "PENDING", "UNRESOLVED", "VALIDATING", "FORMING", "BLOCKED",
+    "WAIT_FOR_PROOF", "INSUFFICIENT_PROOF", "NOT_READY", "UNKNOWN",
+}
 
 
 def _output(results: dict[str, Any], engine: str) -> dict[str, Any]:
@@ -49,14 +54,29 @@ def _engine_blockers(engine: str, output: dict[str, Any]) -> list[str]:
         blockers.extend(_items(output.get(key)))
 
     status = str(_first(output, "status", "analysis_status", "state") or "").upper()
-    if status in {"UNAVAILABLE", "INCOMPLETE", "INSUFFICIENT_DATA", "ERROR"}:
+    if status in {"UNAVAILABLE", "INCOMPLETE", "INSUFFICIENT_DATA", "ERROR", "INVALIDATED"}:
         blockers.append(f"{engine}_{status}")
 
-    gate = output.get("gate_passed")
-    if gate is False:
-        blockers.append(f"{engine}_GATE_FAILED")
+    # A failed gate is not automatically a hard conflict. Specialist brains
+    # routinely fail their local gate while waiting for proof from the next
+    # closed candle. Explicit hard-veto evidence remains authoritative.
+    explicit_hard = output.get("hard_veto") is True or bool(_items(output.get("hard_vetoes")))
+    if output.get("gate_passed") is False and explicit_hard:
+        blockers.append(f"{engine}_GATE_FAILED_HARD")
 
     return list(dict.fromkeys(blockers))
+
+
+def _pending_gate(engine: str, output: dict[str, Any], blockers: list[str]) -> bool:
+    if not output or blockers:
+        return False
+    gate = output.get("gate_passed")
+    if gate is False:
+        return True
+    status = str(_first(output, "analysis_status", "state", "confirmation_state", "risk_state") or "").upper()
+    if status in PENDING_STATES and engine in {"E2", "E4", "E6", "E7", "E8"}:
+        return True
+    return False
 
 
 def _missing(output: dict[str, Any]) -> list[str]:
@@ -90,7 +110,7 @@ def _confirmation(output: dict[str, Any]) -> bool:
         if output.get(key) is True:
             return True
     value = str(_first(output, "confirmation_state", "confirmation", "state") or "").upper()
-    return value in {"CONFIRMED", "VALID", "PASSED"}
+    return value in {"CONFIRMED", "VALID", "PASSED", "PROVEN", "TRADE_READY"}
 
 
 def _economics_valid(output: dict[str, Any]) -> bool:
@@ -108,6 +128,7 @@ def audit_engines(results: dict[str, Any]) -> dict[str, Any]:
     per_engine: dict[str, dict[str, Any]] = {}
     all_missing: list[str] = []
     all_blockers: list[str] = []
+    pending_gates: list[str] = []
     directions: dict[str, str] = {}
 
     for engine in ENGINE_ORDER:
@@ -116,9 +137,12 @@ def audit_engines(results: dict[str, Any]) -> dict[str, Any]:
         missing = _missing(output)
         direction = _direction(output)
         maturity = _maturity(output)
+        pending = _pending_gate(engine, output, blockers)
         directions[engine] = direction
         all_blockers.extend(f"{engine}:{x}" for x in blockers)
         all_missing.extend(f"{engine}:{x}" for x in missing)
+        if pending:
+            pending_gates.append(engine)
         per_engine[engine] = {
             "present": bool(output),
             "direction": direction,
@@ -127,48 +151,60 @@ def audit_engines(results: dict[str, Any]) -> dict[str, Any]:
             "confirmation_passed": _confirmation(output),
             "economics_valid": _economics_valid(output),
             "hard_blockers": list(dict.fromkeys(blockers)),
+            "pending_gate": pending,
             "missing_evidence": list(dict.fromkeys(missing)),
         }
 
     directional = {d for d in directions.values() if d in {"UP", "DOWN"}}
     if len(directional) > 1:
-        all_blockers.append("DIRECTIONAL_EVIDENCE_CONFLICT")
+        # A conflict is hard only when the authoritative structure/market-state
+        # brains explicitly invalidate one another. Pending specialist evidence
+        # is not itself a directional invalidation.
+        e1_direction = directions.get("E1")
+        e3_direction = directions.get("E3")
+        if e1_direction in {"UP", "DOWN"} and e3_direction in {"UP", "DOWN"} and e1_direction != e3_direction:
+            all_blockers.append("DIRECTIONAL_EVIDENCE_CONFLICT")
 
-    e3 = per_engine["E3"]
     e4 = per_engine["E4"]
     e7 = per_engine["E7"]
     e8 = per_engine["E8"]
 
     e3_output = _output(results, "E3")
     lifecycle = str(_first(e3_output, "structure_lifecycle", "lifecycle") or "").upper()
-    if "TRANSITION" in lifecycle or lifecycle == "INVALIDATED":
-        all_blockers.append("STRUCTURE_NOT_RESOLVED")
+    if lifecycle == "INVALIDATED":
+        all_blockers.append("STRUCTURE_INVALIDATED")
+    elif "TRANSITION" in lifecycle:
+        pending_gates.append("E3")
 
     if e4["auction_state"] in {"PENDING", "UNKNOWN", "INITIATIVE", "UNRESOLVED"}:
-        all_blockers.append("AUCTION_CONFIRMATION_PENDING")
+        pending_gates.append("E4")
 
     if not e7["confirmation_passed"]:
-        all_blockers.append("ENTRY_CONFIRMATION_NOT_PROVEN")
+        pending_gates.append("E7")
 
     if not e8["economics_valid"]:
         all_blockers.append("TRADE_ECONOMICS_NOT_VALID")
 
     all_blockers = list(dict.fromkeys(all_blockers))
     all_missing = list(dict.fromkeys(all_missing))
+    pending_gates = list(dict.fromkeys(pending_gates))
     hard_veto = bool(all_blockers)
 
     next_event: list[str] = []
-    for engine in ("E3", "E4", "E7", "E8"):
+    for engine in ("E2", "E3", "E4", "E6", "E7", "E8"):
         next_event.extend(per_engine[engine]["missing_evidence"])
+    if not next_event and pending_gates:
+        next_event.append("next closed candle must resolve the pending proof gates")
     if not next_event and hard_veto:
         next_event.append("resolve all hard blockers on a future closed candle")
 
-    maturity = "BLOCKED" if hard_veto else "READY_FOR_E9_AUTHORITY_CHECK"
+    maturity = "HARD_BLOCKED" if hard_veto else "PENDING_PROOF" if pending_gates else "READY_FOR_E9_AUTHORITY_CHECK"
     return {
-        "architecture": "NINE_BRAIN_PROFESSIONAL_GOVERNANCE_V1",
+        "architecture": "NINE_BRAIN_PROFESSIONAL_GOVERNANCE_V2",
         "engine_order": list(ENGINE_ORDER),
         "hard_veto": hard_veto,
         "hard_vetoes": all_blockers,
+        "pending_gates": pending_gates,
         "missing_evidence": all_missing,
         "next_required_event": list(dict.fromkeys(next_event)),
         "maturity": maturity,
@@ -176,6 +212,7 @@ def audit_engines(results: dict[str, Any]) -> dict[str, Any]:
         "per_engine": per_engine,
         "read_only": True,
         "e9_only_trade_authority": True,
+        "pending_is_not_hard_conflict": True,
     }
 
 
@@ -187,5 +224,11 @@ def enforce_final_authority(e9_output: dict[str, Any], audit: dict[str, Any]) ->
         reasons.append("NINE_BRAIN_GOVERNANCE_BLOCKED")
         return "NO_TRADE", False, list(dict.fromkeys(reasons))
     if requested not in {"BUY", "SELL"}:
+        return "NO_TRADE", False, list(dict.fromkeys(reasons))
+    if e9_output.get("all_gates_pass") is not True:
+        reasons.append("E9_ALL_GATES_NOT_PASSED")
+        return "NO_TRADE", False, list(dict.fromkeys(reasons))
+    if audit.get("pending_gates"):
+        reasons.append("NINE_BRAIN_PROOF_PENDING")
         return "NO_TRADE", False, list(dict.fromkeys(reasons))
     return requested, True, list(dict.fromkeys(reasons))
