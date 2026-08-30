@@ -3,7 +3,7 @@ from statistics import mean
 from typing import Any
 from .contracts import EngineResult
 
-NAME="Setup Brain"; QUESTION="What setup is forming, in what direction, and at what stage?"; ARCHITECTURE="E6_PROFESSIONAL_SETUP_FORMATION_BRAIN_V28"; VERSION="28.0"
+NAME="Setup Brain"; QUESTION="What setup is forming, in what direction, and at what stage?"; ARCHITECTURE="E6_PROFESSIONAL_SETUP_FORMATION_BRAIN_V29"; VERSION="29.0"
 MIN_BARS=60; ATR_PERIOD=14; MIN_SPACE_ATR=.75; MAX_EVENT_AGE_BARS=3
 SETUP_FAMILIES=("LIQUIDITY_REVERSAL","AUCTION_ACCEPTANCE_CONTINUATION","BREAKOUT_RETEST","TREND_PULLBACK","BREAKOUT","IMPULSE_CONTINUATION")
 LIFECYCLE=("ABSENT","FORMING","VALIDATING","MATURE","FAILED","INVALIDATED","EXPIRED")
@@ -59,17 +59,20 @@ def _direction(e1,e2,e3,e4):
         elif d!="NEUTRAL":c.append("E2_DIRECTION_DISAGREEMENT")
         else:d,src=e2d,"E2_CORROBORATION"
     return d,_dedupe(s),_dedupe(c),src
-def _candidates(d,a,e1,e3,e5):
+def _candidates(d,a,e1,e3,e5,primary_context):
     ev=a["event"]; trend=_norm(e1.get("trend_state",e1.get("finding"))); out=[]
-    def add(n,x,b,e):
-        if x in ("BUY","SELL"):out.append({"name":n,"direction":x,"base_quality":b,"evidence":e,"event_required":True})
-    if "FAILED_BREAK_RECLAIM" in ev or "SWEEP_REJECTION" in ev:add("LIQUIDITY_REVERSAL",a["direction"],82,["E4_LIQUIDITY_EVENT","E4_DIRECTIONAL_RESPONSE"])
-    if "ACCEPTANCE" in ev:add("AUCTION_ACCEPTANCE_CONTINUATION",a["direction"],76,["E4_ACCEPTANCE_EVENT","E4_AUCTION_RESPONSE"])
+    def add(n,x,b,e,priority="ALTERNATIVE"):
+        if x in ("BUY","SELL"):out.append({"name":n,"direction":x,"base_quality":b,"evidence":e,"event_required":True,"hypothesis_priority":priority})
+    if "FAILED_BREAK_RECLAIM" in ev or "SWEEP_REJECTION" in ev:
+        reversal=a["direction"]
+        priority="PRIMARY" if reversal==primary_context else "ALTERNATIVE"
+        add("LIQUIDITY_REVERSAL",reversal,82,["E4_LIQUIDITY_EVENT","E4_DIRECTIONAL_RESPONSE"],priority)
+    if "ACCEPTANCE" in ev:add("AUCTION_ACCEPTANCE_CONTINUATION",a["direction"],76,["E4_ACCEPTANCE_EVENT","E4_AUCTION_RESPONSE"],"PRIMARY" if a["direction"]==primary_context else "ALTERNATIVE")
     if any(z in ev for z in ("BREAKOUT_RETEST","BREAKOUT","BOS")) or _text(e3.get("bos",e3.get("break_of_structure"))) in {"BREAK","BOS","YES"}:
-        add("BREAKOUT_RETEST",d,72,["E3_BREAK_EVENT","E4_AUCTION_CONTEXT"]);add("BREAKOUT",d,68,["E3_BOS","E4_AUCTION_CONTEXT"])
-    if trend==d and "PULLBACK" in _text(e1.get("finding",e1.get("trend_state"))):add("TREND_PULLBACK",d,66,["E1_TREND_ALIGNMENT","E3_STRUCTURE"])
+        add("BREAKOUT_RETEST",d,72,["E3_BREAK_EVENT","E4_AUCTION_CONTEXT"],"PRIMARY" if d==primary_context else "ALTERNATIVE");add("BREAKOUT",d,68,["E3_BOS","E4_AUCTION_CONTEXT"],"PRIMARY" if d==primary_context else "ALTERNATIVE")
+    if trend==d and "PULLBACK" in _text(e1.get("finding",e1.get("trend_state"))):add("TREND_PULLBACK",d,66,["E1_TREND_ALIGNMENT","E3_STRUCTURE"],"PRIMARY")
     rp,vr=_text(e5.get("repricing_state")),_text(e5.get("value_response"))
-    if d in ("BUY","SELL") and ("REPRICING_STARTING" in rp or "ACCEPTED_ABOVE_VALUE" in vr or "ACCEPTED_BELOW_VALUE" in vr):add("IMPULSE_CONTINUATION",d,60,["E5_REPRICING_CONTEXT","E1_DIRECTIONAL_CONTEXT"])
+    if d in ("BUY","SELL") and ("REPRICING_STARTING" in rp or "ACCEPTED_ABOVE_VALUE" in vr or "ACCEPTED_BELOW_VALUE" in vr):add("IMPULSE_CONTINUATION",d,60,["E5_REPRICING_CONTEXT","E1_DIRECTIONAL_CONTEXT"],"PRIMARY" if d==primary_context else "ALTERNATIVE")
     return out
 def _evidence(src,statement,kind="SUPPORT",strength="MEDIUM"):return {"source":src,"kind":kind,"strength":strength,"statement":statement}
 def _identity(setup,d,e3,a,e5):
@@ -93,16 +96,22 @@ def analyze_e6(snapshot:dict[str,Any],upstream:dict[str,EngineResult])->EngineRe
                 if float(c[k])!=float(c[k]):raise ValueError
     except (KeyError,TypeError,ValueError):return _result("NO_SETUP","NONE","NEUTRAL","ABSENT","UNRESOLVED","Invalid closed-candle OHLC.",0,100,False,[],["INVALID_MARKET_DATA"],["valid_closed_candle_ohlc"],["provide valid closed-candle OHLC values"],["invalid_market_data"],[],[],{"selected_hypothesis":None},[_evidence("DATA","closed-candle OHLC validation failed","CONSTRAINT","HIGH")])
     e1,e2,e3,e4,e5=(_payload(upstream,n) for n in ("E1","E2","E3","E4","E5"));a=_auction(e4);d,ds,dc,src=_direction(e1,e2,e3,e4);opp=_text(e2.get("finding",e2.get("state"))) or "UNRESOLVED";struct,internal,external=_structure(e3);space=_num(e5.get("available_space_atr_long") if d=="BUY" else e5.get("available_space_atr_short"));location=bool(e5)
+    context_votes=[_norm(e1.get("directional_pressure",e1.get("pressure"))),internal,external];context_votes=[x for x in context_votes if x!="NEUTRAL"]
+    primary_context=max(set(context_votes),key=context_votes.count) if context_votes else "NEUTRAL";context_consensus=(context_votes.count(primary_context)/len(context_votes)) if context_votes else 0.0
     causal={"context":bool(e1),"event":bool(a["event"]),"response":a["terminal"] or _text(e4.get("response_actor")) not in {"","UNKNOWN","NONE"},"structure":not ("MIXED" in struct or "TRANSITION" in struct) and internal!="NEUTRAL" and external!="NEUTRAL"}; causal_count=sum(causal.values())
     contradictions=list(dc)
-    if "MIXED" in struct or "TRANSITION" in struct:contradictions+= ["STRUCTURE_CONFLICT"]
+    if "MIXED" in struct or "TRANSITION" in struct:contradictions+=["STRUCTURE_CONFLICT"]
     if a["pending"] and not a["terminal"]:contradictions+=["AUCTION_PENDING"]
     if not location:contradictions+=["LOCATION_CONFLICT"]
     if d in ("BUY","SELL") and space<MIN_SPACE_ATR:contradictions+=["SPACE_CONFLICT"]
     if internal!="NEUTRAL" and external!="NEUTRAL" and internal!=external:contradictions+=["STRUCTURE_INTERNAL_EXTERNAL_CONFLICT"]
-    contradictions=_dedupe(contradictions);cands=_candidates(d,a,e1,e3,e5);scored=[]
+    contradictions=_dedupe(contradictions);cands=_candidates(d,a,e1,e3,e5,primary_context);scored=[]
     for c in cands:
-        q=float(c["base_quality"]);sup=list(c["evidence"]);con=[];miss=[]
+        q=float(c["base_quality"]);sup=list(c["evidence"]);con=[];miss=[];counter_trend=c["direction"]!=primary_context and primary_context!="NEUTRAL"
+        if counter_trend:
+            q-=18;con.append("COUNTER_TREND_HYPOTHESIS")
+            if not a["terminal"]:q-=18;con.append("REVERSAL_REQUIRES_TERMINAL_AUCTION");miss.append("terminal_auction_confirmation")
+            if internal==primary_context or external==primary_context:q-=10;con.append("STRUCTURE_STILL_SUPPORTS_PRIMARY_CONTEXT");miss.append("structural_reversal_evidence")
         if c["direction"]!=d:q-=25;con.append("DIRECTION_MISMATCH")
         if a["terminal"]:q+=8
         else:q-=5;miss.append("terminal_auction_confirmation")
@@ -116,29 +125,22 @@ def analyze_e6(snapshot:dict[str,Any],upstream:dict[str,EngineResult])->EngineRe
             if x not in con:con.append(x)
         anti=causal_count>=3 and sum(causal.values())-int(causal["event"])>=2
         if not anti:q-=12;miss.append("independent_context_response_structure_support")
-        proof={"context":causal["context"],"event":causal["event"],"response":causal["response"],"structure":causal["structure"],"direction":c["direction"]==d and d!="NEUTRAL","location":location,"space":space>=MIN_SPACE_ATR,"freshness":a["age_bars"]<=MAX_EVENT_AGE_BARS}
-        scored.append({**c,"causal_score":round(max(0,min(100,q)),2),"supporting_evidence":_dedupe(sup),"counter_evidence":_dedupe(con),"missing_proof":_dedupe(miss),"proof_gates":proof,"causal_minimum":causal,"anti_overfit_pass":anti})
-    scored.sort(key=lambda x:(x["causal_score"],sum(bool(v) for v in x["proof_gates"].values())),reverse=True);sel=scored[0] if scored else None
+        proof={"context":causal["context"],"event":causal["event"],"response":causal["response"],"structure":causal["structure"],"direction":c["direction"]==d and d!="NEUTRAL","location":location,"space":space>=MIN_SPACE_ATR,"freshness":a["age_bars"]<=MAX_EVENT_AGE_BARS,"terminal_auction":a["terminal"] if counter_trend else True,"structural_reversal":not counter_trend or (internal!=primary_context and external!=primary_context)}
+        scored.append({**c,"causal_score":round(max(0,min(100,q)),2),"supporting_evidence":_dedupe(sup),"counter_evidence":_dedupe(con),"missing_proof":_dedupe(miss),"proof_gates":proof,"causal_minimum":causal,"anti_overfit_pass":anti,"context_role":"ALTERNATIVE" if counter_trend else "PRIMARY_CONTEXT_ALIGNED"})
+    def rank(c):
+        reversal_confirmed=c["direction"]!=primary_context and a["terminal"]
+        return (1 if c["direction"]==primary_context else (0 if not reversal_confirmed else 1),c["causal_score"],sum(bool(v) for v in c["proof_gates"].values()))
+    scored.sort(key=rank,reverse=True);sel=scored[0] if scored else None
     if not sel:return _result("NO_SETUP","NONE",d,"ABSENT","UNRESOLVED","No plausible setup survives causal screening.",10,65,False,ds,contradictions,["causal_setup_evidence"],["context + event + response + structure"],[],scored,[],{"selected_hypothesis":None},[])
-    setup=sel["name"];identity,identity_basis=_identity(setup,d,e3,a,e5);proof=sel["proof_gates"];rejected=[f"{x['name']}:OUTRANKED_BY_{setup}:SCORE_{x['causal_score']:.2f}" for x in scored[1:]]
-    explicit=(a["terminal"] and a["direction"] in ("BUY","SELL") and a["direction"]!=sel["direction"]) or "INVALIDATED" in _text(e3.get("state")) or "INVALIDATION" in _text(e3.get("finding"));stale=a["age_bars"]>MAX_EVENT_AGE_BARS
-    if stale:stage=mat="EXPIRED";q=min(sel["causal_score"],40);conf=30;thesis=f"{d} {setup} expired because its initiating event is stale."
-    elif explicit:stage=mat="INVALIDATED";q=min(sel["causal_score"],35);conf=25;thesis=f"{d} {setup} is invalidated by explicit opposing evidence."
-    elif all(proof.values()) and causal_count==4 and sel["anti_overfit_pass"] and not contradictions:stage=mat="MATURE";q=max(82,sel["causal_score"]);conf=min(96,80+sel["causal_score"]*.14);thesis=f"{d} {setup} is mature: context, event, response and structure form a coherent causal chain."
-    elif proof["direction"] and proof["event"] and proof["response"] and sel["anti_overfit_pass"]:stage=mat="VALIDATING";q=sel["causal_score"];conf=72;thesis=f"{d} {setup} is validating: the thesis is alive, but proof gates remain incomplete."
-    else:stage=mat="FORMING";q=sel["causal_score"];conf=62;thesis=f"{d} {setup} is forming: a plausible hypothesis exists, but its causal chain is incomplete."
-    sup=ds+sel["supporting_evidence"];con=contradictions+sel["counter_evidence"];miss=sel["missing_proof"];next_req=[]
-    if not proof["event"]:next_req.append("a causal setup event, not an isolated observation")
-    if not proof["response"]:next_req.append("closed-candle response to the event")
-    if not proof["structure"]:next_req.append("structure agreement or confirmed structural response")
-    if opp in {"UNRESOLVED","UNPROVEN","AMBIGUOUS"}:next_req.append("E2 opportunity acceptance/follow-through")
-    if space<MIN_SPACE_ATR and d in ("BUY","SELL"):next_req.append(f"structural space >= {MIN_SPACE_ATR:.2f} ATR")
-    if contradictions:next_req.append("resolve or absorb the active contradiction before maturity")
-    if setup=="LIQUIDITY_REVERSAL":inv=["closed-candle acceptance back through liquidity anchor","opposing confirmed auction response","protected structure breaks against reversal"]
-    elif setup in {"BREAKOUT","BREAKOUT_RETEST","AUCTION_ACCEPTANCE_CONTINUATION"}:inv=["closed-candle rejection back through acceptance/breakout anchor","failed follow-through","structure invalidates continuation"]
-    elif setup=="TREND_PULLBACK":inv=["trend no longer agrees with setup direction","protected structure breaks","pullback fails to continue"]
-    else:inv=["closed-candle structure invalidates directional thesis","opposing confirmed auction response"]
-    if a["level"]:inv.append(f"anchor_level={a['level']:.5f}")
-    ledger=[_evidence("E1",f"observation={_text(e1.get('finding')) or 'NONE'}","OBSERVATION","HIGH"),_evidence("E1",f"interpretation=direction={_norm(e1.get('directional_pressure',e1.get('pressure')))}","INTERPRETATION","MEDIUM"),_evidence("E2",f"observation=opportunity={opp}","OBSERVATION","HIGH"),_evidence("E3",f"observation=structure={struct}","STRUCTURE","HIGH"),_evidence("E4",f"observation=event={a['event'] or 'NONE'}","EVENT","HIGH"),_evidence("E4",f"interpretation=auction={a['direction']},state={a['state'] or 'NONE'}","INTERPRETATION","HIGH"),_evidence("E5",f"observation=space_atr={space:.4f}","CONSTRAINT","HIGH"),_evidence("E6",f"counter_evidence={','.join(_dedupe(con)) or 'NONE'}","COUNTER","HIGH")]
-    trace={"summary":f"E1->E2->E3->E4->E5->contradiction_engine->hypothesis_competition->lifecycle={stage}","decision":"DESCRIBE_SETUP_ONLY","selected_hypothesis":setup,"candidate_identity":identity,"candidate_identity_basis":identity_basis,"direction_source":src,"causal_minimum":causal,"causal_minimum_rule":"context + event + response + structure must align for maturity","anti_overfitting":{"pass":sel["anti_overfit_pass"],"rule":"event alone cannot create a mature setup"},"hypothesis_competition":{"primary":setup,"ranked":[{"name":x["name"],"direction":x["direction"],"causal_score":x["causal_score"],"proof_gates":x["proof_gates"],"rejected":x is not sel} for x in scored]},"contradiction_engine":{"direction":_dedupe([x for x in contradictions if "DIRECTION" in x]),"structure":_dedupe([x for x in contradictions if "STRUCTURE" in x]),"auction":_dedupe([x for x in contradictions if "AUCTION" in x]),"location":_dedupe([x for x in contradictions if "LOCATION" in x]),"space":_dedupe([x for x in contradictions if "SPACE" in x])},"thesis_status":"INVALIDATED" if explicit else ("EXPIRED" if stale else "ALIVE"),"lifecycle_rule":"contradiction weakens; explicit invalidating evidence kills; stale event expires","evidence_integrity":{"status":"PASS" if all((e1,e2,e3,e4,e5)) else "PARTIAL","upstream_is_source_of_truth":True}}
-    return _result(stage,setup,d,stage,mat,thesis,q,conf,True,sup,con,miss,next_req,inv,scored,rejected,trace,ledger)
+    setup=sel["name"];identity,identity_basis=_identity(setup,sel["direction"],e3,a,e5);proof=sel["proof_gates"];rejected=[f"{x['name']}:OUTRANKED_BY_{setup}:SCORE_{x['causal_score']:.2f}" for x in scored[1:]];maturity=round(max(0,min(100,sel["causal_score"])),2)
+    stage="MATURE" if maturity>=82 and all(proof.values()) else ("VALIDATING" if maturity>=60 else "FORMING")
+    if sel["direction"]!=primary_context and not a["terminal"]:stage="FORMING"
+    exists=bool(sel) and stage not in {"FAILED","INVALIDATED","EXPIRED"};thesis=f"{sel['direction']} {setup} is {stage.lower()}: the thesis is {'context-aligned' if sel['direction']==primary_context else 'counter-trend and requires independent reversal proof'}."
+    sup=ds+sel["supporting_evidence"]+(["PRIMARY_CONTEXT_ALIGNMENT"] if sel["direction"]==primary_context else []);con=dc+sel["counter_evidence"];miss=sel["missing_proof"];next_req=[]
+    if not a["terminal"] and sel["direction"]!=primary_context:next_req.append("terminal_auction_confirmation")
+    if sel["direction"]!=primary_context and (internal==primary_context or external==primary_context):next_req.append("structural_reversal_evidence")
+    next_req+=miss;inv=["auction invalidates if event ages beyond MAX_EVENT_AGE_BARS without confirmation"]
+    inv.append("loss_of_dominant_context" if sel["direction"]==primary_context else "failure_to_reclaim_or_close_beyond_reversal_level")
+    ledger=[_evidence("E1",f"dominant_context={primary_context}; consensus={context_consensus:.2f}","SUPPORT" if sel["direction"]==primary_context else "COUNTER_EVIDENCE","HIGH"),_evidence("E4",f"auction={a['event']}; state={a['state']}; terminal={a['terminal']}","SUPPORT","HIGH"),_evidence("E3",f"internal={internal}; external={external}","SUPPORT" if sel["direction"]==primary_context else "COUNTER_EVIDENCE","HIGH"),_evidence("E5",f"available_space_atr={space:.3f}","SUPPORT" if space>=MIN_SPACE_ATR else "COUNTER_EVIDENCE","MEDIUM")]
+    trace={"selected_hypothesis":setup,"candidate_identity":identity,"candidate_identity_basis":identity_basis,"direction_source":src,"directional_evidence":ds,"directional_conflicts":dc,"dominant_context":primary_context,"context_consensus":round(context_consensus,3),"hypothesis_role":"PRIMARY_CONTEXT_ALIGNED" if sel["direction"]==primary_context else "ALTERNATIVE_COUNTER_TREND","counter_trend_gate":"PASSED" if sel["direction"]==primary_context or a["terminal"] else "BLOCKED","reversal_requires_terminal_auction":sel["direction"]!=primary_context,"explicit_reversal_proof":sel["direction"]!=primary_context and a["terminal"]}
+    return _result("SETUP_FORMING" if stage in {"FORMING","VALIDATING"} else "SETUP_MATURE",setup,sel["direction"],stage,maturity,thesis,sel["causal_score"],min(100,60+sel["causal_score"]*.4),exists,sup,con,miss,_dedupe(next_req),inv,scored,rejected,trace,ledger)
