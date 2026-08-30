@@ -3,8 +3,8 @@ from __future__ import annotations
 """Production-v2 nine-brain professional governance hardening.
 
 This layer does not manufacture trading evidence and does not loosen any gate.
-It fixes the boundary between *current evidence* and *future invalidation rules*,
-then exposes an explicit lifecycle/next-event contract for every brain.
+It separates present evidence from future invalidation rules and exposes an
+explicit lifecycle/gate/next-event contract for every brain.
 """
 
 from typing import Any
@@ -37,12 +37,8 @@ def _list(value: Any) -> list[Any]:
 
 
 def _active_codes(output: dict[str, Any]) -> list[str]:
-    """Return only present-tense reason evidence.
-
-    `invalidations` is intentionally excluded: those are conditions to watch for,
-    not proof that the condition is occurring on the current closed candle.
-    """
-    values = []
+    """Return only present-tense evidence; future invalidations are excluded."""
+    values: list[Any] = []
     for key in ("reason_codes", "reasons", "blockers", "risk_blockers", "economic_blockers", "conflicts"):
         values.extend(_list(output.get(key)))
     seen: set[str] = set()
@@ -120,15 +116,62 @@ def _lifecycle(engine_id: str, output: dict[str, Any]) -> str:
     return _text(output.get("decision")) or "UNRESOLVED"
 
 
+def _gate_state(engine_id: str, output: dict[str, Any], active_invalidations: list[str]) -> str:
+    """Classify this brain's present gate without granting execution authority."""
+    if active_invalidations:
+        return "BLOCKED"
+    active = set(_active_codes(output))
+    lifecycle = _lifecycle(engine_id, output)
+    state = _text(output.get("state"))
+
+    hard_data_failure = any("DATA" in code and "FAIL" in code for code in active)
+    if hard_data_failure:
+        return "BLOCKED"
+
+    if engine_id == "E1":
+        return "READY" if lifecycle in {"COMPLETE", "VALIDATED", "STABLE"} and state not in {"UNCLEAR", "UNRESOLVED"} else "PENDING"
+    if engine_id == "E2":
+        maturity = _text(output.get("opportunity_maturity"))
+        return "READY" if maturity in {"CONFIRMED", "ACTIONABLE"} else "PENDING"
+    if engine_id == "E3":
+        return "READY" if lifecycle in {"ESTABLISHED", "CONFIRMED", "VALIDATED"} and state not in {"MIXED", "UNRESOLVED", "TRANSITION"} else "PENDING"
+    if engine_id == "E4":
+        auction = _text(output.get("auction_state"))
+        return "READY" if auction in {"CONFIRMED", "TERMINALLY_CONFIRMED", "RECLAIMED", "ACCEPTED", "REJECTED"} else "PENDING"
+    if engine_id == "E5":
+        if any(code in active for code in {"INVALID_TRADE_GEOMETRY", "NO_USABLE_STRUCTURAL_TARGET", "EFFECTIVE_SPACE_BELOW_MINIMUM"}):
+            return "BLOCKED"
+        return "READY" if lifecycle in {"ADVANTAGEOUS", "FAVORABLE", "ACCEPTED", "REPRICING_CONFIRMED"} else "PENDING"
+    if engine_id == "E6":
+        return "READY" if lifecycle in {"MATURE", "TRADE_READY", "VALIDATED", "CONFIRMED"} else "PENDING"
+    if engine_id == "E7":
+        return "READY" if lifecycle in {"PROVEN", "CONFIRMED", "VALIDATED", "TRADE_READY"} else "PENDING"
+    if engine_id == "E8":
+        risk_state = _text(output.get("risk_state"))
+        economic_state = _text(output.get("economic_state"))
+        if active & {"INVALID_TRADE_GEOMETRY", "INVALID_RISK_GEOMETRY", "REAL_RR_BELOW_MINIMUM", "STOP_QUALITY_TOO_LOW", "TARGET_REALISM_TOO_LOW", "PROBABILITY_EDGE_NOT_TRUSTWORTHY", "NO_USABLE_STRUCTURAL_TARGET"}:
+            return "BLOCKED"
+        return "READY" if risk_state in {"READY", "RISK_READY", "TRADE_READY", "VALIDATED", "PASS", "PASSED"} or economic_state in {"ECONOMICALLY_ACCEPTABLE", "TRADE_READY", "VALIDATED"} else "PENDING"
+    if engine_id == "E9":
+        decision = _text(output.get("decision"))
+        return "READY" if decision in {"BUY", "SELL"} and not active else "BLOCKED"
+    return "PENDING"
+
+
 def harden_engine(engine_id: str, raw_output: dict[str, Any]) -> dict[str, Any]:
     """Apply non-invasive professional boundary hardening to one engine output."""
+    if engine_id not in OWNERS:
+        raise ValueError(f"unknown engine_id: {engine_id}")
+
     output = dict(raw_output or {})
     active = _active_codes(output)
     future = _future_invalidations(output)
     active_invalidations = _explicit_active_invalidations(output)
+    gate_state = _gate_state(engine_id, output, active_invalidations)
+    lifecycle = _lifecycle(engine_id, output)
 
     # A plain list named `invalidations` is a catalogue of future failure rules.
-    # Only an explicit `active_invalidations` field can assert present invalidation.
+    # Only explicit `active_invalidations` can assert present invalidation.
     output["future_invalidation_conditions"] = future
     output["active_invalidations"] = active_invalidations
     output["active_reason_codes"] = active
@@ -140,12 +183,13 @@ def harden_engine(engine_id: str, raw_output: dict[str, Any]) -> dict[str, Any]:
         "can_create_thesis": engine_id in {"E2", "E6"},
         "can_authorize_entry": False,
         "closed_candle_only": True,
-        "lifecycle": _lifecycle(engine_id, output),
+        "lifecycle": lifecycle,
+        "gate_state": gate_state,
+        "blockers": list(active_invalidations) + [x for x in active if x not in active_invalidations],
         "next_required_event": _next_event(engine_id, output),
         "active_invalidated": bool(active_invalidations),
     }
 
-    # Preserve a useful distinction for downstream brains.
     if engine_id == "E1" and _text(output.get("analysis_status")) == "COMPLETE":
         output["data_integrity_current"] = "VALIDATED"
         output["data_integrity_future_failures"] = [x for x in future if "DATA" in x]
@@ -153,7 +197,7 @@ def harden_engine(engine_id: str, raw_output: dict[str, Any]) -> dict[str, Any]:
         output["transition_is_not_invalidation"] = True
     elif engine_id == "E4":
         state = _text(output.get("auction_state"))
-        output["auction_confirmation_proven"] = state in {"CONFIRMED", "TERMINALLY_CONFIRMED", "RECLAIMED"}
+        output["auction_confirmation_proven"] = state in {"CONFIRMED", "TERMINALLY_CONFIRMED", "RECLAIMED", "ACCEPTED", "REJECTED"}
         if state == "PENDING":
             output["auction_confirmation_pending"] = True
     elif engine_id == "E6":
