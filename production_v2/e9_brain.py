@@ -6,8 +6,8 @@ from .contracts import EngineResult
 
 NAME = "Master Decision Brain"
 QUESTION = "Should this trade be taken after reconciling all relevant evidence?"
-ARCHITECTURE = "E9_MASTER_DECISION_RESOLUTION_V41"
-VERSION = "41.0"
+ARCHITECTURE = "E9_MASTER_DECISION_RESOLUTION_V50"
+VERSION = "50.0"
 DIRECTIONS = {"BUY", "SELL"}
 
 HARD_CONFLICT_CODES = {
@@ -36,6 +36,10 @@ BLOCKER_PRIORITY = (
     "SETUP_NOT_MATURE", "RISK_NOT_READY", "RISK_QUALITY_BELOW_DECISION_THRESHOLD", "DIRECTION_UNRESOLVED",
 )
 
+CONFIRMATION_PROVEN = {"PROVEN", "CONFIRMED", "VALIDATED", "TRADE_READY"}
+MATURITY_READY = {"MATURE", "TRADE_READY", "VALIDATED", "CONFIRMED"}
+RISK_READY_STATES = {"READY", "RISK_READY", "ECONOMICALLY_ACCEPTABLE", "TRADE_READY", "VALIDATED", "PASS", "PASSED", "COMPLETE"}
+
 
 def _out(engine: EngineResult | None) -> dict[str, Any]:
     return dict(engine.output or {}) if engine else {}
@@ -51,7 +55,7 @@ def _dedupe(values: list[Any]) -> list[str]:
 
 def _codes_from_output(output: dict[str, Any]) -> list[str]:
     values: list[Any] = []
-    for key in ("reason_codes", "reasons", "counter_evidence", "blockers", "risk_blockers", "economic_blockers", "conflicts"):
+    for key in ("reason_codes", "reasons", "counter_evidence", "blockers", "risk_blockers", "economic_blockers", "conflicts", "invalidations"):
         value = output.get(key)
         if isinstance(value, str):
             values.append(value)
@@ -90,32 +94,20 @@ def _clean_setup(value: Any) -> str:
 
 
 def _e6_identity(e6: dict[str, Any]) -> tuple[str, str, str]:
-    """Recover the E6-owned thesis identity without weakening E6's maturity gate."""
     finding = str(e6.get("finding") or "").strip()
-    direction = _direction(
-        e6.get("direction"), e6.get("direction_thesis"), e6.get("thesis_direction"),
-        e6.get("selected_direction"), finding,
-    )
-
+    direction = _direction(e6.get("direction"), e6.get("direction_thesis"), e6.get("thesis_direction"), e6.get("selected_direction"), finding)
     setup = ""
     for key in ("setup", "setup_family", "candidate_setup", "candidate_setup_thesis", "setup_type", "thesis_setup", "selected_hypothesis"):
         candidate = _clean_setup(e6.get(key))
         if candidate:
             setup = candidate
             break
-
     if not setup and finding:
-        # Examples: "BUY LIQUIDITY_REVERSAL is validating..."
-        # and "SELL AUCTION_ACCEPTANCE_CONTINUATION is validating..."
         head = finding.split(" is validating", 1)[0].split(" is ", 1)[0].strip()
         if direction in DIRECTIONS and _text(head).startswith(direction + " "):
             head = head[len(direction):].strip()
         setup = _clean_setup(head)
-
-    thesis = str(
-        e6.get("thesis") or e6.get("candidate_setup_thesis") or
-        e6.get("selected_hypothesis") or finding or "UNRESOLVED"
-    ).strip()
+    thesis = str(e6.get("thesis") or e6.get("candidate_setup_thesis") or e6.get("selected_hypothesis") or finding or "UNRESOLVED").strip()
     return direction, setup or "UNKNOWN", thesis or "UNRESOLVED"
 
 
@@ -138,7 +130,6 @@ def _walk_dicts(value: Any):
 
 
 def _e8_boundary(e8: EngineResult | None) -> tuple[dict[str, Any], dict[str, Any]]:
-    """Read E8's public execution boundary, including nested specialist output."""
     output = _out(e8)
     merged: dict[str, Any] = {}
     plan: dict[str, Any] = {}
@@ -206,26 +197,45 @@ def _collect_hard_conflicts(upstream: dict[str, EngineResult]) -> list[str]:
 
 
 def _collect_economic_blockers(e8: EngineResult | None) -> list[str]:
-    found = [code for code in _engine_codes(e8) if code in ECONOMIC_BLOCKERS]
+    found: list[str] = []
     for candidate in _walk_dicts(_out(e8)):
         found.extend(code for code in _codes_from_output(candidate) if code in ECONOMIC_BLOCKERS)
     return _dedupe(found)
 
 
-def _resolution(direction: str, setup: str, thesis: str, e6: dict[str, Any], e7: dict[str, Any], e8: EngineResult | None, conflicts: list[str]) -> dict[str, Any]:
+def _resolve_conflicts(direction: str, upstream: dict[str, EngineResult], e6: dict[str, Any]) -> tuple[list[str], list[str]]:
+    hard = _collect_hard_conflicts(upstream)
+    evidence: list[str] = []
+    for engine_id in ("E1", "E2", "E3", "E4", "E5"):
+        evidence.extend(_engine_codes(upstream.get(engine_id)))
+    e6_dir = _direction(e6.get("direction"), e6.get("direction_thesis"), e6.get("thesis_direction"), e6.get("selected_direction"), e6.get("finding"))
+    opposing = "BUY" if direction == "SELL" else "SELL"
+    directional_opposition = any(
+        _direction(_out(upstream.get(e)).get("finding"), _out(upstream.get(e)).get("direction")) == opposing
+        for e in ("E1", "E2", "E3", "E4", "E5") if upstream.get(e)
+    )
+    if e6_dir in DIRECTIONS and e6_dir != direction:
+        hard.append("STRUCTURE_THESIS_CONFLICT")
+    if directional_opposition and direction in DIRECTIONS and "STRUCTURE_THESIS_CONFLICT" not in hard:
+        # Opposition is not automatically fatal; it is surfaced as counter-evidence.
+        evidence.append("DIRECTIONAL_COUNTER_EVIDENCE_PRESENT")
+    return _dedupe(hard), _dedupe(evidence)
+
+
+def _resolution(direction: str, setup: str, thesis: str, e6: dict[str, Any], e7: dict[str, Any], e8: EngineResult | None, upstream: dict[str, EngineResult]) -> dict[str, Any]:
     maturity = _state(e6, ("maturity", "setup_maturity", "setup_stage", "stage", "formation_stage", "lifecycle"))
     confirmation = _confirmation_state(e7)
     trigger = _trigger_observed(e7)
     e8_boundary, plan = _e8_boundary(e8)
     economic_blockers = _collect_economic_blockers(e8)
+    conflicts, counter_evidence = _resolve_conflicts(direction, upstream, e6)
 
     direction_ready = direction in DIRECTIONS
     setup_known = bool(_clean_setup(setup))
-    maturity_known = maturity not in {"", "UNKNOWN", "UNRESOLVED", "NONE"}
-    setup_ready = direction_ready and setup_known and maturity in {"MATURE", "TRADE_READY", "VALIDATED", "CONFIRMED"}
-    confirmation_ready = confirmation in {"PROVEN", "CONFIRMED", "VALIDATED", "TRADE_READY"} and trigger
+    setup_ready = direction_ready and setup_known and maturity in MATURITY_READY
+    confirmation_ready = confirmation in CONFIRMATION_PROVEN and trigger
     risk_state = _text(e8_boundary.get("risk_gate") or e8_boundary.get("risk_state") or e8_boundary.get("economic_state") or e8_boundary.get("plan_status") or "")
-    risk_ready = (not economic_blockers and risk_state in {"READY", "RISK_READY", "ECONOMICALLY_ACCEPTABLE", "TRADE_READY", "VALIDATED", "PASS", "PASSED", "COMPLETE"} and _plan_valid(plan, direction))
+    risk_ready = not economic_blockers and risk_state in RISK_READY_STATES and _plan_valid(plan, direction)
 
     blockers = _dedupe(conflicts + economic_blockers)
     if not direction_ready:
@@ -238,7 +248,6 @@ def _resolution(direction: str, setup: str, thesis: str, e6: dict[str, Any], e7:
         blockers.append("RISK_NOT_READY")
     blockers = _dedupe(blockers)
     primary = next((code for code in BLOCKER_PRIORITY if code in blockers), "NONE")
-    hard_conflict = bool(conflicts)
     all_pass = direction_ready and setup_ready and confirmation_ready and risk_ready and not conflicts and not economic_blockers
 
     if all_pass:
@@ -246,19 +255,15 @@ def _resolution(direction: str, setup: str, thesis: str, e6: dict[str, Any], e7:
         thesis_state, setup_state = "ESTABLISHED", "TRADE_READY"
         final_confirmation_state, final_risk_state, execution_state = "PROVEN", "READY", "READY"
         next_event = "NONE"
-    elif hard_conflict:
+    elif conflicts:
         decision, decision_state = "NO_TRADE", "REJECT"
         thesis_state = "INVALIDATED" if any("INVALIDAT" in code for code in conflicts) else "CONFLICTED"
         setup_state = final_confirmation_state = final_risk_state = execution_state = "BLOCKED"
         next_event = "NEW_CLOSED_CANDLE_MUST_RESOLVE_THE_DECISIVE_CONFLICT"
     else:
         decision, decision_state = "NO_TRADE", "WAIT_FOR_PROOF"
-        # E9 must preserve an E6 thesis that exists even when it is not mature.
         thesis_state = "ESTABLISHED" if direction_ready and setup_known else "UNRESOLVED"
-        if setup_known:
-            setup_state = "TRADE_READY" if setup_ready else (maturity if maturity_known else "FORMING")
-        else:
-            setup_state = "UNRESOLVED"
+        setup_state = "TRADE_READY" if setup_ready else (maturity if maturity not in {"", "UNKNOWN", "UNRESOLVED", "NONE"} else "FORMING") if setup_known else "UNRESOLVED"
         final_confirmation_state = "PROVEN" if confirmation_ready else "PENDING"
         final_risk_state = "READY" if risk_ready else "BLOCKED"
         execution_state = "BLOCKED"
@@ -274,27 +279,28 @@ def _resolution(direction: str, setup: str, thesis: str, e6: dict[str, Any], e7:
         "setup_state": setup_state, "confirmation_state": final_confirmation_state,
         "risk_state": final_risk_state, "execution_state": execution_state,
         "primary_blocker": primary, "secondary_blockers": [code for code in blockers if code != primary],
-        "next_required_event": next_event, "all_gates_pass": all_pass, "hard_conflict": hard_conflict,
+        "next_required_event": next_event, "all_gates_pass": all_pass,
+        "hard_conflict": bool(conflicts), "resolved_conflicts": conflicts, "counter_evidence": counter_evidence,
         "direction": direction, "setup": setup, "thesis": thesis, "e6_maturity": maturity,
-        "e6_identity_resolved": direction_ready and setup_known,
-        "e6_maturity_known": maturity_known,
+        "e6_identity_resolved": direction_ready and setup_known, "e6_maturity_known": maturity not in {"", "UNKNOWN", "UNRESOLVED", "NONE"},
         "e7_confirmation": confirmation, "e7_trigger_observed": trigger, "e8_risk_state": risk_state,
         "e8_plan_valid": _plan_valid(plan, direction), "e8_economic_blockers": economic_blockers,
         "trade_plan": plan if _plan_valid(plan, direction) else {},
         "authority": {"thesis": "E6", "confirmation": "E7", "economics_risk": "E8", "final_decision": "E9"},
+        "resolution_order": ["THESIS_IDENTITY", "HARD_CONFLICT", "SETUP_MATURITY", "CONFIRMATION", "RISK_ECONOMICS", "EXECUTION"],
     }
 
 
 def analyze_e9(snapshot: dict[str, Any], upstream: dict[str, EngineResult]) -> EngineResult:
-    """E9 is the final arbiter; it resolves evidence but never invents a thesis or lookahead."""
+    """Final arbiter: resolves upstream evidence, never invents thesis, entry, target, or lookahead."""
     del snapshot
     e6, e7, e8 = _out(upstream.get("E6")), _out(upstream.get("E7")), upstream.get("E8")
     direction, setup, thesis = _e6_identity(e6)
-    resolved = _resolution(direction, setup, thesis, e6, e7, e8, _collect_hard_conflicts(upstream))
+    resolved = _resolution(direction, setup, thesis, e6, e7, e8, upstream)
 
     readiness_score = round(sum((
         25.0 if direction in DIRECTIONS else 0.0,
-        25.0 if resolved["setup_state"] == "TRADE_READY" else 12.5 if resolved["setup_state"] in {"FORMING", "VALIDATING"} else 0.0,
+        25.0 if resolved["setup_state"] == "TRADE_READY" else 12.5 if resolved["setup_state"] in {"FORMING", "VALIDATING", "VALIDATING"} else 0.0,
         25.0 if resolved["confirmation_state"] == "PROVEN" else 12.5 if resolved["confirmation_state"] == "PENDING" else 0.0,
         25.0 if resolved["risk_state"] == "READY" else 0.0,
     )), 2)
@@ -312,6 +318,7 @@ def analyze_e9(snapshot: dict[str, Any], upstream: dict[str, EngineResult]) -> E
     reason_codes = _dedupe(
         ([resolved["primary_blocker"]] if resolved["primary_blocker"] != "NONE" else ["MASTER_GATES_PASSED"])
         + resolved["secondary_blockers"]
+        + resolved["resolved_conflicts"]
         + (["E9_HARD_CONFLICT"] if resolved["hard_conflict"] else [])
     )
     output = {
@@ -322,9 +329,10 @@ def analyze_e9(snapshot: dict[str, Any], upstream: dict[str, EngineResult]) -> E
         "decision_contract": {
             "BUY_SELL_requires_all_gates": True, "NO_TRADE_on_missing_confirmation": True,
             "NO_EXECUTION_on_invalid_geometry": True, "NO_EXECUTION_on_hard_conflict": True,
-            "E9_does_not_create_thesis": True, "E9_does_not_create_entry": True,
-            "E9_does_not_create_target": True, "E9_does_not_override_E8_economics": True,
-            "closed_candle_only": True,
+            "E9_preserves_E6_thesis_identity": True, "E9_does_not_create_thesis": True,
+            "E9_does_not_create_entry": True, "E9_does_not_create_target": True,
+            "E9_does_not_override_E8_economics": True, "closed_candle_only": True,
+            "counter_evidence_does_not_equal_hard_conflict": True,
         },
     }
     return EngineResult("E9", NAME, bool(resolved["all_gates_pass"]), readiness_score, output, tuple(reason_codes))
