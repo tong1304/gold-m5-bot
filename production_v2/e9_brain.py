@@ -24,6 +24,22 @@ ECONOMIC_HARD_CODES = {
     "INVALID_RISK_GEOMETRY", "RISK_GEOMETRY_INVALID", "NO_USABLE_STRUCTURAL_TARGET",
 }
 
+# Master-decision priority is deliberately ordered: an explicit contradiction
+# or execution/economic failure outranks a generic lifecycle observation.
+MASTER_BLOCKER_PRIORITY = (
+    "THESIS_INVALIDATED", "MARKET_STATE_CONFLICT", "STRUCTURE_THESIS_CONFLICT",
+    "OPPOSING_LIQUIDITY_THESIS", "EXTERNAL_INTERNAL_STRUCTURE_CONFLICT",
+    "E6_THESIS_INVALIDATED", "E7_CONFIRMATION_INVALIDATED", "E8_RISK_INVALIDATED",
+    "INVALID_TRADE_GEOMETRY", "REAL_RR_BELOW_MINIMUM", "EXECUTION_COST_TOO_HIGH",
+    "STRUCTURAL_SURVIVAL_NOT_PROVEN", "EFFECTIVE_SPACE_UNRELIABLE",
+    "EFFECTIVE_SPACE_BELOW_MINIMUM", "STRESSED_PROBABILITY_BELOW_MINIMUM",
+    "TARGET_REALISM_TOO_LOW", "STOP_QUALITY_TOO_LOW",
+    "PROBABILITY_EDGE_NOT_TRUSTWORTHY", "NO_USABLE_STRUCTURAL_TARGET",
+    "ENTRY_CONFIRMATION_NOT_PROVEN", "SETUP_NOT_MATURE", "RISK_NOT_READY",
+    "ECONOMIC_EDGE_TOO_THIN", "ECONOMIC_MARGIN_TOO_THIN",
+    "RISK_QUALITY_BELOW_DECISION_THRESHOLD", "DIRECTION_UNRESOLVED",
+)
+
 
 def _out(e: EngineResult | None) -> dict[str, Any]:
     return dict(e.output) if e else {}
@@ -140,13 +156,116 @@ def _market_control(e4: dict[str, Any], e5: dict[str, Any], direction: str, setu
     }
 
 
+def _master_decision_resolution(
+    direction: str,
+    setup: str,
+    thesis: str,
+    maturity: str,
+    confirmation: str,
+    trigger_observed: bool,
+    risk_gate: str,
+    plan_structural: bool,
+    economics_ready: bool,
+    reasons: list[str],
+    conflicts: list[str],
+) -> dict[str, Any]:
+    """Resolve E9 into an explicit master state, blocker hierarchy and next event.
+
+    E9 does not invent a thesis. E6 owns thesis identity, E7 owns proof and E8
+    owns economic survivability. This helper only reconciles those authorities.
+    """
+    hard = _dedupe(conflicts + [r for r in reasons if r in MASTER_BLOCKER_PRIORITY])
+    direction_ready = direction in DIRECTIONS
+    setup_known = setup not in {"", "UNKNOWN", "NONE", "NO_SETUP"}
+    setup_ready = direction_ready and setup_known and maturity in {"MATURE", "TRADE_READY", "VALIDATED"}
+    confirmation_ready = confirmation in {"CONFIRMED", "PROVEN", "VALIDATED", "TRADE_READY"} and trigger_observed
+    risk_ready = risk_gate in {"RISK_READY", "ECONOMICALLY_ACCEPTABLE", "TRADE_READY"} and plan_structural and economics_ready
+    all_pass = direction_ready and setup_ready and confirmation_ready and risk_ready and not hard
+
+    blocker_set = set(hard)
+    if not direction_ready: blocker_set.add("DIRECTION_UNRESOLVED")
+    if not setup_ready: blocker_set.add("SETUP_NOT_MATURE")
+    if not confirmation_ready: blocker_set.add("ENTRY_CONFIRMATION_NOT_PROVEN")
+    if not risk_ready: blocker_set.add("RISK_NOT_READY")
+
+    primary = "NONE"
+    for code in MASTER_BLOCKER_PRIORITY:
+        if code in blocker_set:
+            primary = code
+            break
+
+    if all_pass:
+        decision = direction
+        decision_state = "EXECUTE"
+        thesis_state = "ESTABLISHED"
+        setup_state = "TRADE_READY"
+        confirmation_state = "PROVEN"
+        risk_state = "READY"
+        execution_state = "READY"
+        next_event = "NONE"
+    elif conflicts or any(c in hard for c in HARD_CONFLICT_CODES):
+        decision = "NO_TRADE"
+        decision_state = "REJECT"
+        thesis_state = "INVALIDATED" if any("INVALIDAT" in c for c in hard) else "CONFLICTED"
+        setup_state = "BLOCKED"
+        confirmation_state = "BLOCKED"
+        risk_state = "BLOCKED"
+        execution_state = "BLOCKED"
+        next_event = "NEW_CLOSED_CANDLE_MUST_RESOLVE_THE_DECISIVE_CONFLICT"
+    else:
+        decision = "NO_TRADE"
+        decision_state = "WAIT_FOR_PROOF"
+        thesis_state = "ESTABLISHED" if direction_ready else "UNRESOLVED"
+        setup_state = "FORMING" if setup_known else "UNRESOLVED"
+        confirmation_state = "PROVEN" if confirmation_ready else "PENDING"
+        risk_state = "READY" if risk_ready else "BLOCKED"
+        execution_state = "READY" if all_pass else "BLOCKED"
+        if primary == "DIRECTION_UNRESOLVED":
+            next_event = "E6_MUST_ESTABLISH_A_DIRECTIONAL_THESIS_AND_SETUP"
+        elif primary == "SETUP_NOT_MATURE":
+            next_event = "E6_SETUP_MUST_REACH_MATURE_OR_TRADE_READY"
+        elif primary == "ENTRY_CONFIRMATION_NOT_PROVEN":
+            next_event = "E7_MUST_PROVE_THE_SETUP_SPECIFIC_CLOSED_CANDLE_CONFIRMATION"
+        elif primary == "RISK_NOT_READY":
+            next_event = "E8_MUST_PROVE_SURVIVABLE_TRADE_GEOMETRY_AND_ECONOMICS"
+        else:
+            next_event = "NEW_CLOSED_CANDLE_MUST_REMOVE_THE_PRIMARY_BLOCKER"
+
+    secondary = [x for x in _dedupe(hard + list(blocker_set)) if x != primary]
+    if all_pass:
+        rationale = f"{direction} is executable: E6 thesis, E7 confirmation and E8 economics all pass without hard conflict."
+    elif primary:
+        rationale = f"NO_TRADE because {primary}; E9 will not promote the thesis to execution until that gate is resolved."
+    else:
+        rationale = "NO_TRADE because the master decision state is unresolved."
+
+    return {
+        "decision": decision,
+        "decision_state": decision_state,
+        "thesis_state": thesis_state,
+        "setup_state": setup_state,
+        "confirmation_state": confirmation_state,
+        "risk_state": risk_state,
+        "execution_state": execution_state,
+        "primary_blocker": primary,
+        "secondary_blockers": secondary,
+        "next_required_event": next_event,
+        "all_gates_pass": all_pass,
+        "thesis": thesis,
+        "setup": setup,
+        "direction": direction,
+        "rationale": rationale,
+        "authority": {"thesis": "E6", "confirmation": "E7", "economics": "E8", "final_decision": "E9"},
+    }
+
+
 def analyze_e9(snapshot: dict[str, Any], upstream: dict[str, EngineResult]) -> EngineResult:
-    """E9 master reconciliation.
+    """E9 master reconciliation and final decision authority.
 
     E6 owns thesis identity, E7 owns confirmation, E8 owns economics.
     Lifecycle/evidence labels are not treated as invalidation unless an exact
-    hard-conflict code is present. This prevents INVALIDATION_EVALUATED from
-    becoming a false veto while keeping all real risk gates intact.
+    hard-conflict code is present. E9 reconciles those authorities and exposes
+    one explicit master decision state, primary blocker and next required event.
     """
     e = [_out(upstream.get(f"E{i}")) for i in range(1, 9)]
     e1, e2, e3, e4, e5, e6, e7, e8 = e
@@ -158,15 +277,18 @@ def analyze_e9(snapshot: dict[str, Any], upstream: dict[str, EngineResult]) -> E
     confirmation = _text(e7.get("confirmation", e7.get("confirmation_state", "UNRESOLVED")))
     risk_gate = _text(e8.get("risk_gate", e8.get("finding", "RISK_NOT_READY")))
     plan = e8.get("trade_plan") or {}
+
     if direction in DIRECTIONS:
         if trigger_dir in DIRECTIONS and trigger_dir != direction: conflicts.append("E7:DIRECTION_OPPOSES_E6")
         if risk_dir in DIRECTIONS and risk_dir != direction: conflicts.append("E8:DIRECTION_OPPOSES_E6")
+
     setup_ready = direction in DIRECTIONS and setup not in {"", "UNKNOWN", "NONE", "NO_SETUP"} and maturity in {"MATURE", "TRADE_READY", "VALIDATED"}
     trigger_observed = bool(e7.get("trigger_observed") or e7.get("closed_candle_trigger") or e7.get("confirmation_proven"))
     confirmation_ready = confirmation in {"CONFIRMED", "PROVEN", "VALIDATED", "TRADE_READY"} and trigger_observed
     plan_structural = _plan_is_structurally_valid(plan, direction)
     plan_ready = plan_structural and (bool(plan.get("valid") or plan.get("verified")) or not plan)
     economics_ready = risk_gate in {"RISK_READY", "ECONOMICALLY_ACCEPTABLE", "TRADE_READY"} and plan_ready
+
     if not setup_ready: reasons.append("SETUP_NOT_MATURE" if direction in DIRECTIONS else "DIRECTION_UNRESOLVED")
     if not confirmation_ready: reasons.append("ENTRY_CONFIRMATION_NOT_PROVEN")
     if not economics_ready: reasons.append("RISK_NOT_READY")
@@ -205,21 +327,30 @@ def analyze_e9(snapshot: dict[str, Any], upstream: dict[str, EngineResult]) -> E
 
     reasons = _dedupe(reasons); conflicts = _dedupe(conflicts); supports = _dedupe(supports); counter = _dedupe(counter)
     hard_vetoes = _dedupe(reasons + conflicts)
-    decision = direction if direction in DIRECTIONS and setup_ready and confirmation_ready and economics_ready and not hard_vetoes else "NO_TRADE"
+    resolution = _master_decision_resolution(
+        direction=direction, setup=setup, thesis=thesis, maturity=maturity,
+        confirmation=confirmation, trigger_observed=trigger_observed,
+        risk_gate=risk_gate, plan_structural=plan_structural,
+        economics_ready=economics_ready, reasons=reasons, conflicts=conflicts,
+    )
+    decision = resolution["decision"]
+
     evidence_quality = max(0.0, min(100.0, 50.0 + 7.0 * len(supports) - 5.0 * len(counter) - 15.0 * len(conflicts)))
-    gate_quality = 100.0 if setup_ready and confirmation_ready and economics_ready else 50.0
+    gate_quality = 100.0 if resolution["all_gates_pass"] else 50.0
     rr_quality = 100.0 if rr is not None and rr >= 1.50 else 35.0 if rr is not None else 45.0
     edge_quality = 100.0 if edge is not None and edge >= 0.10 else 35.0 if edge is not None else 45.0
     economics_quality = (rr_quality + edge_quality) / 2.0
     score = max(0.0, min(100.0, 0.35 * evidence_quality + 0.30 * gate_quality + 0.20 * economics_quality + 0.15 * mc["strength"]))
     if decision == "NO_TRADE": score = min(score, 64.0)
+
+    ordered_reasons = _dedupe([resolution["primary_blocker"]] + resolution["secondary_blockers"] + reasons + conflicts)
     output = {
         "question": QUESTION, "finding": decision, "decision": decision, "direction": direction, "thesis": thesis,
         "setup": setup, "maturity": maturity, "confirmation": confirmation, "risk_gate": risk_gate,
         "setup_ready": setup_ready, "confirmation_ready": confirmation_ready, "economics_ready": economics_ready,
-        "trade_plan": plan, "reasons": _dedupe(reasons + conflicts), "conflicts": conflicts,
+        "trade_plan": plan, "reasons": ordered_reasons, "conflicts": conflicts,
         "supporting_evidence": supports, "counter_evidence": counter, "counter_thesis": counter,
-        "observations": [f"direction={direction}", "direction_authority=E6", f"setup={setup}", f"maturity={maturity or 'UNRESOLVED'}", f"confirmation={confirmation or 'UNRESOLVED'}", f"risk_gate={risk_gate or 'UNRESOLVED'}", f"plan_structurally_valid={plan_structural}", f"market_control={mc['state']}", f"control_strength={mc['strength']}", f"control_chain_complete={mc['participant_chain']['chain_complete']}", "invalidation_evaluated_is_not_invalidation=True", "directional_evidence_conflict_is_not_automatic_veto=True"],
+        "observations": [f"direction={direction}", "direction_authority=E6", f"setup={setup}", f"maturity={maturity or 'UNRESOLVED'}", f"confirmation={confirmation or 'UNRESOLVED'}", f"risk_gate={risk_gate or 'UNRESOLVED'}", f"plan_structurally_valid={plan_structural}", f"market_control={mc['state']}", f"control_strength={mc['strength']}", f"control_chain_complete={mc['participant_chain']['chain_complete']}", f"master_state={resolution['decision_state']}", f"primary_blocker={resolution['primary_blocker']}", f"next_required_event={resolution['next_required_event']}", "invalidation_evaluated_is_not_invalidation=True", "directional_evidence_conflict_is_not_automatic_veto=True"],
         "reasoning_role": "MASTER_DECISION_ANALYST", "decision_authority": "E9", "trade_decision_authority": True,
         "architecture": "SINGLE_AXIS_E1_TO_E9", "reconciliation": "E6_THESIS_AUTHORITY_PLUS_EVIDENCE_HIERARCHY_PLUS_EXPLICIT_GATE_MATRIX",
         "authority_checks": {"E6_thesis": thesis, "E6_setup": setup, "E6_direction": direction, "E6_maturity": maturity, "E7_confirmation": confirmation, "E8_risk_gate": risk_gate, "E8_plan_structurally_valid": plan_structural},
@@ -233,7 +364,8 @@ def analyze_e9(snapshot: dict[str, Any], upstream: dict[str, EngineResult]) -> E
         "uncertainty": {"state": "HIGH" if score < 55 else "MEDIUM" if score < 75 else "LOW", "reasons": counter},
         "counter_evidence_vetoed": bool(conflicts),
         "gates": {"thesis": setup_ready, "confirmation": confirmation_ready, "economics": economics_ready, "hard_conflict": not bool(conflicts), "all_pass": decision in DIRECTIONS},
+        "master_decision_resolution": resolution,
         "invalidation": ["new closed-candle evidence changes a decisive prerequisite", "explicit thesis invalidation or domain contradiction", "economics edge falls below the professional decision floor", "market-control thesis loses its required liquidity/participant chain"],
-        "professional_reasoning": {"conclusion": thesis, "decision": decision, "why_trade": supports, "why_not_trade": _dedupe(reasons + conflicts), "what_can_disprove": _dedupe(counter + conflicts), "edge_assessment": edge, "evidence_quality": evidence_quality, "decision_confidence": score, "market_control_conclusion": mc["state"], "direction_authority": "E6", "economic_authority": "E8"},
+        "professional_reasoning": {"conclusion": thesis, "decision": decision, "why_trade": supports, "why_not_trade": ordered_reasons, "what_can_disprove": _dedupe(counter + conflicts), "edge_assessment": edge, "evidence_quality": evidence_quality, "decision_confidence": score, "market_control_conclusion": mc["state"], "direction_authority": "E6", "economic_authority": "E8", "master_resolution": resolution["rationale"]},
     }
-    return EngineResult("E9", NAME, decision in DIRECTIONS, score, output, tuple(_dedupe(reasons + conflicts)))
+    return EngineResult("E9", NAME, decision in DIRECTIONS, score, output, tuple(ordered_reasons))
