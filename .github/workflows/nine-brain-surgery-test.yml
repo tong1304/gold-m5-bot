@@ -1,7 +1,7 @@
 name: nine-brain-surgery-test
 on:
   push:
-    branches: [nine-brain-professional-surgery]
+    branches: [production-v2, nine-brain-professional-surgery]
 
 jobs:
   test:
