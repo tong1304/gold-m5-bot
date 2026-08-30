@@ -1,0 +1,44 @@
+name: E9 hotfix
+
+on:
+  push:
+    branches:
+      - production-v2
+
+permissions:
+  contents: write
+
+jobs:
+  fix-e9:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: production-v2
+      - name: Fix E9 auction-state normalization
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          p = Path("production_v2/e9_brain.py")
+          s = p.read_text()
+          old = '    auction_state = _first(e4, ("auction_state", "state"), "UNKNOWN")'
+          new = '    auction_state = _text(_first(e4, ("auction_state", "state"), "UNKNOWN"))'
+          if old in s:
+              p.write_text(s.replace(old, new, 1))
+              print("E9 hotfix applied")
+          else:
+              print("E9 hotfix already applied")
+          PY
+      - name: Validate
+        run: python -m py_compile production_v2/e9_brain.py
+      - name: Commit and push
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add production_v2/e9_brain.py
+          if git diff --cached --quiet; then
+            echo "No E9 change needed"
+          else
+            git commit -m "E9: normalize auction state before set membership"
+            git push origin HEAD:production-v2
+          fi
