@@ -38,7 +38,7 @@ def _items(value: Any) -> list[str]:
 
 def _first(output: dict[str, Any], *keys: str) -> Any:
     for key in keys:
-        if key in output and output[key] not in (None, "", [], {}, ()):  # preserve false booleans
+        if key in output and output[key] not in (None, "", [], {}, ()):
             return output[key]
     return None
 
@@ -52,7 +52,6 @@ def _engine_blockers(engine: str, output: dict[str, Any]) -> list[str]:
     if status in {"UNAVAILABLE", "INCOMPLETE", "INSUFFICIENT_DATA", "ERROR"}:
         blockers.append(f"{engine}_{status}")
 
-    # These are semantic hard gates already emitted by the specialized brains.
     gate = output.get("gate_passed")
     if gate is False:
         blockers.append(f"{engine}_GATE_FAILED")
@@ -69,7 +68,12 @@ def _missing(output: dict[str, Any]) -> list[str]:
 
 def _direction(output: dict[str, Any]) -> str:
     value = _first(output, "direction", "opportunity_direction", "trend_state")
-    return str(value or "NEUTRAL").upper()
+    raw = str(value or "NEUTRAL").upper().strip()
+    if raw in {"UP", "BUY", "BULLISH", "LONG", "BUYERS", "TREND_UP"}:
+        return "UP"
+    if raw in {"DOWN", "SELL", "BEARISH", "SHORT", "SELLERS", "TREND_DOWN"}:
+        return "DOWN"
+    return "NEUTRAL"
 
 
 def _maturity(output: dict[str, Any]) -> str:
@@ -83,17 +87,16 @@ def _auction_state(output: dict[str, Any]) -> str:
 
 def _confirmation(output: dict[str, Any]) -> bool:
     for key in ("confirmation_passed", "confirmed", "closed_candle_confirmed", "trigger_confirmed"):
-        value = output.get(key)
-        if value is True:
+        if output.get(key) is True:
             return True
     value = str(_first(output, "confirmation_state", "confirmation", "state") or "").upper()
     return value in {"CONFIRMED", "VALID", "PASSED"}
 
 
 def _economics_valid(output: dict[str, Any]) -> bool:
-    value = _first(output, "trade_economics_valid", "economics_valid", "trade_ready", "risk_ready")
-    if value is False:
-        return False
+    for key in ("trade_economics_valid", "economics_valid", "trade_ready", "risk_ready"):
+        if key in output and output[key] is False:
+            return False
     plan = output.get("trade_plan")
     if isinstance(plan, dict) and plan.get("valid") is False:
         return False
@@ -127,7 +130,7 @@ def audit_engines(results: dict[str, Any]) -> dict[str, Any]:
             "missing_evidence": list(dict.fromkeys(missing)),
         }
 
-    directional = {d for d in directions.values() if d in {"UP", "DOWN", "BUY", "SELL"}}
+    directional = {d for d in directions.values() if d in {"UP", "DOWN"}}
     if len(directional) > 1:
         all_blockers.append("DIRECTIONAL_EVIDENCE_CONFLICT")
 
@@ -137,7 +140,8 @@ def audit_engines(results: dict[str, Any]) -> dict[str, Any]:
     e8 = per_engine["E8"]
 
     e3_output = _output(results, "E3")
-    if str(_first(e3_output, "structure_lifecycle", "lifecycle") or "").upper() in {"TRANSITION", "INVALIDATED"}:
+    lifecycle = str(_first(e3_output, "structure_lifecycle", "lifecycle") or "").upper()
+    if "TRANSITION" in lifecycle or lifecycle == "INVALIDATED":
         all_blockers.append("STRUCTURE_NOT_RESOLVED")
 
     if e4["auction_state"] in {"PENDING", "UNKNOWN", "INITIATIVE", "UNRESOLVED"}:
