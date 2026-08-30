@@ -12,13 +12,14 @@ V11_ARBITRATION_ORDER = [
     "COUNTER_EVIDENCE",
     "TRANSITION",
 ]
+V11_COMPATIBILITY = "LEGACY_PUBLIC_CONTRACT_OVER_HARDENED_V14_CORE"
 
 
 def analyze_e1_professional_v10(bars):
     result = analyze_e1_professional_v14(bars)
-    # Preserve the legacy public contract while the underlying engine remains hardened V14.
     result["e1_contract_version"] = "PROFESSIONAL_MARKET_STATE_V10"
     result["e1_engine_version"] = "PROFESSIONAL_MARKET_STATE_V11"
+    result["e1_compatibility"] = V11_COMPATIBILITY
     reasoning = dict(result.get("professional_reasoning") or {})
     reasoning["arbitration_order"] = list(V11_ARBITRATION_ORDER)
     reasoning["trade_boundary"] = "MARKET_STATE_ONLY"
