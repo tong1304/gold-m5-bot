@@ -1,17 +1,23 @@
 from __future__ import annotations
 
+"""Read-only governance for the nine professional brains.
+
+A critical distinction is enforced here: future invalidation rules are not
+present-tense blockers. Only explicit active invalidations / hard vetoes may
+block the chain.
+"""
+
 from typing import Any
 
 ENGINE_ORDER = ("E1", "E2", "E3", "E4", "E5", "E6", "E7", "E8", "E9")
 
-# Governance is read-only: it classifies evidence and enforces final authority.
-# It never creates market evidence and never grants trade authority to E1-E8.
+# Legacy ``invalidations`` fields are often future failure catalogues. They are
+# intentionally excluded from hard-block detection. Present-tense blockers
+# must use active_invalidations, hard_vetoes, or explicit blocking_reasons.
 HARD_BLOCKER_KEYS = (
-    "hard_veto",
+    "active_invalidations",
     "hard_vetoes",
-    "vetoes",
     "blocking_reasons",
-    "invalidations",
 )
 PENDING_STATES = {
     "PENDING", "UNRESOLVED", "VALIDATING", "FORMING", "BLOCKED",
@@ -57,11 +63,13 @@ def _engine_blockers(engine: str, output: dict[str, Any]) -> list[str]:
     if status in {"UNAVAILABLE", "INCOMPLETE", "INSUFFICIENT_DATA", "ERROR", "INVALIDATED"}:
         blockers.append(f"{engine}_{status}")
 
-    # A failed gate is not automatically a hard conflict. Specialist brains
-    # routinely fail their local gate while waiting for proof from the next
-    # closed candle. Explicit hard-veto evidence remains authoritative.
-    explicit_hard = output.get("hard_veto") is True or bool(_items(output.get("hard_vetoes")))
-    if output.get("gate_passed") is False and explicit_hard:
+    # ``hard_veto`` is allowed as an explicit boolean only. A list stored under
+    # that legacy key may describe future conditions and must not become a hard
+    # blocker merely because it is non-empty.
+    if output.get("hard_veto") is True:
+        blockers.append(f"{engine}_HARD_VETO")
+
+    if output.get("gate_passed") is False and output.get("hard_veto") is True:
         blockers.append(f"{engine}_GATE_FAILED_HARD")
 
     return list(dict.fromkeys(blockers))
@@ -200,7 +208,7 @@ def audit_engines(results: dict[str, Any]) -> dict[str, Any]:
 
     maturity = "HARD_BLOCKED" if hard_veto else "PENDING_PROOF" if pending_gates else "READY_FOR_E9_AUTHORITY_CHECK"
     return {
-        "architecture": "NINE_BRAIN_PROFESSIONAL_GOVERNANCE_V2",
+        "architecture": "NINE_BRAIN_PROFESSIONAL_GOVERNANCE_V3",
         "engine_order": list(ENGINE_ORDER),
         "hard_veto": hard_veto,
         "hard_vetoes": all_blockers,
@@ -213,6 +221,7 @@ def audit_engines(results: dict[str, Any]) -> dict[str, Any]:
         "read_only": True,
         "e9_only_trade_authority": True,
         "pending_is_not_hard_conflict": True,
+        "future_invalidation_catalog_is_not_active_veto": True,
     }
 
 

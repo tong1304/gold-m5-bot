@@ -16,6 +16,7 @@ from .nine_brain_surgery import harden_engine
 from .opportunity_layer import enrich_opportunity, recover_e9
 from .professional_governance import audit_engines, enforce_final_authority
 from .professional_opportunity import consolidate, enrich_engine
+from .professional_brain_audit import audit_all
 
 ENGINE_ORDER = ("E1", "E2", "E3", "E4", "E5", "E6", "E7", "E8", "E9")
 EVIDENCE_INPUTS = {
@@ -114,18 +115,35 @@ class ProductionPipeline:
             e9 = EngineResult(recovered.engine_id, recovered.name, recovered.gate_passed, recovered.score, recovered_output, recovered.reason_codes)
         results["E9"] = e9
 
+        # Professional quality audit is deliberately non-authoritative: it may
+        # describe weaknesses, but it cannot manufacture evidence or unlock a trade.
+        audit = audit_all({engine_id: results[engine_id].output for engine_id in ENGINE_ORDER})
+        for engine_id in ENGINE_ORDER:
+            engine = results[engine_id]
+            output = dict(engine.output)
+            output["professional_audit"] = audit["per_engine"][engine_id]
+            results[engine_id] = EngineResult(engine.engine_id, engine.name, engine.gate_passed, engine.score, output, engine.reason_codes)
+        results["E9"] = EngineResult(
+            results["E9"].engine_id,
+            results["E9"].name,
+            results["E9"].gate_passed,
+            results["E9"].score,
+            {**results["E9"].output, "nine_brain_audit": audit},
+            results["E9"].reason_codes,
+        )
+
         governance = audit_engines(results)
-        decision, approved, governance_reasons = enforce_final_authority(e9.output, governance)
+        decision, approved, governance_reasons = enforce_final_authority(results["E9"].output, governance)
         if governance_reasons:
-            merged_reasons = tuple(dict.fromkeys((*e9.reason_codes, *governance_reasons)))
-            e9_output = harden_engine("E9", dict(e9.output))
+            merged_reasons = tuple(dict.fromkeys((*results["E9"].reason_codes, *governance_reasons)))
+            e9_output = harden_engine("E9", dict(results["E9"].output))
             e9_output["governance"] = governance
             e9_output["decision"] = decision
             e9_output["execution"] = "APPROVED" if approved else "BLOCKED"
             e9_output["governance_blockers"] = governance_reasons
-            e9 = EngineResult(e9.engine_id, e9.name, False if not approved else e9.gate_passed, e9.score, e9_output, merged_reasons)
-            results["E9"] = e9
+            results["E9"] = EngineResult("E9", NAMES["E9"], False if not approved else results["E9"].gate_passed, results["E9"].score, e9_output, merged_reasons)
 
+        e9 = results["E9"]
         plan = e9.output.get("trade_plan") or {}
         approved = bool(approved and e9.gate_passed and decision in {"BUY", "SELL"} and (plan.get("valid", True) if isinstance(plan, dict) else False))
         decision = decision if approved else "NO_TRADE"
@@ -143,11 +161,13 @@ class ProductionPipeline:
             "e9_decision_authority": True,
             "e9_market_control_authority": True,
             "nine_brain_governance": governance,
+            "nine_brain_audit": audit,
             "learning_mode": "ADVISORY_ONLY",
             "next_evaluation": "NEXT_CLOSED_M5_CANDLE",
             "wait_bars": 0,
             "decision_reasons": list(e9.reason_codes),
             "opportunity_radar": radar,
+            "opportunity_potential": audit["opportunity"],
             "opportunity_summary": {e: {"direction": results[e].output.get("opportunity_direction"), "state": results[e].output.get("opportunity_state"), "stage": results[e].output.get("opportunity_stage"), "score": results[e].output.get("opportunity_score"), "next_event": results[e].output.get("opportunity_next_event")} for e in ENGINE_ORDER},
         }
         return DecisionResult(str(snapshot.get("symbol") or "UNKNOWN"), str(snapshot.get("timeframe") or "M5"), decision, approved, e9.score, engines, risk, tuple(e9.reason_codes))
