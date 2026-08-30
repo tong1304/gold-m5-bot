@@ -13,6 +13,7 @@ from .e7_brain import analyze_e7
 from .e8_brain import analyze_e8
 from .e9_brain import analyze_e9
 from .opportunity_layer import enrich_opportunity, recover_e9
+from .professional_governance import audit_engines, enforce_final_authority
 from .professional_opportunity import consolidate, enrich_engine
 
 ENGINE_ORDER = ("E1", "E2", "E3", "E4", "E5", "E6", "E7", "E8", "E9")
@@ -105,9 +106,21 @@ class ProductionPipeline:
             e9 = EngineResult(recovered.engine_id, recovered.name, recovered.gate_passed, recovered.score, enrich_engine("E9", recovered.output), recovered.reason_codes)
         results["E9"] = e9
 
+        governance = audit_engines(results)
+        decision, approved, governance_reasons = enforce_final_authority(e9.output, governance)
+        if governance_reasons:
+            merged_reasons = tuple(dict.fromkeys((*e9.reason_codes, *governance_reasons)))
+            e9_output = dict(e9.output)
+            e9_output["governance"] = governance
+            e9_output["decision"] = decision
+            e9_output["execution"] = "APPROVED" if approved else "BLOCKED"
+            e9_output["governance_blockers"] = governance_reasons
+            e9 = EngineResult(e9.engine_id, e9.name, False if not approved else e9.gate_passed, e9.score, e9_output, merged_reasons)
+            results["E9"] = e9
+
         plan = e9.output.get("trade_plan") or {}
-        approved = bool(e9.gate_passed and e9.output.get("decision") in {"BUY", "SELL"} and (plan.get("valid", True) if isinstance(plan, dict) else False))
-        decision = e9.output.get("decision") if approved else "NO_TRADE"
+        approved = bool(approved and e9.gate_passed and decision in {"BUY", "SELL"} and (plan.get("valid", True) if isinstance(plan, dict) else False))
+        decision = decision if approved else "NO_TRADE"
         engines = tuple(results[e] for e in ENGINE_ORDER)
         radar = consolidate(results)
         risk = {
@@ -115,12 +128,13 @@ class ProductionPipeline:
             "trade_plan": plan,
             "engine_state": "TRADE_APPROVED" if approved else "ANALYSIS_COMPLETE_NO_TRADE",
             "cycle_complete": True,
-            "analysis_architecture": "ONE_BRAIN_PER_ENGINE + PROFESSIONAL_OPPORTUNITY_RADAR",
+            "analysis_architecture": "ONE_BRAIN_PER_ENGINE + PROFESSIONAL_OPPORTUNITY_RADAR + NINE_BRAIN_GOVERNANCE",
             "evidence_inputs": {k: list(EVIDENCE_INPUTS.get(k, ())) for k in ENGINE_ORDER},
             "sub_engines": False,
             "parallel_peer_analysis": False,
             "e9_decision_authority": True,
             "e9_market_control_authority": True,
+            "nine_brain_governance": governance,
             "learning_mode": "ADVISORY_ONLY",
             "next_evaluation": "NEXT_CLOSED_M5_CANDLE",
             "wait_bars": 0,
