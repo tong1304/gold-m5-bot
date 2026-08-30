@@ -1,13 +1,14 @@
 from production_v2.contracts import EngineResult
 from production_v2.e9_brain import analyze_e9
+from production_v2.pipeline import _prepare_e9_boundary
 
 
 def _engine(engine_id, output):
     return EngineResult(engine_id, engine_id, False, 0.0, output, tuple(output.get("reason_codes", ())))
 
 
-def test_e9_accepts_structured_liquidity_event_without_unhashable_dict_failure():
-    upstream = {
+def _upstream():
+    return {
         "E1": _engine("E1", {"market_state": "TREND_UP", "trend_state": "UP", "pressure": "UP", "structure": "BULLISH"}),
         "E2": _engine("E2", {"finding": "CONDITIONAL"}),
         "E3": _engine("E3", {"finding": "STRUCTURE_FORMING", "external_state": "MIXED", "internal_state": "UP", "lifecycle": "FORMING"}),
@@ -36,8 +37,17 @@ def test_e9_accepts_structured_liquidity_event_without_unhashable_dict_failure()
         }),
     }
 
+
+def test_e9_boundary_scalarizes_structured_liquidity_event_and_preserves_detail():
+    upstream = _upstream()
+
+    _prepare_e9_boundary(upstream)
+
+    assert upstream["E4"].output["event"] == "TYPE=HIGH_ACCEPTANCE_CANDIDATE LEVEL=78939.2"
+    assert upstream["E4"].output["event_detail"] == {"type": "HIGH_ACCEPTANCE_CANDIDATE", "level": 78939.2}
+
     result = analyze_e9({}, upstream)
 
     assert result.engine_id == "E9"
     assert result.output["decision"] == "NO_TRADE"
-    assert result.output["auction_event"] == "HIGH_ACCEPTANCE_CANDIDATE level=78939.2"
+    assert result.output["auction_event"] == "TYPE=HIGH_ACCEPTANCE_CANDIDATE LEVEL=78939.2"
