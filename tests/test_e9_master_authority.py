@@ -18,14 +18,14 @@ def _plan(direction="SELL"):
     }
 
 
-def _upstream(e6_direction="SELL", e8_reasons=()):
+def _upstream(e6_direction="SELL", e8_reasons=(), plan=None):
     return {
         f"E{i}": _r(f"E{i}", {"finding": "SUPPORTIVE", "direction": "BUY"})
         for i in range(1, 6)
     } | {
         "E6": _r("E6", {"finding": f"{e6_direction} MATURE", "direction": e6_direction, "setup": "VALID_SETUP", "maturity": "MATURE"}),
         "E7": _r("E7", {"finding": f"{e6_direction} CONFIRMED", "direction": e6_direction, "confirmation": "CONFIRMED", "trigger_observed": True}),
-        "E8": _r("E8", {"finding": "RISK_READY", "risk_gate": "RISK_READY", "trade_plan": _plan(e6_direction)}, reasons=e8_reasons),
+        "E8": _r("E8", {"finding": "RISK_READY", "risk_gate": "RISK_READY", "trade_plan": plan or _plan(e6_direction)}, reasons=e8_reasons),
     }
 
 
@@ -39,3 +39,11 @@ def test_e9_engine_result_economic_veto_cannot_be_hidden_from_output():
     result = analyze_e9({}, _upstream("SELL", ("REAL_RR_BELOW_MINIMUM",)))
     assert result.output["decision"] == "NO_TRADE"
     assert "REAL_RR_BELOW_MINIMUM" in result.reason_codes
+
+
+def test_e9_rejects_geometrically_invalid_verified_plan():
+    invalid = _plan("SELL")
+    invalid["stop_loss"] = 99.0
+    result = analyze_e9({}, _upstream("SELL", plan=invalid))
+    assert result.output["decision"] == "NO_TRADE"
+    assert "INVALID_TRADE_GEOMETRY" in result.reason_codes
