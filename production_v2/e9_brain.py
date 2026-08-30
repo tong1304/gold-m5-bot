@@ -166,11 +166,19 @@ def _market_control_brain(e1, e2, e3, e4, e5, e6, e7, e8, direction, setup, thes
     if range_state and dominant not in {"BUYERS", "SELLERS"}:
         intent = "LIQUIDITY_SEEKING_WITHOUT_DIRECTIONAL_CONTROL"
 
-    accepted = any(k in e5b for k in ("ACCEPTED_ABOVE_VALUE", "ACCEPTED_BELOW_VALUE", "VALUE_ACCEPTANCE", "ACCEPTANCE_ABOVE", "ACCEPTANCE_BELOW"))
-    follow = any(k in (_blob(e7) + " " + _blob(e8)) for k in ("FOLLOW_THROUGH_PROVEN", "CAUSAL_FOLLOW_THROUGH_PROVEN", "CONFIRMED", "PROVEN", "VALIDATED"))
+    accepted_above = any(k in e5b for k in ("ACCEPTED_ABOVE_VALUE", "ACCEPTANCE_ABOVE"))
+    accepted_below = any(k in e5b for k in ("ACCEPTED_BELOW_VALUE", "ACCEPTANCE_BELOW"))
+    accepted = accepted_above or accepted_below or "VALUE_ACCEPTANCE" in e5b
+    acceptance_direction = "BUY" if accepted_above else "SELL" if accepted_below else _direction(e5.get("value_response_direction"), e5.get("repricing_direction"))
+    acceptance_aligned = bool(accepted and repricing in DIRECTIONS and acceptance_direction in {"NEUTRAL", repricing})
+    follow_blob = _blob(e7) + " " + _blob(e8)
+    follow = any(k in follow_blob for k in ("FOLLOW_THROUGH_PROVEN", "CAUSAL_FOLLOW_THROUGH_PROVEN", "CONFIRMED", "PROVEN", "VALIDATED"))
     if accepted: evidence.append("VALUE_ACCEPTANCE_OBSERVED")
+    if acceptance_aligned and acceptance_direction in DIRECTIONS: evidence.append("VALUE_ACCEPTANCE_ALIGNED_WITH_REPRICING")
+    elif accepted and acceptance_direction in DIRECTIONS: warnings.append("VALUE_ACCEPTANCE_DIRECTION_NOT_ALIGNED")
     if follow: evidence.append("FOLLOW_THROUGH_EVIDENCE_PRESENT")
-    chain_complete = bool(explicit_taker and explicit_response and taker != responder and (sweep or rejection) and target not in {"UNRESOLVED", None, ""} and terminal and (accepted or follow))
+
+    chain_complete = bool(explicit_taker and explicit_response and taker != responder and (sweep or rejection) and target not in {"UNRESOLVED", None, ""} and terminal and (acceptance_aligned or follow))
     if chain_complete: evidence.append("MARKET_CONTROL_CHAIN_COMPLETE")
     else: warnings.append("MARKET_CONTROL_CHAIN_INCOMPLETE")
 
@@ -189,7 +197,7 @@ def _market_control_brain(e1, e2, e3, e4, e5, e6, e7, e8, direction, setup, thes
     strength += 20 if (sweep or rejection) else 0
     strength += 15 if explicit_taker and explicit_response and taker != responder else 0
     strength += 15 if terminal else 0
-    strength += 10 if (accepted or follow) else 0
+    strength += 10 if (acceptance_aligned or follow) else 0
     strength -= 20 if pending else 0
     strength -= 10 if info4 == "LOW_INFORMATION" else 0
     strength -= 10 if transition else 0
@@ -200,7 +208,7 @@ def _market_control_brain(e1, e2, e3, e4, e5, e6, e7, e8, direction, setup, thes
     if control_state == "CONTROL_ESTABLISHED":
         interpretation = "Participant-control chain ครบ: liquidity → response → repricing → target และมี acceptance/follow-through"
     elif control_state == "CONTROL_FORMING":
-        interpretation = "พบ controller ที่มีน้ำหนัก แต่ auction ยังไม่ terminal; จึงรายงานเป็น control-forming ไม่ใช่ established"
+        interpretation = "พบ controller ที่มีน้ำหนัก แต่ auction ยังไม่ terminal หรือ follow-through ยังไม่ครบ; ยังไม่ถือเป็น established"
     elif control_state == "CONTROL_CONTESTED":
         interpretation = "หลักฐาน Buyers/Sellers แข่งขันกัน ยังไม่ระบุฝ่ายควบคุมแบบเอกฉันท์"
     elif control_state == "BALANCED_NO_CONTROL":
@@ -211,7 +219,8 @@ def _market_control_brain(e1, e2, e3, e4, e5, e6, e7, e8, direction, setup, thes
     return {
         "state": control_state, "strength": round(strength, 2), "dominant_actor": dominant,
         "controlled_side": controlled, "trapped_side": trapped if chain_complete else "NONE",
-        "liquidity_target": target, "market_intent": intent, "auction_phase": "TERMINAL_RESPONSE" if terminal else "POST_SWEEP_RECLAIM" if sweep and rejection else "LIQUIDITY_INTERACTION" if event else "BALANCED_RANGE" if range_state else "TRANSITION_AUCTION" if transition else "UNRESOLVED",
+        "liquidity_target": target, "market_intent": intent,
+        "auction_phase": "TERMINAL_RESPONSE" if terminal else "POST_SWEEP_RECLAIM" if sweep and rejection else "LIQUIDITY_INTERACTION" if event else "BALANCED_RANGE" if range_state else "TRANSITION_AUCTION" if transition else "UNRESOLVED",
         "repricing_direction": repricing, "evidence": _dedupe(evidence), "warnings": _dedupe(warnings), "conflicts": _dedupe(conflicts),
         "thesis": thesis, "setup": setup,
         "directional_evidence": {"buy_signals": buy_context, "sell_signals": sell_context, "net": buy_context - sell_context, "direction_from_e6": direction},
@@ -262,8 +271,14 @@ def analyze_e9(snapshot: dict[str, Any], upstream: dict[str, EngineResult]) -> E
 
     mc = _market_control_brain(e1, e2, e3, e4, e5, e6, e7, e8, direction, setup, thesis)
     conflicts.extend(f"E9:{x}" for x in mc["conflicts"])
-    supports.append("E9:MARKET_CONTROL_ESTABLISHED" if mc["state"] == "CONTROL_ESTABLISHED" else "E9:MARKET_CONTROL_FORMING" if mc["state"] == "CONTROL_FORMING" else "E9:MARKET_CONTROL_CONTESTED" if mc["state"] == "CONTROL_CONTESTED" else "E9:MARKET_CONTROL_UNPROVEN")
-    if mc["state"] == "CONTROL_CONTESTED": supports.pop(); counter.append("E9:MARKET_CONTROL_CONTESTED")
+    if mc["state"] == "CONTROL_ESTABLISHED":
+        supports.append("E9:MARKET_CONTROL_ESTABLISHED")
+    elif mc["state"] == "CONTROL_FORMING":
+        supports.append("E9:MARKET_CONTROL_FORMING")
+    elif mc["state"] == "CONTROL_CONTESTED":
+        counter.append("E9:MARKET_CONTROL_CONTESTED")
+    else:
+        counter.append("E9:MARKET_CONTROL_UNPROVEN")
     counter.extend(f"E9:{x}" for x in mc["warnings"])
 
     if direction == "NEUTRAL": reasons.append("DIRECTION_UNRESOLVED")
@@ -299,7 +314,7 @@ def analyze_e9(snapshot: dict[str, Any], upstream: dict[str, EngineResult]) -> E
     authority.update({"E6_thesis": thesis, "E6_setup": setup, "E6_maturity": maturity, "E7_confirmation": confirmation, "E8_risk_gate": risk_gate})
     output = {
         "question": QUESTION, "finding": decision,
-        "observations": [f"direction={direction}", f"setup={setup}", f"maturity={maturity or 'UNRESOLVED'}", f"confirmation={confirmation or 'UNRESOLVED'}", f"risk_gate={risk_gate or 'UNRESOLVED'}", f"market_control={mc['state']}", f"control_strength={mc['strength']}"],
+        "observations": [f"direction={direction}", f"setup={setup}", f"maturity={maturity or 'UNRESOLVED'}", f"confirmation={confirmation or 'UNRESOLVED'}", f"risk_gate={risk_gate or 'UNRESOLVED'}", f"market_control={mc['state']}", f"control_strength={mc['strength']}", f"control_chain_complete={mc['participant_chain']['chain_complete']}"],
         "reasons": _dedupe(reasons + conflicts), "decision": decision, "direction": direction, "thesis": thesis, "setup": setup, "maturity": maturity, "confirmation": confirmation, "risk_gate": risk_gate,
         "setup_ready": setup_ready, "confirmation_ready": confirmation_ready, "economics_ready": economics_ready, "trade_plan": plan,
         "reasoning_role": "MASTER_DECISION_ANALYST", "decision_authority": "E9", "trade_decision_authority": True, "architecture": "SINGLE_AXIS_E1_TO_E9",
