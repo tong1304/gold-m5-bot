@@ -172,7 +172,6 @@ def _market_control(e1: dict[str, Any], e2: dict[str, Any], e3: dict[str, Any],
         e5.get("value_response_direction"), e5.get("repricing_direction")
     )
     acceptance_aligned = accepted and repricing in DIRECTIONS and acceptance_direction == repricing
-    follow = any(k in (_blob(e7) + " " + _blob(_out(None))) for k in ())
     if accepted:
         evidence.append("VALUE_ACCEPTANCE_OBSERVED")
     if acceptance_aligned:
@@ -253,7 +252,7 @@ def analyze_e9(snapshot: dict[str, Any], upstream: dict[str, EngineResult]) -> E
     supports: list[str] = []
     counter: list[str] = []
 
-    # E6 owns the thesis/direction. E7 owns confirmation. E8 owns economics.
+    # E6 owns thesis/direction. E7 owns confirmation. E8 owns economics.
     setup = str(e6.get("setup", e6.get("setup_family", "UNKNOWN")))
     thesis = str(e6.get("thesis", e6.get("candidate_setup_thesis", "UNRESOLVED")))
     setup_dir = _direction(e6.get("direction"), e6.get("direction_thesis"), e6.get("thesis_direction"), e6.get("finding"))
@@ -292,29 +291,46 @@ def analyze_e9(snapshot: dict[str, Any], upstream: dict[str, EngineResult]) -> E
     if not economics_ready:
         reasons.append("RISK_NOT_READY")
 
-    # Collect upstream evidence without letting generic words such as RANGE or
-    # TRANSITION become automatic vetoes.
+    # Generic findings are evidence, not vetoes. Only explicit hard conflict
+    # codes or explicit invalidation are allowed to become E9 conflicts.
     for i, eo in enumerate(e, 1):
         f = _finding(eo)
         if f not in {"", "UNRESOLVED", "UNKNOWN", "NONE", "NO_TRADE", "NO_SETUP"}:
             supports.append(f"E{i}:{f}")
         for code in _codes(eo):
-            if code in HARD_CONFLICT_CODES or "INVALIDAT" in code or "OPPOS" in code or "CONFLICT" in code:
+            if code in HARD_CONFLICT_CODES or "INVALIDAT" in code:
                 conflicts.append(f"E{i}:{code}")
             elif code in {"CONFIRMATION_PROVEN", "CAUSAL_FOLLOW_THROUGH_PROVEN", "FOLLOW_THROUGH_PROVEN"}:
                 supports.append(f"E{i}:{code}")
             else:
                 counter.append(f"E{i}:{code}")
 
-    # E1-E5 directional evidence is context, not a vote. Only explicit hard
-    # contradiction is a veto.
+    # E1-E5 provide context and evidence. They do NOT vote against E6 merely
+    # because their broad directional state differs. A contradiction is a veto
+    # only when the upstream engine explicitly declares a thesis-level conflict
+    # or invalidation. This prevents false vetoes such as E1=BEARISH vs
+    # E6=SELL LIQUIDITY_REVERSAL being treated as an opposition.
+    explicit_context_conflict_codes = {
+        "THESIS_INVALIDATED", "MARKET_STATE_CONFLICT", "STRUCTURE_THESIS_CONFLICT",
+        "OPPOSING_LIQUIDITY_THESIS", "DIRECTIONAL_EVIDENCE_CONFLICT",
+        "EXTERNAL_INTERNAL_STRUCTURE_CONFLICT",
+    }
+    for label, eo in (("E1", e1), ("E2", e2), ("E3", e3), ("E4", e4), ("E5", e5)):
+        codes = set(_codes(eo))
+        explicit_conflicts = codes.intersection(explicit_context_conflict_codes)
+        for code in sorted(explicit_conflicts):
+            conflicts.append(f"{label}:{code}")
+
+    # A directional field is only treated as contradictory when the engine also
+    # explicitly marks it as conflicting with the active E6 thesis. Normal
+    # structure/bias disagreement remains counter-evidence for reconciliation.
     for label, eo in (("E1", e1), ("E2", e2), ("E3", e3), ("E4", e4), ("E5", e5)):
         d = _direction(
             eo.get("direction"), eo.get("opportunity_direction"), eo.get("thesis_direction"),
             eo.get("structure_direction"), eo.get("bias"), eo.get("repricing_direction"),
         )
         if d in DIRECTIONS and direction in DIRECTIONS and d != direction:
-            conflicts.append(f"{label}:DIRECTION_OPPOSES_E6")
+            counter.append(f"{label}:DIRECTION_COUNTER_EVIDENCE_{d}_VS_{direction}")
 
     mc = _market_control(e1, e2, e3, e4, e5, e6, e7, direction, setup, thesis)
     for code in mc["conflicts"]:
