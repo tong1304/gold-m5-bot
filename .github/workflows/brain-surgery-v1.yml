@@ -1,0 +1,36 @@
+name: Brain Surgery V1
+
+on:
+  push:
+    branches: [brain-surgery-v1]
+
+permissions:
+  contents: write
+
+jobs:
+  surgery:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: brain-surgery-v1
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Run deterministic E1-E9 surgery
+        run: python tools/brain_surgery_v1.py
+      - name: Syntax gate
+        run: python -m compileall -q production_v2
+      - name: Commit all nine brain changes
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add production_v2/e*_brain.py
+          if git diff --cached --quiet; then
+            echo 'No brain changes required'
+            exit 0
+          fi
+          git commit -m 'brain surgery: professionalize E1-E9 [skip ci]'
+          git push origin brain-surgery-v1
