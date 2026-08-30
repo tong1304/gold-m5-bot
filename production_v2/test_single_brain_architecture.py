@@ -33,3 +33,11 @@ def test_no_legacy_e1_decision_layers_remain():
     }
     present = sorted(p.name for p in ROOT.iterdir() if p.is_file() and p.name in forbidden)
     assert not present, f"legacy E1 decision layers remain: {present}"
+
+
+def test_nine_brain_governance_module_is_present():
+    governance = ROOT / "professional_governance.py"
+    assert governance.exists()
+    tree = ast.parse(governance.read_text(encoding="utf-8"))
+    names = {n.name for n in tree.body if isinstance(n, ast.FunctionDef)}
+    assert {"audit_engines", "enforce_final_authority"}.issubset(names)
