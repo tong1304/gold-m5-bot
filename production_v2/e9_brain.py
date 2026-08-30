@@ -8,7 +8,6 @@ NAME = "Master Decision Brain"
 QUESTION = "Should this trade be taken after reconciling all relevant evidence?"
 DIRECTIONS = {"BUY", "SELL"}
 
-# E9 is the final reconciler. These codes can never be softened by scoring.
 HARD_CONFLICT_CODES = {
     "THESIS_INVALIDATED", "MARKET_STATE_CONFLICT", "STRUCTURE_THESIS_CONFLICT",
     "OPPOSING_LIQUIDITY_THESIS", "DIRECTIONAL_EVIDENCE_CONFLICT",
@@ -19,6 +18,7 @@ ECONOMIC_HARD_CODES = {
     "EFFECTIVE_SPACE_UNRELIABLE", "EFFECTIVE_SPACE_BELOW_MINIMUM",
     "STRESSED_PROBABILITY_BELOW_MINIMUM", "TARGET_REALISM_TOO_LOW",
     "STOP_QUALITY_TOO_LOW", "PROBABILITY_EDGE_NOT_TRUSTWORTHY",
+    "INVALID_RISK_GEOMETRY", "RISK_GEOMETRY_INVALID", "NO_USABLE_STRUCTURAL_TARGET",
 }
 
 
@@ -43,6 +43,12 @@ def _codes(o: dict[str, Any]) -> list[str]:
     if isinstance(vals, str):
         vals = [vals]
     return [_text(v) for v in vals if v]
+
+
+def _engine_codes(e: EngineResult | None) -> list[str]:
+    if not e:
+        return []
+    return list(dict.fromkeys(_codes(_out(e)) + [_text(v) for v in (e.reason_codes or ()) if v]))
 
 
 def _finding(o: dict[str, Any]) -> str:
@@ -239,11 +245,32 @@ def _market_control(e1: dict[str, Any], e2: dict[str, Any], e3: dict[str, Any],
     }
 
 
+def _plan_is_structurally_valid(plan: dict[str, Any], direction: str) -> bool:
+    if not isinstance(plan, dict) or direction not in DIRECTIONS:
+        return False
+    try:
+        entry = float(plan["entry"]); stop = float(plan["stop_loss"])
+        tp2 = float(plan["take_profit_2"])
+    except (KeyError, TypeError, ValueError):
+        return False
+    if not all(x == x for x in (entry, stop, tp2)):
+        return False
+    if direction == "BUY" and not (stop < entry < tp2):
+        return False
+    if direction == "SELL" and not (tp2 < entry < stop):
+        return False
+    rr = _num(plan.get("rr_tp2"))
+    if rr is not None and rr < 1.50:
+        return False
+    return True
+
+
 def analyze_e9(snapshot: dict[str, Any], upstream: dict[str, EngineResult]) -> EngineResult:
     """Final E9 reconciliation.
 
-    E9 never invents a setup and never weakens E6/E7/E8 gates. It resolves the
-    evidence hierarchy, applies hard vetoes, and emits an auditable decision.
+    E6 owns the actionable thesis direction; E7 owns confirmation; E8 owns
+    execution economics. E9 reconciles evidence but never lets a vote count,
+    score, or advisory layer override a failed hard gate.
     """
     e = [_out(upstream.get(f"E{i}")) for i in range(1, 9)]
     e1, e2, e3, e4, e5, e6, e7, e8 = e
@@ -252,10 +279,16 @@ def analyze_e9(snapshot: dict[str, Any], upstream: dict[str, EngineResult]) -> E
     supports: list[str] = []
     counter: list[str] = []
 
-    # E6 owns thesis/direction. E7 owns confirmation. E8 owns economics.
     setup = str(e6.get("setup", e6.get("setup_family", "UNKNOWN")))
     thesis = str(e6.get("thesis", e6.get("candidate_setup_thesis", "UNRESOLVED")))
-    setup_dir = _direction(e6.get("direction"), e6.get("direction_thesis"), e6.get("thesis_direction"), e6.get("finding"))
+    # E6 is the thesis owner. Other engines are corroboration/counter-evidence,
+    # not peers that can outvote the setup thesis.
+    direction = _direction(
+        e6.get("direction"), e6.get("direction_thesis"),
+        e6.get("thesis_direction"), e6.get("finding"),
+    )
+    if direction not in DIRECTIONS:
+        direction = "NEUTRAL"
     trigger_dir = _direction(e7.get("direction"), e7.get("confirmation_direction"))
     risk_dir = _direction(e8.get("direction"), e8.get("risk_direction"))
     maturity = _text(e6.get("maturity", e6.get("stage", "UNRESOLVED")))
@@ -263,9 +296,6 @@ def analyze_e9(snapshot: dict[str, Any], upstream: dict[str, EngineResult]) -> E
     risk_gate = _text(e8.get("risk_gate", e8.get("finding", "RISK_NOT_READY")))
     plan = e8.get("trade_plan") or {}
 
-    # Direction is valid only when E6 owns a clear thesis. E7/E8 may confirm it,
-    # but they cannot create a new direction.
-    direction = setup_dir if setup_dir in DIRECTIONS else "NEUTRAL"
     if direction in DIRECTIONS:
         if trigger_dir in DIRECTIONS and trigger_dir != direction:
             conflicts.append("E7:DIRECTION_OPPOSES_E6")
@@ -279,9 +309,10 @@ def analyze_e9(snapshot: dict[str, Any], upstream: dict[str, EngineResult]) -> E
     )
     trigger_observed = bool(e7.get("trigger_observed") or e7.get("closed_candle_trigger") or e7.get("confirmation_proven"))
     confirmation_ready = confirmation in {"CONFIRMED", "PROVEN", "VALIDATED", "TRADE_READY"} and trigger_observed
+    plan_valid = bool(plan.get("valid") or plan.get("verified")) and _plan_is_structurally_valid(plan, direction)
     economics_ready = (
         risk_gate in {"RISK_READY", "ECONOMICALLY_ACCEPTABLE", "TRADE_READY"}
-        and bool(plan.get("valid") or plan.get("verified"))
+        and plan_valid
     )
 
     if not setup_ready:
@@ -290,9 +321,9 @@ def analyze_e9(snapshot: dict[str, Any], upstream: dict[str, EngineResult]) -> E
         reasons.append("ENTRY_CONFIRMATION_NOT_PROVEN")
     if not economics_ready:
         reasons.append("RISK_NOT_READY")
+    if plan and not plan_valid:
+        reasons.append("INVALID_TRADE_GEOMETRY")
 
-    # Generic findings are evidence, not vetoes. Only explicit hard conflict
-    # codes or explicit invalidation are allowed to become E9 conflicts.
     for i, eo in enumerate(e, 1):
         f = _finding(eo)
         if f not in {"", "UNRESOLVED", "UNKNOWN", "NONE", "NO_TRADE", "NO_SETUP"}:
@@ -305,25 +336,12 @@ def analyze_e9(snapshot: dict[str, Any], upstream: dict[str, EngineResult]) -> E
             else:
                 counter.append(f"E{i}:{code}")
 
-    # E1-E5 provide context and evidence. They do NOT vote against E6 merely
-    # because their broad directional state differs. A contradiction is a veto
-    # only when the upstream engine explicitly declares a thesis-level conflict
-    # or invalidation. This prevents false vetoes such as E1=BEARISH vs
-    # E6=SELL LIQUIDITY_REVERSAL being treated as an opposition.
-    explicit_context_conflict_codes = {
-        "THESIS_INVALIDATED", "MARKET_STATE_CONFLICT", "STRUCTURE_THESIS_CONFLICT",
-        "OPPOSING_LIQUIDITY_THESIS", "DIRECTIONAL_EVIDENCE_CONFLICT",
-        "EXTERNAL_INTERNAL_STRUCTURE_CONFLICT",
-    }
+    explicit_context_conflict_codes = HARD_CONFLICT_CODES
     for label, eo in (("E1", e1), ("E2", e2), ("E3", e3), ("E4", e4), ("E5", e5)):
         codes = set(_codes(eo))
-        explicit_conflicts = codes.intersection(explicit_context_conflict_codes)
-        for code in sorted(explicit_conflicts):
+        for code in sorted(codes.intersection(explicit_context_conflict_codes)):
             conflicts.append(f"{label}:{code}")
 
-    # A directional field is only treated as contradictory when the engine also
-    # explicitly marks it as conflicting with the active E6 thesis. Normal
-    # structure/bias disagreement remains counter-evidence for reconciliation.
     for label, eo in (("E1", e1), ("E2", e2), ("E3", e3), ("E4", e4), ("E5", e5)):
         d = _direction(
             eo.get("direction"), eo.get("opportunity_direction"), eo.get("thesis_direction"),
@@ -343,8 +361,6 @@ def analyze_e9(snapshot: dict[str, Any], upstream: dict[str, EngineResult]) -> E
         counter.append(f"E9:MARKET_CONTROL_{mc['state'].replace('CONTROL_', '')}")
     counter.extend(f"E9:{x}" for x in mc["warnings"])
 
-    # E8 economics are hard gates. Missing values are NOT treated as zero;
-    # absence is reported as not ready, preventing accidental arithmetic vetoes.
     rr = _num(e8.get("real_rr", e8.get("rr_used")))
     edge = _num(e8.get("economic_edge_r", e8.get("expected_value_r")))
     margin = _num(e8.get("economic_margin"))
@@ -363,7 +379,9 @@ def analyze_e9(snapshot: dict[str, Any], upstream: dict[str, EngineResult]) -> E
     if risk_quality is not None and risk_quality < 0.68:
         reasons.append("RISK_QUALITY_BELOW_DECISION_THRESHOLD")
 
-    for code in _codes(e8):
+    # E8 reason_codes are first-class evidence. A hard economic veto cannot be
+    # hidden by putting the code in EngineResult metadata instead of output.
+    for code in _engine_codes(upstream.get("E8")):
         if code in ECONOMIC_HARD_CODES:
             reasons.append(code)
 
@@ -374,12 +392,8 @@ def analyze_e9(snapshot: dict[str, Any], upstream: dict[str, EngineResult]) -> E
 
     hard_vetoes = _dedupe(reasons + conflicts)
     hard_veto = bool(hard_vetoes)
-
-    # Explicit decision matrix: every executable trade must pass ALL three
-    # gates. E9 cannot turn an incomplete gate into a trade by score.
     decision = direction if direction in DIRECTIONS and setup_ready and confirmation_ready and economics_ready and not hard_veto else "NO_TRADE"
 
-    # Transparent scoring is descriptive only; it never overrides the matrix.
     evidence_quality = max(0.0, min(100.0, 50.0 + 7.0 * len(supports) - 5.0 * len(counter) - 15.0 * len(conflicts)))
     gate_quality = 100.0 if setup_ready and confirmation_ready and economics_ready else 50.0
     rr_quality = 100.0 if rr is not None and rr >= 1.50 else 35.0 if rr is not None else 45.0
@@ -393,9 +407,11 @@ def analyze_e9(snapshot: dict[str, Any], upstream: dict[str, EngineResult]) -> E
     authority.update({
         "E6_thesis": thesis,
         "E6_setup": setup,
+        "E6_direction": direction,
         "E6_maturity": maturity,
         "E7_confirmation": confirmation,
         "E8_risk_gate": risk_gate,
+        "E8_plan_structurally_valid": plan_valid,
     })
 
     output = {
@@ -419,10 +435,12 @@ def analyze_e9(snapshot: dict[str, Any], upstream: dict[str, EngineResult]) -> E
         "counter_thesis": counter,
         "observations": [
             f"direction={direction}",
+            f"direction_authority=E6",
             f"setup={setup}",
             f"maturity={maturity or 'UNRESOLVED'}",
             f"confirmation={confirmation or 'UNRESOLVED'}",
             f"risk_gate={risk_gate or 'UNRESOLVED'}",
+            f"plan_structurally_valid={plan_valid}",
             f"market_control={mc['state']}",
             f"control_strength={mc['strength']}",
             f"control_chain_complete={mc['participant_chain']['chain_complete']}",
@@ -431,7 +449,7 @@ def analyze_e9(snapshot: dict[str, Any], upstream: dict[str, EngineResult]) -> E
         "decision_authority": "E9",
         "trade_decision_authority": True,
         "architecture": "SINGLE_AXIS_E1_TO_E9",
-        "reconciliation": "EVIDENCE_HIERARCHY_PLUS_COUNTER_THESIS_PLUS_EXPLICIT_GATE_MATRIX",
+        "reconciliation": "E6_THESIS_AUTHORITY_PLUS_EVIDENCE_HIERARCHY_PLUS_EXPLICIT_GATE_MATRIX",
         "authority_checks": authority,
         "evidence_used": "E1_E2_E3_E4_E5_E6_E7_E8",
         "evidence_hierarchy": [
@@ -486,6 +504,8 @@ def analyze_e9(snapshot: dict[str, Any], upstream: dict[str, EngineResult]) -> E
             "evidence_quality": evidence_quality,
             "decision_confidence": score,
             "market_control_conclusion": mc["state"],
+            "direction_authority": "E6",
+            "economic_authority": "E8",
         },
     }
     return EngineResult("E9", NAME, decision in DIRECTIONS, score, output, tuple(_dedupe(reasons + conflicts)))
