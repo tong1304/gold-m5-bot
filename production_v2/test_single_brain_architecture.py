@@ -55,7 +55,7 @@ def test_pending_engine_gates_are_not_mislabeled_as_hard_conflicts():
         "E6": {"direction": "BUY", "maturity": "VALIDATING", "gate_passed": False},
         "E7": {"confirmation_state": "PENDING", "gate_passed": False},
         "E8": {"risk_state": "BLOCKED", "gate_passed": False},
-        "E9": {"decision": "NO_TRADE", "all_gates_pass": False},
+        "E9": {"decision": "BUY", "all_gates_pass": False},
     }
 
     audit = audit_engines(results)
