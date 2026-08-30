@@ -13,6 +13,7 @@ from .e7_brain import analyze_e7
 from .e8_brain import analyze_e8
 from .e9_brain import analyze_e9
 from .opportunity_layer import enrich_opportunity, recover_e9
+from .professional_opportunity import consolidate, enrich_engine
 
 ENGINE_ORDER = ("E1", "E2", "E3", "E4", "E5", "E6", "E7", "E8", "E9")
 EVIDENCE_INPUTS = {
@@ -47,29 +48,19 @@ def _dict_result(engine_id: str, output: dict[str, Any]) -> EngineResult:
 
 def _enrich(engine_id: str, result: EngineResult, snapshot: dict[str, Any]) -> EngineResult:
     output = enrich_opportunity(engine_id, result.output, snapshot)
+    output = enrich_engine(engine_id, output)
     return EngineResult(result.engine_id, result.name, result.gate_passed, result.score, output, result.reason_codes)
 
 
 def _scalarize(value: Any) -> str:
-    """Convert structured evidence into a deterministic scalar token for E9 set membership."""
     if isinstance(value, dict):
-        return " ".join(
-            f"{key}={_scalarize(child)}"
-            for key, child in sorted(value.items(), key=lambda item: str(item[0]))
-        )
+        return " ".join(f"{key}={_scalarize(child)}" for key, child in sorted(value.items(), key=lambda item: str(item[0])))
     if isinstance(value, (list, tuple, set)):
         return " ".join(_scalarize(child) for child in value)
     return str(value if value is not None else "").upper().strip()
 
 
 def _prepare_e9_boundary(results: dict[str, EngineResult]) -> None:
-    """Normalize E4 structured auction events only at the E8 -> E9 boundary.
-
-    E4 may legitimately expose a structured event object and E5/E6/E7/E8 must
-    continue to see that original evidence. E9's market-control state machine
-    performs scalar set-membership checks, so the boundary keeps the original
-    object as event_detail while supplying a deterministic event token.
-    """
     e4 = results.get("E4")
     if not e4 or not isinstance(e4.output, dict):
         return
@@ -93,7 +84,6 @@ class ProductionPipeline:
 
         e1 = _enrich("E1", _dict_result("E1", analyze_e1(bars)), snapshot)
         results["E1"] = e1
-
         e2_snapshot = dict(snapshot)
         e2_snapshot["E1_result"] = e1.output
         results["E2"] = _enrich("E2", _dict_result("E2", analyze_e2(e2_snapshot)), snapshot)
@@ -104,33 +94,28 @@ class ProductionPipeline:
         results["E7"] = _enrich("E7", analyze_e7(snapshot, results), snapshot)
         results["E8"] = _enrich("E8", analyze_e8(snapshot, results), snapshot)
 
-        # E9 remains the sole final authority. Normalize only the evidence boundary
-        # immediately before E9 so upstream brains retain their original evidence.
         _prepare_e9_boundary(results)
         try:
-            e9 = analyze_e9(snapshot, results)
-            e9 = _enrich("E9", e9, snapshot)
+            e9 = _enrich("E9", analyze_e9(snapshot, results), snapshot)
         except Exception as exc:
             recovery = recover_e9(results)
             recovery["e9_exception_type"] = type(exc).__name__
             recovery["e9_exception"] = str(exc)
-            e9 = _dict_result("E9", enrich_opportunity("E9", recovery, snapshot))
+            recovered = _dict_result("E9", enrich_opportunity("E9", recovery, snapshot))
+            e9 = EngineResult(recovered.engine_id, recovered.name, recovered.gate_passed, recovered.score, enrich_engine("E9", recovered.output), recovered.reason_codes)
         results["E9"] = e9
 
         plan = e9.output.get("trade_plan") or {}
-        approved = bool(
-            e9.gate_passed
-            and e9.output.get("decision") in {"BUY", "SELL"}
-            and (plan.get("valid", True) if isinstance(plan, dict) else False)
-        )
+        approved = bool(e9.gate_passed and e9.output.get("decision") in {"BUY", "SELL"} and (plan.get("valid", True) if isinstance(plan, dict) else False))
         decision = e9.output.get("decision") if approved else "NO_TRADE"
         engines = tuple(results[e] for e in ENGINE_ORDER)
+        radar = consolidate(results)
         risk = {
             "risk_gate": bool(plan.get("valid")) if isinstance(plan, dict) else False,
             "trade_plan": plan,
             "engine_state": "TRADE_APPROVED" if approved else "ANALYSIS_COMPLETE_NO_TRADE",
             "cycle_complete": True,
-            "analysis_architecture": "ONE_BRAIN_PER_ENGINE + BOUNDED_OPPORTUNITY_LAYER",
+            "analysis_architecture": "ONE_BRAIN_PER_ENGINE + PROFESSIONAL_OPPORTUNITY_RADAR",
             "evidence_inputs": {k: list(EVIDENCE_INPUTS.get(k, ())) for k in ENGINE_ORDER},
             "sub_engines": False,
             "parallel_peer_analysis": False,
@@ -140,23 +125,7 @@ class ProductionPipeline:
             "next_evaluation": "NEXT_CLOSED_M5_CANDLE",
             "wait_bars": 0,
             "decision_reasons": list(e9.reason_codes),
-            "opportunity_summary": {
-                e: {
-                    "direction": results[e].output.get("opportunity_direction"),
-                    "stage": results[e].output.get("opportunity_stage"),
-                    "score": results[e].output.get("opportunity_score"),
-                    "next_event": results[e].output.get("opportunity_next_event"),
-                }
-                for e in ENGINE_ORDER
-            },
+            "opportunity_radar": radar,
+            "opportunity_summary": {e: {"direction": results[e].output.get("opportunity_direction"), "state": results[e].output.get("opportunity_state"), "stage": results[e].output.get("opportunity_stage"), "score": results[e].output.get("opportunity_score"), "next_event": results[e].output.get("opportunity_next_event")} for e in ENGINE_ORDER},
         }
-        return DecisionResult(
-            str(snapshot.get("symbol") or "UNKNOWN"),
-            str(snapshot.get("timeframe") or "M5"),
-            decision,
-            approved,
-            e9.score,
-            engines,
-            risk,
-            tuple(e9.reason_codes),
-        )
+        return DecisionResult(str(snapshot.get("symbol") or "UNKNOWN"), str(snapshot.get("timeframe") or "M5"), decision, approved, e9.score, engines, risk, tuple(e9.reason_codes))
