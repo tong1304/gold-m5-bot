@@ -138,9 +138,17 @@ def _market_control_brain(e1, e2, e3, e4, e5, e6, e7, e8, direction, setup, thes
     elif event and event not in {"UNRESOLVED", "UNKNOWN", "NONE", "LOW_INFORMATION"}:
         control["liquidity_target"] = event
 
-    # Explicit participant behaviour has priority over directional inference.
+    # A liquidity taker is not automatically the controlling participant.
+    # In a failed-break/reclaim sequence, the response actor is the party
+    # demonstrating control after the liquidity is taken. This distinction
+    # prevents "BUYERS took liquidity" from being misreported as "BUYERS control"
+    # when the observed response is a seller rejection/repricing.
+    response_controls = response in {"BUYERS", "SELLERS"} and sweep and reclaim
     if sellers_took and buyers_took:
         conflicts.append("E4:LIQUIDITY_TAKER_CONFLICT")
+    elif response_controls:
+        control["dominant_actor"] = response
+        evidence.append("RESPONSE_ACTOR_CONTROLS_AFTER_FAILED_BREAK")
     elif sellers_took:
         control["dominant_actor"] = "SELLERS"
         evidence.append("SELLERS_TAKING_LIQUIDITY")
@@ -171,20 +179,14 @@ def _market_control_brain(e1, e2, e3, e4, e5, e6, e7, e8, direction, setup, thes
             control["dominant_actor"] = "CONTESTED"
             conflicts.append("DIRECTIONAL_CONTROL_EVIDENCE_CONTESTED")
 
-    if control["dominant_actor"] == "SELLERS" and sell_signals >= 3 and sell_signals > buy_signals:
+    if control["dominant_actor"] == "SELLERS" and (response_controls or (sell_signals >= 3 and sell_signals > buy_signals) or (sellers_took and not buyers_took)):
         control["controlled_side"] = "SELL"
         control["repricing_direction"] = "SELL"
         evidence.append("SELL_SIDE_CONTROL_FORMING")
-    elif control["dominant_actor"] == "BUYERS" and buy_signals >= 3 and buy_signals > sell_signals:
+    elif control["dominant_actor"] == "BUYERS" and (response_controls or (buy_signals >= 3 and buy_signals > sell_signals) or (buyers_took and not sellers_took)):
         control["controlled_side"] = "BUY"
         control["repricing_direction"] = "BUY"
         evidence.append("BUY_SIDE_CONTROL_FORMING")
-    elif control["dominant_actor"] == "SELLERS" and sellers_took and not buyers_took:
-        control["controlled_side"] = "SELL"
-        control["repricing_direction"] = "SELL"
-    elif control["dominant_actor"] == "BUYERS" and buyers_took and not sellers_took:
-        control["controlled_side"] = "BUY"
-        control["repricing_direction"] = "BUY"
 
     if sweep and reclaim and response == "SELLERS" and buyers_took:
         control["trapped_side"] = "BUYERS"
@@ -237,8 +239,7 @@ def _market_control_brain(e1, e2, e3, e4, e5, e6, e7, e8, direction, setup, thes
     if direction == "SELL" and 0 < short_space < 0.75:
         warnings.append("SELL_SPACE_CONSTRAINED")
 
-    # Market-control strength is intentionally independent of trade permission.
-    # E7/E8 readiness belongs to the execution decision, not to the market state.
+    # Market-control strength is independent of trade permission.
     control_strength = 0.0
     control_strength += 25.0 if control["dominant_actor"] in {"BUYERS", "SELLERS"} else 0.0
     control_strength += 25.0 if control["controlled_side"] in DIRECTIONS else 0.0
@@ -296,6 +297,8 @@ def _market_control_brain(e1, e2, e3, e4, e5, e6, e7, e8, direction, setup, thes
         "participant_chain": {
             "liquidity_taker": _text(e4.get("liquidity_taker")) or "UNPROVEN",
             "response_actor": response or "UNPROVEN",
+            "controller_role": control["dominant_actor"],
+            "controller_basis": "RESPONSE_AFTER_FAILED_BREAK_RECLAIM" if response_controls else ("EXPLICIT_RESPONSE_ACTOR" if response in {"BUYERS", "SELLERS"} else "LIQUIDITY_TAKER_OR_CROSS_ENGINE_CONVERGENCE"),
             "liquidity_type": event or "UNPROVEN",
             "event_level": level,
             "chain_complete": chain_complete,
@@ -476,6 +479,8 @@ def analyze_e9(snapshot: dict[str, Any], upstream: dict[str, EngineResult]) -> E
             "evidence": mc["evidence"],
             "warnings": mc["warnings"],
             "chain_complete": mc["participant_chain"]["chain_complete"],
+            "controller_role": mc["participant_chain"]["controller_role"],
+            "controller_basis": mc["participant_chain"]["controller_basis"],
         },
         "evidence_quality": round(evidence_quality, 2),
         "edge_quality": round(edge_quality, 2),
