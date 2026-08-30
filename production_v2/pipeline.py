@@ -63,13 +63,12 @@ def _scalarize(value: Any) -> str:
 
 
 def _prepare_e9_boundary(results: dict[str, EngineResult]) -> None:
-    """Normalize E4 structured auction events before they cross into E9.
+    """Normalize E4 structured auction events only at the E8 -> E9 boundary.
 
-    E4 may legitimately expose a structured event object. E9's market-control
-    state machine performs scalar set-membership checks, so the boundary keeps
-    the original object as event_detail while supplying a deterministic event
-    token. This prevents a malformed data-shape exception from forcing E9 into
-    recovery mode and does not alter the underlying auction evidence.
+    E4 may legitimately expose a structured event object and E5/E6/E7/E8 must
+    continue to see that original evidence. E9's market-control state machine
+    performs scalar set-membership checks, so the boundary keeps the original
+    object as event_detail while supplying a deterministic event token.
     """
     e4 = results.get("E4")
     if not e4 or not isinstance(e4.output, dict):
@@ -92,24 +91,22 @@ class ProductionPipeline:
         bars = list(snapshot.get("bars") or [])
         results: dict[str, EngineResult] = {}
 
-        # E1 owns market state and is enriched only with its own bounded opportunity context.
         e1 = _enrich("E1", _dict_result("E1", analyze_e1(bars)), snapshot)
         results["E1"] = e1
 
-        # Every downstream brain receives upstream evidence, never a peer's authority.
         e2_snapshot = dict(snapshot)
         e2_snapshot["E1_result"] = e1.output
         results["E2"] = _enrich("E2", _dict_result("E2", analyze_e2(e2_snapshot)), snapshot)
         results["E3"] = _enrich("E3", _dict_result("E3", analyze_e3(bars)), snapshot)
         results["E4"] = _enrich("E4", _dict_result("E4", analyze_e4(snapshot, results)), snapshot)
-        _prepare_e9_boundary(results)
         results["E5"] = _enrich("E5", _dict_result("E5", analyze_e5(snapshot, results)), snapshot)
         results["E6"] = _enrich("E6", analyze_e6(snapshot, results), snapshot)
         results["E7"] = _enrich("E7", analyze_e7(snapshot, results), snapshot)
         results["E8"] = _enrich("E8", analyze_e8(snapshot, results), snapshot)
 
-        # E9 remains the sole final authority. If its existing implementation throws,
-        # fail closed rather than losing the M5 evaluation cycle.
+        # E9 remains the sole final authority. Normalize only the evidence boundary
+        # immediately before E9 so upstream brains retain their original evidence.
+        _prepare_e9_boundary(results)
         try:
             e9 = analyze_e9(snapshot, results)
             e9 = _enrich("E9", e9, snapshot)
