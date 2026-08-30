@@ -50,6 +50,39 @@ def _enrich(engine_id: str, result: EngineResult, snapshot: dict[str, Any]) -> E
     return EngineResult(result.engine_id, result.name, result.gate_passed, result.score, output, result.reason_codes)
 
 
+def _scalarize(value: Any) -> str:
+    """Convert structured evidence into a deterministic scalar token for E9 set membership."""
+    if isinstance(value, dict):
+        return " ".join(
+            f"{key}={_scalarize(child)}"
+            for key, child in sorted(value.items(), key=lambda item: str(item[0]))
+        )
+    if isinstance(value, (list, tuple, set)):
+        return " ".join(_scalarize(child) for child in value)
+    return str(value if value is not None else "").upper().strip()
+
+
+def _prepare_e9_boundary(results: dict[str, EngineResult]) -> None:
+    """Normalize E4 structured auction events before they cross into E9.
+
+    E4 may legitimately expose a structured event object. E9's market-control
+    state machine performs scalar set-membership checks, so the boundary keeps
+    the original object as event_detail while supplying a deterministic event
+    token. This prevents a malformed data-shape exception from forcing E9 into
+    recovery mode and does not alter the underlying auction evidence.
+    """
+    e4 = results.get("E4")
+    if not e4 or not isinstance(e4.output, dict):
+        return
+    output = dict(e4.output)
+    for key in ("event", "auction_event", "liquidity_event"):
+        value = output.get(key)
+        if isinstance(value, (dict, list, tuple, set)):
+            output.setdefault("event_detail", value)
+            output[key] = _scalarize(value)
+    results["E4"] = EngineResult(e4.engine_id, e4.name, e4.gate_passed, e4.score, output, e4.reason_codes)
+
+
 class ProductionPipeline:
     ENGINE_ORDER = ENGINE_ORDER
 
@@ -69,6 +102,7 @@ class ProductionPipeline:
         results["E2"] = _enrich("E2", _dict_result("E2", analyze_e2(e2_snapshot)), snapshot)
         results["E3"] = _enrich("E3", _dict_result("E3", analyze_e3(bars)), snapshot)
         results["E4"] = _enrich("E4", _dict_result("E4", analyze_e4(snapshot, results)), snapshot)
+        _prepare_e9_boundary(results)
         results["E5"] = _enrich("E5", _dict_result("E5", analyze_e5(snapshot, results)), snapshot)
         results["E6"] = _enrich("E6", analyze_e6(snapshot, results), snapshot)
         results["E7"] = _enrich("E7", analyze_e7(snapshot, results), snapshot)
