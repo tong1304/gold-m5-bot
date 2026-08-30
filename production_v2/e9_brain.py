@@ -6,14 +6,16 @@ from .contracts import EngineResult
 
 NAME = "Master Decision Brain"
 QUESTION = "Should this trade be taken after reconciling all relevant evidence?"
-ARCHITECTURE = "E9_MASTER_DECISION_RESOLUTION_V52"
-VERSION = "52.0"
+ARCHITECTURE = "E9_MASTER_DECISION_RESOLUTION_V53"
+VERSION = "53.0"
 DIRECTIONS = {"BUY", "SELL"}
 
 HARD_CONFLICT_CODES = {
     "THESIS_INVALIDATED", "MARKET_STATE_CONFLICT", "STRUCTURE_THESIS_CONFLICT",
     "OPPOSING_LIQUIDITY_THESIS", "EXTERNAL_INTERNAL_STRUCTURE_CONFLICT",
     "E6_THESIS_INVALIDATED", "E7_CONFIRMATION_INVALIDATED", "E8_RISK_INVALIDATED",
+    "STRUCTURE_INVALIDATED", "BULLISH_STRUCTURE_INVALIDATED", "BEARISH_STRUCTURE_INVALIDATED",
+    "E3_STRUCTURE_INVALIDATED", "E3_THESIS_INVALIDATED",
 }
 ECONOMIC_BLOCKERS = {
     "INVALID_TRADE_GEOMETRY", "INVALID_RISK_GEOMETRY", "RISK_GEOMETRY_INVALID",
@@ -25,15 +27,15 @@ ECONOMIC_BLOCKERS = {
 }
 BLOCKER_PRIORITY = (
     "THESIS_INVALIDATED", "E6_THESIS_INVALIDATED", "E7_CONFIRMATION_INVALIDATED",
-    "E8_RISK_INVALIDATED", "MARKET_STATE_CONFLICT", "STRUCTURE_THESIS_CONFLICT",
-    "OPPOSING_LIQUIDITY_THESIS", "EXTERNAL_INTERNAL_STRUCTURE_CONFLICT",
-    "INVALID_TRADE_GEOMETRY", "INVALID_RISK_GEOMETRY", "RISK_GEOMETRY_INVALID",
-    "REAL_RR_BELOW_MINIMUM", "EXECUTION_COST_TOO_HIGH", "STRUCTURAL_SURVIVAL_NOT_PROVEN",
-    "EFFECTIVE_SPACE_UNRELIABLE", "EFFECTIVE_SPACE_BELOW_MINIMUM",
+    "E8_RISK_INVALIDATED", "E3_STRUCTURE_INVALIDATED", "STRUCTURE_INVALIDATED",
+    "BULLISH_STRUCTURE_INVALIDATED", "BEARISH_STRUCTURE_INVALIDATED", "E3_THESIS_INVALIDATED",
+    "MARKET_STATE_CONFLICT", "STRUCTURE_THESIS_CONFLICT", "OPPOSING_LIQUIDITY_THESIS",
+    "EXTERNAL_INTERNAL_STRUCTURE_CONFLICT", "INVALID_TRADE_GEOMETRY", "INVALID_RISK_GEOMETRY",
+    "RISK_GEOMETRY_INVALID", "REAL_RR_BELOW_MINIMUM", "EXECUTION_COST_TOO_HIGH",
+    "STRUCTURAL_SURVIVAL_NOT_PROVEN", "EFFECTIVE_SPACE_UNRELIABLE", "EFFECTIVE_SPACE_BELOW_MINIMUM",
     "STRESSED_PROBABILITY_BELOW_MINIMUM", "TARGET_REALISM_TOO_LOW", "STOP_QUALITY_TOO_LOW",
-    "PROBABILITY_EDGE_NOT_TRUSTWORTHY", "NO_USABLE_STRUCTURAL_TARGET",
-    "ENTRY_CONFIRMATION_NOT_PROVEN", "SETUP_NOT_MATURE", "RISK_NOT_READY",
-    "RISK_QUALITY_BELOW_DECISION_THRESHOLD", "DIRECTION_UNRESOLVED",
+    "PROBABILITY_EDGE_NOT_TRUSTWORTHY", "NO_USABLE_STRUCTURAL_TARGET", "ENTRY_CONFIRMATION_NOT_PROVEN",
+    "SETUP_NOT_MATURE", "RISK_NOT_READY", "RISK_QUALITY_BELOW_DECISION_THRESHOLD", "DIRECTION_UNRESOLVED",
 )
 CONFIRMATION_PROVEN = {"PROVEN", "CONFIRMED", "VALIDATED", "TRADE_READY"}
 MATURITY_READY = {"MATURE", "TRADE_READY", "VALIDATED", "CONFIRMED"}
@@ -157,7 +159,24 @@ def _plan_valid(plan: dict[str, Any], direction: str) -> bool:
 def _hard_conflicts(upstream: dict[str, EngineResult]) -> list[str]:
     found: list[str] = []
     for engine_id in ("E1", "E2", "E3", "E4", "E5", "E6", "E7", "E8"):
-        found.extend(c for c in _engine_codes(upstream.get(engine_id)) if c in HARD_CONFLICT_CODES)
+        engine = upstream.get(engine_id)
+        output = _out(engine)
+        codes = _engine_codes(engine)
+        found.extend(c for c in codes if c in HARD_CONFLICT_CODES)
+        for key in ("state", "finding", "lifecycle", "invalidation", "structure_state", "thesis_state"):
+            value = _text(output.get(key))
+            if value in HARD_CONFLICT_CODES or value.endswith("_INVALIDATED") or "THESIS_INVALIDATED" in value:
+                if value: found.append(value)
+        invalidations = output.get("invalidations")
+        if isinstance(invalidations, dict):
+            for key, value in invalidations.items():
+                if value is True and ("STRUCTURE" in _text(key) or "THESIS" in _text(key) or "INVALIDAT" in _text(key)):
+                    found.append(_text(key))
+        if engine_id == "E3":
+            finding = _text(output.get("finding"))
+            lifecycle = _text(output.get("lifecycle"))
+            if "_INVALIDATED" in finding or lifecycle == "INVALIDATED":
+                found.append("E3_STRUCTURE_INVALIDATED")
     return _dedupe(found)
 
 
@@ -240,5 +259,5 @@ def analyze_e9(snapshot: dict[str, Any], upstream: dict[str, EngineResult]) -> E
         "closed_candle_only": True, "no_lookahead": True, "authority": resolved["authority"],
     }
     reason_codes = _dedupe(([resolved["primary_blocker"]] if resolved["primary_blocker"] != "NONE" else ["MASTER_GATES_PASSED"]) + resolved["secondary_blockers"] + resolved["resolved_conflicts"] + (["E9_HARD_CONFLICT"] if resolved["hard_conflict"] else []))
-    output = {**resolved, "master_resolution": "EXECUTE" if resolved["all_gates_pass"] else "REJECT" if resolved["decision_state"] == "REJECT" else "WAIT_FOR_PROOF", "readiness_score": readiness_score, "evidence_summary": evidence_summary, "professional_reasoning": professional_reasoning, "decision_contract": {"BUY_SELL_requires_all_gates": True, "NO_TRADE_on_missing_confirmation": True, "NO_EXECUTION_on_invalid_geometry": True, "NO_EXECUTION_on_hard_conflict": True, "E9_preserves_E6_thesis_identity": True, "E9_does_not_create_thesis": True, "E9_does_not_create_entry": True, "E9_does_not_create_target": True, "E9_does_not_override_E8_economics": True, "closed_candle_only": True, "counter_evidence_does_not_equal_hard_conflict": True, "master_state_machine": True, "invalidation_lifecycle_explicit": True, "next_required_event_explicit": True}}
+    output = {**resolved, "master_resolution": "EXECUTE" if resolved["all_gates_pass"] else "REJECT" if resolved["decision_state"] == "REJECT" else "WAIT_FOR_PROOF", "readiness_score": readiness_score, "evidence_summary": evidence_summary, "professional_reasoning": professional_reasoning, "decision_contract": {"BUY_SELL_requires_all_gates": True, "NO_TRADE_on_missing_confirmation": True, "NO_EXECUTION_on_invalid_geometry": True, "NO_EXECUTION_on_hard_conflict": True, "E9_preserves_E6_thesis_identity": True, "E9_does_not_create_thesis": True, "E9_does_not_create_entry": True, "E9_does_not_create_target": True, "E9_does_not_override_E8_economics": True, "closed_candle_only": True, "counter_evidence_does_not_equal_hard_conflict": True, "master_state_machine": True, "invalidation_lifecycle_explicit": True, "next_required_event_explicit": True, "structure_invalidation_is_hard_conflict": True, "hard_conflict_detects_state_and_finding": True}}
     return EngineResult("E9", NAME, bool(resolved["all_gates_pass"]), readiness_score, output, tuple(reason_codes))
