@@ -14,6 +14,7 @@ from .e8_brain import analyze_e8
 from .e9_brain import analyze_e9
 from .opportunity_layer import enrich_opportunity, recover_e9
 from .professional_opportunity import consolidate, enrich_engine
+from .professional_surgery import enrich_professional_opportunity
 
 ENGINE_ORDER = ("E1", "E2", "E3", "E4", "E5", "E6", "E7", "E8", "E9")
 EVIDENCE_INPUTS = {
@@ -48,6 +49,7 @@ def _dict_result(engine_id: str, output: dict[str, Any]) -> EngineResult:
 
 def _enrich(engine_id: str, result: EngineResult, snapshot: dict[str, Any]) -> EngineResult:
     output = enrich_opportunity(engine_id, result.output, snapshot)
+    output = enrich_professional_opportunity(engine_id, output, snapshot)
     output = enrich_engine(engine_id, output)
     return EngineResult(result.engine_id, result.name, result.gate_passed, result.score, output, result.reason_codes)
 
