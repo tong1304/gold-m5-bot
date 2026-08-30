@@ -41,3 +41,31 @@ def test_nine_brain_governance_module_is_present():
     tree = ast.parse(governance.read_text(encoding="utf-8"))
     names = {n.name for n in tree.body if isinstance(n, ast.FunctionDef)}
     assert {"audit_engines", "enforce_final_authority"}.issubset(names)
+
+
+def test_pending_engine_gates_are_not_mislabeled_as_hard_conflicts():
+    from professional_governance import audit_engines, enforce_final_authority
+
+    results = {
+        "E1": {"direction": "UP", "state": "TREND_UP"},
+        "E2": {"state": "UNRESOLVED", "gate_passed": False},
+        "E3": {"direction": "UP", "lifecycle": "CONFIRMED"},
+        "E4": {"auction_state": "PENDING", "gate_passed": False},
+        "E5": {"state": "FAVORABLE_LOCATION"},
+        "E6": {"direction": "BUY", "maturity": "VALIDATING", "gate_passed": False},
+        "E7": {"confirmation_state": "PENDING", "gate_passed": False},
+        "E8": {"risk_state": "BLOCKED", "gate_passed": False},
+        "E9": {"decision": "NO_TRADE", "all_gates_pass": False},
+    }
+
+    audit = audit_engines(results)
+
+    assert audit["hard_veto"] is False
+    assert "ENTRY_CONFIRMATION_NOT_PROVEN" not in audit["hard_vetoes"]
+    assert "AUCTION_CONFIRMATION_PENDING" not in audit["hard_vetoes"]
+    assert set(audit["pending_gates"]) >= {"E2", "E4", "E6", "E7", "E8"}
+
+    decision, approved, reasons = enforce_final_authority(results["E9"], audit)
+    assert decision == "NO_TRADE"
+    assert approved is False
+    assert "E9_ALL_GATES_NOT_PASSED" in reasons
