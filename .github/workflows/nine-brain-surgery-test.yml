@@ -1,0 +1,15 @@
+name: nine-brain-surgery-test
+on:
+  push:
+    branches: [nine-brain-professional-surgery]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.11'
+      - run: python -m pip install --upgrade pip pytest pandas numpy flask requests lse-data
+      - run: python -m pytest -q production_v2/tests/test_nine_brain_profit_opportunity.py
