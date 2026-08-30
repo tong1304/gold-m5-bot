@@ -243,7 +243,7 @@ def _market_control(upstream: dict[str, EngineResult], e6: dict[str, Any]) -> di
     event = _first(e4, ("event", "auction_event", "liquidity_event"), "NONE")
     taker = _first(e4, ("liquidity_taker", "taker", "auction_taker"), "UNKNOWN")
     responder = _first(e4, ("response_actor", "responder", "auction_responder"), "UNKNOWN")
-    auction_state = _first(e4, ("auction_state", "state"), "UNKNOWN")
+    auction_state = _text(_first(e4, ("auction_state", "state"), "UNKNOWN"))
     liquidity_type = _first(e4, ("liquidity_type",), "UNKNOWN")
     level = _first(e4, ("event_level", "liquidity_level", "level"), None)
     liquidity_quality = _first(e4, ("liquidity_quality",), None)
