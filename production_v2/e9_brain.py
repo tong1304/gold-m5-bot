@@ -6,8 +6,8 @@ from .contracts import EngineResult
 
 NAME = "Master Decision Brain"
 QUESTION = "Should this trade be taken after reconciling all relevant evidence?"
-ARCHITECTURE = "E9_MASTER_DECISION_RESOLUTION_V40"
-VERSION = "40.0"
+ARCHITECTURE = "E9_MASTER_DECISION_RESOLUTION_V41"
+VERSION = "41.0"
 DIRECTIONS = {"BUY", "SELL"}
 
 HARD_CONFLICT_CODES = {
@@ -82,16 +82,41 @@ def _direction(*values: Any) -> str:
     return "NEUTRAL"
 
 
+def _clean_setup(value: Any) -> str:
+    text = str(value or "").strip()
+    if _text(text) in {"", "UNKNOWN", "NONE", "NO_SETUP", "NO SETUP", "UNRESOLVED"}:
+        return ""
+    return text
+
+
 def _e6_identity(e6: dict[str, Any]) -> tuple[str, str, str]:
+    """Recover the E6-owned thesis identity without weakening E6's maturity gate."""
     finding = str(e6.get("finding") or "").strip()
-    direction = _direction(e6.get("direction"), e6.get("direction_thesis"), e6.get("thesis_direction"), finding)
-    setup = e6.get("setup") or e6.get("setup_family") or e6.get("setup_type") or e6.get("thesis_setup")
+    direction = _direction(
+        e6.get("direction"), e6.get("direction_thesis"), e6.get("thesis_direction"),
+        e6.get("selected_direction"), finding,
+    )
+
+    setup = ""
+    for key in ("setup", "setup_family", "candidate_setup", "candidate_setup_thesis", "setup_type", "thesis_setup", "selected_hypothesis"):
+        candidate = _clean_setup(e6.get(key))
+        if candidate:
+            setup = candidate
+            break
+
     if not setup and finding:
+        # Examples: "BUY LIQUIDITY_REVERSAL is validating..."
+        # and "SELL AUCTION_ACCEPTANCE_CONTINUATION is validating..."
         head = finding.split(" is validating", 1)[0].split(" is ", 1)[0].strip()
-        prefix = direction + " "
-        setup = head[len(prefix):].strip() if direction in DIRECTIONS and _text(head).startswith(prefix) else head
-    thesis = e6.get("thesis") or e6.get("candidate_setup_thesis") or finding
-    return direction, str(setup or "UNKNOWN").strip(), str(thesis or "UNRESOLVED").strip()
+        if direction in DIRECTIONS and _text(head).startswith(direction + " "):
+            head = head[len(direction):].strip()
+        setup = _clean_setup(head)
+
+    thesis = str(
+        e6.get("thesis") or e6.get("candidate_setup_thesis") or
+        e6.get("selected_hypothesis") or finding or "UNRESOLVED"
+    ).strip()
+    return direction, setup or "UNKNOWN", thesis or "UNRESOLVED"
 
 
 def _state(output: dict[str, Any], keys: tuple[str, ...], default: str = "UNRESOLVED") -> str:
@@ -188,14 +213,15 @@ def _collect_economic_blockers(e8: EngineResult | None) -> list[str]:
 
 
 def _resolution(direction: str, setup: str, thesis: str, e6: dict[str, Any], e7: dict[str, Any], e8: EngineResult | None, conflicts: list[str]) -> dict[str, Any]:
-    maturity = _state(e6, ("maturity", "setup_stage", "stage", "lifecycle"))
+    maturity = _state(e6, ("maturity", "setup_maturity", "setup_stage", "stage", "formation_stage", "lifecycle"))
     confirmation = _confirmation_state(e7)
     trigger = _trigger_observed(e7)
     e8_boundary, plan = _e8_boundary(e8)
     economic_blockers = _collect_economic_blockers(e8)
 
     direction_ready = direction in DIRECTIONS
-    setup_known = setup not in {"", "UNKNOWN", "NONE", "NO_SETUP"}
+    setup_known = bool(_clean_setup(setup))
+    maturity_known = maturity not in {"", "UNKNOWN", "UNRESOLVED", "NONE"}
     setup_ready = direction_ready and setup_known and maturity in {"MATURE", "TRADE_READY", "VALIDATED", "CONFIRMED"}
     confirmation_ready = confirmation in {"PROVEN", "CONFIRMED", "VALIDATED", "TRADE_READY"} and trigger
     risk_state = _text(e8_boundary.get("risk_gate") or e8_boundary.get("risk_state") or e8_boundary.get("economic_state") or e8_boundary.get("plan_status") or "")
@@ -227,8 +253,12 @@ def _resolution(direction: str, setup: str, thesis: str, e6: dict[str, Any], e7:
         next_event = "NEW_CLOSED_CANDLE_MUST_RESOLVE_THE_DECISIVE_CONFLICT"
     else:
         decision, decision_state = "NO_TRADE", "WAIT_FOR_PROOF"
-        thesis_state = "ESTABLISHED" if direction_ready else "UNRESOLVED"
-        setup_state = "FORMING" if setup_known else "UNRESOLVED"
+        # E9 must preserve an E6 thesis that exists even when it is not mature.
+        thesis_state = "ESTABLISHED" if direction_ready and setup_known else "UNRESOLVED"
+        if setup_known:
+            setup_state = "TRADE_READY" if setup_ready else (maturity if maturity_known else "FORMING")
+        else:
+            setup_state = "UNRESOLVED"
         final_confirmation_state = "PROVEN" if confirmation_ready else "PENDING"
         final_risk_state = "READY" if risk_ready else "BLOCKED"
         execution_state = "BLOCKED"
@@ -246,6 +276,8 @@ def _resolution(direction: str, setup: str, thesis: str, e6: dict[str, Any], e7:
         "primary_blocker": primary, "secondary_blockers": [code for code in blockers if code != primary],
         "next_required_event": next_event, "all_gates_pass": all_pass, "hard_conflict": hard_conflict,
         "direction": direction, "setup": setup, "thesis": thesis, "e6_maturity": maturity,
+        "e6_identity_resolved": direction_ready and setup_known,
+        "e6_maturity_known": maturity_known,
         "e7_confirmation": confirmation, "e7_trigger_observed": trigger, "e8_risk_state": risk_state,
         "e8_plan_valid": _plan_valid(plan, direction), "e8_economic_blockers": economic_blockers,
         "trade_plan": plan if _plan_valid(plan, direction) else {},
@@ -262,7 +294,7 @@ def analyze_e9(snapshot: dict[str, Any], upstream: dict[str, EngineResult]) -> E
 
     readiness_score = round(sum((
         25.0 if direction in DIRECTIONS else 0.0,
-        25.0 if resolved["setup_state"] == "TRADE_READY" else 12.5 if resolved["setup_state"] == "FORMING" else 0.0,
+        25.0 if resolved["setup_state"] == "TRADE_READY" else 12.5 if resolved["setup_state"] in {"FORMING", "VALIDATING"} else 0.0,
         25.0 if resolved["confirmation_state"] == "PROVEN" else 12.5 if resolved["confirmation_state"] == "PENDING" else 0.0,
         25.0 if resolved["risk_state"] == "READY" else 0.0,
     )), 2)
