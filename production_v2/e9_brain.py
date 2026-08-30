@@ -89,6 +89,32 @@ def _first(*values: Any) -> Any:
     return None
 
 
+def _e6_identity(e6: dict[str, Any]) -> tuple[str, str, str]:
+    """Recover the E6 thesis identity when E6 exposes it only in `finding`."""
+    raw_finding = str(e6.get("finding", "")).strip()
+    setup = str(e6.get("setup", e6.get("setup_family", ""))).strip()
+    thesis = str(e6.get("thesis", e6.get("candidate_setup_thesis", ""))).strip()
+    direction = _direction(
+        e6.get("direction"), e6.get("direction_thesis"),
+        e6.get("thesis_direction"), raw_finding,
+    )
+
+    if (not setup or _text(setup) in {"UNKNOWN", "NONE", "NO_SETUP"}) and raw_finding:
+        head = raw_finding.split(" is ", 1)[0].strip()
+        if head and _direction(head) in DIRECTIONS:
+            setup_candidate = head
+            prefix = f"{_direction(head)} "
+            if _text(setup_candidate).startswith(prefix):
+                setup_candidate = setup_candidate[len(prefix):].strip()
+            if setup_candidate:
+                setup = setup_candidate
+
+    if not thesis:
+        thesis = raw_finding or "UNRESOLVED"
+
+    return direction if direction in DIRECTIONS else "NEUTRAL", setup or "UNKNOWN", thesis
+
+
 def _market_control(e1: dict[str, Any], e2: dict[str, Any], e3: dict[str, Any],
                     e4: dict[str, Any], e5: dict[str, Any], e6: dict[str, Any],
                     e7: dict[str, Any], direction: str, setup: str, thesis: str) -> dict[str, Any]:
@@ -279,16 +305,7 @@ def analyze_e9(snapshot: dict[str, Any], upstream: dict[str, EngineResult]) -> E
     supports: list[str] = []
     counter: list[str] = []
 
-    setup = str(e6.get("setup", e6.get("setup_family", "UNKNOWN")))
-    thesis = str(e6.get("thesis", e6.get("candidate_setup_thesis", "UNRESOLVED")))
-    # E6 is the thesis owner. Other engines are corroboration/counter-evidence,
-    # not peers that can outvote the setup thesis.
-    direction = _direction(
-        e6.get("direction"), e6.get("direction_thesis"),
-        e6.get("thesis_direction"), e6.get("finding"),
-    )
-    if direction not in DIRECTIONS:
-        direction = "NEUTRAL"
+    direction, setup, thesis = _e6_identity(e6)
     trigger_dir = _direction(e7.get("direction"), e7.get("confirmation_direction"))
     risk_dir = _direction(e8.get("direction"), e8.get("risk_direction"))
     maturity = _text(e6.get("maturity", e6.get("stage", "UNRESOLVED")))
@@ -379,8 +396,6 @@ def analyze_e9(snapshot: dict[str, Any], upstream: dict[str, EngineResult]) -> E
     if risk_quality is not None and risk_quality < 0.68:
         reasons.append("RISK_QUALITY_BELOW_DECISION_THRESHOLD")
 
-    # E8 reason_codes are first-class evidence. A hard economic veto cannot be
-    # hidden by putting the code in EngineResult metadata instead of output.
     for code in _engine_codes(upstream.get("E8")):
         if code in ECONOMIC_HARD_CODES:
             reasons.append(code)
