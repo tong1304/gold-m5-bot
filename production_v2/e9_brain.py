@@ -8,7 +8,7 @@ from .contracts import EngineResult
 NAME = "Master Decision Brain"
 QUESTION = "Who controls the market, does E6 thesis survive, are E7/E8 proof gates complete, and what is the final governance state?"
 ARCHITECTURE = "E9_FOUR_LAYER_GOVERNANCE"
-VERSION = "64.0"
+VERSION = "65.0"
 
 DIRECTIONS = {"BUY", "SELL"}
 CONFIRMATION_PROVEN = {"PROVEN", "CONFIRMED", "VALIDATED", "TRADE_READY"}
@@ -254,13 +254,34 @@ def _risk_state(e8: dict[str, Any]) -> tuple[str, bool, list[str]]:
 
 
 def _thesis_state(e3: dict[str, Any], e6: dict[str, Any]) -> str:
-    lifecycle = _state(e3, ("lifecycle", "structure_lifecycle"), "UNRESOLVED")
-    if lifecycle == "INVALIDATED":
+    """Report the E6 thesis lifecycle, never the E3 structure lifecycle."""
+    codes = set(_codes(e6))
+    if codes & {"THESIS_INVALIDATED", "E6_THESIS_INVALIDATED", "SETUP_INVALIDATED", "SETUP_REJECTED"}:
         return "INVALIDATED"
-    if lifecycle in {"ESTABLISHED", "MATURE", "CONFIRMED"}:
-        return "ESTABLISHED"
-    if _state(e6, ("thesis_state",)) in {"INVALIDATED", "REJECTED"}:
+
+    explicit = _state(e6, ("thesis_state", "thesis_lifecycle"), "UNRESOLVED")
+    if explicit in {"INVALIDATED", "REJECTED"}:
         return "INVALIDATED"
+    if explicit in {"HYPOTHESIS", "CANDIDATE", "FORMING"}:
+        return "HYPOTHESIS"
+    if explicit in {"VALIDATING", "VALIDATING_SETUP", "DEVELOPING"}:
+        return "VALIDATING"
+    if explicit in {"MATURE", "CONFIRMED", "VALIDATED", "TRADE_READY", "ESTABLISHED"}:
+        return "MATURE"
+
+    maturity = _state(e6, ("maturity", "setup_state", "opportunity_stage"), "UNRESOLVED")
+    if maturity in {"HYPOTHESIS", "CANDIDATE", "FORMING"}:
+        return "HYPOTHESIS"
+    if maturity in {"VALIDATING", "VALIDATING_SETUP", "DEVELOPING"}:
+        return "VALIDATING"
+    if maturity in {"MATURE", "CONFIRMED", "VALIDATED", "TRADE_READY", "ESTABLISHED"}:
+        return "MATURE"
+
+    finding = _text(e6.get("finding"))
+    if "CANDIDATE HYPOTHESIS ONLY" in finding or "REMAINS A HYPOTHESIS" in finding:
+        return "HYPOTHESIS"
+    if "IS VALIDATING" in finding or "VALIDATING" in finding:
+        return "VALIDATING"
     return "UNRESOLVED"
 
 
@@ -322,6 +343,7 @@ def analyze_e9(snapshot: dict[str, Any], upstream: dict[str, EngineResult]) -> E
     control = _market_control(upstream)
     thesis_direction, setup, thesis_text = _e6_identity(e6)
     thesis_state = _thesis_state(e3, e6)
+    structure_lifecycle = _state(e3, ("lifecycle", "structure_lifecycle"), "UNRESOLVED")
     setup_state = _setup_state(e6)
     confirmation_state, confirmation_proven = _confirmation_state(e7)
     economic_state, economic_ready, economic_blockers = _risk_state(e8)
@@ -351,6 +373,18 @@ def analyze_e9(snapshot: dict[str, Any], upstream: dict[str, EngineResult]) -> E
         and not economic_blockers
     )
 
+    missing: list[str] = []
+    if setup_state != "MATURE":
+        missing.append("E6_SETUP_NOT_MATURE")
+    if not confirmation_proven:
+        missing.append("E7_CONFIRMATION_REQUIRED")
+    if not economic_ready:
+        missing.append("E8_TRADE_ECONOMICS_REQUIRED")
+    if not _plan_valid(e8, thesis_direction):
+        missing.append("TRADE_PLAN_NOT_VALID")
+    if alignment == "CONFLICTED":
+        missing.append("MARKET_CONTROL_THESIS_CONFLICT")
+
     if hard_conflicts:
         governance_decision = "REJECTED_HARD_CONFLICT"
         legacy_decision = "NO_TRADE"
@@ -366,12 +400,6 @@ def analyze_e9(snapshot: dict[str, Any], upstream: dict[str, EngineResult]) -> E
     else:
         governance_decision = "WAIT_FOR_PROOF"
         legacy_decision = "NO_TRADE"
-        missing = []
-        if setup_state != "MATURE": missing.append("E6_SETUP_NOT_MATURE")
-        if not confirmation_proven: missing.append("E7_CONFIRMATION_REQUIRED")
-        if not economic_ready: missing.append("E8_TRADE_ECONOMICS_REQUIRED")
-        if not _plan_valid(e8, thesis_direction): missing.append("TRADE_PLAN_NOT_VALID")
-        if alignment == "CONFLICTED": missing.append("MARKET_CONTROL_THESIS_CONFLICT")
         governance_reason = missing[0] if missing else "PROOF_GATES_INCOMPLETE"
 
     reason_codes = [
@@ -387,6 +415,7 @@ def analyze_e9(snapshot: dict[str, Any], upstream: dict[str, EngineResult]) -> E
     if economic_blockers:
         reason_codes.extend(economic_blockers)
     reason_codes.extend(hard_conflicts)
+    reason_codes.extend(missing)
     if not confirmation_proven:
         reason_codes.append("WAITING_FOR_E7_PROOF")
     if not economic_ready:
@@ -398,11 +427,25 @@ def analyze_e9(snapshot: dict[str, Any], upstream: dict[str, EngineResult]) -> E
         "liquidity_taker": _text(e4.get("liquidity_taker") or "UNCLEAR"),
         "response_actor": _text(e4.get("response_actor") or "UNCLEAR"),
     }
+    control_summary = (
+        f"{control['market_control_state']} direction={control['control_direction']} "
+        f"confidence={control['control_confidence']} scores={control['control_scores']}"
+    )
+    proof_summary = {
+        "e6_thesis": thesis_state,
+        "e6_setup": setup_state,
+        "e7_confirmation": confirmation_state,
+        "e8_economics": economic_state,
+        "e8_blockers": economic_blockers,
+        "hard_conflicts": hard_conflicts,
+    }
     output = {
         "decision": legacy_decision,
         "final_governance": governance_decision,
         "governance_decision": governance_decision,
         "governance_reason": governance_reason,
+        "governance_blockers": _dedupe(missing + economic_blockers + hard_conflicts),
+        "next_required_events": _dedupe(missing),
         "execution_state": "APPROVED" if governance_decision == "EXECUTE" else "BLOCKED",
         "all_gates_pass": all_gates_pass,
         "direction": thesis_direction if thesis_direction in DIRECTIONS else "NEUTRAL",
@@ -410,6 +453,8 @@ def analyze_e9(snapshot: dict[str, Any], upstream: dict[str, EngineResult]) -> E
         "setup": setup,
         "thesis": thesis_text,
         "thesis_state": thesis_state,
+        "thesis_lifecycle_source": "E6",
+        "structure_lifecycle": structure_lifecycle,
         "setup_state": setup_state,
         "confirmation_state": confirmation_state,
         "economic_state": economic_state,
@@ -421,9 +466,11 @@ def analyze_e9(snapshot: dict[str, Any], upstream: dict[str, EngineResult]) -> E
         "control_scores": control["control_scores"],
         "control_evidence": control["control_evidence"],
         "dominant_control_evidence": control["dominant_control_evidence"],
+        "control_summary": control_summary,
         "evidence_alignment": evidence_alignment,
         "evidence_alignment_reason": alignment_reason,
         "auction": auction,
+        "proof_summary": proof_summary,
         "governance_layers": {
             "market_control": "MARKET_CONTROL",
             "thesis_control": "E6_OWNER",
