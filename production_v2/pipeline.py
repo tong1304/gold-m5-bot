@@ -21,18 +21,8 @@ from .shared_market_picture import attach_brain_view, build_shared_market_pictur
 from .conflict_resolution import build_conflict_ledger
 
 ENGINE_ORDER = ("E1", "E2", "E3", "E4", "E5", "E6", "E7", "E8", "E9")
-EVIDENCE_INPUTS = {
-    "E1": (), "E2": ("E1",), "E3": (), "E4": ("E1", "E3"),
-    "E5": ("E1", "E3", "E4"), "E6": ("E1", "E2", "E3", "E4", "E5"),
-    "E7": ("E4", "E6"), "E8": ("E5", "E6", "E7"),
-    "E9": ("E1", "E2", "E3", "E4", "E5", "E6", "E7", "E8"),
-}
-NAMES = {
-    "E1": "Market State Brain", "E2": "Opportunity / Regime Brain",
-    "E3": "Market Structure Brain", "E4": "Liquidity Brain",
-    "E5": "Location / Value Brain", "E6": "Setup Brain",
-    "E7": "Confirmation Brain", "E8": "Trade Economics Brain", "E9": "Master Decision Brain",
-}
+EVIDENCE_INPUTS = {"E1": (), "E2": ("E1",), "E3": (), "E4": ("E1", "E3"), "E5": ("E1", "E3", "E4"), "E6": ("E1", "E2", "E3", "E4", "E5"), "E7": ("E4", "E6"), "E8": ("E5", "E6", "E7"), "E9": ("E1", "E2", "E3", "E4", "E5", "E6", "E7", "E8")}
+NAMES = {"E1": "Market State Brain", "E2": "Opportunity / Regime Brain", "E3": "Market Structure Brain", "E4": "Liquidity Brain", "E5": "Location / Value Brain", "E6": "Setup Brain", "E7": "Confirmation Brain", "E8": "Trade Economics Brain", "E9": "Master Decision Brain"}
 
 
 def _dict_result(engine_id: str, output: dict[str, Any]) -> EngineResult:
@@ -70,7 +60,6 @@ def _scalarize(value: Any) -> str:
 
 
 def _prepare_e9_boundary(results: dict[str, EngineResult]) -> None:
-    """Expose only current evidence to E9; preserve future failure rules separately."""
     for engine_id, engine in tuple(results.items()):
         if not engine or not isinstance(engine.output, dict):
             continue
@@ -86,17 +75,46 @@ def _prepare_e9_boundary(results: dict[str, EngineResult]) -> None:
 
 
 def _attach_conflict_ledger(results: dict[str, EngineResult], ledger: dict[str, Any]) -> None:
-    """Publish the same reconciliation record to every brain without changing its evidence."""
     for engine_id in tuple(results):
         engine = results[engine_id]
         output = dict(engine.output)
         output["cross_brain_conflicts"] = ledger
-        output["conflict_awareness"] = {
-            "role": engine_id,
-            "authority": "NON_AUTHORITATIVE_UNTIL_E9",
-            "must_not_rewrite_upstream_evidence": True,
-        }
+        output["conflict_awareness"] = {"role": engine_id, "authority": "NON_AUTHORITATIVE_UNTIL_E9", "must_not_rewrite_upstream_evidence": True}
         results[engine_id] = EngineResult(engine.engine_id, engine.name, engine.gate_passed, engine.score, output, engine.reason_codes)
+
+
+def _direction(value: Any) -> str:
+    text = str(value or "").upper().strip()
+    if text in {"UP", "BULLISH", "TREND_UP", "BUY"} or text.startswith("BUY ") or text.startswith("BUY_"):
+        return "BUY"
+    if text in {"DOWN", "BEARISH", "TREND_DOWN", "SELL"} or text.startswith("SELL ") or text.startswith("SELL_"):
+        return "SELL"
+    return "NEUTRAL"
+
+
+def _ensure_cross_brain_conflict_visibility(results: dict[str, EngineResult], ledger: dict[str, Any]) -> dict[str, Any]:
+    """Ensure E2 disagreements cannot disappear merely because its native field is not a veto."""
+    e2 = results.get("E2")
+    e6 = results.get("E6")
+    if not e2 or not e6:
+        return ledger
+    d2 = _direction(e2.output.get("direction") or e2.output.get("opportunity_direction") or e2.output.get("finding"))
+    d6 = _direction(e6.output.get("direction") or e6.output.get("direction_thesis") or e6.output.get("thesis_direction") or e6.output.get("finding"))
+    if d2 not in {"BUY", "SELL"} or d6 not in {"BUY", "SELL"} or d2 == d6:
+        return ledger
+    conflicts = list(ledger.get("conflicts") or [])
+    if not any(item.get("code") == "DIRECTION_EVIDENCE_CONFLICT" and "E2" in (item.get("brains") or []) for item in conflicts):
+        conflicts.append({"code": "DIRECTION_EVIDENCE_CONFLICT", "severity": "HIGH", "brains": ["E2", "E6"], "authority": "E2/E6_ROLE_BOUNDARIES", "explanation": "E2 opportunity direction conflicts with E6 setup direction; preserve both specialist views and let E9 reconcile.", "evidence": {"E2": d2, "E6": d6}, "resolution": "E9_RECONCILE_WITHOUT_REWRITING_UPSTREAM_FACTS"})
+    ledger = dict(ledger)
+    ledger["conflicts"] = conflicts
+    summary = dict(ledger.get("summary") or {})
+    summary["total"] = len(conflicts)
+    summary["blocking_conflicts"] = sum(1 for item in conflicts if item.get("severity") == "HIGH")
+    summary["tensions"] = sum(1 for item in conflicts if item.get("severity") == "MEDIUM")
+    summary["supportive_relations"] = sum(1 for item in conflicts if item.get("severity") == "LOW")
+    summary["has_conflict"] = bool(conflicts)
+    ledger["summary"] = summary
+    return ledger
 
 
 class ProductionPipeline:
@@ -106,16 +124,12 @@ class ProductionPipeline:
         del resume_state, historical_calibration
         snapshot = dict(market_data)
         bars = list(snapshot.get("bars") or [])
-
-        # One factual market picture is frozen for the whole nine-brain cycle.
-        # Brains may interpret it differently, but may not replace its facts.
         shared_picture = build_shared_market_picture(snapshot)
         snapshot["shared_market_picture"] = shared_picture
         results: dict[str, EngineResult] = {}
 
         e1 = _enrich("E1", _dict_result("E1", analyze_e1(bars)), snapshot)
         results["E1"] = e1
-
         e2_snapshot = dict(snapshot)
         e2_snapshot["E1_result"] = e1.output
         results["E2"] = _enrich("E2", _dict_result("E2", analyze_e2(e2_snapshot)), snapshot)
@@ -126,10 +140,7 @@ class ProductionPipeline:
         results["E7"] = _enrich("E7", analyze_e7(snapshot, results), snapshot)
         results["E8"] = _enrich("E8", analyze_e8(snapshot, results), snapshot)
 
-        # Reconcile specialist disagreements only after all specialist evidence
-        # exists. This is descriptive: it cannot manufacture confirmation or
-        # weaken an existing risk/structure veto.
-        conflict_ledger = build_conflict_ledger(results)
+        conflict_ledger = _ensure_cross_brain_conflict_visibility(results, build_conflict_ledger(results))
         snapshot["cross_brain_conflicts"] = conflict_ledger
         _attach_conflict_ledger(results, conflict_ledger)
         _prepare_e9_boundary(results)
@@ -151,14 +162,7 @@ class ProductionPipeline:
             output = dict(engine.output)
             output["professional_audit"] = audit["per_engine"][engine_id]
             results[engine_id] = EngineResult(engine.engine_id, engine.name, engine.gate_passed, engine.score, output, engine.reason_codes)
-        results["E9"] = EngineResult(
-            results["E9"].engine_id,
-            results["E9"].name,
-            results["E9"].gate_passed,
-            results["E9"].score,
-            {**results["E9"].output, "nine_brain_audit": audit},
-            results["E9"].reason_codes,
-        )
+        results["E9"] = EngineResult(results["E9"].engine_id, results["E9"].name, results["E9"].gate_passed, results["E9"].score, {**results["E9"].output, "nine_brain_audit": audit}, results["E9"].reason_codes)
 
         governance = audit_engines(results)
         decision, approved, governance_reasons = enforce_final_authority(results["E9"].output, governance)
@@ -177,30 +181,5 @@ class ProductionPipeline:
         decision = decision if approved else "NO_TRADE"
         engines = tuple(results[e] for e in ENGINE_ORDER)
         radar = consolidate(results)
-        risk = {
-            "risk_gate": bool(plan.get("valid")) if isinstance(plan, dict) else False,
-            "trade_plan": plan,
-            "engine_state": "TRADE_APPROVED" if approved else "ANALYSIS_COMPLETE_NO_TRADE",
-            "cycle_complete": True,
-            "analysis_architecture": "SHARED_MARKET_PICTURE + ONE_BRAIN_PER_ENGINE + CROSS_BRAIN_CONFLICT_LEDGER + PROFESSIONAL_OPPORTUNITY_RADAR + NINE_BRAIN_GOVERNANCE",
-            "shared_market_picture": shared_picture,
-            "cross_brain_conflicts": conflict_ledger,
-            "evidence_inputs": {k: list(EVIDENCE_INPUTS.get(k, ())) for k in ENGINE_ORDER},
-            "sub_engines": False,
-            "parallel_peer_analysis": False,
-            "shared_picture_frozen_per_cycle": True,
-            "brain_boundaries_explicit": True,
-            "cross_brain_reconciliation": True,
-            "e9_decision_authority": True,
-            "e9_market_control_authority": True,
-            "nine_brain_governance": governance,
-            "nine_brain_audit": audit,
-            "learning_mode": "ADVISORY_ONLY",
-            "next_evaluation": "NEXT_CLOSED_M5_CANDLE",
-            "wait_bars": 0,
-            "decision_reasons": list(e9.reason_codes),
-            "opportunity_radar": radar,
-            "opportunity_potential": audit["opportunity"],
-            "opportunity_summary": {e: {"direction": results[e].output.get("opportunity_direction"), "state": results[e].output.get("opportunity_state"), "stage": results[e].output.get("opportunity_stage"), "score": results[e].output.get("opportunity_score"), "next_event": results[e].output.get("opportunity_next_event")} for e in ENGINE_ORDER},
-        }
+        risk = {"risk_gate": bool(plan.get("valid")) if isinstance(plan, dict) else False, "trade_plan": plan, "engine_state": "TRADE_APPROVED" if approved else "ANALYSIS_COMPLETE_NO_TRADE", "cycle_complete": True, "analysis_architecture": "SHARED_MARKET_PICTURE + ONE_BRAIN_PER_ENGINE + CROSS_BRAIN_CONFLICT_LEDGER + PROFESSIONAL_OPPORTUNITY_RADAR + NINE_BRAIN_GOVERNANCE", "shared_market_picture": shared_picture, "cross_brain_conflicts": conflict_ledger, "evidence_inputs": {k: list(EVIDENCE_INPUTS.get(k, ())) for k in ENGINE_ORDER}, "sub_engines": False, "parallel_peer_analysis": False, "shared_picture_frozen_per_cycle": True, "brain_boundaries_explicit": True, "cross_brain_reconciliation": True, "e9_decision_authority": True, "e9_market_control_authority": True, "nine_brain_governance": governance, "nine_brain_audit": audit, "learning_mode": "ADVISORY_ONLY", "next_evaluation": "NEXT_CLOSED_M5_CANDLE", "wait_bars": 0, "decision_reasons": list(e9.reason_codes), "opportunity_radar": radar, "opportunity_potential": audit["opportunity"], "opportunity_summary": {e: {"direction": results[e].output.get("opportunity_direction"), "state": results[e].output.get("opportunity_state"), "stage": results[e].output.get("opportunity_stage"), "score": results[e].output.get("opportunity_score"), "next_event": results[e].output.get("opportunity_next_event")} for e in ENGINE_ORDER}}
         return DecisionResult(str(snapshot.get("symbol") or "UNKNOWN"), str(snapshot.get("timeframe") or "M5"), decision, approved, e9.score, engines, risk, tuple(e9.reason_codes))
