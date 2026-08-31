@@ -4,7 +4,7 @@ from datetime import datetime
 from typing import Any
 from zoneinfo import ZoneInfo
 
-from .telegram import ENGINE_THAI_NAMES, _e9_control_lines, _engine_answer, send
+from .telegram import ENGINE_THAI_NAMES, _engine_finding, send
 
 BANGKOK_TZ = ZoneInfo("Asia/Bangkok")
 REASON_TH = {
@@ -30,112 +30,83 @@ def _main_reason(result: Any) -> str:
     if e9 is not None:
         output = getattr(e9, "output", {}) or {}
         reasons.extend(output.get("decision_reasons") or getattr(e9, "reason_codes", ()) or ())
-    for code in reasons:
+    # Preserve order while removing repeated reason codes from the same alert.
+    for code in dict.fromkeys(str(x) for x in reasons if x):
         if code in REASON_TH:
             return REASON_TH[code]
-    return str(reasons[0]) if reasons else "หลักฐานยังไม่เพียงพอสำหรับเปิด Position"
+    return "หลักฐานยังไม่เพียงพอสำหรับเปิด Position"
 
 
 def _engines(result: Any) -> list[Any]:
-    """Return the complete E1-E9 engine set without losing data during serialization."""
     engines = getattr(result, "engines", None)
     if engines:
         return list(engines)
-
-    # Defensive fallback for callers that pass an as_dict()/JSON-shaped result.
     if isinstance(result, dict):
         raw = result.get("engines") or result.get("engine_results") or []
         return list(raw) if isinstance(raw, (list, tuple)) else []
-
     try:
-        payload = result.as_dict()
-        raw = payload.get("engines") or []
+        raw = result.as_dict().get("engines") or []
         return list(raw) if isinstance(raw, (list, tuple)) else []
     except Exception:
         return []
 
 
-def _engine_answer_safe(engine: Any, expected_id: str) -> str:
-    """Render one engine even if a connector/serialization layer changed its type."""
-    if hasattr(engine, "engine_id"):
-        return _engine_answer(engine)
+def _engine_compact(engine: Any, expected_id: str) -> str:
+    """Return only the engine's current conclusion for NO_TRADE alerts.
 
-    if isinstance(engine, dict):
-        # Reconstruct only the small EngineResult-like surface consumed by the
-        # existing formatter. This preserves the actual engine payload instead
-        # of replacing it with 'ไม่พบข้อมูล'.
+    Detailed evidence belongs in server logs/API responses. Keeping it out of
+    Telegram prevents one logical alert from being split into several Telegram
+    messages by the 4096-character transport limit.
+    """
+    if hasattr(engine, "engine_id"):
+        engine_id = str(engine.engine_id)
+        finding = _engine_finding(engine)
+    elif isinstance(engine, dict):
+        engine_id = str(engine.get("engine_id") or engine.get("id") or expected_id)
+        output = engine.get("output") if isinstance(engine.get("output"), dict) else engine
+
         class _EngineView:
             pass
+
         view = _EngineView()
-        view.engine_id = str(engine.get("engine_id") or engine.get("id") or expected_id)
-        view.output = engine.get("output") if isinstance(engine.get("output"), dict) else engine
+        view.engine_id = engine_id
+        view.output = output
         view.reason_codes = tuple(engine.get("reason_codes") or engine.get("reasons") or ())
         view.gate_passed = engine.get("gate_passed")
-        return _engine_answer(view)
+        finding = _engine_finding(view)
+    else:
+        engine_id = expected_id
+        finding = "ANALYSIS_DATA_MISSING"
 
-    class _EmptyEngineView:
-        pass
-    view = _EmptyEngineView()
-    view.engine_id = expected_id
-    view.output = {}
-    view.reason_codes = ()
-    view.gate_passed = False
-    return _engine_answer(view)
+    # One line per brain: no evidence dump, no repeated reason catalogue.
+    return f"{engine_id}: {finding}"
 
 
 def format_no_trade(results: dict[str, Any], notified_at: datetime | None = None) -> str:
+    """Build exactly one compact NO_TRADE alert for the current notification slot."""
     now = notified_at or datetime.now(BANGKOK_TZ)
     lines = [
-        "🚫 ยังไม่มีการออกออเดอร์",
+        "🚫 NO_TRADE — ยังไม่มีการออกออเดอร์",
         "",
-        "⚙️ ระบบ PRODUCTION-V2",
-        "🧠 E1 → E2 → E3 → E4 → E5 → E6 → E7 → E8 → E9",
-        "⏱ Timeframe: M5",
-        f"🚨 เวลาแจ้งเตือน: {now:%d/%m/%Y %H:%M} (ประเทศไทย)",
+        "⚙️ PRODUCTION-V2 | E1 → E2 → E3 → E4 → E5 → E6 → E7 → E8 → E9",
+        "⏱ M5",
+        f"🚨 {now:%d/%m/%Y %H:%M} (ประเทศไทย)",
     ]
 
     for symbol, result in results.items():
         lines += ["", "━━━━━━━━━━━━━━━━━━", f"📊 {symbol}", "━━━━━━━━━━━━━━━━━━"]
         engines_by_id = {getattr(e, "engine_id", None): e for e in _engines(result)}
-        if not engines_by_id and isinstance(result, dict):
-            raw = result.get("engines") or result.get("engine_results") or []
-            engines_by_id = {
-                str(e.get("engine_id") or e.get("id")): e
-                for e in raw
-                if isinstance(e, dict)
-            }
-
-        # Telegram must always expose all nine brains in canonical order.
-        # Missing data is reported explicitly, but a real engine payload is
-        # never discarded merely because its container type changed.
         for engine_id in ("E1", "E2", "E3", "E4", "E5", "E6", "E7", "E8", "E9"):
             engine = engines_by_id.get(engine_id)
-            if engine is None:
-                lines += [
-                    "",
-                    f"🟡 {engine_id} — {ENGINE_THAI_NAMES[engine_id]}",
-                    "คำตอบ: ANALYSIS_DATA_MISSING",
-                    "เหตุผล: ENGINE_RESULT_NOT_AVAILABLE_IN_NOTIFICATION_PAYLOAD",
-                ]
-            else:
-                lines += ["", _engine_answer_safe(engine, engine_id)]
-
-        # E9 remains the sole final authority; its market-control synthesis is
-        # part of the same notification, not a separate/legacy alert.
-        lines += _e9_control_lines(result)
+            lines.append(_engine_compact(engine, engine_id) if engine is not None else f"{engine_id}: ANALYSIS_DATA_MISSING")
         lines += [
-            "",
-            "━━━━━━━━━━━━━━━━━━",
-            "🎯 FINAL DECISION",
-            "━━━━━━━━━━━━━━━━━━",
-            "⛔ NO_TRADE",
+            f"🎯 FINAL: NO_TRADE",
             f"เหตุผลหลัก: {_main_reason(result)}",
         ]
 
     lines += [
         "",
-        "🔄 แท่ง M5 ปิดถัดไปจะวิเคราะห์ใหม่ตั้งแต่ E1",
-        "📌 ไม่มี WAIT และผลรอบก่อนไม่ถูกนำมาบังคับรอบใหม่",
+        "🔄 วิเคราะห์ใหม่เมื่อแท่ง M5 ปิดถัดไป",
         "📌 E9 เท่านั้นเป็น Final Decision Authority",
     ]
     return "\n".join(lines)
