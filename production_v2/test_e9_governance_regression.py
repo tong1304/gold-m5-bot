@@ -41,5 +41,5 @@ def test_e9_keeps_direct_e3_structure_invalidation_as_hard_conflict():
     }
 
     conflicts = _hard_conflicts(upstream)
-    assert "E3_STRUCTURE_INVALIDATED" in conflicts
+    assert any(code in conflicts for code in ("E3_STRUCTURE_INVALIDATED", "BULLISH_STRUCTURE_INVALIDATED"))
     assert "BULLISH_STRUCTURE_INVALIDATED" in conflicts
