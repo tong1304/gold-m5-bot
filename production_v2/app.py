@@ -4,6 +4,7 @@ import os
 from flask import Flask, jsonify, request
 from .market_data import normalize_market_data
 from .pipeline import ProductionPipeline
+from .professional_opportunity_surgery import enrich_decision
 from .statistics import build_statistics, store
 
 logger = logging.getLogger(__name__)
@@ -11,7 +12,7 @@ app = Flask(__name__)
 pipeline = ProductionPipeline()
 app.config["PRODUCTION_V2_LIVE_REQUIRED"] = True
 _runtime_started = False
-ARCHITECTURE = "SINGLE_AXIS:E1 -> E2 -> E3 -> E4 -> E5 -> E6 -> E7 -> E8 -> E9"
+ARCHITECTURE = "SINGLE_AXIS:E1 -> E2 -> E3 -> E4 -> E5 -> E6 -> E7 -> E8 -> E9 -> OPPORTUNITY_SYNTHESIS"
 
 
 def _load_historical_calibration():
@@ -76,6 +77,7 @@ def signal():
     try:
         market_data = normalize_market_data(request.get_json(silent=True) or {})
         result = pipeline.run(market_data, historical_calibration=_load_historical_calibration())
+        result = enrich_decision(result)
         price = market_data["bars"][-1]["close"] if market_data["bars"] else None
         store.record(result, price)
         return jsonify(result.as_dict())
