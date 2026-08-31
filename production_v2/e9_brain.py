@@ -1,13 +1,14 @@
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from .contracts import EngineResult
 
 NAME = "Master Decision Brain"
 QUESTION = "Who controls the auction, where is liquidity, and should this trade be taken after reconciling all evidence?"
-ARCHITECTURE = "E9_MASTER_DECISION_MARKET_CONTROL_V59"
-VERSION = "59.0"
+ARCHITECTURE = "E9_MASTER_DECISION_MARKET_CONTROL_V60"
+VERSION = "60.0"
 
 DIRECTIONS = {"BUY", "SELL"}
 CONFIRMATION_PROVEN = {"PROVEN", "CONFIRMED", "VALIDATED", "TRADE_READY"}
@@ -99,13 +100,31 @@ def _clean_setup(value: Any) -> str:
     return "" if text in {"", "UNKNOWN", "NONE", "NO_SETUP", "NO SETUP", "UNRESOLVED"} else text
 
 
+def _candidate_identity_from_finding(finding: str) -> tuple[str, str] | None:
+    """Parse only E6's explicit candidate-thesis sentence; never infer from market prose."""
+    if not finding:
+        return None
+    match = re.match(
+        r"^(BUY|SELL)\s+([A-Z][A-Z0-9_]+)\s+IS\s+A\s+CANDIDATE\s+HYPOTHESIS\s+ONLY\b",
+        finding,
+    )
+    if not match:
+        return None
+    direction, setup = match.groups()
+    if setup in {"UNKNOWN", "NONE", "NO_SETUP", "UNRESOLVED"}:
+        return None
+    return direction, setup
+
+
 def _e6_identity(e6: dict[str, Any]) -> tuple[str, str, str]:
     finding = _text(e6.get("finding"))
     codes = set(_codes(e6))
     if "NO PLAUSIBLE SETUP SURVIVES" in finding or "NO SURVIVING SETUP" in finding:
         return "NEUTRAL", "UNKNOWN", "UNRESOLVED"
     if {"DIRECTIONAL_EVIDENCE_CONFLICT", "SPACE_CONFLICT"}.issubset(codes):
-        return "NEUTRAL", "UNKNOWN", "UNRESOLVED"
+        candidate = _candidate_identity_from_finding(finding)
+        if candidate is None:
+            return "NEUTRAL", "UNKNOWN", "UNRESOLVED"
     if any(c in codes for c in {"NO_SURVIVING_SETUP", "NO_ELIGIBLE_SETUP", "SETUP_REJECTED", "SETUP_INVALIDATED"}):
         return "NEUTRAL", "UNKNOWN", "UNRESOLVED"
     setup = ""
@@ -113,9 +132,13 @@ def _e6_identity(e6: dict[str, Any]) -> tuple[str, str, str]:
         setup = _clean_setup(e6.get(key))
         if setup:
             break
+    direction = _direction(e6.get("direction"), e6.get("direction_thesis"), e6.get("thesis_direction"), e6.get("selected_direction"), finding)
+    if not setup:
+        candidate = _candidate_identity_from_finding(finding)
+        if candidate is not None:
+            direction, setup = candidate
     if not setup:
         return "NEUTRAL", "UNKNOWN", "UNRESOLVED"
-    direction = _direction(e6.get("direction"), e6.get("direction_thesis"), e6.get("thesis_direction"), e6.get("selected_direction"), finding)
     thesis = str(e6.get("thesis") or e6.get("candidate_setup_thesis") or e6.get("selected_hypothesis") or finding or "UNRESOLVED").strip()
     return direction, setup, thesis or "UNRESOLVED"
 
