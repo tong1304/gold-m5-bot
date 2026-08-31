@@ -7,8 +7,8 @@ from .contracts import EngineResult
 
 NAME = "Setup Brain"
 QUESTION = "What setup is forming, in what direction, and at what stage?"
-ARCHITECTURE = "E6_PROFESSIONAL_SETUP_FORMATION_BRAIN_V39"
-VERSION = "39.0"
+ARCHITECTURE = "E6_PROFESSIONAL_SETUP_FORMATION_BRAIN_V40"
+VERSION = "40.0"
 MIN_BARS = 60
 ATR_PERIOD = 14
 MIN_SPACE_ATR = 0.75
@@ -195,8 +195,11 @@ def _direction(e1: dict[str, Any], e2: dict[str, Any], e3: dict[str, Any], e4: d
 
 
 def _candidate(direction: str, auction: dict[str, Any], e1: dict[str, Any], e2: dict[str, Any], e3: dict[str, Any], e5: dict[str, Any]) -> tuple[str, float, list[str]] | None:
-    if direction == "NEUTRAL" or not _e2_confirmed(e2):
+    if direction == "NEUTRAL":
         return None
+
+    e2_confirmed = _e2_confirmed(e2)
+    e2_unresolved = _e2_unresolved(e2)
     event = auction["event"]
     event_direction = auction["direction"]
     terminal = auction["terminal"]
@@ -210,26 +213,38 @@ def _candidate(direction: str, auction: dict[str, Any], e1: dict[str, Any], e2: 
     repricing = _text(e5.get("repricing_state"))
     value_response = _text(e5.get("value_response"))
 
-    # Specific causal paths are ordered from strongest event evidence to contextual continuation.
-    if terminal and event_direction == direction and any(x in event for x in ("SWEEP_REJECTION", "FAILED_BREAK_RECLAIM")):
-        return "LIQUIDITY_REVERSAL", 86.0, ["E4_TERMINAL_LIQUIDITY_RESPONSE"]
-    if terminal and event_direction == direction and "ACCEPTANCE" in event:
-        return "AUCTION_ACCEPTANCE_CONTINUATION", 82.0, ["E4_TERMINAL_AUCTION_ACCEPTANCE"]
+    # E6 may FORM a causal hypothesis before E2 is fully confirmed.
+    # This is deliberately limited to event/structure-backed paths. It never makes the setup trade-ready.
+    if event_direction == direction and any(x in event for x in ("SWEEP_REJECTION", "FAILED_BREAK_RECLAIM", "HIGH_REJECTION", "LOW_REJECTION")):
+        if terminal and e2_confirmed:
+            return "LIQUIDITY_REVERSAL", 86.0, ["E4_TERMINAL_LIQUIDITY_RESPONSE", "E2_OPPORTUNITY_CONFIRMED"]
+        if e2_unresolved and (internal == direction or external == direction or direction in e3_finding):
+            return "LIQUIDITY_REVERSAL", 62.0, ["E4_LIQUIDITY_RESPONSE", "E3_STRUCTURE_RESPONSE", "E6_FORMING_WITH_E2_PROOF_PENDING"]
+
+    if event_direction == direction and "ACCEPTANCE" in event:
+        if terminal and e2_confirmed:
+            return "AUCTION_ACCEPTANCE_CONTINUATION", 82.0, ["E4_TERMINAL_AUCTION_ACCEPTANCE", "E2_OPPORTUNITY_CONFIRMED"]
+        if terminal and e2_unresolved and (internal == direction or external == direction):
+            return "AUCTION_ACCEPTANCE_CONTINUATION", 60.0, ["E4_TERMINAL_AUCTION_ACCEPTANCE", "E3_STRUCTURE_RESPONSE", "E6_FORMING_WITH_E2_PROOF_PENDING"]
 
     break_event = any(x in event for x in ("BREAKOUT", "BOS", "FAILED_BREAK_RECLAIM")) or bos in {"BREAK", "BOS", "YES"}
     if break_event and ("RETEST" in e3_finding or "RECLAIM" in e3_finding or terminal):
-        return "BREAKOUT_RETEST", 74.0, ["E3_CONFIRMED_BREAK_STRUCTURE"]
+        if e2_confirmed:
+            return "BREAKOUT_RETEST", 74.0, ["E3_CONFIRMED_BREAK_STRUCTURE", "E2_OPPORTUNITY_CONFIRMED"]
+        if e2_unresolved and internal == direction:
+            return "BREAKOUT_RETEST", 58.0, ["E3_CONFIRMED_BREAK_STRUCTURE", "E6_FORMING_WITH_E2_PROOF_PENDING"]
 
+    # Trend-pullback and impulse continuation remain opportunity-dependent and therefore require E2 confirmation.
     aligned = trend == direction == internal == external
     transition = any("TRANSITION" in x for x in (market_state, e1_finding, e3_finding))
     pullback = any(x in (e1_finding, e3_finding) for x in ("PULLBACK", "RETRACE"))
-    if aligned and not transition and pullback:
+    if e2_confirmed and aligned and not transition and pullback:
         return "TREND_PULLBACK", 72.0, ["E1_TREND_ALIGNMENT", "E2_OPPORTUNITY_CONFIRMED", "E3_STRUCTURE_ALIGNMENT", "PULLBACK_CONTEXT"]
 
     expansion = any(x in e1_finding for x in ("EXPANSION", "IMPULSE", "DIRECTIONAL_EXPANSION"))
     pressure = _norm(e1.get("pressure", e1.get("directional_pressure")))
     accepted = any(x in repricing for x in ("ACCEPTANCE", "REPRICING", "CONTINUATION")) or "ACCEPTED" in value_response
-    if expansion and pressure == direction and internal == external == direction and accepted:
+    if e2_confirmed and expansion and pressure == direction and internal == external == direction and accepted:
         return "IMPULSE_CONTINUATION", 68.0, ["E1_DIRECTIONAL_EXPANSION", "E2_OPPORTUNITY_CONFIRMED", "E3_STRUCTURE_ALIGNMENT", "E5_REPRICING_ACCEPTANCE"]
 
     return None
