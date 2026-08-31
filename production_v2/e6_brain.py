@@ -3,7 +3,7 @@ from statistics import mean
 from typing import Any
 from .contracts import EngineResult
 
-NAME="Setup Brain"; QUESTION="What setup is forming, in what direction, and at what stage?"; ARCHITECTURE="E6_PROFESSIONAL_SETUP_FORMATION_BRAIN_V30"; VERSION="30.0"
+NAME="Setup Brain"; QUESTION="What setup is forming, in what direction, and at what stage?"; ARCHITECTURE="E6_PROFESSIONAL_SETUP_FORMATION_BRAIN_V31"; VERSION="31.0"
 MIN_BARS=60; ATR_PERIOD=14; MIN_SPACE_ATR=.75; MAX_EVENT_AGE_BARS=3
 SETUP_FAMILIES=("LIQUIDITY_REVERSAL","AUCTION_ACCEPTANCE_CONTINUATION","BREAKOUT_RETEST","TREND_PULLBACK","BREAKOUT","IMPULSE_CONTINUATION")
 LIFECYCLE=("ABSENT","FORMING","VALIDATING","MATURE","FAILED","INVALIDATED","EXPIRED")
@@ -39,10 +39,23 @@ def _auction(e):
     return {"event":ev,"state":st,"terminal":terminal,"pending":st=="PENDING" or "PENDING" in ev,"age_bars":max(0,int(_num(e.get("event_age_bars")))),"direction":d,"level":_num(e.get("event_level")),"event_id":str(e.get("event_id") or e.get("event_candle_id") or "")}
 def _structure(e):return _text(e.get("finding",e.get("structure_state"))),_norm(e.get("internal_state",e.get("internal_count_state"))),_norm(e.get("external_state",e.get("external_count_state")))
 def _structure_is_invalidated(e):
-    finding=_text(e.get("finding",e.get("structure_state")))
-    lifecycle=_text(e.get("lifecycle",e.get("state")))
+    """Only E3's explicit active lifecycle may invalidate E6.
+
+    Do not infer invalidation from descriptive finding text or from a generic
+    non-empty invalidation catalogue. E3 is the sole owner of active market
+    structure state; downstream brains must consume that state, not recreate it.
+    """
+    lifecycle=_text(e.get("lifecycle"))
     invalidation=_text(e.get("invalidation"))
-    return "INVALIDATED" in finding or lifecycle=="INVALIDATED" or "INVALIDATED" in invalidation or bool(invalidation and invalidation not in {"NONE","NO_INVALIDATION"})
+    active_flag=e.get("structure_invalidated") is True or e.get("active_invalidation") is True
+    explicit_lifecycle=lifecycle=="INVALIDATED"
+    explicit_invalidation=invalidation in {
+        "ACTIVE_INVALIDATION",
+        "STRUCTURE_INVALIDATED",
+        "BULLISH_STRUCTURE_INVALIDATED",
+        "BEARISH_STRUCTURE_INVALIDATED",
+    }
+    return bool(active_flag or explicit_lifecycle or explicit_invalidation)
 def _direction(e1,e2,e3,e4):
     a=_auction(e4); p=_norm(e1.get("directional_pressure",e1.get("pressure"))); f,i,x=_structure(e3); s=[]; c=[]
     if p!="NEUTRAL":s.append(f"E1_PRESSURE={p}")
@@ -52,11 +65,6 @@ def _direction(e1,e2,e3,e4):
     if "MIXED" in f or "TRANSITION" in f:c.append("STRUCTURE_NOT_RESOLVED")
     if i!="NEUTRAL" and x!="NEUTRAL" and i!=x:c.append("EXTERNAL_INTERNAL_STRUCTURE_CONFLICT")
     if p!=a["direction"] and p!="NEUTRAL" and a["direction"]!="NEUTRAL":c.append("DIRECTIONAL_EVIDENCE_CONFLICT")
-
-    # Context (E1 pressure + E3 structure) is the primary directional frame.
-    # A pending E4 auction event is evidence-in-progress, not an authority that
-    # may flip an otherwise coherent E1/E3 direction. Only a terminal auction
-    # may become the directional leader when the context cannot resolve it.
     if p!="NEUTRAL" and i!="NEUTRAL" and p==i:
         d,src=p,"E1_E3_DIRECTIONAL_CORE"
     elif i==x and i!="NEUTRAL":
@@ -73,10 +81,7 @@ def _direction(e1,e2,e3,e4):
         d,src=a["direction"],"E4_PENDING_HYPOTHESIS"
     else:
         d,src="NEUTRAL","NO_DIRECTIONAL_THESIS"
-
-    if a["pending"] and a["direction"] not in {"NEUTRAL",d}:
-        c.append("E4_PENDING_DIRECTION_NOT_AUTHORITATIVE")
-
+    if a["pending"] and a["direction"] not in {"NEUTRAL",d}:c.append("E4_PENDING_DIRECTION_NOT_AUTHORITATIVE")
     e2f=_text(e2.get("finding",e2.get("state"))); e2d=_norm(e2.get("direction",e2.get("opportunity_direction")))
     if e2d!="NEUTRAL" and not any(z in e2f for z in ("UNRESOLVED","UNPROVEN","AMBIGUOUS")):
         if d==e2d:s.append(f"E2_DIRECTION={e2d}")
@@ -87,8 +92,7 @@ def _candidates(d,a,e1,e3,e5):
     ev=a["event"]; trend=_norm(e1.get("trend_state",e1.get("finding"))); out=[]
     def add(n,x,b,e):
         if x in ("BUY","SELL"):out.append({"name":n,"direction":x,"base_quality":b,"evidence":e,"event_required":True})
-    event_direction=a["direction"]
-    event_can_drive_setup=a["terminal"] or event_direction in {"NEUTRAL",d}
+    event_direction=a["direction"]; event_can_drive_setup=a["terminal"] or event_direction in {"NEUTRAL",d}
     if ("FAILED_BREAK_RECLAIM" in ev or "SWEEP_REJECTION" in ev) and event_can_drive_setup:add("LIQUIDITY_REVERSAL",event_direction,82,["E4_LIQUIDITY_EVENT","E4_DIRECTIONAL_RESPONSE"])
     if "ACCEPTANCE" in ev and event_can_drive_setup:add("AUCTION_ACCEPTANCE_CONTINUATION",event_direction,76,["E4_ACCEPTANCE_EVENT","E4_AUCTION_RESPONSE"])
     if any(z in ev for z in ("BREAKOUT_RETEST","BREAKOUT","BOS")) or _text(e3.get("bos",e3.get("break_of_structure"))) in {"BREAK","BOS","YES"}:
@@ -99,13 +103,11 @@ def _candidates(d,a,e1,e3,e5):
     return out
 def _evidence(src,statement,kind="SUPPORT",strength="MEDIUM"):return {"source":src,"kind":kind,"strength":strength,"statement":statement}
 def _identity(setup,d,e3,a,e5):
-    anchor=a.get("event_id") or (f"LEVEL:{a['level']:.5f}" if a.get("level") else "")
-    basis="E4_EVENT_ID" if a.get("event_id") else "E4_EVENT_LEVEL"
+    anchor=a.get("event_id") or (f"LEVEL:{a['level']:.5f}" if a.get("level") else ""); basis="E4_EVENT_ID" if a.get("event_id") else "E4_EVENT_LEVEL"
     if not anchor:anchor=f"VALUE:{_num(e5.get('value_distance_atr')):.3f}";basis="E5_VALUE_CONTEXT"
     return f"{setup}:{d}:{anchor}",basis
 def _result(state,setup,d,stage,maturity,thesis,q,conf,exists,sup,con,miss,next_req,inv,cands,rejected,trace,ledger):
-    sup,con,miss,next_req,inv=map(_dedupe,(sup,con,miss,next_req,inv)); reasons=_dedupe(con+["SETUP_NOT_TRADE_READY"])
-    selected=trace.get("selected_hypothesis") or setup
+    sup,con,miss,next_req,inv=map(_dedupe,(sup,con,miss,next_req,inv)); reasons=_dedupe(con+["SETUP_NOT_TRADE_READY"]); selected=trace.get("selected_hypothesis") or setup
     out={"architecture":ARCHITECTURE,"version":VERSION,"question":QUESTION,"role":"SETUP_FORMATION_REASONER","reasoning_role":"SETUP_FORMATION_REASONER","decision_authority":"E9","trade_decision_authority":False,"state":state,"setup_state":state,"finding":state,"setup":setup,"setup_family":setup,"candidate_setup":setup,"candidate_setup_identity":trace.get("candidate_identity"),"candidate_identity_basis":trace.get("candidate_identity_basis"),"candidate_setup_thesis":thesis,"direction":d,"direction_thesis":thesis,"direction_source":trace.get("direction_source"),"stage":stage,"formation_stage":stage,"lifecycle":stage,"lifecycle_states":list(LIFECYCLE),"maturity":maturity,"thesis":thesis,"setup_exists":exists,"trade_ready":False,"trade_readiness":"NOT_READY","setup_quality":round(max(0,min(100,q)),2),"confidence":round(max(0,min(100,conf)),2),"candidate_setups":[c["name"] for c in cands],"candidate_states":cands,"selected_hypothesis":selected,"rejected_hypotheses":_dedupe(rejected),"rejected_setups":_dedupe(rejected),"supporting_evidence":sup,"counter_evidence":con,"missing_evidence":miss,"missing_proof":miss,"next_required_evidence":next_req,"invalidation":inv,"evidence_ledger":ledger,"reasoning_trace":trace,"reason_codes":reasons,"professional_reasoning":{"conclusion":thesis,"selected_hypothesis":selected,"why_it_is_forming":sup,"what_is_wrong_with_the_thesis":con,"what_is_missing":miss,"what_must_happen_next":next_req,"what_invalidates_it":inv,"formation_stage":stage,"maturity":maturity,"setup_quality":round(max(0,min(100,q)),2),"confidence":round(max(0,min(100,conf)),2),"decision_boundary":"E6 describes and stages the setup; E9 alone decides whether a trade is permitted."}}
     return EngineResult("E6",NAME,False,max(0,min(100,q)),out,tuple(reasons))
 
@@ -121,11 +123,11 @@ def analyze_e6(snapshot:dict[str,Any],upstream:dict[str,EngineResult])->EngineRe
     e1,e2,e3,e4,e5=(_payload(upstream,n) for n in ("E1","E2","E3","E4","E5"))
     if _structure_is_invalidated(e3):
         finding=_text(e3.get("finding",e3.get("structure_state"))) or "STRUCTURE_INVALIDATED"
-        return _result("INVALIDATED","NONE","NEUTRAL","INVALIDATED","INVALIDATED","No setup survives because E3 has invalidated the active market structure.",0,100,False,[],["E3_STRUCTURE_INVALIDATED",finding],["a new closed-candle structure lifecycle after invalidation"],["E3 must establish a new valid structure before E6 can form a setup"],[finding],[],[],{"selected_hypothesis":None,"direction_source":"E3_STRUCTURE_INVALIDATION","lifecycle_owner":"E3"},[_evidence("E3",f"structure_lifecycle={_text(e3.get('lifecycle',e3.get('state'))) or 'INVALIDATED'}; finding={finding}","INVALIDATION","HIGH")])
+        return _result("INVALIDATED","NONE","NEUTRAL","INVALIDATED","INVALIDATED","No setup survives because E3 has explicitly invalidated the active market structure.",0,100,False,[],["E3_STRUCTURE_INVALIDATED",finding],["a new closed-candle structure lifecycle after invalidation"],["E3 must establish a new valid structure before E6 can form a setup"],[finding],[],[],{"selected_hypothesis":None,"direction_source":"E3_STRUCTURE_INVALIDATION","lifecycle_owner":"E3"},[_evidence("E3",f"structure_lifecycle={_text(e3.get('lifecycle')) or 'INVALIDATED'}; finding={finding}","INVALIDATION","HIGH")])
     a=_auction(e4);d,ds,dc,src=_direction(e1,e2,e3,e4);opp=_text(e2.get("finding",e2.get("state"))) or "UNRESOLVED";struct,internal,external=_structure(e3);space=_num(e5.get("available_space_atr_long") if d=="BUY" else e5.get("available_space_atr_short"));location=bool(e5)
     causal={"context":bool(e1),"event":bool(a["event"]),"response":a["terminal"] or _text(e4.get("response_actor")) not in {"","UNKNOWN","NONE"},"structure":not ("MIXED" in struct or "TRANSITION" in struct) and internal!="NEUTRAL" and external!="NEUTRAL"}; causal_count=sum(causal.values())
     contradictions=list(dc)
-    if "MIXED" in struct or "TRANSITION" in struct:contradictions+= ["STRUCTURE_CONFLICT"]
+    if "MIXED" in struct or "TRANSITION" in struct:contradictions+=["STRUCTURE_CONFLICT"]
     if a["pending"] and not a["terminal"]:contradictions+=["AUCTION_PENDING"]
     if not location:contradictions+=["LOCATION_CONFLICT"]
     if d in ("BUY","SELL") and space<MIN_SPACE_ATR:contradictions+=["SPACE_CONFLICT"]
