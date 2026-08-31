@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from production_v2.e2_brain import analyze_e2
+from production_v2.e2_brain import _classify_opportunity, analyze_e2
 
 
 def _bars(n: int = 100):
@@ -67,3 +67,35 @@ def test_e2_insufficient_data_is_an_explicit_no_thesis_state():
     assert result["opportunity"] == "NONE"
     assert result["decision"] is None
     assert result["gate"] is None
+
+
+def test_e2_acceptance_does_not_override_location_and_space_vetoes():
+    result = _classify_opportunity(
+        up=7, down=0, auction="BUY_SIDE_ACCEPTANCE", balanced=False,
+        acceptance=True, rejection=False, space_atr=0.35, location_ok=False,
+    )
+    assert result["direction"] == "BUY"
+    assert result["opportunity_maturity"] == "DEVELOPING"
+    assert "LOCATION_NOT_ADVANTAGEOUS" in result["blockers"]
+    assert "INSUFFICIENT_OPPOSING_SPACE" in result["blockers"]
+
+
+def test_e2_conflicting_directional_evidence_is_explicit_and_not_confirmed():
+    result = _classify_opportunity(
+        up=5, down=4, auction="BUY_SIDE_ACCEPTANCE", balanced=False,
+        acceptance=True, rejection=False, space_atr=2.0, location_ok=True,
+    )
+    assert result["direction"] == "BUY"
+    assert result["opportunity_maturity"] == "DEVELOPING"
+    assert "DIRECTIONAL_EVIDENCE_CONFLICT" in result["blockers"]
+
+
+def test_e2_exposes_regime_phase_playbooks_and_reasoning_trace():
+    result = analyze_e2({"bars": _bars()})
+    assert result["regime_phase"] in {"EARLY", "MATURE", "LATE", "FAILED", "UNRESOLVED"}
+    assert isinstance(result["candidate_playbooks"], list)
+    assert result["preferred_playbook"] is None or isinstance(result["preferred_playbook"], dict)
+    assert isinstance(result["opportunity_bias"], str)
+    assert isinstance(result["evidence"], list)
+    assert isinstance(result["conflicts"], list)
+    assert isinstance(result["reasoning_trace"], list)
