@@ -7,8 +7,8 @@ from .contracts import EngineResult
 
 NAME = "Setup Brain"
 QUESTION = "What setup is forming, in what direction, and at what stage?"
-ARCHITECTURE = "E6_PROFESSIONAL_SETUP_FORMATION_BRAIN_V33"
-VERSION = "33.0"
+ARCHITECTURE = "E6_PROFESSIONAL_SETUP_FORMATION_BRAIN_V34"
+VERSION = "34.0"
 
 MIN_BARS = 60
 ATR_PERIOD = 14
@@ -191,11 +191,13 @@ def _candidates(direction: str, auction: dict[str, Any], e1: dict[str, Any], e3:
         if side in {"BUY", "SELL"}:
             candidates.append({"name": name, "direction": side, "base_quality": quality, "evidence": evidence})
 
-    if event_direction in {"NEUTRAL", direction}:
+    # E4 pending events are observations, not setup proof. Reversal and
+    # acceptance-continuation hypotheses require terminal auction evidence.
+    if auction["terminal"] and event_direction in {"NEUTRAL", direction}:
         if "FAILED_BREAK_RECLAIM" in event or "SWEEP_REJECTION" in event:
-            add("LIQUIDITY_REVERSAL", event_direction, 82.0, ["E4_LIQUIDITY_EVENT", "E4_DIRECTIONAL_RESPONSE"])
+            add("LIQUIDITY_REVERSAL", event_direction, 82.0, ["E4_LIQUIDITY_EVENT", "E4_DIRECTIONAL_RESPONSE", "E4_TERMINAL_AUCTION"])
         if "ACCEPTANCE" in event:
-            add("AUCTION_ACCEPTANCE_CONTINUATION", event_direction, 76.0, ["E4_ACCEPTANCE_EVENT", "E4_AUCTION_RESPONSE"])
+            add("AUCTION_ACCEPTANCE_CONTINUATION", event_direction, 76.0, ["E4_ACCEPTANCE_EVENT", "E4_AUCTION_RESPONSE", "E4_TERMINAL_AUCTION"])
     bos = _text(e3.get("bos", e3.get("break_of_structure")))
     if any(x in event for x in ("BREAKOUT", "BOS")) or bos in {"BREAK", "BOS", "YES"}:
         add("BREAKOUT_RETEST", direction, 72.0, ["E3_BREAK_EVENT", "E4_AUCTION_CONTEXT"])
