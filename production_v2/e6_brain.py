@@ -357,9 +357,9 @@ def analyze_e6(snapshot: dict[str, Any], upstream: dict[str, EngineResult]) -> E
         blockers.append("DIRECTION_UNRESOLVED")
     if e2_unresolved:
         blockers.append("E2_OPPORTUNITY_UNRESOLVED")
-    if auction.pending and not auction.terminal:
+    if auction["pending"] and not auction["terminal"]:
         blockers.append("AUCTION_CONFIRMATION_PENDING")
-    if auction.age_bars > MAX_EVENT_AGE_BARS and auction.event:
+    if auction["age_bars"] > MAX_EVENT_AGE_BARS and auction["event"]:
         blockers.append("STALE_AUCTION_EVENT")
     if internal != "NEUTRAL" and external != "NEUTRAL" and internal != external:
         blockers.append("STRUCTURE_CONFLICT")
@@ -381,7 +381,7 @@ def analyze_e6(snapshot: dict[str, Any], upstream: dict[str, EngineResult]) -> E
         if candidate["direction"] != direction:
             quality -= 25.0
             counter.append("DIRECTION_MISMATCH")
-        if auction.terminal:
+        if auction["terminal"]:
             quality += 8.0
         else:
             quality -= 12.0
@@ -408,7 +408,7 @@ def analyze_e6(snapshot: dict[str, Any], upstream: dict[str, EngineResult]) -> E
             quality -= 15.0
             counter.append("SPACE_CONFLICT")
             missing.append("sufficient_structural_space")
-        if candidate["name"] in {"LIQUIDITY_REVERSAL", "AUCTION_ACCEPTANCE_CONTINUATION"} and not auction.terminal:
+        if candidate["name"] in {"LIQUIDITY_REVERSAL", "AUCTION_ACCEPTANCE_CONTINUATION"} and not auction["terminal"]:
             quality -= 12.0
             missing.append("terminal_auction_confirmation")
         for blocker in blockers:
@@ -416,13 +416,13 @@ def analyze_e6(snapshot: dict[str, Any], upstream: dict[str, EngineResult]) -> E
                 counter.append(blocker)
         proof = {
             "direction": candidate["direction"] == direction and direction in {"BUY", "SELL"},
-            "event": bool(auction.event),
-            "response": auction.terminal or auction.response_actor not in {"", "UNKNOWN", "NONE"},
+            "event": bool(auction["event"]),
+            "response": auction["terminal"] or auction["response_actor"] not in {"", "UNKNOWN", "NONE"},
             "structure": structure_resolved,
             "opportunity": not e2_unresolved,
-            "auction_finality": auction.terminal if candidate["name"] in {"LIQUIDITY_REVERSAL", "AUCTION_ACCEPTANCE_CONTINUATION"} else True,
+            "auction_finality": auction["terminal"] if candidate["name"] in {"LIQUIDITY_REVERSAL", "AUCTION_ACCEPTANCE_CONTINUATION"} else True,
             "space": space >= MIN_SPACE_ATR,
-            "freshness": auction.age_bars <= MAX_EVENT_AGE_BARS,
+            "freshness": auction["age_bars"] <= MAX_EVENT_AGE_BARS,
         }
         scored.append({
             **candidate,
@@ -449,9 +449,9 @@ def analyze_e6(snapshot: dict[str, Any], upstream: dict[str, EngineResult]) -> E
     setup = selected["name"]
     identity, identity_basis = _identity(setup, direction, auction, e5)
     proof = selected["proof_gates"]
-    explicit_opposition = auction.terminal and auction.direction in {"BUY", "SELL"} and selected["direction"] != auction["direction"]
-    stale = auction.age_bars > MAX_EVENT_AGE_BARS
-    hard_pending = e2_unresolved or (setup in {"LIQUIDITY_REVERSAL", "AUCTION_ACCEPTANCE_CONTINUATION"} and not auction.terminal)
+    explicit_opposition = auction["terminal"] and auction["direction"] in {"BUY", "SELL"} and selected["direction"] != auction["direction"]
+    stale = auction["age_bars"] > MAX_EVENT_AGE_BARS
+    hard_pending = e2_unresolved or (setup in {"LIQUIDITY_REVERSAL", "AUCTION_ACCEPTANCE_CONTINUATION"} and not auction["terminal"])
 
     if stale:
         stage = maturity = "EXPIRED"
@@ -487,7 +487,7 @@ def analyze_e6(snapshot: dict[str, Any], upstream: dict[str, EngineResult]) -> E
     missing = list(selected["missing_proof"])
     if e2_unresolved and "E2_OPPORTUNITY_ACCEPTANCE_FOLLOW_THROUGH" not in missing:
         missing.append("E2_OPPORTUNITY_ACCEPTANCE_FOLLOW_THROUGH")
-    if not auction.terminal and setup in {"LIQUIDITY_REVERSAL", "AUCTION_ACCEPTANCE_CONTINUATION"}:
+    if not auction["terminal"] and setup in {"LIQUIDITY_REVERSAL", "AUCTION_ACCEPTANCE_CONTINUATION"}:
         missing.append("TERMINAL_AUCTION_CONFIRMATION")
     if direction in {"BUY", "SELL"} and space < MIN_SPACE_ATR:
         missing.append(f"STRUCTURAL_SPACE_{MIN_SPACE_ATR:.2f}_ATR")
