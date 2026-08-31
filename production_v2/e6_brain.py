@@ -3,7 +3,7 @@ from statistics import mean
 from typing import Any
 from .contracts import EngineResult
 
-NAME="Setup Brain"; QUESTION="What setup is forming, in what direction, and at what stage?"; ARCHITECTURE="E6_PROFESSIONAL_SETUP_FORMATION_BRAIN_V29"; VERSION="29.0"
+NAME="Setup Brain"; QUESTION="What setup is forming, in what direction, and at what stage?"; ARCHITECTURE="E6_PROFESSIONAL_SETUP_FORMATION_BRAIN_V30"; VERSION="30.0"
 MIN_BARS=60; ATR_PERIOD=14; MIN_SPACE_ATR=.75; MAX_EVENT_AGE_BARS=3
 SETUP_FAMILIES=("LIQUIDITY_REVERSAL","AUCTION_ACCEPTANCE_CONTINUATION","BREAKOUT_RETEST","TREND_PULLBACK","BREAKOUT","IMPULSE_CONTINUATION")
 LIFECYCLE=("ABSENT","FORMING","VALIDATING","MATURE","FAILED","INVALIDATED","EXPIRED")
@@ -38,6 +38,11 @@ def _auction(e):
     elif any(x in ev for x in ("LOW_ACCEPTANCE","LOW_BREAK")):d="SELL"
     return {"event":ev,"state":st,"terminal":terminal,"pending":st=="PENDING" or "PENDING" in ev,"age_bars":max(0,int(_num(e.get("event_age_bars")))),"direction":d,"level":_num(e.get("event_level")),"event_id":str(e.get("event_id") or e.get("event_candle_id") or "")}
 def _structure(e):return _text(e.get("finding",e.get("structure_state"))),_norm(e.get("internal_state",e.get("internal_count_state"))),_norm(e.get("external_state",e.get("external_count_state")))
+def _structure_is_invalidated(e):
+    finding=_text(e.get("finding",e.get("structure_state")))
+    lifecycle=_text(e.get("lifecycle",e.get("state")))
+    invalidation=_text(e.get("invalidation"))
+    return "INVALIDATED" in finding or lifecycle=="INVALIDATED" or "INVALIDATED" in invalidation or bool(invalidation and invalidation not in {"NONE","NO_INVALIDATION"})
 def _direction(e1,e2,e3,e4):
     a=_auction(e4); p=_norm(e1.get("directional_pressure",e1.get("pressure"))); f,i,x=_structure(e3); s=[]; c=[]
     if p!="NEUTRAL":s.append(f"E1_PRESSURE={p}")
@@ -113,7 +118,11 @@ def analyze_e6(snapshot:dict[str,Any],upstream:dict[str,EngineResult])->EngineRe
             for k in ("open","high","low","close"):
                 if float(c[k])!=float(c[k]):raise ValueError
     except (KeyError,TypeError,ValueError):return _result("NO_SETUP","NONE","NEUTRAL","ABSENT","UNRESOLVED","Invalid closed-candle OHLC.",0,100,False,[],["INVALID_MARKET_DATA"],["valid_closed_candle_ohlc"],["provide valid closed-candle OHLC values"],["invalid_market_data"],[],[],{"selected_hypothesis":None},[_evidence("DATA","closed-candle OHLC validation failed","CONSTRAINT","HIGH")])
-    e1,e2,e3,e4,e5=(_payload(upstream,n) for n in ("E1","E2","E3","E4","E5"));a=_auction(e4);d,ds,dc,src=_direction(e1,e2,e3,e4);opp=_text(e2.get("finding",e2.get("state"))) or "UNRESOLVED";struct,internal,external=_structure(e3);space=_num(e5.get("available_space_atr_long") if d=="BUY" else e5.get("available_space_atr_short"));location=bool(e5)
+    e1,e2,e3,e4,e5=(_payload(upstream,n) for n in ("E1","E2","E3","E4","E5"))
+    if _structure_is_invalidated(e3):
+        finding=_text(e3.get("finding",e3.get("structure_state"))) or "STRUCTURE_INVALIDATED"
+        return _result("INVALIDATED","NONE","NEUTRAL","INVALIDATED","INVALIDATED","No setup survives because E3 has invalidated the active market structure.",0,100,False,[],["E3_STRUCTURE_INVALIDATED",finding],["a new closed-candle structure lifecycle after invalidation"],["E3 must establish a new valid structure before E6 can form a setup"],[finding],[],[],{"selected_hypothesis":None,"direction_source":"E3_STRUCTURE_INVALIDATION","lifecycle_owner":"E3"},[_evidence("E3",f"structure_lifecycle={_text(e3.get('lifecycle',e3.get('state'))) or 'INVALIDATED'}; finding={finding}","INVALIDATION","HIGH")])
+    a=_auction(e4);d,ds,dc,src=_direction(e1,e2,e3,e4);opp=_text(e2.get("finding",e2.get("state"))) or "UNRESOLVED";struct,internal,external=_structure(e3);space=_num(e5.get("available_space_atr_long") if d=="BUY" else e5.get("available_space_atr_short"));location=bool(e5)
     causal={"context":bool(e1),"event":bool(a["event"]),"response":a["terminal"] or _text(e4.get("response_actor")) not in {"","UNKNOWN","NONE"},"structure":not ("MIXED" in struct or "TRANSITION" in struct) and internal!="NEUTRAL" and external!="NEUTRAL"}; causal_count=sum(causal.values())
     contradictions=list(dc)
     if "MIXED" in struct or "TRANSITION" in struct:contradictions+= ["STRUCTURE_CONFLICT"]
@@ -142,7 +151,7 @@ def analyze_e6(snapshot:dict[str,Any],upstream:dict[str,EngineResult])->EngineRe
     scored.sort(key=lambda x:(x["causal_score"],sum(bool(v) for v in x["proof_gates"].values())),reverse=True);sel=scored[0] if scored else None
     if not sel:return _result("NO_SETUP","NONE",d,"ABSENT","UNRESOLVED","No plausible setup survives causal screening.",10,65,False,ds,contradictions,["causal_setup_evidence"],["context + event + response + structure"],[],scored,[],{"selected_hypothesis":None},[])
     setup=sel["name"];identity,identity_basis=_identity(setup,d,e3,a,e5);proof=sel["proof_gates"];rejected=[f"{x['name']}:OUTRANKED_BY_{setup}:SCORE_{x['causal_score']:.2f}" for x in scored[1:]]
-    explicit=(a["terminal"] and a["direction"] in ("BUY","SELL") and a["direction"]!=sel["direction"]) or "INVALIDATED" in _text(e3.get("state")) or "INVALIDATION" in _text(e3.get("finding"));stale=a["age_bars"]>MAX_EVENT_AGE_BARS
+    explicit=(a["terminal"] and a["direction"] in ("BUY","SELL") and a["direction"]!=sel["direction"]) or _structure_is_invalidated(e3);stale=a["age_bars"]>MAX_EVENT_AGE_BARS
     if stale:stage=mat="EXPIRED";q=min(sel["causal_score"],40);conf=30;thesis=f"{d} {setup} expired because its initiating event is stale."
     elif explicit:stage=mat="INVALIDATED";q=min(sel["causal_score"],35);conf=25;thesis=f"{d} {setup} is invalidated by explicit opposing evidence."
     elif all(proof.values()) and causal_count==4 and sel["anti_overfit_pass"] and not contradictions:stage=mat="MATURE";q=max(82,sel["causal_score"]);conf=min(96,80+sel["causal_score"]*.14);thesis=f"{d} {setup} is mature: context, event, response and structure form a coherent causal chain."
