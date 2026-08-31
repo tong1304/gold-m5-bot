@@ -25,8 +25,9 @@ def _num(value: Any, default: float = 0.0) -> float:
 def _records(source: Any) -> list[dict[str, Any]]:
     if isinstance(source, dict):
         for key in ("records", "outcomes", "trades", "historical_outcomes", "setup_history"):
-            if isinstance(source.get(key), list):
-                return [x for x in source[key] if isinstance(x, dict)]
+            value = source.get(key)
+            if isinstance(value, list):
+                return [x for x in value if isinstance(x, dict)]
     if isinstance(source, list):
         return [x for x in source if isinstance(x, dict)]
     return []
@@ -42,33 +43,54 @@ def _resolved(row: dict[str, Any]) -> tuple[bool | None, float | None]:
             win = False
     if not isinstance(win, bool):
         return None, None
-    r = row.get("r_multiple", row.get("r", row.get("return_r")))
-    if r is None:
-        r = None
-    else:
-        r = _num(r, 0.0)
+    raw_r = row.get("r_multiple", row.get("r", row.get("return_r")))
+    r = None if raw_r is None else _num(raw_r, 0.0)
     return win, r
 
 
-def _matches(row: dict[str, Any], symbol: str, regime: str, direction: str, setup: str, location: str, confirmation: str) -> bool:
-    pairs = (
-        ("symbol", symbol),
-        ("regime", regime),
-        ("direction", direction),
-        ("setup", setup),
-        ("setup_family", setup),
-        ("location", location),
-        ("location_state", location),
-        ("confirmation", confirmation),
-        ("confirmation_state", confirmation),
-    )
-    # Optional dimensions only constrain when the historical row contains them.
-    for key, wanted in pairs:
-        if key not in row or row.get(key) in (None, "", "UNKNOWN"):
-            continue
-        if _text(row.get(key)) != _text(wanted):
+def _field(row: dict[str, Any], names: tuple[str, ...]) -> str:
+    for name in names:
+        value = row.get(name)
+        if value not in (None, "", "UNKNOWN"):
+            return _text(value)
+    return ""
+
+
+def _match(row: dict[str, Any], dimensions: dict[str, str], keys: tuple[str, ...]) -> bool:
+    for key in keys:
+        aliases = {
+            "setup": ("setup", "setup_family", "setup_type"),
+            "location": ("location", "location_state", "value_state"),
+            "confirmation": ("confirmation", "confirmation_state", "proof_state"),
+            "regime": ("regime", "market_state", "trend_state"),
+            "direction": ("direction",),
+            "symbol": ("symbol",),
+        }[key]
+        observed = _field(row, aliases)
+        if observed and observed != dimensions[key]:
             return False
     return True
+
+
+def _conditional_candidates(records: list[dict[str, Any]], dimensions: dict[str, str]) -> tuple[list[dict[str, Any]], tuple[str, ...], str]:
+    # Mandatory identity first. Then progressively relax only contextual dimensions.
+    # This prevents a sparse confirmation/location bucket from silently producing zero
+    # samples when a defensible broader historical bucket exists.
+    tiers = (
+        ("symbol", "direction", "setup", "regime", "location", "confirmation"),
+        ("symbol", "direction", "setup", "regime", "location"),
+        ("symbol", "direction", "setup", "regime"),
+        ("symbol", "direction", "setup"),
+    )
+    resolved_by_tier: list[tuple[list[dict[str, Any]], tuple[str, ...]]] = []
+    for keys in tiers:
+        matched = [r for r in records if _match(r, dimensions, keys)]
+        resolved = [r for r in matched if _resolved(r)[0] is not None]
+        resolved_by_tier.append((resolved, keys))
+        if len(resolved) >= MIN_SAMPLE:
+            return resolved, keys, "EXACT_OR_PROGRESSIVELY_RELAXED"
+    best, keys = max(resolved_by_tier, key=lambda item: len(item[0]))
+    return best, keys, "INSUFFICIENT_SAMPLE_AT_ALL_TIERS"
 
 
 def evaluate_profit_edge(*, symbol: str, regime: str, direction: str, setup: str,
@@ -77,22 +99,17 @@ def evaluate_profit_edge(*, symbol: str, regime: str, direction: str, setup: str
                          cost_r: float = 0.0) -> dict[str, Any]:
     """Evaluate conditional expectancy from completed outcomes only.
 
-    This module is deliberately non-predictive: it never manufactures outcomes,
-    never inspects future candles, and never authorizes execution. Historical
-    records must already represent completed trades/outcomes supplied by the
-    caller.
+    No future candles are inspected here. Historical rows must already be completed
+    outcomes. Context relaxation is explicit and reported so E9 knows exactly how
+    much conditioning was actually supported by the available sample.
     """
-    symbol = _text(symbol)
-    regime = _text(regime)
-    direction = _text(direction)
-    setup = _text(setup)
-    location = _text(location)
-    confirmation = _text(confirmation)
+    dimensions = {
+        "symbol": _text(symbol), "regime": _text(regime), "direction": _text(direction),
+        "setup": _text(setup), "location": _text(location), "confirmation": _text(confirmation),
+    }
+    records = _records(historical_outcomes)
+    candidates, conditioning_keys, selection_mode = _conditional_candidates(records, dimensions)
 
-    candidates = [
-        row for row in _records(historical_outcomes)
-        if _matches(row, symbol, regime, direction, setup, location, confirmation)
-    ]
     resolved = []
     for row in candidates:
         win, r = _resolved(row)
@@ -104,22 +121,27 @@ def evaluate_profit_edge(*, symbol: str, regime: str, direction: str, setup: str
     losses = n - wins
     p = (wins + 1.0) / (n + 2.0) if n else None
 
-    observed_r = [r for _, r, _ in resolved if r is not None and r != 0.0]
-    avg_win_r = mean([r for win, r, _ in resolved if win and r is not None and r > 0]) if any(win and r is not None and r > 0 for win, r, _ in resolved) else max(realized_rr, 0.0)
-    avg_loss_r = abs(mean([r for win, r, _ in resolved if not win and r is not None and r < 0])) if any((not win) and r is not None and r < 0 for win, r, _ in resolved) else 1.0
-    reward_r = max(avg_win_r, _num(realized_rr, 0.0), 0.0)
+    win_rs = [r for win, r, _ in resolved if win and r is not None and r > 0]
+    loss_rs = [r for win, r, _ in resolved if not win and r is not None and r < 0]
+    avg_win_r = mean(win_rs) if win_rs else max(_num(realized_rr), 0.0)
+    avg_loss_r = abs(mean(loss_rs)) if loss_rs else 1.0
+    reward_r = max(avg_win_r, _num(realized_rr), 0.0)
     risk_r = max(avg_loss_r, 1e-9)
+    cost_r = max(_num(cost_r), 0.0)
 
     expected = None
     stress_expected = None
     break_even = None
+    stress_p = None
     if p is not None:
-        net_reward = max(0.0, reward_r - max(cost_r, 0.0))
-        net_risk = risk_r + max(cost_r, 0.0)
+        net_reward = max(0.0, reward_r - cost_r)
+        net_risk = risk_r + cost_r
         expected = p * net_reward - (1.0 - p) * net_risk
         stress_p = max(0.0, p - STRESS_PROBABILITY)
-        stress_cost = max(cost_r, 0.0) * STRESS_COST_MULTIPLIER
-        stress_expected = stress_p * max(0.0, reward_r - stress_cost) - (1.0 - stress_p) * (risk_r + stress_cost)
+        stress_cost = cost_r * STRESS_COST_MULTIPLIER
+        stress_reward = max(0.0, reward_r - stress_cost)
+        stress_risk = risk_r + stress_cost
+        stress_expected = stress_p * stress_reward - (1.0 - stress_p) * stress_risk
         break_even = net_risk / max(net_risk + net_reward, 1e-9)
 
     sample_quality = min(100.0, 100.0 * n / TRUSTED_SAMPLE) if n else 0.0
@@ -133,13 +155,33 @@ def evaluate_profit_edge(*, symbol: str, regime: str, direction: str, setup: str
         blockers.append("PROFIT_EXPECTANCY_BELOW_MINIMUM")
     if stress_expected is not None and stress_expected <= 0.0:
         blockers.append("PROFIT_EDGE_FAILS_COST_STRESS")
+    if conditioning_keys != ("symbol", "direction", "setup", "regime", "location", "confirmation"):
+        blockers.append("CONDITIONAL_SAMPLE_RELAXED")
+    if selection_mode == "INSUFFICIENT_SAMPLE_AT_ALL_TIERS":
+        blockers.append("HISTORICAL_SAMPLE_INSUFFICIENT")
 
-    state = "UNQUANTIFIED" if n == 0 else "UNTRUSTED" if n < MIN_SAMPLE else "NEGATIVE_EDGE" if expected is not None and expected < MIN_EXPECTED_VALUE_R else "POSITIVE_EDGE"
-    trusted = n >= MIN_SAMPLE and expected is not None and expected >= MIN_EXPECTED_VALUE_R and (stress_expected or -1.0) > 0.0
-    if trusted:
-        state = "POSITIVE_EDGE"
-    elif n >= MIN_SAMPLE and expected is not None and expected < MIN_EXPECTED_VALUE_R:
+    if n == 0:
+        state = "UNQUANTIFIED"
+    elif n < MIN_SAMPLE:
+        state = "UNTRUSTED"
+    elif expected is not None and expected < MIN_EXPECTED_VALUE_R:
         state = "NEGATIVE_EDGE"
+    else:
+        state = "POSITIVE_EDGE"
+
+    # A relaxed bucket may quantify expectancy, but it is not allowed to become a
+    # trusted execution edge unless the minimum conditional sample is present and
+    # the stress test remains positive.
+    trusted = bool(
+        n >= MIN_SAMPLE
+        and expected is not None
+        and expected >= MIN_EXPECTED_VALUE_R
+        and stress_expected is not None
+        and stress_expected > 0.0
+    )
+    if not trusted and state == "POSITIVE_EDGE":
+        state = "UNTRUSTED"
+        blockers.append("PROFIT_EDGE_NOT_TRUSTED")
 
     return {
         "state": state,
@@ -155,9 +197,12 @@ def evaluate_profit_edge(*, symbol: str, regime: str, direction: str, setup: str
         "expected_value_r": None if expected is None else round(expected, 6),
         "stress_expected_value_r": None if stress_expected is None else round(stress_expected, 6),
         "break_even_probability": None if break_even is None else round(break_even, 6),
-        "cost_r": round(max(cost_r, 0.0), 6),
-        "conditioning": {"symbol": symbol, "regime": regime, "direction": direction, "setup": setup, "location": location, "confirmation": confirmation},
-        "observed_r_samples": len(observed_r),
+        "stress_probability": None if stress_p is None else round(stress_p, 6),
+        "cost_r": round(cost_r, 6),
+        "conditioning": dimensions,
+        "conditioning_used": list(conditioning_keys),
+        "conditioning_mode": selection_mode,
+        "observed_r_samples": len([r for _, r, _ in resolved if r is not None]),
         "source": "COMPLETED_HISTORICAL_OUTCOMES_ONLY",
         "lookahead": False,
         "blockers": list(dict.fromkeys(blockers)),
