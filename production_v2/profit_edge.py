@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from statistics import mean
 from typing import Any
+import os
 
 MIN_SAMPLE = 30
 TRUSTED_SAMPLE = 50
@@ -23,6 +24,14 @@ def _num(value: Any, default: float = 0.0) -> float:
 
 
 def _records(source: Any) -> list[dict[str, Any]]:
+    if source is None:
+        path = os.getenv("E9_LEARNING_PATH", "").strip()
+        if path:
+            try:
+                from .e9_learning import load_records
+                source = [r.__dict__ for r in load_records(path)]
+            except Exception:
+                source = []
     if isinstance(source, dict):
         for key in ("records", "outcomes", "trades", "historical_outcomes", "setup_history"):
             value = source.get(key)
@@ -41,9 +50,11 @@ def _resolved(row: dict[str, Any]) -> tuple[bool | None, float | None]:
             win = True
         elif outcome in {"LOSS", "LOST", "SL", "FAIL"}:
             win = False
+        elif outcome == "TIMEOUT":
+            win = False
     if not isinstance(win, bool):
         return None, None
-    raw_r = row.get("r_multiple", row.get("r", row.get("return_r")))
+    raw_r = row.get("r_multiple", row.get("realized_r", row.get("r", row.get("return_r"))))
     r = None if raw_r is None else _num(raw_r, 0.0)
     return win, r
 
@@ -57,39 +68,36 @@ def _field(row: dict[str, Any], names: tuple[str, ...]) -> str:
 
 
 def _match(row: dict[str, Any], dimensions: dict[str, str], keys: tuple[str, ...]) -> bool:
+    aliases = {
+        "setup": ("setup", "setup_family", "setup_type"),
+        "location": ("location", "location_state", "value_state"),
+        "confirmation": ("confirmation", "confirmation_state", "proof_state"),
+        "regime": ("regime", "market_state", "trend_state"),
+        "direction": ("direction",),
+        "symbol": ("symbol", "asset"),
+    }
     for key in keys:
-        aliases = {
-            "setup": ("setup", "setup_family", "setup_type"),
-            "location": ("location", "location_state", "value_state"),
-            "confirmation": ("confirmation", "confirmation_state", "proof_state"),
-            "regime": ("regime", "market_state", "trend_state"),
-            "direction": ("direction",),
-            "symbol": ("symbol",),
-        }[key]
-        observed = _field(row, aliases)
+        observed = _field(row, aliases[key])
         if observed and observed != dimensions[key]:
             return False
     return True
 
 
 def _conditional_candidates(records: list[dict[str, Any]], dimensions: dict[str, str]) -> tuple[list[dict[str, Any]], tuple[str, ...], str]:
-    # Mandatory identity first. Then progressively relax only contextual dimensions.
-    # This prevents a sparse confirmation/location bucket from silently producing zero
-    # samples when a defensible broader historical bucket exists.
     tiers = (
         ("symbol", "direction", "setup", "regime", "location", "confirmation"),
         ("symbol", "direction", "setup", "regime", "location"),
         ("symbol", "direction", "setup", "regime"),
         ("symbol", "direction", "setup"),
     )
-    resolved_by_tier: list[tuple[list[dict[str, Any]], tuple[str, ...]]] = []
+    attempts: list[tuple[list[dict[str, Any]], tuple[str, ...]]] = []
     for keys in tiers:
         matched = [r for r in records if _match(r, dimensions, keys)]
         resolved = [r for r in matched if _resolved(r)[0] is not None]
-        resolved_by_tier.append((resolved, keys))
+        attempts.append((resolved, keys))
         if len(resolved) >= MIN_SAMPLE:
             return resolved, keys, "EXACT_OR_PROGRESSIVELY_RELAXED"
-    best, keys = max(resolved_by_tier, key=lambda item: len(item[0]))
+    best, keys = max(attempts, key=lambda item: len(item[0]))
     return best, keys, "INSUFFICIENT_SAMPLE_AT_ALL_TIERS"
 
 
@@ -97,11 +105,10 @@ def evaluate_profit_edge(*, symbol: str, regime: str, direction: str, setup: str
                          location: str = "UNKNOWN", confirmation: str = "UNKNOWN",
                          historical_outcomes: Any = None, realized_rr: float = 0.0,
                          cost_r: float = 0.0) -> dict[str, Any]:
-    """Evaluate conditional expectancy from completed outcomes only.
+    """Evaluate expectancy from completed historical outcomes only.
 
-    No future candles are inspected here. Historical rows must already be completed
-    outcomes. Context relaxation is explicit and reported so E9 knows exactly how
-    much conditioning was actually supported by the available sample.
+    If the pipeline does not explicitly provide a calibration set, an optional
+    E9_LEARNING_PATH is loaded. No current/future candles are used as outcomes.
     """
     dimensions = {
         "symbol": _text(symbol), "regime": _text(regime), "direction": _text(direction),
@@ -169,16 +176,7 @@ def evaluate_profit_edge(*, symbol: str, regime: str, direction: str, setup: str
     else:
         state = "POSITIVE_EDGE"
 
-    # A relaxed bucket may quantify expectancy, but it is not allowed to become a
-    # trusted execution edge unless the minimum conditional sample is present and
-    # the stress test remains positive.
-    trusted = bool(
-        n >= MIN_SAMPLE
-        and expected is not None
-        and expected >= MIN_EXPECTED_VALUE_R
-        and stress_expected is not None
-        and stress_expected > 0.0
-    )
+    trusted = bool(n >= MIN_SAMPLE and expected is not None and expected >= MIN_EXPECTED_VALUE_R and stress_expected is not None and stress_expected > 0.0)
     if not trusted and state == "POSITIVE_EDGE":
         state = "UNTRUSTED"
         blockers.append("PROFIT_EDGE_NOT_TRUSTED")
