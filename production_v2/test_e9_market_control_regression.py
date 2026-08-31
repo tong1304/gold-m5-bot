@@ -32,7 +32,7 @@ def test_e9_preserves_e6_candidate_identity_when_setup_is_only_in_finding():
     output = result.output if hasattr(result, "output") else result
 
     assert output["decision"] in {"NO_TRADE", "WAIT_FOR_PROOF"}
-    assert output["thesis_state"] == "ESTABLISHED"
+    assert output["thesis_state"] == "HYPOTHESIS"
     assert output["setup_state"] == "HYPOTHESIS"
     assert output["execution_state"] == "BLOCKED"
     assert output["direction"] == "SELL"
@@ -116,3 +116,24 @@ def test_e9_thesis_direction_cannot_be_rewritten_by_market_control():
     assert output["control_direction"] == "SELL"
     assert output["decision"] in {"WAIT_FOR_PROOF", "NO_TRADE"}
     assert output["decision"] != "EXECUTE"
+
+
+def test_e9_reports_e6_thesis_lifecycle_separately_from_e3_structure_lifecycle():
+    upstream = {
+        "E1": _engine("E1", {"pressure": "DOWN"}),
+        "E2": _engine("E2", {"finding": "DOWN opportunity is developing"}),
+        "E3": _engine("E3", {"structure_direction": "DOWN", "lifecycle": "ESTABLISHED"}),
+        "E4": _engine("E4", {"response_actor": "SELLERS", "auction_state": "PENDING"}),
+        "E5": _engine("E5", {"repricing_state": "ACCEPTANCE_BELOW_VALUE"}),
+        "E6": _engine("E6", {"direction": "SELL", "setup": "AUCTION_ACCEPTANCE_CONTINUATION", "maturity": "VALIDATING", "thesis_state": "VALIDATING"}),
+        "E7": _engine("E7", {"confirmation_state": "PENDING"}),
+        "E8": _engine("E8", {"risk_state": "UNRESOLVED", "reason_codes": ("REAL_RR_BELOW_MINIMUM",)}),
+    }
+
+    result = analyze_e9({}, upstream)
+    output = result.output if hasattr(result, "output") else result
+
+    assert output["thesis_state"] == "VALIDATING"
+    assert output["setup_state"] == "VALIDATING"
+    assert output["structure_lifecycle"] == "ESTABLISHED"
+    assert output["thesis_lifecycle_source"] == "E6"
