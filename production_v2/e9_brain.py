@@ -6,8 +6,8 @@ from .contracts import EngineResult
 
 NAME = "Master Decision Brain"
 QUESTION = "Who controls the auction, where is liquidity, and should this trade be taken after reconciling all evidence?"
-ARCHITECTURE = "E9_MASTER_DECISION_MARKET_CONTROL_V56"
-VERSION = "56.0"
+ARCHITECTURE = "E9_MASTER_DECISION_MARKET_CONTROL_V57"
+VERSION = "57.0"
 DIRECTIONS = {"BUY", "SELL"}
 
 HARD_CONFLICT_CODES = {"THESIS_INVALIDATED", "MARKET_STATE_CONFLICT", "STRUCTURE_THESIS_CONFLICT", "OPPOSING_LIQUIDITY_THESIS", "EXTERNAL_INTERNAL_STRUCTURE_CONFLICT", "E6_THESIS_INVALIDATED", "E7_CONFIRMATION_INVALIDATED", "E8_RISK_INVALIDATED", "STRUCTURE_INVALIDATED", "BULLISH_STRUCTURE_INVALIDATED", "BEARISH_STRUCTURE_INVALIDATED", "E3_STRUCTURE_INVALIDATED", "E3_THESIS_INVALIDATED"}
@@ -180,23 +180,61 @@ def _plan_valid(plan: dict[str, Any], direction: str) -> bool:
     return True
 
 
+def _e3_direct_structure_invalidation(e3: dict[str, Any]) -> list[str]:
+    """Return only structure invalidations proven by E3 itself.
+
+    Downstream engines may repeat an E3 veto in their own reason trail. E9 must
+    not treat that repetition as independent evidence. The causal authority for
+    structure invalidation is E3's current lifecycle/invalidation state.
+    """
+    if not e3:
+        return []
+    lifecycle = _text(e3.get("lifecycle"))
+    invalidation = _text(e3.get("invalidation"))
+    finding = _text(e3.get("finding"))
+    direct_codes = _engine_codes(EngineResult("E3", "E3", False, 0.0, e3, tuple(e3.get("reason_codes", ()))))
+    proven = lifecycle == "INVALIDATED" or invalidation.endswith("_INVALIDATED") or finding.endswith("_INVALIDATED") or any(code in {"E3_STRUCTURE_INVALIDATED", "STRUCTURE_INVALIDATED", "BULLISH_STRUCTURE_INVALIDATED", "BEARISH_STRUCTURE_INVALIDATED"} for code in direct_codes)
+    if not proven:
+        return []
+    candidates = ["E3_STRUCTURE_INVALIDATED"]
+    for value in (invalidation, finding):
+        if value.endswith("_INVALIDATED") and value not in candidates:
+            candidates.append(value)
+    return _dedupe(candidates)
+
+
 def _hard_conflicts(upstream: dict[str, EngineResult]) -> list[str]:
     found: list[str] = []
+    e3 = _out(upstream.get("E3"))
+    direct_e3_conflicts = set(_e3_direct_structure_invalidation(e3))
     for engine_id in ("E1", "E2", "E3", "E4", "E5", "E6", "E7", "E8"):
         engine = upstream.get(engine_id); output = _out(engine); codes = _engine_codes(engine)
-        found.extend(c for c in codes if c in HARD_CONFLICT_CODES)
+        for code in codes:
+            if code in {"E3_STRUCTURE_INVALIDATED", "STRUCTURE_INVALIDATED", "BULLISH_STRUCTURE_INVALIDATED", "BEARISH_STRUCTURE_INVALIDATED"}:
+                if engine_id == "E3" and code in direct_e3_conflicts:
+                    found.append(code)
+                continue
+            if code in HARD_CONFLICT_CODES:
+                found.append(code)
         for key in ("state", "finding", "lifecycle", "invalidation", "structure_state", "thesis_state"):
             value = _text(output.get(key))
+            if value in {"E3_STRUCTURE_INVALIDATED", "STRUCTURE_INVALIDATED", "BULLISH_STRUCTURE_INVALIDATED", "BEARISH_STRUCTURE_INVALIDATED"}:
+                if engine_id == "E3" and value in direct_e3_conflicts:
+                    found.append(value)
+                continue
             if value in HARD_CONFLICT_CODES or value.endswith("_INVALIDATED") or "THESIS_INVALIDATED" in value:
-                if value: found.append(value)
+                if value:
+                    found.append(value)
         invalidations = output.get("invalidations")
         if isinstance(invalidations, dict):
             for key, value in invalidations.items():
-                if value is True and ("STRUCTURE" in _text(key) or "THESIS" in _text(key) or "INVALIDAT" in _text(key)):
-                    found.append(_text(key))
-        if engine_id == "E3":
-            finding = _text(output.get("finding")); lifecycle = _text(output.get("lifecycle"))
-            if "_INVALIDATED" in finding or lifecycle == "INVALIDATED": found.append("E3_STRUCTURE_INVALIDATED")
+                token = _text(key)
+                if value is True and ("STRUCTURE" in token or "THESIS" in token or "INVALIDAT" in token):
+                    if "E3_STRUCTURE_INVALIDATED" in token or token in {"STRUCTURE_INVALIDATED", "BULLISH_STRUCTURE_INVALIDATED", "BEARISH_STRUCTURE_INVALIDATED"}:
+                        if engine_id == "E3" and token in direct_e3_conflicts:
+                            found.append(token)
+                    else:
+                        found.append(token)
     return _dedupe(found)
 
 
@@ -353,7 +391,7 @@ def analyze_e9(snapshot: dict[str, Any], upstream: dict[str, EngineResult]) -> E
     professional_reasoning = {"primary_thesis": {"direction": direction, "setup": setup, "state": resolved["thesis_state"], "text": thesis}, "market_control": market_control, "master": {"state": resolved["master_state"], "decision_state": resolved["decision_state"], "readiness_score": readiness_score}, "setup": {"direction": direction, "state": resolved["setup_state"], "name": setup, "maturity": resolved["e6_maturity"]}, "execution": {"state": resolved["execution_state"], "decision_state": resolved["decision_state"]}, "confirmation": {"state": resolved["confirmation_state"], "trigger_observed": resolved["e7_trigger_observed"]}, "risk": {"state": resolved["risk_state"], "economic_blockers": resolved["e8_economic_blockers"]}, "invalidation": lifecycle, "conflicts": resolved["resolved_conflicts"], "hard_invalidations": [c for c in resolved["resolved_conflicts"] if "INVALIDAT" in c], "primary_blocker": resolved["primary_blocker"], "next_required_event": resolved["next_required_event"], "closed_candle_only": True, "no_lookahead": True, "authority": resolved["authority"]}
     reason_codes = _dedupe(([resolved["primary_blocker"]] if resolved["primary_blocker"] != "NONE" else ["MASTER_GATES_PASSED"]) + resolved["secondary_blockers"] + resolved["resolved_conflicts"] + market_control["reason_codes"] + (["E9_HARD_CONFLICT"] if resolved["hard_conflict"] else []))
     report_fields = {"market_intent": market_control["market_intent"], "dominant_side": market_control["dominant_side"], "controlled_side": market_control["controlled_side"], "trapped_side": market_control["trapped_side"], "liquidity_target": market_control["liquidity_target"], "repricing_direction": market_control["repricing_direction"], "repricing_state": market_control["repricing_state"], "control_strength": market_control["control_strength"], "control_state": market_control["control_state"], "liquidity_taker": market_control["liquidity_taker"], "response_actor": market_control["response_actor"], "auction_event": market_control["auction_event"], "auction_state": market_control["auction_state"], "liquidity_type": market_control["liquidity_type"], "auction_quality": market_control["auction_quality"], "liquidity_quality": market_control["liquidity_quality"], "direction_consensus": market_control["direction_consensus"]}
-    output = {**resolved, **report_fields, "market_control": market_control, "master_resolution": "EXECUTE" if resolved["all_gates_pass"] else "REJECT" if resolved["decision_state"] == "REJECT" else "WAIT_FOR_PROOF", "readiness_score": readiness_score, "evidence_summary": evidence_summary, "professional_reasoning": professional_reasoning, "decision_contract": {"BUY_SELL_requires_all_gates": True, "NO_TRADE_on_missing_confirmation": True, "NO_EXECUTION_on_invalid_geometry": True, "NO_EXECUTION_on_hard_conflict": True, "E9_preserves_E6_thesis_identity": True, "E9_does_not_create_thesis": True, "E9_does_not_create_entry": True, "E9_does_not_create_target": True, "E9_does_not_override_E8_economics": True, "E9_synthesizes_market_control_from_upstream_only": True, "E9_does_not_invent_liquidity_events": True, "E9_market_control_is_reportable_at_top_level": True, "closed_candle_only": True, "counter_evidence_does_not_equal_hard_conflict": True, "master_state_machine": True, "invalidation_lifecycle_explicit": True, "next_required_event_explicit": True, "structure_invalidation_is_hard_conflict": True, "hard_conflict_detects_state_and_finding": True, "set_membership_is_type_safe": True}}
+    output = {**resolved, **report_fields, "market_control": market_control, "master_resolution": "EXECUTE" if resolved["all_gates_pass"] else "REJECT" if resolved["decision_state"] == "REJECT" else "WAIT_FOR_PROOF", "readiness_score": readiness_score, "evidence_summary": evidence_summary, "professional_reasoning": professional_reasoning, "decision_contract": {"BUY_SELL_requires_all_gates": True, "NO_TRADE_on_missing_confirmation": True, "NO_EXECUTION_on_invalid_geometry": True, "NO_EXECUTION_on_hard_conflict": True, "E9_preserves_E6_thesis_identity": True, "E9_does_not_create_thesis": True, "E9_does_not_create_entry": True, "E9_does_not_create_target": True, "E9_does_not_override_E8_economics": True, "E9_synthesizes_market_control_from_upstream_only": True, "E9_does_not_invent_liquidity_events": True, "E9_market_control_is_reportable_at_top_level": True, "closed_candle_only": True, "counter_evidence_does_not_equal_hard_conflict": True, "master_state_machine": True, "invalidation_lifecycle_explicit": True, "next_required_event_explicit": True, "structure_invalidation_is_hard_conflict": True, "hard_conflict_detects_state_and_finding": True, "hard_conflict_structure_is_causal_to_e3": True, "propagated_e3_veto_is_not_independent_evidence": True, "set_membership_is_type_safe": True}}
     result = EngineResult("E9", NAME, bool(resolved["all_gates_pass"]), readiness_score, output, tuple(reason_codes))
     opportunity = _opportunity_map(result)
     enriched = dict(result.output)
