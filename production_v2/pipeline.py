@@ -19,6 +19,7 @@ from .professional_opportunity import consolidate, enrich_engine
 from .professional_brain_audit import audit_all
 from .shared_market_picture import attach_brain_view, build_shared_market_picture
 from .conflict_resolution import build_conflict_ledger
+from .profit_edge import evaluate_profit_edge
 
 ENGINE_ORDER = ("E1", "E2", "E3", "E4", "E5", "E6", "E7", "E8", "E9")
 EVIDENCE_INPUTS = {"E1": (), "E2": ("E1",), "E3": (), "E4": ("E1", "E3"), "E5": ("E1", "E3", "E4"), "E6": ("E1", "E2", "E3", "E4", "E5"), "E7": ("E4", "E6"), "E8": ("E5", "E6", "E7"), "E9": ("E1", "E2", "E3", "E4", "E5", "E6", "E7", "E8")}
@@ -27,17 +28,12 @@ NAMES = {"E1": "Market State Brain", "E2": "Opportunity / Regime Brain", "E3": "
 
 def _dict_result(engine_id: str, output: dict[str, Any]) -> EngineResult:
     confidence = output.get("confidence", output.get("evidence_strength", 0.0))
-    try:
-        score = float(confidence) * 100.0
-    except (TypeError, ValueError):
-        score = 0.0
+    try: score = float(confidence) * 100.0
+    except (TypeError, ValueError): score = 0.0
     reasons = output.get("reason_codes", output.get("reasons", output.get("conflicts", ())))
-    if isinstance(reasons, dict):
-        reasons = tuple(str(k) for k, v in reasons.items() if v)
-    elif isinstance(reasons, str):
-        reasons = (reasons,)
-    else:
-        reasons = tuple(str(x) for x in (reasons or ()))
+    if isinstance(reasons, dict): reasons = tuple(str(k) for k, v in reasons.items() if v)
+    elif isinstance(reasons, str): reasons = (reasons,)
+    else: reasons = tuple(str(x) for x in (reasons or ()))
     return EngineResult(engine_id, NAMES[engine_id], output.get("gate_passed"), score, output, reasons)
 
 
@@ -46,38 +42,32 @@ def _enrich(engine_id: str, result: EngineResult, snapshot: dict[str, Any]) -> E
     output = enrich_engine(engine_id, output)
     output = harden_engine(engine_id, output)
     shared = snapshot.get("shared_market_picture")
-    if isinstance(shared, dict):
-        output = attach_brain_view(engine_id, output, shared)
+    if isinstance(shared, dict): output = attach_brain_view(engine_id, output, shared)
     return EngineResult(result.engine_id, result.name, result.gate_passed, result.score, output, result.reason_codes)
 
 
 def _scalarize(value: Any) -> str:
-    if isinstance(value, dict):
-        return " ".join(f"{key}={_scalarize(child)}" for key, child in sorted(value.items(), key=lambda item: str(item[0])))
-    if isinstance(value, (list, tuple, set)):
-        return " ".join(_scalarize(child) for child in value)
+    if isinstance(value, dict): return " ".join(f"{key}={_scalarize(child)}" for key, child in sorted(value.items(), key=lambda item: str(item[0])))
+    if isinstance(value, (list, tuple, set)): return " ".join(_scalarize(child) for child in value)
     return str(value if value is not None else "").upper().strip()
 
 
 def _prepare_e9_boundary(results: dict[str, EngineResult]) -> None:
     for engine_id, engine in tuple(results.items()):
-        if not engine or not isinstance(engine.output, dict):
-            continue
+        if not engine or not isinstance(engine.output, dict): continue
         output = harden_engine(engine_id, dict(engine.output))
         output["invalidations"] = list(output.get("active_invalidations") or [])
         if engine_id == "E4":
             for key in ("event", "auction_event", "liquidity_event"):
                 value = output.get(key)
                 if isinstance(value, (dict, list, tuple, set)):
-                    output.setdefault("event_detail", value)
-                    output[key] = _scalarize(value)
+                    output.setdefault("event_detail", value); output[key] = _scalarize(value)
         results[engine_id] = EngineResult(engine.engine_id, engine.name, engine.gate_passed, engine.score, output, engine.reason_codes)
 
 
 def _attach_conflict_ledger(results: dict[str, EngineResult], ledger: dict[str, Any]) -> None:
     for engine_id in tuple(results):
-        engine = results[engine_id]
-        output = dict(engine.output)
+        engine = results[engine_id]; output = dict(engine.output)
         output["cross_brain_conflicts"] = ledger
         output["conflict_awareness"] = {"role": engine_id, "authority": "NON_AUTHORITATIVE_UNTIL_E9", "must_not_rewrite_upstream_evidence": True}
         results[engine_id] = EngineResult(engine.engine_id, engine.name, engine.gate_passed, engine.score, output, engine.reason_codes)
@@ -85,53 +75,97 @@ def _attach_conflict_ledger(results: dict[str, EngineResult], ledger: dict[str, 
 
 def _direction(value: Any) -> str:
     text = str(value or "").upper().strip()
-    if text in {"UP", "BULLISH", "TREND_UP", "BUY"} or text.startswith("BUY ") or text.startswith("BUY_"):
-        return "BUY"
-    if text in {"DOWN", "BEARISH", "TREND_DOWN", "SELL"} or text.startswith("SELL ") or text.startswith("SELL_"):
-        return "SELL"
+    if text in {"UP", "BULLISH", "TREND_UP", "BUY"} or text.startswith("BUY ") or text.startswith("BUY_"): return "BUY"
+    if text in {"DOWN", "BEARISH", "TREND_DOWN", "SELL"} or text.startswith("SELL ") or text.startswith("SELL_"): return "SELL"
     return "NEUTRAL"
 
 
 def _ensure_cross_brain_conflict_visibility(results: dict[str, EngineResult], ledger: dict[str, Any]) -> dict[str, Any]:
-    """Ensure E2 disagreements cannot disappear merely because its native field is not a veto."""
-    e2 = results.get("E2")
-    e6 = results.get("E6")
-    if not e2 or not e6:
-        return ledger
+    e2, e6 = results.get("E2"), results.get("E6")
+    if not e2 or not e6: return ledger
     d2 = _direction(e2.output.get("direction") or e2.output.get("opportunity_direction") or e2.output.get("finding"))
     d6 = _direction(e6.output.get("direction") or e6.output.get("direction_thesis") or e6.output.get("thesis_direction") or e6.output.get("finding"))
-    if d2 not in {"BUY", "SELL"} or d6 not in {"BUY", "SELL"} or d2 == d6:
-        return ledger
+    if d2 not in {"BUY", "SELL"} or d6 not in {"BUY", "SELL"} or d2 == d6: return ledger
     conflicts = list(ledger.get("conflicts") or [])
     if not any(item.get("code") == "DIRECTION_EVIDENCE_CONFLICT" and "E2" in (item.get("brains") or []) for item in conflicts):
-        conflicts.append({"code": "DIRECTION_EVIDENCE_CONFLICT", "severity": "HIGH", "brains": ["E2", "E6"], "authority": "E2/E6_ROLE_BOUNDARIES", "explanation": "E2 opportunity direction conflicts with E6 setup direction; preserve both specialist views and let E9 reconcile.", "evidence": {"E2": d2, "E6": d6}, "resolution": "E9_RECONCILE_WITHOUT_REWRITING_UPSTREAM_FACTS"})
-    ledger = dict(ledger)
-    ledger["conflicts"] = conflicts
+        conflicts.append({"code":"DIRECTION_EVIDENCE_CONFLICT","severity":"HIGH","brains":["E2","E6"],"authority":"E2/E6_ROLE_BOUNDARIES","explanation":"E2 opportunity direction conflicts with E6 setup direction; preserve both specialist views and let E9 reconcile.","evidence":{"E2":d2,"E6":d6},"resolution":"E9_RECONCILE_WITHOUT_REWRITING_UPSTREAM_FACTS"})
+    ledger = dict(ledger); ledger["conflicts"] = conflicts
     summary = dict(ledger.get("summary") or {})
-    summary["total"] = len(conflicts)
-    summary["blocking_conflicts"] = sum(1 for item in conflicts if item.get("severity") == "HIGH")
-    summary["tensions"] = sum(1 for item in conflicts if item.get("severity") == "MEDIUM")
-    summary["supportive_relations"] = sum(1 for item in conflicts if item.get("severity") == "LOW")
-    summary["has_conflict"] = bool(conflicts)
+    summary.update(total=len(conflicts), blocking_conflicts=sum(1 for x in conflicts if x.get("severity")=="HIGH"), tensions=sum(1 for x in conflicts if x.get("severity")=="MEDIUM"), supportive_relations=sum(1 for x in conflicts if x.get("severity")=="LOW"), has_conflict=bool(conflicts))
     ledger["summary"] = summary
     return ledger
+
+
+def _historical_records(calibration: Any) -> Any:
+    if isinstance(calibration, list): return calibration
+    if isinstance(calibration, dict):
+        for key in ("records", "outcomes", "trades", "historical_outcomes", "setup_history"):
+            if isinstance(calibration.get(key), list): return calibration[key]
+    return None
+
+
+def _attach_profit_edge(results: dict[str, EngineResult], snapshot: dict[str, Any]) -> None:
+    e1 = results.get("E1").output if results.get("E1") else {}
+    e5 = results.get("E5").output if results.get("E5") else {}
+    e6 = results.get("E6").output if results.get("E6") else {}
+    e7 = results.get("E7").output if results.get("E7") else {}
+    e8 = results.get("E8")
+    if not e8: return
+    out = dict(e8.output)
+    direction = _direction(e6.get("direction") or e6.get("direction_thesis") or e6.get("thesis_direction") or e6.get("finding"))
+    setup = str(e6.get("setup") or e6.get("setup_family") or e6.get("setup_type") or "UNKNOWN").upper().strip()
+    if setup == "UNKNOWN":
+        parts = str(e6.get("finding") or "").split()
+        if len(parts) >= 2 and parts[0].upper() in {"BUY","SELL"}: setup = parts[1].upper()
+    regime = str(e1.get("market_state") or e1.get("trend_state") or "UNKNOWN").upper().strip()
+    location = str(e5.get("value_state") or e5.get("location_state") or e5.get("finding") or "UNKNOWN").upper().strip()
+    confirmation = str(e7.get("confirmation_state") or e7.get("confirmation") or "UNKNOWN").upper().strip()
+    plan = out.get("trade_plan") if isinstance(out.get("trade_plan"), dict) else {}
+    execution = out.get("execution_cost") if isinstance(out.get("execution_cost"), dict) else {}
+    try:
+        rr = float(plan.get("rr_tp2", plan.get("rr", 0.0)) or 0.0)
+    except (TypeError, ValueError): rr = 0.0
+    try:
+        cost_atr = float(execution.get("cost_atr", out.get("execution_cost_atr", 0.0)) or 0.0)
+    except (TypeError, ValueError): cost_atr = 0.0
+    try:
+        atr = float(out.get("atr", 0.0) or 0.0)
+        risk_price = abs(float(plan.get("entry", 0.0)) - float(plan.get("stop_loss", 0.0)))
+        risk_atr = risk_price / max(atr, 1e-9)
+    except (TypeError, ValueError): risk_atr = 0.0
+    cost_r = cost_atr / max(risk_atr, 1e-9) if cost_atr > 0 and risk_atr > 0 else 0.0
+    edge = evaluate_profit_edge(symbol=str(snapshot.get("symbol") or "UNKNOWN"), regime=regime, direction=direction, setup=setup, location=location, confirmation=confirmation, historical_outcomes=snapshot.get("historical_outcomes"), realized_rr=rr, cost_r=cost_r)
+    out["profit_edge"] = edge
+    out["economic_evidence"] = {"entry":plan.get("entry"),"stop":plan.get("stop_loss"),"target":plan.get("take_profit_2",plan.get("take_profit",plan.get("tp2"))),"rr":plan.get("rr_tp2",plan.get("rr")),"profit_edge_state":edge["state"],"expected_value_r":edge["expected_value_r"],"stress_expected_value_r":edge["stress_expected_value_r"],"sample":edge["sample"],"win_probability":edge["win_probability"],"probability_quality":edge["probability_quality"],"blockers":edge["blockers"]}
+    reasons = list(e8.reason_codes)
+    if edge.get("blockers"):
+        reasons.extend(edge["blockers"])
+        # Preserve the existing E9 economic veto contract while exposing the more precise edge reason.
+        reasons.append("PROBABILITY_EDGE_NOT_TRUSTWORTHY")
+    results["E8"] = EngineResult("E8", e8.name, False if edge.get("blockers") else e8.gate_passed, e8.score, out, tuple(dict.fromkeys(reasons)))
+
+
+def _attach_state_semantics(results: dict[str, EngineResult]) -> None:
+    e1 = results.get("E1").output if results.get("E1") else {}; e6 = results.get("E6").output if results.get("E6") else {}; e7 = results.get("E7").output if results.get("E7") else {}; e8 = results.get("E8").output if results.get("E8") else {}; e9 = results.get("E9")
+    if not e9: return
+    out = dict(e9.output)
+    out["state_semantics"] = {"market_state":str(e1.get("market_state") or e1.get("trend_state") or "UNKNOWN").upper(),"setup_state":str(e6.get("setup_state") or e6.get("opportunity_stage") or "UNKNOWN").upper(),"confirmation_state":str(e7.get("confirmation_state") or e7.get("confirmation") or "PENDING").upper(),"economic_state":str(e8.get("economic_state") or e8.get("risk_state") or (e8.get("profit_edge") or {}).get("state") or "UNKNOWN").upper(),"execution_state":str(out.get("execution") or "BLOCKED").upper()}
+    results["E9"] = EngineResult(e9.engine_id,e9.name,e9.gate_passed,e9.score,out,e9.reason_codes)
 
 
 class ProductionPipeline:
     ENGINE_ORDER = ENGINE_ORDER
 
     def run(self, market_data: dict[str, Any], *, wait_bars=0, resume_state=None, historical_calibration=None):
-        del resume_state, historical_calibration
+        del resume_state
         snapshot = dict(market_data)
+        calibration_records = _historical_records(historical_calibration)
+        if calibration_records is not None: snapshot["historical_outcomes"] = calibration_records
         bars = list(snapshot.get("bars") or [])
-        shared_picture = build_shared_market_picture(snapshot)
-        snapshot["shared_market_picture"] = shared_picture
+        shared_picture = build_shared_market_picture(snapshot); snapshot["shared_market_picture"] = shared_picture
         results: dict[str, EngineResult] = {}
-
-        e1 = _enrich("E1", _dict_result("E1", analyze_e1(bars)), snapshot)
-        results["E1"] = e1
-        e2_snapshot = dict(snapshot)
-        e2_snapshot["E1_result"] = e1.output
+        results["E1"] = _enrich("E1", _dict_result("E1", analyze_e1(bars)), snapshot)
+        e2_snapshot = dict(snapshot); e2_snapshot["E1_result"] = results["E1"].output
         results["E2"] = _enrich("E2", _dict_result("E2", analyze_e2(e2_snapshot)), snapshot)
         results["E3"] = _enrich("E3", _dict_result("E3", analyze_e3(bars)), snapshot)
         results["E4"] = _enrich("E4", _dict_result("E4", analyze_e4(snapshot, results)), snapshot)
@@ -139,47 +173,22 @@ class ProductionPipeline:
         results["E6"] = _enrich("E6", analyze_e6(snapshot, results), snapshot)
         results["E7"] = _enrich("E7", analyze_e7(snapshot, results), snapshot)
         results["E8"] = _enrich("E8", analyze_e8(snapshot, results), snapshot)
-
-        conflict_ledger = _ensure_cross_brain_conflict_visibility(results, build_conflict_ledger(results))
-        snapshot["cross_brain_conflicts"] = conflict_ledger
-        _attach_conflict_ledger(results, conflict_ledger)
-        _prepare_e9_boundary(results)
+        _attach_profit_edge(results, snapshot)
+        conflict_ledger = _ensure_cross_brain_conflict_visibility(results, build_conflict_ledger(results)); snapshot["cross_brain_conflicts"] = conflict_ledger; _attach_conflict_ledger(results, conflict_ledger); _prepare_e9_boundary(results)
         try:
             e9 = _enrich("E9", analyze_e9(snapshot, results), snapshot)
         except Exception as exc:
-            recovery = recover_e9(results)
-            recovery["e9_exception_type"] = type(exc).__name__
-            recovery["e9_exception"] = str(exc)
-            recovered = _dict_result("E9", enrich_opportunity("E9", recovery, snapshot))
-            recovered_output = harden_engine("E9", enrich_engine("E9", recovered.output))
-            recovered_output = attach_brain_view("E9", recovered_output, shared_picture)
-            e9 = EngineResult(recovered.engine_id, recovered.name, recovered.gate_passed, recovered.score, recovered_output, recovered.reason_codes)
-        results["E9"] = e9
-
-        audit = audit_all({engine_id: results[engine_id].output for engine_id in ENGINE_ORDER})
+            recovery = recover_e9(results); recovery["e9_exception_type"] = type(exc).__name__; recovery["e9_exception"] = str(exc)
+            recovered = _dict_result("E9", enrich_opportunity("E9", recovery, snapshot)); recovered_output = harden_engine("E9", enrich_engine("E9", recovered.output)); recovered_output = attach_brain_view("E9", recovered_output, shared_picture)
+            e9 = EngineResult(recovered.engine_id,recovered.name,recovered.gate_passed,recovered.score,recovered_output,recovered.reason_codes)
+        results["E9"] = e9; _attach_state_semantics(results)
+        audit = audit_all({engine_id:results[engine_id].output for engine_id in ENGINE_ORDER})
         for engine_id in ENGINE_ORDER:
-            engine = results[engine_id]
-            output = dict(engine.output)
-            output["professional_audit"] = audit["per_engine"][engine_id]
-            results[engine_id] = EngineResult(engine.engine_id, engine.name, engine.gate_passed, engine.score, output, engine.reason_codes)
-        results["E9"] = EngineResult(results["E9"].engine_id, results["E9"].name, results["E9"].gate_passed, results["E9"].score, {**results["E9"].output, "nine_brain_audit": audit}, results["E9"].reason_codes)
-
-        governance = audit_engines(results)
-        decision, approved, governance_reasons = enforce_final_authority(results["E9"].output, governance)
+            engine=results[engine_id]; output=dict(engine.output); output["professional_audit"]=audit["per_engine"][engine_id]; results[engine_id]=EngineResult(engine.engine_id,engine.name,engine.gate_passed,engine.score,output,engine.reason_codes)
+        results["E9"] = EngineResult(results["E9"].engine_id,results["E9"].name,results["E9"].gate_passed,results["E9"].score,{**results["E9"].output,"nine_brain_audit":audit},results["E9"].reason_codes)
+        governance = audit_engines(results); decision, approved, governance_reasons = enforce_final_authority(results["E9"].output, governance)
         if governance_reasons:
-            merged_reasons = tuple(dict.fromkeys((*results["E9"].reason_codes, *governance_reasons)))
-            e9_output = harden_engine("E9", dict(results["E9"].output))
-            e9_output["governance"] = governance
-            e9_output["decision"] = decision
-            e9_output["execution"] = "APPROVED" if approved else "BLOCKED"
-            e9_output["governance_blockers"] = governance_reasons
-            results["E9"] = EngineResult("E9", NAMES["E9"], False if not approved else results["E9"].gate_passed, results["E9"].score, e9_output, merged_reasons)
-
-        e9 = results["E9"]
-        plan = e9.output.get("trade_plan") or {}
-        approved = bool(approved and e9.gate_passed and decision in {"BUY", "SELL"} and (plan.get("valid", True) if isinstance(plan, dict) else False))
-        decision = decision if approved else "NO_TRADE"
-        engines = tuple(results[e] for e in ENGINE_ORDER)
-        radar = consolidate(results)
-        risk = {"risk_gate": bool(plan.get("valid")) if isinstance(plan, dict) else False, "trade_plan": plan, "engine_state": "TRADE_APPROVED" if approved else "ANALYSIS_COMPLETE_NO_TRADE", "cycle_complete": True, "analysis_architecture": "SHARED_MARKET_PICTURE + ONE_BRAIN_PER_ENGINE + CROSS_BRAIN_CONFLICT_LEDGER + PROFESSIONAL_OPPORTUNITY_RADAR + NINE_BRAIN_GOVERNANCE", "shared_market_picture": shared_picture, "cross_brain_conflicts": conflict_ledger, "evidence_inputs": {k: list(EVIDENCE_INPUTS.get(k, ())) for k in ENGINE_ORDER}, "sub_engines": False, "parallel_peer_analysis": False, "shared_picture_frozen_per_cycle": True, "brain_boundaries_explicit": True, "cross_brain_reconciliation": True, "e9_decision_authority": True, "e9_market_control_authority": True, "nine_brain_governance": governance, "nine_brain_audit": audit, "learning_mode": "ADVISORY_ONLY", "next_evaluation": "NEXT_CLOSED_M5_CANDLE", "wait_bars": 0, "decision_reasons": list(e9.reason_codes), "opportunity_radar": radar, "opportunity_potential": audit["opportunity"], "opportunity_summary": {e: {"direction": results[e].output.get("opportunity_direction"), "state": results[e].output.get("opportunity_state"), "stage": results[e].output.get("opportunity_stage"), "score": results[e].output.get("opportunity_score"), "next_event": results[e].output.get("opportunity_next_event")} for e in ENGINE_ORDER}}
-        return DecisionResult(str(snapshot.get("symbol") or "UNKNOWN"), str(snapshot.get("timeframe") or "M5"), decision, approved, e9.score, engines, risk, tuple(e9.reason_codes))
+            merged_reasons=tuple(dict.fromkeys((*results["E9"].reason_codes,*governance_reasons))); e9_output=harden_engine("E9",dict(results["E9"].output)); e9_output["governance"]=governance; e9_output["decision"]=decision; e9_output["execution"]="APPROVED" if approved else "BLOCKED"; e9_output["governance_blockers"]=governance_reasons; results["E9"]=EngineResult("E9",NAMES["E9"],False if not approved else results["E9"].gate_passed,results["E9"].score,e9_output,merged_reasons)
+        e9=results["E9"]; plan=e9.output.get("trade_plan") or {}; approved=bool(approved and e9.gate_passed and decision in {"BUY","SELL"} and (plan.get("valid",True) if isinstance(plan,dict) else False)); decision=decision if approved else "NO_TRADE"; engines=tuple(results[e] for e in ENGINE_ORDER); radar=consolidate(results)
+        risk={"risk_gate":bool(plan.get("valid")) if isinstance(plan,dict) else False,"trade_plan":plan,"engine_state":"TRADE_APPROVED" if approved else "ANALYSIS_COMPLETE_NO_TRADE","cycle_complete":True,"analysis_architecture":"SHARED_MARKET_PICTURE + ONE_BRAIN_PER_ENGINE + CROSS_BRAIN_CONFLICT_LEDGER + PROFESSIONAL_OPPORTUNITY_RADAR + PROFIT_EDGE_EXPECTANCY + NINE_BRAIN_GOVERNANCE","shared_market_picture":shared_picture,"cross_brain_conflicts":conflict_ledger,"evidence_inputs":{k:list(EVIDENCE_INPUTS.get(k,())) for k in ENGINE_ORDER},"sub_engines":False,"parallel_peer_analysis":False,"shared_picture_frozen_per_cycle":True,"brain_boundaries_explicit":True,"cross_brain_reconciliation":True,"e9_decision_authority":True,"e9_market_control_authority":True,"nine_brain_governance":governance,"nine_brain_audit":audit,"learning_mode":"ADVISORY_ONLY","next_evaluation":"NEXT_CLOSED_M5_CANDLE","wait_bars":0,"decision_reasons":list(e9.reason_codes),"opportunity_radar":radar,"opportunity_potential":audit["opportunity"],"profit_edge":results["E8"].output.get("profit_edge"),"opportunity_summary":{e:{"direction":results[e].output.get("opportunity_direction"),"state":results[e].output.get("opportunity_state"),"stage":results[e].output.get("opportunity_stage"),"score":results[e].output.get("opportunity_score"),"next_event":results[e].output.get("opportunity_next_event")} for e in ENGINE_ORDER}}
+        return DecisionResult(str(snapshot.get("symbol") or "UNKNOWN"),str(snapshot.get("timeframe") or "M5"),decision,approved,e9.score,engines,risk,tuple(e9.reason_codes))
