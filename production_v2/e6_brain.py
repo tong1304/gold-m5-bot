@@ -7,8 +7,8 @@ from .contracts import EngineResult
 
 NAME = "Setup Brain"
 QUESTION = "What setup is forming, in what direction, and at what stage?"
-ARCHITECTURE = "E6_PROFESSIONAL_SETUP_FORMATION_BRAIN_V38"
-VERSION = "38.0"
+ARCHITECTURE = "E6_PROFESSIONAL_SETUP_FORMATION_BRAIN_V39"
+VERSION = "39.0"
 MIN_BARS = 60
 ATR_PERIOD = 14
 MIN_SPACE_ATR = 0.75
@@ -101,10 +101,11 @@ def _auction(e4: dict[str, Any]) -> dict[str, Any]:
 
 
 def _structure(e3: dict[str, Any]) -> tuple[str, str, str]:
-    finding = _text(e3.get("finding", e3.get("structure_state")))
-    internal = _norm(e3.get("internal_state", e3.get("internal_count_state")))
-    external = _norm(e3.get("external_state", e3.get("external_count_state")))
-    return finding, internal, external
+    return (
+        _text(e3.get("finding", e3.get("structure_state"))),
+        _norm(e3.get("internal_state", e3.get("internal_count_state"))),
+        _norm(e3.get("external_state", e3.get("external_count_state"))),
+    )
 
 
 def _e2_direction(e2: dict[str, Any]) -> str:
@@ -113,9 +114,9 @@ def _e2_direction(e2: dict[str, Any]) -> str:
         if direction != "NEUTRAL":
             return direction
     finding = _text(e2.get("finding", e2.get("state")))
-    if finding.startswith("BUY ") or finding.startswith("LONG "):
+    if finding.startswith(("BUY ", "LONG ")):
         return "BUY"
-    if finding.startswith("SELL ") or finding.startswith("SHORT ") or finding.startswith("DOWN "):
+    if finding.startswith(("SELL ", "SHORT ", "DOWN ")):
         return "SELL"
     return "NEUTRAL"
 
@@ -124,15 +125,20 @@ def _e2_unresolved(e2: dict[str, Any]) -> bool:
     finding = _text(e2.get("finding", e2.get("state")))
     state = _text(e2.get("opportunity_state", e2.get("opportunity_decision")))
     maturity = _text(e2.get("opportunity_maturity"))
-    return finding in UNRESOLVED or state in UNRESOLVED or maturity in {"UNPROVEN", "EMERGING", "DEVELOPING"} or " OPPORTUNITY IS DEVELOPING" in finding
+    return (
+        finding in UNRESOLVED
+        or state in UNRESOLVED
+        or maturity in {"UNPROVEN", "EMERGING", "DEVELOPING"}
+        or "OPPORTUNITY IS DEVELOPING" in finding
+    )
 
 
 def _e2_confirmed(e2: dict[str, Any]) -> bool:
+    if _e2_unresolved(e2):
+        return False
     finding = _text(e2.get("finding", e2.get("state")))
     state = _text(e2.get("opportunity_state", e2.get("opportunity_decision")))
     maturity = _text(e2.get("opportunity_maturity"))
-    if _e2_unresolved(e2):
-        return False
     return (
         "OPPORTUNITY IS CONFIRMED" in finding
         or state in {"CONFIRMED", "VALID", "ELIGIBLE", "ACTIONABLE"}
@@ -148,7 +154,10 @@ def _e3_invalidated(e3: dict[str, Any]) -> bool:
         e3.get("structure_invalidated") is True
         or e3.get("active_invalidation") is True
         or lifecycle == "INVALIDATED"
-        or invalidation in {"ACTIVE_INVALIDATION", "STRUCTURE_INVALIDATED", "BULLISH_STRUCTURE_INVALIDATED", "BEARISH_STRUCTURE_INVALIDATED"}
+        or invalidation in {
+            "ACTIVE_INVALIDATION", "STRUCTURE_INVALIDATED",
+            "BULLISH_STRUCTURE_INVALIDATED", "BEARISH_STRUCTURE_INVALIDATED",
+        }
         or finding.endswith("_INVALIDATED")
     )
 
@@ -170,7 +179,7 @@ def _direction(e1: dict[str, Any], e2: dict[str, Any], e3: dict[str, Any], e4: d
         conflicts.append("E1_E2_DIRECTION_CONFLICT")
     if internal != "NEUTRAL" and external != "NEUTRAL" and internal != external:
         conflicts.append("STRUCTURE_DIRECTION_CONFLICT")
-    if pressure != "NEUTRAL" and internal == pressure and (external in {pressure, "NEUTRAL"}):
+    if pressure != "NEUTRAL" and internal == pressure and external in {pressure, "NEUTRAL"}:
         return pressure, _dedupe(support), _dedupe(conflicts), "E1_E3_DIRECTIONAL_CORE"
     if e2_direction != "NEUTRAL" and internal == e2_direction:
         return e2_direction, _dedupe(support), _dedupe(conflicts), "E2_E3_OPPORTUNITY_STRUCTURE"
@@ -186,66 +195,57 @@ def _direction(e1: dict[str, Any], e2: dict[str, Any], e3: dict[str, Any], e4: d
 
 
 def _candidate(direction: str, auction: dict[str, Any], e1: dict[str, Any], e2: dict[str, Any], e3: dict[str, Any], e5: dict[str, Any]) -> tuple[str, float, list[str]] | None:
-    if direction == "NEUTRAL":
+    if direction == "NEUTRAL" or not _e2_confirmed(e2):
         return None
     event = auction["event"]
     event_direction = auction["direction"]
-    trend = _norm(e1.get("trend_state"))
-    market_state = _text(e1.get("market_state"))
+    terminal = auction["terminal"]
     e1_finding = _text(e1.get("finding", e1.get("trend_state")))
     e3_finding = _text(e3.get("finding", e3.get("structure_state")))
+    trend = _norm(e1.get("trend_state"))
+    internal = _norm(e3.get("internal_state"))
+    external = _norm(e3.get("external_state"))
     bos = _text(e3.get("bos", e3.get("break_of_structure")))
+    market_state = _text(e1.get("market_state"))
     repricing = _text(e5.get("repricing_state"))
     value_response = _text(e5.get("value_response"))
-    e2_confirmed = _e2_confirmed(e2)
 
-    if auction["terminal"] and event_direction == direction and any(x in event for x in ("SWEEP_REJECTION", "FAILED_BREAK_RECLAIM")):
+    # Specific causal paths are ordered from strongest event evidence to contextual continuation.
+    if terminal and event_direction == direction and any(x in event for x in ("SWEEP_REJECTION", "FAILED_BREAK_RECLAIM")):
         return "LIQUIDITY_REVERSAL", 86.0, ["E4_TERMINAL_LIQUIDITY_RESPONSE"]
-    if auction["terminal"] and event_direction == direction and "ACCEPTANCE" in event:
+    if terminal and event_direction == direction and "ACCEPTANCE" in event:
         return "AUCTION_ACCEPTANCE_CONTINUATION", 82.0, ["E4_TERMINAL_AUCTION_ACCEPTANCE"]
 
     break_event = any(x in event for x in ("BREAKOUT", "BOS", "FAILED_BREAK_RECLAIM")) or bos in {"BREAK", "BOS", "YES"}
-    if break_event and ("RETEST" in e3_finding or "RECLAIM" in e3_finding or auction["terminal"]):
+    if break_event and ("RETEST" in e3_finding or "RECLAIM" in e3_finding or terminal):
         return "BREAKOUT_RETEST", 74.0, ["E3_CONFIRMED_BREAK_STRUCTURE"]
 
-    trend_structure_aligned = trend == direction and e2_confirmed and "TRANSITION" not in market_state and "TRANSITION" not in e1_finding and "TRANSITION" not in e3_finding
-    structure_aligned = _norm(e3.get("internal_state")) == direction and _norm(e3.get("external_state")) == direction
-    pullback_context = any(x in e1_finding for x in ("PULLBACK", "RETRACE")) or any(x in e3_finding for x in ("PULLBACK", "RETRACE"))
-    if trend_structure_aligned and structure_aligned and pullback_context:
+    aligned = trend == direction == internal == external
+    transition = any("TRANSITION" in x for x in (market_state, e1_finding, e3_finding))
+    pullback = any(x in (e1_finding, e3_finding) for x in ("PULLBACK", "RETRACE"))
+    if aligned and not transition and pullback:
         return "TREND_PULLBACK", 72.0, ["E1_TREND_ALIGNMENT", "E2_OPPORTUNITY_CONFIRMED", "E3_STRUCTURE_ALIGNMENT", "PULLBACK_CONTEXT"]
 
-    # V38: impulse continuation requires a confirmed opportunity, not merely a developing one.
     expansion = any(x in e1_finding for x in ("EXPANSION", "IMPULSE", "DIRECTIONAL_EXPANSION"))
-    pressure_aligned = _norm(e1.get("pressure", e1.get("directional_pressure"))) == direction
-    repricing_confirmed = any(x in repricing for x in ("ACCEPTANCE", "REPRICING", "CONTINUATION")) or "ACCEPTED" in value_response
-    if expansion and pressure_aligned and structure_aligned and e2_confirmed and repricing_confirmed:
+    pressure = _norm(e1.get("pressure", e1.get("directional_pressure")))
+    accepted = any(x in repricing for x in ("ACCEPTANCE", "REPRICING", "CONTINUATION")) or "ACCEPTED" in value_response
+    if expansion and pressure == direction and internal == external == direction and accepted:
         return "IMPULSE_CONTINUATION", 68.0, ["E1_DIRECTIONAL_EXPANSION", "E2_OPPORTUNITY_CONFIRMED", "E3_STRUCTURE_ALIGNMENT", "E5_REPRICING_ACCEPTANCE"]
 
     return None
 
 
-def _identity(setup: str, direction: str, auction: dict[str, Any], e5: dict[str, Any]) -> tuple[str, str]:
-    if auction["event_id"]:
-        return f"{setup}:{direction}:{auction['event_id']}", "E4_EVENT_ID"
-    if auction["level"]:
-        return f"{setup}:{direction}:LEVEL:{auction['level']:.5f}", "E4_EVENT_LEVEL"
-    return f"{setup}:{direction}:CANDLE:{_text(e5.get('structural_location')) or 'UNKNOWN'}", "E5_LOCATION_CONTEXT"
-
-
 def _space_diagnostic(direction: str, e5: dict[str, Any]) -> dict[str, Any]:
     key = "available_space_atr_long" if direction == "BUY" else "available_space_atr_short" if direction == "SELL" else ""
     available = _num(e5.get(key)) if key else 0.0
-    location = _text(e5.get("structural_location")) or "UNKNOWN"
-    resistance = _num(e5.get("next_resistance"))
-    support = _num(e5.get("next_support"))
     return {
         "direction": direction,
         "available_space_atr": round(available, 4),
         "minimum_required_space_atr": MIN_SPACE_ATR,
         "space_sufficient": available >= MIN_SPACE_ATR,
-        "structural_location": location,
-        "next_resistance": resistance,
-        "next_support": support,
+        "structural_location": _text(e5.get("structural_location")) or "UNKNOWN",
+        "next_resistance": _num(e5.get("next_resistance")),
+        "next_support": _num(e5.get("next_support")),
         "constraint": "NONE" if available >= MIN_SPACE_ATR else "STRUCTURAL_SPACE_INSUFFICIENT",
         "interpretation": "SPACE_IS_NOT_A_SETUP_INVALIDATION;_IT_IS_A_TRADE_GEOMETRY_CONSTRAINT" if available < MIN_SPACE_ATR else "SPACE_SUPPORTS_SETUP_FORMATION",
     }
@@ -267,7 +267,7 @@ def _result(**kwargs: Any) -> EngineResult:
     confidence = round(max(0.0, min(100.0, float(kwargs.get("confidence", 0.0)))), 2)
     trace = dict(kwargs.get("trace", {}))
     observations = _dedupe(kwargs.get("observations", []))
-    candidates = kwargs.get("candidates", [])
+    candidates = list(kwargs.get("candidates", []))
     out = {
         "architecture": ARCHITECTURE, "version": VERSION, "question": QUESTION,
         "role": "SETUP_FORMATION_REASONER", "reasoning_role": "SETUP_FORMATION_REASONER",
@@ -345,19 +345,15 @@ def analyze_e6(snapshot: dict[str, Any], upstream: dict[str, EngineResult]) -> E
     if "MIXED" in structure_finding or "TRANSITION" in structure_finding:
         blockers.append("STRUCTURE_TRANSITION")
     if direction in {"BUY", "SELL"} and not space_info["space_sufficient"]:
-        blockers.append("SPACE_CONFLICT")
-        blockers.append("STRUCTURAL_SPACE_INSUFFICIENT")
+        blockers.extend(("SPACE_CONFLICT", "STRUCTURAL_SPACE_INSUFFICIENT"))
     blockers = _dedupe(blockers)
 
     candidate = _candidate(direction, auction, e1, e2, e3, e5)
     if candidate is None:
         obs = direction_support + [
-            f"auction={auction['event'] or 'NONE'}",
-            f"auction_state={auction['state'] or 'NONE'}",
-            f"space_atr={space:.3f}",
-            f"space_required_atr={MIN_SPACE_ATR:.3f}",
-            f"space_constraint={space_info['constraint']}",
-            f"e2_opportunity_confirmed={e2_confirmed}",
+            f"auction={auction['event'] or 'NONE'}", f"auction_state={auction['state'] or 'NONE'}",
+            f"space_atr={space:.3f}", f"space_required_atr={MIN_SPACE_ATR:.3f}",
+            f"space_constraint={space_info['constraint']}", f"e2_opportunity_confirmed={e2_confirmed}",
         ]
         missing = ["CAUSAL_SETUP_CHAIN"]
         if direction in {"BUY", "SELL"} and not space_info["space_sufficient"]:
@@ -373,12 +369,12 @@ def analyze_e6(snapshot: dict[str, Any], upstream: dict[str, EngineResult]) -> E
         return _result(state="ABSENT", setup="NONE", direction=direction, maturity="UNRESOLVED", thesis=thesis, quality=0, confidence=65, exists=False, observations=obs, support=direction_support, counter=blockers, missing=missing, next_event="WAIT_FOR_NEW_CLOSED_CANDLE_CAUSAL_SETUP_EVIDENCE", primary_blocker=primary, secondary_blockers=[x for x in blockers if x != primary], trace={"space_diagnostic": space_info, "direction_source": direction_source, "context_is_not_setup": True, "space_is_constraint_not_invalidation": True})
 
     setup, base_quality, candidate_evidence = candidate
-    identity, identity_basis = _identity(setup, direction, auction, e5)
-    support = direction_support + candidate_evidence
+    identity = f"{setup}:{direction}:{auction['event_id']}" if auction["event_id"] else f"{setup}:{direction}:LEVEL:{auction['level']:.5f}" if auction["level"] else f"{setup}:{direction}:LOCATION:{_text(e5.get('structural_location')) or 'UNKNOWN'}"
+    identity_basis = "E4_EVENT_ID" if auction["event_id"] else "E4_EVENT_LEVEL" if auction["level"] else "E5_LOCATION_CONTEXT"
+    support = _dedupe(direction_support + candidate_evidence)
     missing: list[str] = []
     counter = list(blockers)
     proof_core = direction in {"BUY", "SELL"} and not any(x in blockers for x in ("DIRECTIONAL_EVIDENCE_CONFLICT", "E1_E2_DIRECTION_CONFLICT", "STRUCTURE_CONFLICT"))
-
     if e2_unresolved:
         missing.append("E2_CLOSED_CANDLE_OPPORTUNITY_ACCEPTANCE_AND_FOLLOW_THROUGH")
     if auction["pending"] and not auction["terminal"]:
@@ -397,9 +393,7 @@ def analyze_e6(snapshot: dict[str, Any], upstream: dict[str, EngineResult]) -> E
         support.append(f"E4_RESPONSE_ACTOR={auction['response_actor']}")
     else:
         missing.append("CLOSED_CANDLE_RESPONSE_CONFIRMATION")
-    support = _dedupe(support)
-    missing = _dedupe(missing)
-    counter = _dedupe(counter)
+    support, missing, counter = _dedupe(support), _dedupe(missing), _dedupe(counter)
 
     if not proof_core:
         stage, maturity, confidence = "FORMING", "FORMING", 55.0
@@ -421,13 +415,12 @@ def analyze_e6(snapshot: dict[str, Any], upstream: dict[str, EngineResult]) -> E
         "SPACE_CONFLICT": "E5_STRUCTURAL_SPACE_REOPENS_ABOVE_MINIMUM",
         "STRUCTURE_TRANSITION": "E3_CLOSED_CANDLE_STRUCTURE_RESOLUTION",
     }.get(primary, "E7_SETUP_SPECIFIC_CLOSED_CANDLE_CONFIRMATION")
-    thesis = f"{direction} {setup} is {stage.lower()}: causal evidence is present, while remaining proof and economic constraints are explicitly exposed."
+    thesis = f"{direction} {setup} is {stage.lower()}: E6 has a causal setup thesis, while remaining proof and economic constraints are explicitly exposed."
     observations = [
-        f"direction={direction}", f"direction_source={direction_source}", f"setup={setup}",
-        f"formation_stage={stage}", f"auction={auction['event'] or 'NONE'}", f"auction_state={auction['state'] or 'NONE'}",
-        f"auction_terminal={auction['terminal']}", f"space_atr={space:.3f}", f"space_required_atr={MIN_SPACE_ATR:.3f}",
-        f"space_constraint={space_info['constraint']}", f"e2_unresolved={e2_unresolved}", f"e2_opportunity_confirmed={e2_confirmed}",
-        f"structure_internal={internal}", f"structure_external={external}",
+        f"direction={direction}", f"direction_source={direction_source}", f"setup={setup}", f"formation_stage={stage}",
+        f"auction={auction['event'] or 'NONE'}", f"auction_state={auction['state'] or 'NONE'}", f"auction_terminal={auction['terminal']}",
+        f"space_atr={space:.3f}", f"space_required_atr={MIN_SPACE_ATR:.3f}", f"space_constraint={space_info['constraint']}",
+        f"e2_unresolved={e2_unresolved}", f"e2_opportunity_confirmed={e2_confirmed}", f"structure_internal={internal}", f"structure_external={external}",
     ]
     ledger = [
         {"source": "E1", "kind": "CONTEXT", "statement": _text(e1.get("finding", "NONE"))},
@@ -437,25 +430,14 @@ def analyze_e6(snapshot: dict[str, Any], upstream: dict[str, EngineResult]) -> E
         {"source": "E5", "kind": "LOCATION", "space_atr": space, "space_required_atr": MIN_SPACE_ATR, "constraint": space_info["constraint"]},
     ]
     trace = {
-        "summary": f"E1->E2->E3->E4->E5->E6:{stage}",
-        "decision": "DESCRIBE_SETUP_ONLY",
-        "selected_hypothesis": setup,
-        "candidate_identity": identity,
-        "candidate_identity_basis": identity_basis,
-        "direction_source": direction_source,
-        "thesis_status": "ALIVE" if stage in {"FORMING", "VALIDATING", "MATURE"} else stage,
-        "proof_gates": {
-            "direction": proof_core,
-            "opportunity": e2_confirmed,
-            "auction_confirmation": auction["terminal"],
-            "space": space_info["space_sufficient"],
-            "structure": internal == external and internal != "NEUTRAL",
+        "summary": f"E1->E2->E3->E4->E5->E6:{stage}", "decision": "DESCRIBE_SETUP_ONLY", "selected_hypothesis": setup,
+        "candidate_identity": identity, "candidate_identity_basis": identity_basis, "direction_source": direction_source,
+        "thesis_status": "ALIVE", "proof_gates": {
+            "direction": proof_core, "opportunity": e2_confirmed, "auction_confirmation": auction["terminal"],
+            "space": space_info["space_sufficient"], "structure": internal == external and internal != "NEUTRAL",
         },
-        "space_diagnostic": space_info,
-        "space_is_constraint_not_invalidation": True,
-        "context_is_not_setup": True,
-        "impulse_requires_causal_expansion": True,
-        "impulse_requires_confirmed_opportunity": True,
+        "space_diagnostic": space_info, "space_is_constraint_not_invalidation": True, "context_is_not_setup": True,
+        "causal_chain_required": True, "impulse_requires_causal_expansion": True, "impulse_requires_confirmed_opportunity": True,
         "e6_owns_thesis": True, "e7_owns_confirmation": True, "e8_owns_trade_economics": True, "e9_owns_trade_decision": True,
     }
     candidate_state = [{"name": setup, "direction": direction, "causal_score": round(quality, 2), "stage": stage, "proof_gates": trace["proof_gates"], "supporting_evidence": support, "counter_evidence": counter, "missing_proof": missing}]
