@@ -17,6 +17,7 @@ from .opportunity_layer import enrich_opportunity, recover_e9
 from .professional_governance import audit_engines, enforce_final_authority
 from .professional_opportunity import consolidate, enrich_engine
 from .professional_brain_audit import audit_all
+from .shared_market_picture import attach_brain_view, build_shared_market_picture
 
 ENGINE_ORDER = ("E1", "E2", "E3", "E4", "E5", "E6", "E7", "E8", "E9")
 EVIDENCE_INPUTS = {
@@ -53,6 +54,9 @@ def _enrich(engine_id: str, result: EngineResult, snapshot: dict[str, Any]) -> E
     output = enrich_opportunity(engine_id, result.output, snapshot)
     output = enrich_engine(engine_id, output)
     output = harden_engine(engine_id, output)
+    shared = snapshot.get("shared_market_picture")
+    if isinstance(shared, dict):
+        output = attach_brain_view(engine_id, output, shared)
     return EngineResult(result.engine_id, result.name, result.gate_passed, result.score, output, result.reason_codes)
 
 
@@ -70,8 +74,6 @@ def _prepare_e9_boundary(results: dict[str, EngineResult]) -> None:
         if not engine or not isinstance(engine.output, dict):
             continue
         output = harden_engine(engine_id, dict(engine.output))
-        # E9 must never interpret a catalogue of future invalidation conditions as
-        # current evidence. The full catalogue remains auditable in the separate field.
         output["invalidations"] = list(output.get("active_invalidations") or [])
         if engine_id == "E4":
             for key in ("event", "auction_event", "liquidity_event"):
@@ -89,10 +91,16 @@ class ProductionPipeline:
         del resume_state, historical_calibration
         snapshot = dict(market_data)
         bars = list(snapshot.get("bars") or [])
+
+        # One factual market picture is frozen for the whole nine-brain cycle.
+        # Brains may interpret it differently, but may not replace its facts.
+        shared_picture = build_shared_market_picture(snapshot)
+        snapshot["shared_market_picture"] = shared_picture
         results: dict[str, EngineResult] = {}
 
         e1 = _enrich("E1", _dict_result("E1", analyze_e1(bars)), snapshot)
         results["E1"] = e1
+
         e2_snapshot = dict(snapshot)
         e2_snapshot["E1_result"] = e1.output
         results["E2"] = _enrich("E2", _dict_result("E2", analyze_e2(e2_snapshot)), snapshot)
@@ -112,11 +120,10 @@ class ProductionPipeline:
             recovery["e9_exception"] = str(exc)
             recovered = _dict_result("E9", enrich_opportunity("E9", recovery, snapshot))
             recovered_output = harden_engine("E9", enrich_engine("E9", recovered.output))
+            recovered_output = attach_brain_view("E9", recovered_output, shared_picture)
             e9 = EngineResult(recovered.engine_id, recovered.name, recovered.gate_passed, recovered.score, recovered_output, recovered.reason_codes)
         results["E9"] = e9
 
-        # Professional quality audit is deliberately non-authoritative: it may
-        # describe weaknesses, but it cannot manufacture evidence or unlock a trade.
         audit = audit_all({engine_id: results[engine_id].output for engine_id in ENGINE_ORDER})
         for engine_id in ENGINE_ORDER:
             engine = results[engine_id]
@@ -154,10 +161,13 @@ class ProductionPipeline:
             "trade_plan": plan,
             "engine_state": "TRADE_APPROVED" if approved else "ANALYSIS_COMPLETE_NO_TRADE",
             "cycle_complete": True,
-            "analysis_architecture": "ONE_BRAIN_PER_ENGINE + PROFESSIONAL_OPPORTUNITY_RADAR + NINE_BRAIN_GOVERNANCE",
+            "analysis_architecture": "SHARED_MARKET_PICTURE + ONE_BRAIN_PER_ENGINE + PROFESSIONAL_OPPORTUNITY_RADAR + NINE_BRAIN_GOVERNANCE",
+            "shared_market_picture": shared_picture,
             "evidence_inputs": {k: list(EVIDENCE_INPUTS.get(k, ())) for k in ENGINE_ORDER},
             "sub_engines": False,
             "parallel_peer_analysis": False,
+            "shared_picture_frozen_per_cycle": True,
+            "brain_boundaries_explicit": True,
             "e9_decision_authority": True,
             "e9_market_control_authority": True,
             "nine_brain_governance": governance,
