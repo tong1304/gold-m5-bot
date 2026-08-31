@@ -43,4 +43,4 @@ def test_confirmed_auction_can_supply_direction_when_context_has_no_direction():
     direction, support, conflicts, source = _direction(e1, e2, e3, e4)
 
     assert direction == "SELL"
-    assert source == "E4_EVENT_WITH_CONTEXT_CONFLICT"
+    assert source == "E4_TERMINAL_AUCTION"
