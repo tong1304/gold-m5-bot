@@ -1,0 +1,17 @@
+name: E9 TDD
+
+on:
+  push:
+    branches:
+      - e9-market-control-reporting-v65
+
+jobs:
+  test-e9:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install -r requirements.txt
+      - run: PYTHONPATH=. pytest -q production_v2/test_e9_market_control_regression.py
