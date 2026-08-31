@@ -7,8 +7,8 @@ from .contracts import EngineResult
 
 NAME = "Master Decision Brain"
 QUESTION = "Who controls the auction, where is liquidity, and should this trade be taken after reconciling all evidence?"
-ARCHITECTURE = "E9_MASTER_DECISION_MARKET_CONTROL_V61"
-VERSION = "61.0"
+ARCHITECTURE = "E9_MASTER_DECISION_MARKET_CONTROL_V62"
+VERSION = "62.0"
 
 DIRECTIONS = {"BUY", "SELL"}
 CONFIRMATION_PROVEN = {"PROVEN", "CONFIRMED", "VALIDATED", "TRADE_READY"}
@@ -110,7 +110,7 @@ def _e6_identity(e6: dict[str, Any]) -> tuple[str, str, str]:
     codes = set(_codes(e6))
     if "NO PLAUSIBLE SETUP SURVIVES" in finding or "NO SURVIVING SETUP" in finding:
         return "NEUTRAL", "UNKNOWN", "UNRESOLVED"
-    if any(c in codes for c in {"NO_SURVIVING_SETUP", "NO_ELIGIBLE_SETUP", "SETUP_REJECTED", "SETUP_INVALIDATED"}):
+    if codes & {"NO_SURVIVING_SETUP", "NO_ELIGIBLE_SETUP", "SETUP_REJECTED", "SETUP_INVALIDATED"}:
         return "NEUTRAL", "UNKNOWN", "UNRESOLVED"
     setup = ""
     for key in ("setup", "setup_family", "candidate_setup", "candidate_setup_thesis", "setup_type", "thesis_setup", "selected_hypothesis"):
@@ -235,29 +235,100 @@ def _auction_fields(e4: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _market_control(upstream: dict[str, EngineResult]) -> dict[str, Any]:
+    """Synthesize control from E1-E5 only; never promote it into an E6 trade thesis."""
+    e1, e2, e3, e4, e5 = (_out(upstream.get(k)) for k in ("E1", "E2", "E3", "E4", "E5"))
+    votes: list[tuple[str, str, str]] = []
+
+    pressure = _direction(e1.get("pressure"), e1.get("pressure_direction"))
+    if pressure in DIRECTIONS:
+        votes.append((pressure, "E1_PRESSURE", "HIGH"))
+    structure = _direction(e1.get("structure_direction"), e1.get("structure"), e3.get("structure_direction"), e3.get("external_state"))
+    if structure in DIRECTIONS:
+        votes.append((structure, "STRUCTURE", "HIGH"))
+    opportunity = _direction(e2.get("direction"), e2.get("opportunity_direction"), e2.get("finding"))
+    if opportunity in DIRECTIONS:
+        votes.append((opportunity, "E2_OPPORTUNITY", "MEDIUM"))
+    response = _direction(e4.get("response_actor"), e4.get("auction_response"))
+    if response in DIRECTIONS:
+        votes.append((response, "E4_RESPONSE_ACTOR", "MEDIUM"))
+    repricing = _direction(e5.get("repricing_direction"), e5.get("value_response"), e5.get("repricing_state"))
+    if repricing in DIRECTIONS:
+        votes.append((repricing, "E5_REPRICING", "MEDIUM"))
+
+    weights = {"HIGH": 3.0, "MEDIUM": 2.0}
+    totals = {"BUY": 0.0, "SELL": 0.0}
+    for direction, _, strength in votes:
+        totals[direction] += weights[strength]
+    total = totals["BUY"] + totals["SELL"]
+    if not total:
+        state, direction, confidence = "UNRESOLVED", "NEUTRAL", 0.0
+    elif totals["BUY"] == totals["SELL"]:
+        state, direction, confidence = "MIXED", "NEUTRAL", 0.0
+    else:
+        direction = "BUY" if totals["BUY"] > totals["SELL"] else "SELL"
+        confidence = round(max(totals.values()) / total * 100.0, 2)
+        state = f"{direction}-CONTROLLED"
+        if confidence < 60.0:
+            state = "MIXED"
+            direction = "NEUTRAL"
+
+    alignment = "NO_DIRECTIONAL_EVIDENCE" if not votes else "ALIGNED" if len({v[0] for v in votes}) == 1 else "CONFLICTED"
+    dominant = [source for side, source, _ in votes if side == direction] if direction in DIRECTIONS else [source for _, source, _ in votes]
+    return {
+        "market_control_state": state,
+        "control_direction": direction,
+        "control_confidence": confidence,
+        "evidence_alignment": alignment,
+        "dominant_control_evidence": dominant,
+        "market_control_votes": [{"direction": d, "source": s, "strength": w} for d, s, w in votes],
+    }
+
+
 def analyze_e9(snapshot: dict[str, Any], upstream: dict[str, EngineResult]) -> dict[str, Any]:
-    """Final governance only: reconcile E1-E8 without creating evidence, setup, confirmation, or risk."""
+    """Four-layer final governance: Market Control -> Thesis Control -> Proof Control -> Final Governance."""
     del snapshot
     e6 = _out(upstream.get("E6"))
     e7 = _out(upstream.get("E7"))
     e4 = _out(upstream.get("E4"))
     e8_engine = upstream.get("E8")
 
-    direction, setup, thesis = _e6_identity(e6)
+    market = _market_control(upstream)
+    thesis_direction, setup, thesis = _e6_identity(e6)
     maturity = _state(e6, ("maturity", "setup_maturity", "setup_stage", "stage", "formation_stage", "lifecycle"))
     confirmation, confirmation_ready = _confirmation(e7)
     boundary, plan = _e8_boundary(e8_engine)
     economic = _economic_blockers(e8_engine)
     conflicts = _hard_conflicts(upstream)
 
-    direction_ready = direction in DIRECTIONS
-    setup_ready = direction_ready and setup != "UNKNOWN" and maturity in MATURITY_READY
+    # Layer 2: E6 owns thesis. Market control is deliberately kept separate.
+    thesis_identity_resolved = thesis_direction in DIRECTIONS and setup != "UNKNOWN"
+    setup_ready = thesis_identity_resolved and maturity in MATURITY_READY
+    thesis_control = {
+        "thesis_owner": "E6",
+        "thesis_direction": thesis_direction,
+        "thesis_setup": setup,
+        "thesis": thesis,
+        "thesis_identity_resolved": thesis_identity_resolved,
+        "market_bias_promoted_to_thesis": False,
+    }
+
+    # Layer 3: E7 owns confirmation; E8 owns economics/risk. No gate can be skipped.
     risk_state = _text(boundary.get("risk_gate") or boundary.get("risk_state") or boundary.get("economic_state") or boundary.get("plan_status") or "UNRESOLVED")
-    plan_valid = _plan_valid(plan, direction)
+    plan_valid = _plan_valid(plan, thesis_direction)
     risk_ready = not economic and risk_state in RISK_READY_STATES and plan_valid
+    proof_control = {
+        "e7_confirmation_state": "PROVEN" if confirmation_ready else confirmation,
+        "e7_confirmation_proven": confirmation_ready,
+        "e8_economics_state": "PROVEN" if risk_ready else "PENDING",
+        "e8_economics_proven": risk_ready,
+        "proof_gates_complete": bool(setup_ready and confirmation_ready and risk_ready),
+        "gate_order": ["E6_THESIS", "E7_CONFIRMATION", "E8_ECONOMICS_RISK"],
+        "gate_bypass": False,
+    }
 
     blockers = _dedupe(conflicts + economic)
-    if not direction_ready:
+    if not thesis_identity_resolved:
         blockers.append("DIRECTION_UNRESOLVED")
     if not setup_ready:
         blockers.append("SETUP_NOT_MATURE")
@@ -268,27 +339,30 @@ def analyze_e9(snapshot: dict[str, Any], upstream: dict[str, EngineResult]) -> d
     blockers = _dedupe(blockers)
     primary = next((code for code in BLOCKER_PRIORITY if code in blockers), "NONE")
 
-    all_pass = direction_ready and setup_ready and confirmation_ready and risk_ready and not conflicts and not economic
+    all_pass = thesis_identity_resolved and setup_ready and confirmation_ready and risk_ready and not conflicts and not economic
     if all_pass:
-        decision = direction
+        decision = thesis_direction
         decision_state = master_state = "EXECUTE"
-        thesis_state, setup_state, risk_final, execution_state = "ESTABLISHED", "TRADE_READY", "READY", "READY"
         governance_state = "TRADE_AUTHORIZED"
+        thesis_state, setup_state, risk_final, execution_state = "ESTABLISHED", "TRADE_READY", "READY", "READY"
+        final_governance = "EXECUTE"
     elif conflicts:
         decision = "NO_TRADE"
         decision_state = "REJECT"
         master_state = "REJECTED_HARD_CONFLICT"
+        governance_state = "HARD_BLOCK"
         thesis_state = "INVALIDATED" if any("INVALIDAT" in x for x in conflicts) else "CONFLICTED"
         setup_state = risk_final = execution_state = "BLOCKED"
-        governance_state = "HARD_BLOCK"
+        final_governance = "REJECTED_HARD_CONFLICT"
     else:
         decision = "NO_TRADE"
         decision_state = master_state = "WAIT_FOR_PROOF"
-        thesis_state = "ESTABLISHED" if direction_ready and setup != "UNKNOWN" else "UNRESOLVED"
+        governance_state = "WAITING_FOR_EVIDENCE"
+        thesis_state = "ESTABLISHED" if thesis_identity_resolved else "UNRESOLVED"
         setup_state = maturity if setup != "UNKNOWN" and maturity not in {"", "UNKNOWN", "UNRESOLVED", "NONE"} else "FORMING"
         risk_final = "READY" if risk_ready else "BLOCKED"
         execution_state = "BLOCKED"
-        governance_state = "WAITING_FOR_EVIDENCE"
+        final_governance = "WAIT_FOR_PROOF"
 
     next_required = {
         "DIRECTION_UNRESOLVED": "E6_MUST_ESTABLISH_A_DIRECTIONAL_THESIS_AND_SETUP",
@@ -300,10 +374,12 @@ def analyze_e9(snapshot: dict[str, Any], upstream: dict[str, EngineResult]) -> d
     auction = _auction_fields(e4)
     reason_codes = _dedupe([
         "E9_MARKET_CONTROL_SYNTHESIS",
-        "NINE_BRAIN_GOVERNANCE_PASSED" if all_pass else "NINE_BRAIN_GOVERNANCE_BLOCKED",
+        "E9_THESIS_CONTROL_E6_OWNER",
+        "E9_PROOF_CONTROL_E7_E8_GATES",
+        f"E9_FINAL_GOVERNANCE_{final_governance}",
         *conflicts,
         *economic,
-        *(["DIRECTION_UNRESOLVED"] if not direction_ready else []),
+        *(["DIRECTION_UNRESOLVED"] if not thesis_identity_resolved else []),
         *(["SETUP_NOT_MATURE"] if not setup_ready else []),
         *(["ENTRY_CONFIRMATION_NOT_PROVEN"] if not confirmation_ready else []),
         *(["RISK_NOT_READY"] if not risk_ready else []),
@@ -313,6 +389,7 @@ def analyze_e9(snapshot: dict[str, Any], upstream: dict[str, EngineResult]) -> d
         "decision": decision,
         "decision_state": decision_state,
         "master_state": master_state,
+        "final_governance": final_governance,
         "governance_state": governance_state,
         "thesis_state": thesis_state,
         "setup_state": setup_state,
@@ -334,11 +411,11 @@ def analyze_e9(snapshot: dict[str, Any], upstream: dict[str, EngineResult]) -> d
         "hard_conflict": bool(conflicts),
         "resolved_conflicts": conflicts,
         "counter_evidence": _dedupe(_codes(e7) + _codes(e8_engine.output if e8_engine else {})),
-        "direction": direction,
+        "direction": thesis_direction,
         "setup": setup,
         "thesis": thesis,
         "e6_maturity": maturity,
-        "e6_identity_resolved": direction_ready and setup != "UNKNOWN",
+        "e6_identity_resolved": thesis_identity_resolved,
         "e6_maturity_known": maturity not in {"", "UNKNOWN", "UNRESOLVED", "NONE"},
         "e7_confirmation": confirmation,
         "e7_trigger_observed": confirmation_ready,
@@ -346,6 +423,9 @@ def analyze_e9(snapshot: dict[str, Any], upstream: dict[str, EngineResult]) -> d
         "e8_plan_valid": plan_valid,
         "e8_economic_blockers": economic,
         "trade_plan": plan if plan_valid else {},
+        **market,
+        "thesis_control": thesis_control,
+        "proof_control": proof_control,
         **auction,
         "invalidation_lifecycle": {
             "state": "NONE" if setup != "UNKNOWN" else "NO_SETUP",
@@ -354,10 +434,13 @@ def analyze_e9(snapshot: dict[str, Any], upstream: dict[str, EngineResult]) -> d
             "recovery": next_required,
         },
         "authority": {
-            "thesis": "E6", "confirmation": "E7", "economics_risk": "E8",
-            "market_control": "E9", "final_decision": "E9",
+            "market_control": "E9",
+            "thesis": "E6",
+            "confirmation": "E7",
+            "economics_risk": "E8",
+            "final_decision": "E9",
         },
-        "resolution_order": ["THESIS_IDENTITY", "MARKET_CONTROL", "HARD_CONFLICT", "SETUP_MATURITY", "CONFIRMATION", "RISK_ECONOMICS", "EXECUTION"],
+        "resolution_order": ["MARKET_CONTROL", "THESIS_IDENTITY_E6", "PROOF_E7", "ECONOMICS_E8", "FINAL_GOVERNANCE"],
         "governance_invariants": {
             "e9_cannot_invent_setup": True,
             "e9_cannot_invent_confirmation": True,
@@ -367,5 +450,10 @@ def analyze_e9(snapshot: dict[str, Any], upstream: dict[str, EngineResult]) -> d
             "e9_requires_e8_economic_approval": True,
             "e9_only_authorizes_when_all_gates_pass": True,
             "e9_distinguishes_wait_from_hard_conflict": True,
+            "e9_market_control_is_not_trade_thesis": True,
+            "e9_e6_is_sole_thesis_owner": True,
+            "e9_e7_is_confirmation_owner": True,
+            "e9_e8_is_economics_risk_owner": True,
+            "e9_gate_bypass_forbidden": True,
         },
     }
