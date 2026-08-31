@@ -18,6 +18,7 @@ from .professional_governance import audit_engines, enforce_final_authority
 from .professional_opportunity import consolidate, enrich_engine
 from .professional_brain_audit import audit_all
 from .shared_market_picture import attach_brain_view, build_shared_market_picture
+from .conflict_resolution import build_conflict_ledger
 
 ENGINE_ORDER = ("E1", "E2", "E3", "E4", "E5", "E6", "E7", "E8", "E9")
 EVIDENCE_INPUTS = {
@@ -84,6 +85,20 @@ def _prepare_e9_boundary(results: dict[str, EngineResult]) -> None:
         results[engine_id] = EngineResult(engine.engine_id, engine.name, engine.gate_passed, engine.score, output, engine.reason_codes)
 
 
+def _attach_conflict_ledger(results: dict[str, EngineResult], ledger: dict[str, Any]) -> None:
+    """Publish the same reconciliation record to every brain without changing its evidence."""
+    for engine_id in tuple(results):
+        engine = results[engine_id]
+        output = dict(engine.output)
+        output["cross_brain_conflicts"] = ledger
+        output["conflict_awareness"] = {
+            "role": engine_id,
+            "authority": "NON_AUTHORITATIVE_UNTIL_E9",
+            "must_not_rewrite_upstream_evidence": True,
+        }
+        results[engine_id] = EngineResult(engine.engine_id, engine.name, engine.gate_passed, engine.score, output, engine.reason_codes)
+
+
 class ProductionPipeline:
     ENGINE_ORDER = ENGINE_ORDER
 
@@ -111,6 +126,12 @@ class ProductionPipeline:
         results["E7"] = _enrich("E7", analyze_e7(snapshot, results), snapshot)
         results["E8"] = _enrich("E8", analyze_e8(snapshot, results), snapshot)
 
+        # Reconcile specialist disagreements only after all specialist evidence
+        # exists. This is descriptive: it cannot manufacture confirmation or
+        # weaken an existing risk/structure veto.
+        conflict_ledger = build_conflict_ledger(results)
+        snapshot["cross_brain_conflicts"] = conflict_ledger
+        _attach_conflict_ledger(results, conflict_ledger)
         _prepare_e9_boundary(results)
         try:
             e9 = _enrich("E9", analyze_e9(snapshot, results), snapshot)
@@ -161,13 +182,15 @@ class ProductionPipeline:
             "trade_plan": plan,
             "engine_state": "TRADE_APPROVED" if approved else "ANALYSIS_COMPLETE_NO_TRADE",
             "cycle_complete": True,
-            "analysis_architecture": "SHARED_MARKET_PICTURE + ONE_BRAIN_PER_ENGINE + PROFESSIONAL_OPPORTUNITY_RADAR + NINE_BRAIN_GOVERNANCE",
+            "analysis_architecture": "SHARED_MARKET_PICTURE + ONE_BRAIN_PER_ENGINE + CROSS_BRAIN_CONFLICT_LEDGER + PROFESSIONAL_OPPORTUNITY_RADAR + NINE_BRAIN_GOVERNANCE",
             "shared_market_picture": shared_picture,
+            "cross_brain_conflicts": conflict_ledger,
             "evidence_inputs": {k: list(EVIDENCE_INPUTS.get(k, ())) for k in ENGINE_ORDER},
             "sub_engines": False,
             "parallel_peer_analysis": False,
             "shared_picture_frozen_per_cycle": True,
             "brain_boundaries_explicit": True,
+            "cross_brain_reconciliation": True,
             "e9_decision_authority": True,
             "e9_market_control_authority": True,
             "nine_brain_governance": governance,
