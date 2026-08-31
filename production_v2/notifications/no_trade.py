@@ -4,7 +4,7 @@ from datetime import datetime
 from typing import Any
 from zoneinfo import ZoneInfo
 
-from .telegram import ENGINE_THAI_NAMES, _engine_finding, send
+from .telegram import _engine_finding, send
 
 BANGKOK_TZ = ZoneInfo("Asia/Bangkok")
 REASON_TH = {
@@ -30,7 +30,6 @@ def _main_reason(result: Any) -> str:
     if e9 is not None:
         output = getattr(e9, "output", {}) or {}
         reasons.extend(output.get("decision_reasons") or getattr(e9, "reason_codes", ()) or ())
-    # Preserve order while removing repeated reason codes from the same alert.
     for code in dict.fromkeys(str(x) for x in reasons if x):
         if code in REASON_TH:
             return REASON_TH[code]
@@ -52,12 +51,7 @@ def _engines(result: Any) -> list[Any]:
 
 
 def _engine_compact(engine: Any, expected_id: str) -> str:
-    """Return only the engine's current conclusion for NO_TRADE alerts.
-
-    Detailed evidence belongs in server logs/API responses. Keeping it out of
-    Telegram prevents one logical alert from being split into several Telegram
-    messages by the 4096-character transport limit.
-    """
+    """Return only a bounded engine conclusion for the single NO_TRADE alert."""
     if hasattr(engine, "engine_id"):
         engine_id = str(engine.engine_id)
         finding = _engine_finding(engine)
@@ -78,12 +72,14 @@ def _engine_compact(engine: Any, expected_id: str) -> str:
         engine_id = expected_id
         finding = "ANALYSIS_DATA_MISSING"
 
-    # One line per brain: no evidence dump, no repeated reason catalogue.
+    finding = " ".join(str(finding).split())
+    if len(finding) > 180:
+        finding = finding[:177].rstrip() + "..."
     return f"{engine_id}: {finding}"
 
 
 def format_no_trade(results: dict[str, Any], notified_at: datetime | None = None) -> str:
-    """Build exactly one compact NO_TRADE alert for the current notification slot."""
+    """Build one compact NO_TRADE alert; detailed evidence stays in logs/API."""
     now = notified_at or datetime.now(BANGKOK_TZ)
     lines = [
         "🚫 NO_TRADE — ยังไม่มีการออกออเดอร์",
@@ -100,7 +96,7 @@ def format_no_trade(results: dict[str, Any], notified_at: datetime | None = None
             engine = engines_by_id.get(engine_id)
             lines.append(_engine_compact(engine, engine_id) if engine is not None else f"{engine_id}: ANALYSIS_DATA_MISSING")
         lines += [
-            f"🎯 FINAL: NO_TRADE",
+            "🎯 FINAL: NO_TRADE",
             f"เหตุผลหลัก: {_main_reason(result)}",
         ]
 
