@@ -7,8 +7,8 @@ from .contracts import EngineResult
 
 NAME = "Master Decision Brain"
 QUESTION = "Who controls the auction, where is liquidity, and should this trade be taken after reconciling all evidence?"
-ARCHITECTURE = "E9_MASTER_DECISION_MARKET_CONTROL_V62"
-VERSION = "62.0"
+ARCHITECTURE = "E9_MASTER_DECISION_MARKET_CONTROL_V63"
+VERSION = "63.0"
 
 DIRECTIONS = {"BUY", "SELL"}
 CONFIRMATION_PROVEN = {"PROVEN", "CONFIRMED", "VALIDATED", "TRADE_READY"}
@@ -84,13 +84,25 @@ def _codes(output: dict[str, Any]) -> list[str]:
 
 
 def _direction(*values: Any) -> str:
+    """Read explicit direction labels without turning arbitrary prose into a thesis."""
     for value in values:
         x = _text(value)
+        if not x:
+            continue
         if x in DIRECTIONS:
             return x
-        if x.startswith(("BUY ", "BUY_", "BUY:")) or x in {"UP", "BULLISH"}:
+        if x in {"UP", "BULLISH", "BUYERS", "BUYER", "BUY_CONTROLLED", "BUY-CONTROLLED"}:
             return "BUY"
-        if x.startswith(("SELL ", "SELL_", "SELL:")) or x in {"DOWN", "BEARISH"}:
+        if x in {"DOWN", "BEARISH", "SELLERS", "SELLER", "SELL_CONTROLLED", "SELL-CONTROLLED"}:
+            return "SELL"
+        if x.startswith(("BUY ", "BUY_", "BUY:", "BUY-")):
+            return "BUY"
+        if x.startswith(("SELL ", "SELL_", "SELL:", "SELL-")):
+            return "SELL"
+        # Structured engine prose commonly carries fields such as PRESSURE=DOWN.
+        if re.search(r"(?:^|[ =:;,|])(?:UP|BULLISH|BUYERS|BUYER)(?:$|[ =:;,|])", x):
+            return "BUY"
+        if re.search(r"(?:^|[ =:;,|])(?:DOWN|BEARISH|SELLERS|SELLER)(?:$|[ =:;,|])", x):
             return "SELL"
     return "NEUTRAL"
 
@@ -236,45 +248,52 @@ def _auction_fields(e4: dict[str, Any]) -> dict[str, Any]:
 
 
 def _market_control(upstream: dict[str, EngineResult]) -> dict[str, Any]:
-    """Synthesize control from E1-E5 only; never promote it into an E6 trade thesis."""
+    """Layer 1 only: synthesize market control from E1-E5, never create an E6 thesis."""
     e1, e2, e3, e4, e5 = (_out(upstream.get(k)) for k in ("E1", "E2", "E3", "E4", "E5"))
     votes: list[tuple[str, str, str]] = []
 
-    pressure = _direction(e1.get("pressure"), e1.get("pressure_direction"))
+    pressure = _direction(e1.get("pressure"), e1.get("pressure_direction"), e1.get("finding"))
     if pressure in DIRECTIONS:
         votes.append((pressure, "E1_PRESSURE", "HIGH"))
-    structure = _direction(e1.get("structure_direction"), e1.get("structure"), e3.get("structure_direction"), e3.get("external_state"))
+
+    structure = _direction(e1.get("structure_direction"), e1.get("structure"), e3.get("structure_direction"), e3.get("external_state"), e3.get("finding"))
     if structure in DIRECTIONS:
-        votes.append((structure, "STRUCTURE", "HIGH"))
+        votes.append((structure, "E3_STRUCTURE", "HIGH"))
+
     opportunity = _direction(e2.get("direction"), e2.get("opportunity_direction"), e2.get("finding"))
     if opportunity in DIRECTIONS:
         votes.append((opportunity, "E2_OPPORTUNITY", "MEDIUM"))
-    response = _direction(e4.get("response_actor"), e4.get("auction_response"))
+
+    response = _direction(e4.get("response_actor"), e4.get("auction_response"), e4.get("finding"))
     if response in DIRECTIONS:
-        votes.append((response, "E4_RESPONSE_ACTOR", "MEDIUM"))
-    repricing = _direction(e5.get("repricing_direction"), e5.get("value_response"), e5.get("repricing_state"))
+        votes.append((response, "E4_RESPONSE", "MEDIUM"))
+
+    repricing = _direction(e5.get("repricing_direction"), e5.get("value_response"), e5.get("repricing_state"), e5.get("finding"))
     if repricing in DIRECTIONS:
-        votes.append((repricing, "E5_REPRICING", "MEDIUM"))
+        votes.append((repricing, "E5_VALUE_RESPONSE", "MEDIUM"))
 
     weights = {"HIGH": 3.0, "MEDIUM": 2.0}
     totals = {"BUY": 0.0, "SELL": 0.0}
     for direction, _, strength in votes:
         totals[direction] += weights[strength]
+
     total = totals["BUY"] + totals["SELL"]
     if not total:
         state, direction, confidence = "UNRESOLVED", "NEUTRAL", 0.0
     elif totals["BUY"] == totals["SELL"]:
-        state, direction, confidence = "MIXED", "NEUTRAL", 0.0
+        state, direction, confidence = "MIXED", "NEUTRAL", 50.0
     else:
         direction = "BUY" if totals["BUY"] > totals["SELL"] else "SELL"
         confidence = round(max(totals.values()) / total * 100.0, 2)
-        state = f"{direction}-CONTROLLED"
-        if confidence < 60.0:
-            state = "MIXED"
+        state = f"{direction}-CONTROLLED" if confidence >= 60.0 else "MIXED"
+        if state == "MIXED":
             direction = "NEUTRAL"
 
     alignment = "NO_DIRECTIONAL_EVIDENCE" if not votes else "ALIGNED" if len({v[0] for v in votes}) == 1 else "CONFLICTED"
-    dominant = [source for side, source, _ in votes if side == direction] if direction in DIRECTIONS else [source for _, source, _ in votes]
+    dominant = [source for side, source, _ in votes if direction in DIRECTIONS and side == direction]
+    if not dominant:
+        dominant = [source for _, source, _ in votes]
+
     return {
         "market_control_state": state,
         "control_direction": direction,
@@ -282,11 +301,12 @@ def _market_control(upstream: dict[str, EngineResult]) -> dict[str, Any]:
         "evidence_alignment": alignment,
         "dominant_control_evidence": dominant,
         "market_control_votes": [{"direction": d, "source": s, "strength": w} for d, s, w in votes],
+        "market_control_totals": totals,
     }
 
 
 def analyze_e9(snapshot: dict[str, Any], upstream: dict[str, EngineResult]) -> dict[str, Any]:
-    """Four-layer final governance: Market Control -> Thesis Control -> Proof Control -> Final Governance."""
+    """Four-layer governance: Market Control -> Thesis Control -> Proof Control -> Final Governance."""
     del snapshot
     e6 = _out(upstream.get("E6"))
     e7 = _out(upstream.get("E7"))
@@ -301,7 +321,7 @@ def analyze_e9(snapshot: dict[str, Any], upstream: dict[str, EngineResult]) -> d
     economic = _economic_blockers(e8_engine)
     conflicts = _hard_conflicts(upstream)
 
-    # Layer 2: E6 owns thesis. Market control is deliberately kept separate.
+    # Layer 2: E6 is the sole owner of the trade thesis. Market control can never replace it.
     thesis_identity_resolved = thesis_direction in DIRECTIONS and setup != "UNKNOWN"
     setup_ready = thesis_identity_resolved and maturity in MATURITY_READY
     thesis_control = {
@@ -313,7 +333,7 @@ def analyze_e9(snapshot: dict[str, Any], upstream: dict[str, EngineResult]) -> d
         "market_bias_promoted_to_thesis": False,
     }
 
-    # Layer 3: E7 owns confirmation; E8 owns economics/risk. No gate can be skipped.
+    # Layer 3: E7 owns confirmation and E8 owns economics/risk. Every gate is mandatory.
     risk_state = _text(boundary.get("risk_gate") or boundary.get("risk_state") or boundary.get("economic_state") or boundary.get("plan_status") or "UNRESOLVED")
     plan_valid = _plan_valid(plan, thesis_direction)
     risk_ready = not economic and risk_state in RISK_READY_STATES and plan_valid
