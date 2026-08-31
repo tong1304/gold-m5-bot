@@ -3,7 +3,7 @@ from statistics import mean
 from typing import Any
 from .contracts import EngineResult
 
-NAME="Setup Brain"; QUESTION="What setup is forming, in what direction, and at what stage?"; ARCHITECTURE="E6_PROFESSIONAL_SETUP_FORMATION_BRAIN_V28"; VERSION="28.0"
+NAME="Setup Brain"; QUESTION="What setup is forming, in what direction, and at what stage?"; ARCHITECTURE="E6_PROFESSIONAL_SETUP_FORMATION_BRAIN_V29"; VERSION="29.0"
 MIN_BARS=60; ATR_PERIOD=14; MIN_SPACE_ATR=.75; MAX_EVENT_AGE_BARS=3
 SETUP_FAMILIES=("LIQUIDITY_REVERSAL","AUCTION_ACCEPTANCE_CONTINUATION","BREAKOUT_RETEST","TREND_PULLBACK","BREAKOUT","IMPULSE_CONTINUATION")
 LIFECYCLE=("ABSENT","FORMING","VALIDATING","MATURE","FAILED","INVALIDATED","EXPIRED")
@@ -46,13 +46,32 @@ def _direction(e1,e2,e3,e4):
     if a["direction"]!="NEUTRAL":s.append(f"E4_AUCTION={a['direction']}")
     if "MIXED" in f or "TRANSITION" in f:c.append("STRUCTURE_NOT_RESOLVED")
     if i!="NEUTRAL" and x!="NEUTRAL" and i!=x:c.append("EXTERNAL_INTERNAL_STRUCTURE_CONFLICT")
-    if p!="NEUTRAL" and a["direction"]==p:d,src=p,"E1_E4_DIRECTIONAL_CORE"
-    elif i!="NEUTRAL" and a["direction"]==i:d,src=i,"E3_E4_DIRECTIONAL_CORE"
-    elif i==x and i!="NEUTRAL":d,src=i,"E3_STRUCTURE_CONVERGENCE"
-    elif a["direction"]!="NEUTRAL":d,src=a["direction"],"E4_EVENT_WITH_CONTEXT_CONFLICT"
-    elif p!="NEUTRAL":d,src=p,"E1_CONTEXT_ONLY"
-    else:d,src="NEUTRAL","NO_DIRECTIONAL_THESIS"
     if p!=a["direction"] and p!="NEUTRAL" and a["direction"]!="NEUTRAL":c.append("DIRECTIONAL_EVIDENCE_CONFLICT")
+
+    # Context (E1 pressure + E3 structure) is the primary directional frame.
+    # A pending E4 auction event is evidence-in-progress, not an authority that
+    # may flip an otherwise coherent E1/E3 direction. Only a terminal auction
+    # may become the directional leader when the context cannot resolve it.
+    if p!="NEUTRAL" and i!="NEUTRAL" and p==i:
+        d,src=p,"E1_E3_DIRECTIONAL_CORE"
+    elif i==x and i!="NEUTRAL":
+        d,src=i,"E3_STRUCTURE_CONVERGENCE"
+    elif p!="NEUTRAL" and a["direction"]==p:
+        d,src=p,"E1_E4_DIRECTIONAL_CORE"
+    elif a["terminal"] and a["direction"]!="NEUTRAL":
+        d,src=a["direction"],"E4_TERMINAL_AUCTION"
+    elif p!="NEUTRAL":
+        d,src=p,"E1_CONTEXT_ONLY"
+    elif i!="NEUTRAL":
+        d,src=i,"E3_STRUCTURE_ONLY"
+    elif a["direction"]!="NEUTRAL":
+        d,src=a["direction"],"E4_PENDING_HYPOTHESIS"
+    else:
+        d,src="NEUTRAL","NO_DIRECTIONAL_THESIS"
+
+    if a["pending"] and a["direction"] not in {"NEUTRAL",d}:
+        c.append("E4_PENDING_DIRECTION_NOT_AUTHORITATIVE")
+
     e2f=_text(e2.get("finding",e2.get("state"))); e2d=_norm(e2.get("direction",e2.get("opportunity_direction")))
     if e2d!="NEUTRAL" and not any(z in e2f for z in ("UNRESOLVED","UNPROVEN","AMBIGUOUS")):
         if d==e2d:s.append(f"E2_DIRECTION={e2d}")
@@ -63,8 +82,10 @@ def _candidates(d,a,e1,e3,e5):
     ev=a["event"]; trend=_norm(e1.get("trend_state",e1.get("finding"))); out=[]
     def add(n,x,b,e):
         if x in ("BUY","SELL"):out.append({"name":n,"direction":x,"base_quality":b,"evidence":e,"event_required":True})
-    if "FAILED_BREAK_RECLAIM" in ev or "SWEEP_REJECTION" in ev:add("LIQUIDITY_REVERSAL",a["direction"],82,["E4_LIQUIDITY_EVENT","E4_DIRECTIONAL_RESPONSE"])
-    if "ACCEPTANCE" in ev:add("AUCTION_ACCEPTANCE_CONTINUATION",a["direction"],76,["E4_ACCEPTANCE_EVENT","E4_AUCTION_RESPONSE"])
+    event_direction=a["direction"]
+    event_can_drive_setup=a["terminal"] or event_direction in {"NEUTRAL",d}
+    if ("FAILED_BREAK_RECLAIM" in ev or "SWEEP_REJECTION" in ev) and event_can_drive_setup:add("LIQUIDITY_REVERSAL",event_direction,82,["E4_LIQUIDITY_EVENT","E4_DIRECTIONAL_RESPONSE"])
+    if "ACCEPTANCE" in ev and event_can_drive_setup:add("AUCTION_ACCEPTANCE_CONTINUATION",event_direction,76,["E4_ACCEPTANCE_EVENT","E4_AUCTION_RESPONSE"])
     if any(z in ev for z in ("BREAKOUT_RETEST","BREAKOUT","BOS")) or _text(e3.get("bos",e3.get("break_of_structure"))) in {"BREAK","BOS","YES"}:
         add("BREAKOUT_RETEST",d,72,["E3_BREAK_EVENT","E4_AUCTION_CONTEXT"]);add("BREAKOUT",d,68,["E3_BOS","E4_AUCTION_CONTEXT"])
     if trend==d and "PULLBACK" in _text(e1.get("finding",e1.get("trend_state"))):add("TREND_PULLBACK",d,66,["E1_TREND_ALIGNMENT","E3_STRUCTURE"])
