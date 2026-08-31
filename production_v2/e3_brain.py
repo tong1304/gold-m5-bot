@@ -4,7 +4,7 @@ from statistics import mean
 from typing import Any
 
 QUESTION = "What is price structure communicating?"
-ARCHITECTURE = "E3_PROFESSIONAL_MARKET_STRUCTURE_CAUSAL_V5"
+ARCHITECTURE = "E3_PROFESSIONAL_MARKET_STRUCTURE_CAUSAL_V6"
 UP, DOWN, NEUTRAL, MIXED = "UP", "DOWN", "NEUTRAL", "MIXED"
 MIN_CANDLES = 40
 INTERNAL_RADIUS, EXTERNAL_RADIUS = 2, 5
@@ -149,26 +149,51 @@ def _semantic(highs, lows):
 
 
 def _protected(highs, lows):
+    """Return causal protected levels, not merely the latest swing of each type.
+
+    A bullish protected low is the latest confirmed HL that existed before the
+    impulse HH which established the current bullish leg.  Bearish protection is
+    symmetric.  This prevents an unrelated later pivot from silently replacing
+    the level that actually carries structural invalidation authority.
+    """
     hh = _latest(highs, {"HH"})
-    hl = _latest(lows, {"HL"})
     lh = _latest(highs, {"LH"})
     ll = _latest(lows, {"LL"})
 
     bullish_low = None
+    bullish_anchor = None
     if hh:
-        candidates = [p for p in lows if p.get("label") == "HL" and p["index"] < hh["index"] and p["confirmation_index"] <= hh["confirmation_index"]]
-        bullish_low = candidates[-1] if candidates else None
+        candidates = [
+            p for p in lows
+            if p.get("label") == "HL"
+            and p["index"] < hh["index"]
+            and p["confirmation_index"] <= hh["confirmation_index"]
+        ]
+        if candidates:
+            bullish_low = candidates[-1]
+            bullish_anchor = hh
 
     bearish_high = None
+    bearish_anchor = None
     if ll:
-        candidates = [p for p in highs if p.get("label") == "LH" and p["index"] < ll["index"] and p["confirmation_index"] <= ll["confirmation_index"]]
-        bearish_high = candidates[-1] if candidates else None
+        candidates = [
+            p for p in highs
+            if p.get("label") == "LH"
+            and p["index"] < ll["index"]
+            and p["confirmation_index"] <= ll["confirmation_index"]
+        ]
+        if candidates:
+            bearish_high = candidates[-1]
+            bearish_anchor = ll
 
     return {
         "protected_high": bearish_high,
         "protected_low": bullish_low,
+        "bullish_anchor": bullish_anchor,
+        "bearish_anchor": bearish_anchor,
         "bullish_basis": "HL_PROTECTED_BY_CONFIRMED_HH" if bullish_low else "NONE",
         "bearish_basis": "LH_PROTECTED_BY_CONFIRMED_LL" if bearish_high else "NONE",
+        "authority_rule": "CAUSAL_ANCHOR_REQUIRED",
     }
 
 
@@ -228,23 +253,39 @@ def _failed_break(bars, highs, lows, current, atr):
 
 
 def _sweep_reclaim(bars, highs, lows, atr):
+    """Detect a sweep/reclaim on the current closed candle using the nearest
+    causally relevant confirmed liquidity pool on each side, rather than only
+    the latest pivot. The event is valid only when the same candle both sweeps
+    and closes back through the level by the minimum reclaim distance.
+    """
     if not bars or atr <= 0:
         return {"event": "NO_SWEEP_RECLAIM", "direction": NEUTRAL, "confirmed": False, "lifecycle": "NONE", "current": False}
     current = len(bars) - 1
     found = []
-    for pivot, direction, side in [(_latest(highs, {"HH", "LH", "EQH"}), DOWN, "high"), (_latest(lows, {"HL", "LL", "EQL"}), UP, "low")]:
-        if not pivot or pivot["confirmation_index"] > current - 1:
-            continue
-        if side == "high":
-            sweep = (bars[current]["high"] - pivot["price"]) / atr
-            reclaimed = bars[current]["close"] < pivot["price"]
-            reclaim_distance = (pivot["price"] - bars[current]["close"]) / atr
-        else:
-            sweep = (pivot["price"] - bars[current]["low"]) / atr
-            reclaimed = bars[current]["close"] > pivot["price"]
-            reclaim_distance = (bars[current]["close"] - pivot["price"]) / atr
+
+    high_candidates = [p for p in highs if p["confirmation_index"] <= current - 1 and p.get("label") in {"HH", "LH", "EQH"}]
+    low_candidates = [p for p in lows if p["confirmation_index"] <= current - 1 and p.get("label") in {"HL", "LL", "EQL"}]
+
+    # Prefer the nearest level actually touched by the current candle.  This
+    # avoids letting a distant old swing outrank a fresh, relevant liquidity pool.
+    for pivot in high_candidates:
+        sweep = (bars[current]["high"] - pivot["price"]) / atr
+        reclaimed = bars[current]["close"] < pivot["price"]
+        reclaim_distance = (pivot["price"] - bars[current]["close"]) / atr
         if sweep >= SWEEP_MIN_ATR and reclaimed and reclaim_distance >= RECLAIM_MIN_ATR:
-            found.append((reclaim_distance, {"event": "SWEEP_RECLAIM", "direction": direction, "confirmed": True, "closed_candle_confirmed": True, "current": True, "level": pivot["price"], "swing_index": pivot["index"], "sweep_candle_index": current, "sweep_distance_atr": round(sweep, 4), "reclaim_distance_atr": round(reclaim_distance, 4), "liquidity_type": "EQUAL_HIGH" if pivot["label"] == "EQH" else "EQUAL_LOW" if pivot["label"] == "EQL" else "STRUCTURAL_SWING", "lifecycle": "RECLAIM"}))
+            proximity = abs(bars[current]["close"] - pivot["price"]) / atr
+            quality = (reclaim_distance, -proximity, pivot["index"])
+            found.append((quality, {"event": "SWEEP_RECLAIM", "direction": DOWN, "confirmed": True, "closed_candle_confirmed": True, "current": True, "level": pivot["price"], "swing_index": pivot["index"], "sweep_candle_index": current, "sweep_distance_atr": round(sweep, 4), "reclaim_distance_atr": round(reclaim_distance, 4), "liquidity_type": "EQUAL_HIGH" if pivot["label"] == "EQH" else "STRUCTURAL_SWING", "lifecycle": "RECLAIM"}))
+
+    for pivot in low_candidates:
+        sweep = (pivot["price"] - bars[current]["low"]) / atr
+        reclaimed = bars[current]["close"] > pivot["price"]
+        reclaim_distance = (bars[current]["close"] - pivot["price"]) / atr
+        if sweep >= SWEEP_MIN_ATR and reclaimed and reclaim_distance >= RECLAIM_MIN_ATR:
+            proximity = abs(bars[current]["close"] - pivot["price"]) / atr
+            quality = (reclaim_distance, -proximity, pivot["index"])
+            found.append((quality, {"event": "SWEEP_RECLAIM", "direction": UP, "confirmed": True, "closed_candle_confirmed": True, "current": True, "level": pivot["price"], "swing_index": pivot["index"], "sweep_candle_index": current, "sweep_distance_atr": round(sweep, 4), "reclaim_distance_atr": round(reclaim_distance, 4), "liquidity_type": "EQUAL_LOW" if pivot["label"] == "EQL" else "STRUCTURAL_SWING", "lifecycle": "RECLAIM"}))
+
     return max(found, key=lambda x: x[0])[1] if found else {"event": "NO_SWEEP_RECLAIM", "direction": NEUTRAL, "confirmed": False, "lifecycle": "NONE", "current": False}
 
 
