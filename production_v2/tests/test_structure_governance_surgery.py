@@ -10,11 +10,11 @@ def _engine(engine_id, output=None, reasons=()):
 def test_e3_rejects_inverted_protected_geometry():
     highs = [
         {"index": 8, "price": 120.0, "confirmation_index": 10, "status": "CONFIRMED", "label": "HH"},
-        {"index": 12, "price": 100.0, "confirmation_index": 14, "status": "CONFIRMED", "label": "LH"},
+        {"index": 10, "price": 100.0, "confirmation_index": 12, "status": "CONFIRMED", "label": "LH"},
     ]
     lows = [
-        {"index": 9, "price": 110.0, "confirmation_index": 11, "status": "CONFIRMED", "label": "HL"},
-        {"index": 13, "price": 90.0, "confirmation_index": 15, "status": "CONFIRMED", "label": "LL"},
+        {"index": 7, "price": 110.0, "confirmation_index": 9, "status": "CONFIRMED", "label": "HL"},
+        {"index": 11, "price": 90.0, "confirmation_index": 13, "status": "CONFIRMED", "label": "LL"},
     ]
     result = _protected(highs, lows)
     assert result["integrity"] == "INVALID"
