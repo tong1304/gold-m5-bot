@@ -17,7 +17,7 @@ from .opportunity_layer import enrich_opportunity, recover_e9
 from .professional_governance import audit_engines, enforce_final_authority
 from .professional_opportunity import consolidate, enrich_engine
 from .professional_brain_audit import audit_all
-from .shared_market_picture import attach_brain_view, build_shared_market_picture
+from .shared_market_picture import attach_brain_view, audit_shared_market_picture_contract, build_shared_market_picture
 from .conflict_resolution import build_conflict_ledger
 from .profit_edge import evaluate_profit_edge
 
@@ -122,16 +122,12 @@ def _attach_profit_edge(results: dict[str, EngineResult], snapshot: dict[str, An
     confirmation = str(e7.get("confirmation_state") or e7.get("confirmation") or "UNKNOWN").upper().strip()
     plan = out.get("trade_plan") if isinstance(out.get("trade_plan"), dict) else {}
     execution = out.get("execution_cost") if isinstance(out.get("execution_cost"), dict) else {}
-    try:
-        rr = float(plan.get("rr_tp2", plan.get("rr", 0.0)) or 0.0)
+    try: rr = float(plan.get("rr_tp2", plan.get("rr", 0.0)) or 0.0)
     except (TypeError, ValueError): rr = 0.0
-    try:
-        cost_atr = float(execution.get("cost_atr", out.get("execution_cost_atr", 0.0)) or 0.0)
+    try: cost_atr = float(execution.get("cost_atr", out.get("execution_cost_atr", 0.0)) or 0.0)
     except (TypeError, ValueError): cost_atr = 0.0
     try:
-        atr = float(out.get("atr", 0.0) or 0.0)
-        risk_price = abs(float(plan.get("entry", 0.0)) - float(plan.get("stop_loss", 0.0)))
-        risk_atr = risk_price / max(atr, 1e-9)
+        atr = float(out.get("atr", 0.0) or 0.0); risk_price = abs(float(plan.get("entry", 0.0)) - float(plan.get("stop_loss", 0.0))); risk_atr = risk_price / max(atr, 1e-9)
     except (TypeError, ValueError): risk_atr = 0.0
     cost_r = cost_atr / max(risk_atr, 1e-9) if cost_atr > 0 and risk_atr > 0 else 0.0
     edge = evaluate_profit_edge(symbol=str(snapshot.get("symbol") or "UNKNOWN"), regime=regime, direction=direction, setup=setup, location=location, confirmation=confirmation, historical_outcomes=snapshot.get("historical_outcomes"), realized_rr=rr, cost_r=cost_r)
@@ -139,9 +135,7 @@ def _attach_profit_edge(results: dict[str, EngineResult], snapshot: dict[str, An
     out["economic_evidence"] = {"entry":plan.get("entry"),"stop":plan.get("stop_loss"),"target":plan.get("take_profit_2",plan.get("take_profit",plan.get("tp2"))),"rr":plan.get("rr_tp2",plan.get("rr")),"profit_edge_state":edge["state"],"expected_value_r":edge["expected_value_r"],"stress_expected_value_r":edge["stress_expected_value_r"],"sample":edge["sample"],"win_probability":edge["win_probability"],"probability_quality":edge["probability_quality"],"blockers":edge["blockers"]}
     reasons = list(e8.reason_codes)
     if edge.get("blockers"):
-        reasons.extend(edge["blockers"])
-        # Preserve the existing E9 economic veto contract while exposing the more precise edge reason.
-        reasons.append("PROBABILITY_EDGE_NOT_TRUSTWORTHY")
+        reasons.extend(edge["blockers"]); reasons.append("PROBABILITY_EDGE_NOT_TRUSTWORTHY")
     results["E8"] = EngineResult("E8", e8.name, False if edge.get("blockers") else e8.gate_passed, e8.score, out, tuple(dict.fromkeys(reasons)))
 
 
@@ -161,8 +155,12 @@ class ProductionPipeline:
         snapshot = dict(market_data)
         calibration_records = _historical_records(historical_calibration)
         if calibration_records is not None: snapshot["historical_outcomes"] = calibration_records
+        shared_picture = build_shared_market_picture(snapshot)
+        snapshot["shared_market_picture"] = shared_picture
+        # IMPORTANT: obtain bars only AFTER the shared boundary is frozen.
+        # This makes E1/E3 and every downstream brain consume the exact same
+        # closed-candle dataset rather than the pre-freeze input list.
         bars = list(snapshot.get("bars") or [])
-        shared_picture = build_shared_market_picture(snapshot); snapshot["shared_market_picture"] = shared_picture
         results: dict[str, EngineResult] = {}
         results["E1"] = _enrich("E1", _dict_result("E1", analyze_e1(bars)), snapshot)
         e2_snapshot = dict(snapshot); e2_snapshot["E1_result"] = results["E1"].output
@@ -182,13 +180,34 @@ class ProductionPipeline:
             recovered = _dict_result("E9", enrich_opportunity("E9", recovery, snapshot)); recovered_output = harden_engine("E9", enrich_engine("E9", recovered.output)); recovered_output = attach_brain_view("E9", recovered_output, shared_picture)
             e9 = EngineResult(recovered.engine_id,recovered.name,recovered.gate_passed,recovered.score,recovered_output,recovered.reason_codes)
         results["E9"] = e9; _attach_state_semantics(results)
+
+        # HARD SHARED-MARKET-PICTURE CONTRACT: one cutoff, one picture, no
+        # lookahead, and explicit FACT/INTERPRETATION/DECISION classification.
+        shared_picture_audit = audit_shared_market_picture_contract({engine_id: results[engine_id].output for engine_id in ENGINE_ORDER})
+        if not shared_picture_audit["passed"]:
+            e9 = results["E9"]
+            blocked_output = dict(e9.output)
+            blocked_output["shared_market_picture_audit"] = shared_picture_audit
+            blocked_output["decision"] = "NO_TRADE"
+            blocked_output["execution"] = "BLOCKED"
+            blocked_output["governance_blockers"] = list(dict.fromkeys([*(blocked_output.get("governance_blockers") or []), "SHARED_MARKET_PICTURE_CONTRACT_BLOCKED"]))
+            blocked_reasons = tuple(dict.fromkeys((*e9.reason_codes, "SHARED_MARKET_PICTURE_CONTRACT_BLOCKED")))
+            results["E9"] = EngineResult("E9", e9.name, False, e9.score, blocked_output, blocked_reasons)
+        else:
+            e9 = results["E9"]
+            results["E9"] = EngineResult("E9", e9.name, e9.gate_passed, e9.score, {**e9.output, "shared_market_picture_audit": shared_picture_audit}, e9.reason_codes)
+
         audit = audit_all({engine_id:results[engine_id].output for engine_id in ENGINE_ORDER})
         for engine_id in ENGINE_ORDER:
             engine=results[engine_id]; output=dict(engine.output); output["professional_audit"]=audit["per_engine"][engine_id]; results[engine_id]=EngineResult(engine.engine_id,engine.name,engine.gate_passed,engine.score,output,engine.reason_codes)
         results["E9"] = EngineResult(results["E9"].engine_id,results["E9"].name,results["E9"].gate_passed,results["E9"].score,{**results["E9"].output,"nine_brain_audit":audit},results["E9"].reason_codes)
         governance = audit_engines(results); decision, approved, governance_reasons = enforce_final_authority(results["E9"].output, governance)
+        if not shared_picture_audit["passed"]:
+            approved = False
+            decision = "NO_TRADE"
+            governance_reasons = tuple(dict.fromkeys((*governance_reasons, "SHARED_MARKET_PICTURE_CONTRACT_BLOCKED")))
         if governance_reasons:
             merged_reasons=tuple(dict.fromkeys((*results["E9"].reason_codes,*governance_reasons))); e9_output=harden_engine("E9",dict(results["E9"].output)); e9_output["governance"]=governance; e9_output["decision"]=decision; e9_output["execution"]="APPROVED" if approved else "BLOCKED"; e9_output["governance_blockers"]=governance_reasons; results["E9"]=EngineResult("E9",NAMES["E9"],False if not approved else results["E9"].gate_passed,results["E9"].score,e9_output,merged_reasons)
         e9=results["E9"]; plan=e9.output.get("trade_plan") or {}; approved=bool(approved and e9.gate_passed and decision in {"BUY","SELL"} and (plan.get("valid",True) if isinstance(plan,dict) else False)); decision=decision if approved else "NO_TRADE"; engines=tuple(results[e] for e in ENGINE_ORDER); radar=consolidate(results)
-        risk={"risk_gate":bool(plan.get("valid")) if isinstance(plan,dict) else False,"trade_plan":plan,"engine_state":"TRADE_APPROVED" if approved else "ANALYSIS_COMPLETE_NO_TRADE","cycle_complete":True,"analysis_architecture":"SHARED_MARKET_PICTURE + ONE_BRAIN_PER_ENGINE + CROSS_BRAIN_CONFLICT_LEDGER + PROFESSIONAL_OPPORTUNITY_RADAR + PROFIT_EDGE_EXPECTANCY + NINE_BRAIN_GOVERNANCE","shared_market_picture":shared_picture,"cross_brain_conflicts":conflict_ledger,"evidence_inputs":{k:list(EVIDENCE_INPUTS.get(k,())) for k in ENGINE_ORDER},"sub_engines":False,"parallel_peer_analysis":False,"shared_picture_frozen_per_cycle":True,"brain_boundaries_explicit":True,"cross_brain_reconciliation":True,"e9_decision_authority":True,"e9_market_control_authority":True,"nine_brain_governance":governance,"nine_brain_audit":audit,"learning_mode":"ADVISORY_ONLY","next_evaluation":"NEXT_CLOSED_M5_CANDLE","wait_bars":0,"decision_reasons":list(e9.reason_codes),"opportunity_radar":radar,"opportunity_potential":audit["opportunity"],"profit_edge":results["E8"].output.get("profit_edge"),"opportunity_summary":{e:{"direction":results[e].output.get("opportunity_direction"),"state":results[e].output.get("opportunity_state"),"stage":results[e].output.get("opportunity_stage"),"score":results[e].output.get("opportunity_score"),"next_event":results[e].output.get("opportunity_next_event")} for e in ENGINE_ORDER}}
+        risk={"risk_gate":bool(plan.get("valid")) if isinstance(plan,dict) else False,"trade_plan":plan,"engine_state":"TRADE_APPROVED" if approved else "ANALYSIS_COMPLETE_NO_TRADE","cycle_complete":True,"analysis_architecture":"SHARED_MARKET_PICTURE + ONE_BRAIN_PER_ENGINE + CROSS_BRAIN_CONFLICT_LEDGER + PROFESSIONAL_OPPORTUNITY_RADAR + PROFIT_EDGE_EXPECTANCY + NINE_BRAIN_GOVERNANCE","shared_market_picture":shared_picture,"shared_market_picture_audit":shared_picture_audit,"cross_brain_conflicts":conflict_ledger,"evidence_inputs":{k:list(EVIDENCE_INPUTS.get(k,())) for k in ENGINE_ORDER},"sub_engines":False,"parallel_peer_analysis":False,"shared_picture_frozen_per_cycle":True,"brain_boundaries_explicit":True,"cross_brain_reconciliation":True,"e9_decision_authority":True,"e9_market_control_authority":True,"nine_brain_governance":governance,"nine_brain_audit":audit,"learning_mode":"ADVISORY_ONLY","next_evaluation":"NEXT_CLOSED_M5_CANDLE","wait_bars":0,"decision_reasons":list(e9.reason_codes),"opportunity_radar":radar,"opportunity_potential":audit["opportunity"],"profit_edge":results["E8"].output.get("profit_edge"),"opportunity_summary":{e:{"direction":results[e].output.get("opportunity_direction"),"state":results[e].output.get("opportunity_state"),"stage":results[e].output.get("opportunity_stage"),"score":results[e].output.get("opportunity_score"),"next_event":results[e].output.get("opportunity_next_event")} for e in ENGINE_ORDER}}
         return DecisionResult(str(snapshot.get("symbol") or "UNKNOWN"),str(snapshot.get("timeframe") or "M5"),decision,approved,e9.score,engines,risk,tuple(e9.reason_codes))
