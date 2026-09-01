@@ -7,8 +7,8 @@ from .contracts import EngineResult
 
 NAME = "Trade Economics & Risk Brain"
 QUESTION = "Is the proposed trade economically attractive, structurally survivable, and robust to execution uncertainty?"
-ARCHITECTURE = "E8_PROFESSIONAL_TRADE_ECONOMICS_RISK_BRAIN_V24"
-VERSION = "24.0"
+ARCHITECTURE = "E8_PROFESSIONAL_TRADE_ECONOMICS_RISK_BRAIN_V25"
+VERSION = "25.0"
 
 # E8 is an economics/risk gate only. It never creates a setup or changes direction.
 MIN_BARS = 30
@@ -43,6 +43,104 @@ MIN_STOP_QUALITY = 70.0
 RISK_CLASS_A = 0.78
 RISK_CLASS_B = 0.68
 RISK_CLASS_C = 0.58
+
+
+# Lower numeric rank means the blocker is more causally upstream and therefore
+# more useful as the single primary veto. E8 reports every blocker separately.
+_VETO_PRIORITY = {
+    "ENTRY_CONFIRMATION": 10,
+    "NO_USABLE_STRUCTURAL_TARGET": 20,
+    "INVALID_TRADE_GEOMETRY": 30,
+    "STOP_TOO_TIGHT": 40,
+    "STOP_TOO_WIDE": 40,
+    "REAL_RR_BELOW_MINIMUM": 50,
+    "EFFECTIVE_SPACE_UNRELIABLE": 60,
+    "EFFECTIVE_SPACE_BELOW_MINIMUM": 60,
+    "SPACE_CONFLICT": 60,
+    "STRUCTURAL_SURVIVAL_NOT_PROVEN": 70,
+    "EXECUTION_COST_TOO_HIGH": 80,
+    "TARGET_REALISM_TOO_LOW": 90,
+    "STOP_QUALITY_TOO_LOW": 90,
+    "STRESSED_PROBABILITY_BELOW_MINIMUM": 100,
+    "PROBABILITY_EDGE_NOT_POSITIVE": 100,
+    "ECONOMIC_MARGIN_TOO_THIN": 100,
+    "PROBABILITY_EDGE_NOT_TRUSTWORTHY": 110,
+    "HISTORICAL_SAMPLE_INSUFFICIENT": 105,
+    "SURVIVAL_FRAGILE": 120,
+    "ECONOMICS_SENSITIVITY_FRAGILE": 130,
+}
+
+_VETO_LAYER = {
+    "ENTRY_CONFIRMATION": "CONFIRMATION",
+    "NO_USABLE_STRUCTURAL_TARGET": "TARGET",
+    "INVALID_TRADE_GEOMETRY": "GEOMETRY",
+    "STOP_TOO_TIGHT": "STOP",
+    "STOP_TOO_WIDE": "STOP",
+    "REAL_RR_BELOW_MINIMUM": "RR",
+    "EFFECTIVE_SPACE_UNRELIABLE": "SPACE",
+    "EFFECTIVE_SPACE_BELOW_MINIMUM": "SPACE",
+    "SPACE_CONFLICT": "SPACE",
+    "STRUCTURAL_SURVIVAL_NOT_PROVEN": "SURVIVAL",
+    "EXECUTION_COST_TOO_HIGH": "EXECUTION",
+    "TARGET_REALISM_TOO_LOW": "TARGET_REALISM",
+    "STOP_QUALITY_TOO_LOW": "STOP_QUALITY",
+    "STRESSED_PROBABILITY_BELOW_MINIMUM": "PROBABILITY",
+    "PROBABILITY_EDGE_NOT_POSITIVE": "PROBABILITY",
+    "ECONOMIC_MARGIN_TOO_THIN": "PROBABILITY",
+    "PROBABILITY_EDGE_NOT_TRUSTWORTHY": "PROBABILITY",
+    "HISTORICAL_SAMPLE_INSUFFICIENT": "PROBABILITY",
+    "SURVIVAL_FRAGILE": "SURVIVAL",
+    "ECONOMICS_SENSITIVITY_FRAGILE": "ROBUSTNESS",
+}
+
+_NEXT_EVENT = {
+    "ENTRY_CONFIRMATION": "E7_SETUP_SPECIFIC_CLOSED_CANDLE_CONFIRMATION",
+    "NO_USABLE_STRUCTURAL_TARGET": "NEW_CREDIBLE_OPPOSING_STRUCTURAL_BARRIER",
+    "INVALID_TRADE_GEOMETRY": "VALID_ENTRY_STOP_TARGET_GEOMETRY",
+    "STOP_TOO_TIGHT": "STRUCTURAL_STOP_WITH_VALID_ATR_WIDTH",
+    "STOP_TOO_WIDE": "TIGHTER_STRUCTURAL_STOP_OR_NEW_ENTRY",
+    "REAL_RR_BELOW_MINIMUM": "ENTRY_OR_TARGET_REPRICING_TO_RR_THRESHOLD",
+    "EFFECTIVE_SPACE_UNRELIABLE": "CONSISTENT_STRUCTURAL_SPACE_EVIDENCE",
+    "EFFECTIVE_SPACE_BELOW_MINIMUM": "INCREASED_CLEAR_SPACE_BEYOND_MINIMUM",
+    "SPACE_CONFLICT": "RESOLVED_SPACE_MEASUREMENT_CONSISTENCY",
+    "STRUCTURAL_SURVIVAL_NOT_PROVEN": "HISTORICAL_MAE_SUPPORTING_STOP_SURVIVAL",
+    "EXECUTION_COST_TOO_HIGH": "LOWER_SPREAD_SLIPPAGE_OR_HIGHER_ATR",
+    "TARGET_REALISM_TOO_LOW": "CREDIBLE_TARGET_WITH_REALISTIC_PATH",
+    "STOP_QUALITY_TOO_LOW": "HIGHER_QUALITY_STRUCTURAL_STOP",
+    "STRESSED_PROBABILITY_BELOW_MINIMUM": "HIGHER_TRUSTED_STRESSED_PROBABILITY",
+    "PROBABILITY_EDGE_NOT_POSITIVE": "POSITIVE_STRESSED_EXPECTANCY",
+    "ECONOMIC_MARGIN_TOO_THIN": "WIDER_PROBABILITY_EDGE_OVER_BREAKEVEN",
+    "PROBABILITY_EDGE_NOT_TRUSTWORTHY": "TRUSTED_SETUP_DIRECTION_PROBABILITY",
+    "HISTORICAL_SAMPLE_INSUFFICIENT": "MORE_RESOLVED_SETUP_HISTORY",
+    "SURVIVAL_FRAGILE": "LARGER_SURVIVAL_MARGIN",
+    "ECONOMICS_SENSITIVITY_FRAGILE": "ROBUST_POSITIVE_ECONOMICS_UNDER_SHOCK",
+}
+
+_DATA_BLOCKERS = {"HISTORICAL_SAMPLE_INSUFFICIENT", "PROBABILITY_EDGE_NOT_TRUSTWORTHY"}
+
+
+def _economic_diagnosis(reasons: list[str], confirmation: str) -> dict[str, Any]:
+    """Turn a flat veto list into a causal diagnosis without changing the gate."""
+    unique = list(dict.fromkeys(_text(x) for x in reasons if _text(x)))
+    ranked = sorted(unique, key=lambda x: (_VETO_PRIORITY.get(x, 1000), x))
+    primary = ranked[0] if ranked else "NONE"
+    secondary = [x for x in ranked if x != primary]
+    layers = list(dict.fromkeys(_VETO_LAYER.get(x, "OTHER") for x in ranked))
+    primary_class = "DATA_INSUFFICIENT" if primary in _DATA_BLOCKERS else (
+        "CONFIRMATION_REQUIRED" if primary == "ENTRY_CONFIRMATION" else "TRADE_INVALIDATION")
+    if primary == "NONE" and confirmation != "CONFIRMED":
+        primary = "ENTRY_CONFIRMATION"
+        primary_class = "CONFIRMATION_REQUIRED"
+        layers = ["CONFIRMATION"]
+    return {
+        "primary_veto": primary,
+        "secondary_vetoes": secondary,
+        "blocking_layers": layers,
+        "veto_class": primary_class,
+        "next_required_event": _NEXT_EVENT.get(primary, "NEW_CLOSED_CANDLE_EVIDENCE"),
+        "next_required_events": list(dict.fromkeys(_NEXT_EVENT.get(x, "NEW_CLOSED_CANDLE_EVIDENCE") for x in ranked)),
+        "veto_count": len(unique),
+    }
 
 
 def _num(v: Any, default: float = 0.0) -> float:
@@ -457,7 +555,8 @@ def _economic(geometry: dict[str, Any], probability: dict[str, Any], execution: 
 
     hard = {"REAL_RR_BELOW_MINIMUM", "EXECUTION_COST_TOO_HIGH", "STRUCTURAL_SURVIVAL_NOT_PROVEN",
             "EFFECTIVE_SPACE_UNRELIABLE", "EFFECTIVE_SPACE_BELOW_MINIMUM",
-            "STRESSED_PROBABILITY_BELOW_MINIMUM", "TARGET_REALISM_TOO_LOW", "STOP_QUALITY_TOO_LOW"}
+            "STRESSED_PROBABILITY_BELOW_MINIMUM", "PROBABILITY_EDGE_NOT_POSITIVE",
+            "ECONOMIC_MARGIN_TOO_THIN", "TARGET_REALISM_TOO_LOW", "STOP_QUALITY_TOO_LOW"}
     state = "NOT_EVALUABLE" if not probability.get("trusted") else (
         "ECONOMICALLY_INVALID" if any(x in hard for x in reasons) else
         "FRAGILE" if reasons else "ECONOMICALLY_ACCEPTABLE")
@@ -540,12 +639,14 @@ def _confidence(economics: dict[str, Any], survival: dict[str, Any], sensitivity
 
 def _unresolved(direction: str, setup: str, confirmation: str, bars: int, atr: float,
                 reasons: list[str]) -> EngineResult:
+    diagnosis = _economic_diagnosis(reasons, confirmation)
     output = {"engine_id": "E8", "role": "TRADE_ECONOMICS_RISK_ANALYST", "question": QUESTION,
               "architecture": ARCHITECTURE, "version": VERSION, "finding": "UNRESOLVED",
               "direction": direction, "setup": setup, "confirmation": confirmation,
               "economic_state": "NOT_EVALUABLE", "gate_passed": False, "risk_ready": False,
               "observations": [f"valid_candles={bars}", f"atr14={atr:.6f}"],
               "reasons": reasons, "reason_codes": reasons,
+              **diagnosis,
               "professional_rule": "E8_ECONOMICS_ONLY_E9_FINAL_AUTHORITY", "decision_authority": "E9"}
     return EngineResult("E8", NAME, False, 0.0, output, tuple(reasons))
 
@@ -598,6 +699,8 @@ def analyze_e8(snapshot: dict[str, Any], results: dict[str, EngineResult]) -> En
     mae = _historical_mae(bars, direction)
     survival = _survival(mae, risk_atr)
     probability = _probability(e7, snapshot, direction, setup)
+    if probability.get("sample", 0) < MIN_PROBABILITY_SAMPLE:
+        reasons.append("HISTORICAL_SAMPLE_INSUFFICIENT")
     target_realism = _target_realism(target, space, survival, geometry, e4)
     stop_quality = _stop_quality(stop_plan, survival, geometry)
     economics = _economic(geometry, probability, execution, survival, space, target_realism, stop_quality)
@@ -617,6 +720,7 @@ def analyze_e8(snapshot: dict[str, Any], results: dict[str, EngineResult]) -> En
         "EFFECTIVE_SPACE_BELOW_MINIMUM", "SPACE_CONFLICT", "STOP_TOO_TIGHT", "STOP_TOO_WIDE",
         "STRUCTURAL_SURVIVAL_NOT_PROVEN", "EXECUTION_COST_TOO_HIGH", "ENTRY_CONFIRMATION",
         "STRESSED_PROBABILITY_BELOW_MINIMUM", "EFFECTIVE_SPACE_UNRELIABLE",
+        "PROBABILITY_EDGE_NOT_POSITIVE", "ECONOMIC_MARGIN_TOO_THIN",
         "TARGET_REALISM_TOO_LOW", "STOP_QUALITY_TOO_LOW"})
     risk_ready = bool(
         confirmation == "CONFIRMED" and target_valid and geometry["side_valid"]
@@ -635,11 +739,11 @@ def analyze_e8(snapshot: dict[str, Any], results: dict[str, EngineResult]) -> En
     else:
         finding, gate = ("ECONOMICALLY_INVALID" if hard_fail or economics["state"] == "ECONOMICALLY_INVALID" else "FRAGILE"), False
 
+    diagnosis = _economic_diagnosis(reasons, confirmation)
     confidence = _confidence(economics, survival, sensitivity, target, target_realism, stop_quality, execution, confirmation, probability)
     if risk_ready:
         confidence = max(confidence, 0.70)
 
-    primary_veto = reasons[0] if reasons else "NONE"
     observations = [
         f"bars={len(bars)}", f"atr14={atr:.6f}", f"entry={entry:.8f}", f"risk_atr={risk_atr:.6f}",
         f"nominal_rr={geometry['nominal_rr']:.6f}", f"real_rr={geometry['real_rr']:.6f}",
@@ -654,7 +758,9 @@ def analyze_e8(snapshot: dict[str, Any], results: dict[str, EngineResult]) -> En
         f"breakeven_probability={economics.get('breakeven_probability') if economics.get('breakeven_probability') is not None else 'UNQUANTIFIED'}",
         f"economic_margin={economics.get('economic_margin') if economics.get('economic_margin') is not None else 'UNQUANTIFIED'}",
         f"economic_state={economics['state']}", f"sensitivity={sensitivity.get('state', 'UNQUANTIFIED')}",
-        f"risk_quality={risk_quality['score']:.6f}", f"risk_class={risk_quality['class']}", f"primary_veto={primary_veto}"]
+        f"risk_quality={risk_quality['score']:.6f}", f"risk_class={risk_quality['class']}",
+        f"primary_veto={diagnosis['primary_veto']}", f"veto_class={diagnosis['veto_class']}",
+        f"next_required_event={diagnosis['next_required_event']}"]
 
     trade_plan = {"valid": risk_ready, "direction": direction, "setup": setup, "entry": entry,
                   "stop": stop if risk_ready else None, "target": target_level if risk_ready else None,
@@ -679,6 +785,7 @@ def analyze_e8(snapshot: dict[str, Any], results: dict[str, EngineResult]) -> En
               "economics": economics, "sensitivity": sensitivity, "risk_quality": risk_quality,
               "economic_state": economics["state"], "risk_ready": risk_ready, "gate_passed": gate,
               "trade_plan": trade_plan, "observations": observations, "reasons": reasons,
-              "reason_codes": reasons, "confidence": confidence, "primary_veto": primary_veto,
+              "reason_codes": reasons, "confidence": confidence,
+              **diagnosis,
               "professional_rule": "E8_ECONOMICS_ONLY_E9_FINAL_AUTHORITY", "decision_authority": "E9"}
     return EngineResult("E8", NAME, gate, confidence * 100.0, output, tuple(reasons))
