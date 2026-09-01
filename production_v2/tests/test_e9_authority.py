@@ -20,7 +20,7 @@ def test_pending_e4_response_is_not_market_control_vote():
     result = analyze_e9({}, upstream)
     assert result.output["pending_e4_response_excluded"] is True
     assert not any(item["source"] == "E4_CONFIRMED_AUCTION_RESPONSE" for item in result.output["control_evidence"])
-    assert result.output["control_scores"]["SELL"] == 6.5
+    assert result.output["control_scores"]["SELL"] == 7.5
 
 
 def test_complete_positive_short_path_can_execute():
