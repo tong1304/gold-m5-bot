@@ -11,6 +11,8 @@ from typing import Any
 This module does not make trade decisions. It creates one cycle-level factual
 market snapshot so every brain reasons from the same closed-candle reality,
 while each brain explicitly declares what it owns and does not own.
+
+The picture_id makes that shared factual cycle auditable across every brain.
 """
 
 
