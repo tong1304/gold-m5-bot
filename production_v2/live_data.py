@@ -79,7 +79,6 @@ class LiveMarketData:
         rows = response.get("data", response) if isinstance(response, dict) else response
         now = datetime.now(timezone.utc)
         bars = []
-        latest_source_timestamp = None
 
         # LSE timestamps identify the M5 candle start. A candle is admissible
         # only after start + 5 minutes <= now. Never pass the live/open candle
@@ -103,18 +102,16 @@ class LiveMarketData:
                 "is_closed": True,
                 "candle_close_timestamp": close_time.isoformat().replace("+00:00", "Z"),
             })
-            if latest_source_timestamp is None:
-                latest_source_timestamp = timestamp
 
+        latest = bars[-1] if bars else None
         return {
             "symbol": symbol,
             "timeframe": "M5",
             "bars": bars,
-            # Keep scheduler identity backward compatible; closure proof is
-            # carried separately in each bar and in the shared contract.
-            "candle_close_timestamp": latest_source_timestamp,
-            "data_cutoff_timestamp": (bars[-1]["candle_close_timestamp"] if bars else None),
-            "data_cutoff_candle_id": (bars[-1]["candle_id"] if bars else None),
+            # Scheduler identity remains the latest candle start timestamp.
+            "candle_close_timestamp": latest.get("timestamp") if latest else None,
+            "data_cutoff_timestamp": latest.get("candle_close_timestamp") if latest else None,
+            "data_cutoff_candle_id": latest.get("candle_id") if latest else None,
             "market_open": True,
             "market_state": "MARKET_OPEN",
             "closed_candle_only": True,
