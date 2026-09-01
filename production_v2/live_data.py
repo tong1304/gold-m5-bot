@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 import os
-from datetime import datetime, time, timezone
+from datetime import datetime, time, timedelta, timezone
 from typing import Any
 
 from lse import LSE
 
 DEFAULT_SYMBOLS = {"GOLD": "XAU/USD", "BTC": "BTC/USD"}
+CANDLE_INTERVAL = timedelta(minutes=5)
 
 
 class LiveMarketData:
@@ -28,6 +29,18 @@ class LiveMarketData:
             return time(int(hour), int(minute))
         except (AttributeError, ValueError):
             return default
+
+    @staticmethod
+    def _parse_timestamp(value: Any) -> datetime | None:
+        if value is None:
+            return None
+        try:
+            stamp = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+            if stamp.tzinfo is None:
+                stamp = stamp.replace(tzinfo=timezone.utc)
+            return stamp.astimezone(timezone.utc)
+        except (TypeError, ValueError):
+            return None
 
     def market_is_open(self, alias: str, now: datetime | None = None) -> bool:
         alias = alias.upper()
@@ -58,23 +71,52 @@ class LiveMarketData:
                 "candle_close_timestamp": None,
                 "market_open": False,
                 "market_state": "MARKET_CLOSED",
+                "closed_candle_only": True,
+                "lookahead_allowed": False,
             }
 
         response = self.client.candles(symbol, "5m", limit=limit, order="desc")
         rows = response.get("data", response) if isinstance(response, dict) else response
+        now = datetime.now(timezone.utc)
         bars = []
+        latest_source_timestamp = None
+
+        # LSE timestamps identify the M5 candle start. A candle is admissible
+        # only after start + 5 minutes <= now. Never pass the live/open candle
+        # across the market-data boundary.
         for row in reversed(rows or []):
+            source_timestamp = row.get("timestamp")
+            start = self._parse_timestamp(source_timestamp)
+            if start is None:
+                continue
+            close_time = start + CANDLE_INTERVAL
+            if close_time > now:
+                continue
+            timestamp = start.isoformat().replace("+00:00", "Z")
             bars.append({
                 "open": float(row["open"]),
                 "high": float(row["high"]),
                 "low": float(row["low"]),
                 "close": float(row["close"]),
+                "timestamp": timestamp,
+                "candle_id": timestamp,
+                "is_closed": True,
+                "candle_close_timestamp": close_time.isoformat().replace("+00:00", "Z"),
             })
+            if latest_source_timestamp is None:
+                latest_source_timestamp = timestamp
+
         return {
             "symbol": symbol,
             "timeframe": "M5",
             "bars": bars,
-            "candle_close_timestamp": (rows[0].get("timestamp") if rows else None),
+            # Keep scheduler identity backward compatible; closure proof is
+            # carried separately in each bar and in the shared contract.
+            "candle_close_timestamp": latest_source_timestamp,
+            "data_cutoff_timestamp": (bars[-1]["candle_close_timestamp"] if bars else None),
+            "data_cutoff_candle_id": (bars[-1]["candle_id"] if bars else None),
             "market_open": True,
             "market_state": "MARKET_OPEN",
+            "closed_candle_only": True,
+            "lookahead_allowed": False,
         }
