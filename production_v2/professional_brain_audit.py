@@ -64,9 +64,11 @@ def opportunity_potential(outputs: dict[str,dict[str,Any]]) -> dict[str,Any]:
 def audit_all(outputs: dict[str,dict[str,Any]]) -> dict[str,Any]:
     per_engine={eid:audit_engine(eid,outputs.get(eid,{})) for eid in ENGINE_ORDER}
     shared_audit = audit_shared_market_picture_contract(outputs)
+    violating_brains = set(shared_audit.get("violating_brains", ()))
+    missing_contract_brains = set(shared_audit.get("missing_contract_brains", ()))
     for engine_id in ENGINE_ORDER:
         per_engine[engine_id]["shared_market_picture_contract"] = {
-            "passed": engine_id in shared_audit["covered_brains"] and engine_id not in shared_audit["mismatched_brains"] and engine_id not in shared_audit["missing_contract_brains"],
+            "passed": engine_id in shared_audit["covered_brains"] and engine_id not in violating_brains and engine_id not in missing_contract_brains,
             "picture_id": (outputs.get(engine_id, {}).get("market_picture_contract") or {}).get("picture_id"),
             "authority": "NON_AUTHORITATIVE_CONTRACT_AUDIT",
         }
