@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from math import sqrt
 from statistics import mean, median
 from typing import Any
 
@@ -7,8 +8,8 @@ from .contracts import EngineResult
 
 NAME = "Trade Economics & Risk Brain"
 QUESTION = "Is the proposed trade economically attractive, structurally survivable, and robust to execution uncertainty?"
-ARCHITECTURE = "E8_PROFESSIONAL_TRADE_ECONOMICS_RISK_BRAIN_V25"
-VERSION = "25.0"
+ARCHITECTURE = "E8_PROFESSIONAL_TRADE_ECONOMICS_RISK_BRAIN_V26"
+VERSION = "26.0"
 
 # E8 is an economics/risk gate only. It never creates a setup or changes direction.
 MIN_BARS = 30
@@ -33,6 +34,8 @@ MIN_PROBABILITY = 0.50
 MIN_PROBABILITY_QUALITY = 70.0
 MIN_PROBABILITY_SAMPLE = 30
 PROBABILITY_STRESS = 0.03
+WILSON_Z = 1.645
+MIN_WILSON_LOWER = 0.50
 SENSITIVITY_ENTRY_ATR = 0.20
 SENSITIVITY_STOP_ATR = 0.20
 SENSITIVITY_TARGET_ATR = 0.20
@@ -45,8 +48,6 @@ RISK_CLASS_B = 0.68
 RISK_CLASS_C = 0.58
 
 
-# Lower numeric rank means the blocker is more causally upstream and therefore
-# more useful as the single primary veto. E8 reports every blocker separately.
 _VETO_PRIORITY = {
     "ENTRY_CONFIRMATION": 10,
     "NO_USABLE_STRUCTURAL_TARGET": 20,
@@ -120,7 +121,6 @@ _DATA_BLOCKERS = {"HISTORICAL_SAMPLE_INSUFFICIENT", "PROBABILITY_EDGE_NOT_TRUSTW
 
 
 def _economic_diagnosis(reasons: list[str], confirmation: str) -> dict[str, Any]:
-    """Turn a flat veto list into a causal diagnosis without changing the gate."""
     unique = list(dict.fromkeys(_text(x) for x in reasons if _text(x)))
     ranked = sorted(unique, key=lambda x: (_VETO_PRIORITY.get(x, 1000), x))
     primary = ranked[0] if ranked else "NONE"
@@ -342,18 +342,26 @@ def _stop(direction: str, entry: float, atr: float, levels: dict[str, Any]) -> d
     ] if direction == "SELL" else [])
     candidates = [x for x in candidates if x[1] is not None and
                   ((direction == "BUY" and x[1] < entry) or (direction == "SELL" and x[1] > entry))]
-    if not candidates:
+    evaluated: list[dict[str, Any]] = []
+    for source, level, quality in candidates:
+        stop = level - RISK_ATR_BUFFER * atr if direction == "BUY" else level + RISK_ATR_BUFFER * atr
+        risk_atr = abs(entry - stop) / max(atr, 1e-9)
+        width_valid = MIN_STOP_ATR <= risk_atr <= MAX_STOP_ATR
+        evaluated.append({"source": source, "level": level, "stop": stop, "quality": quality,
+                          "risk_atr": risk_atr, "width_valid": width_valid})
+    if not evaluated:
         fallback = entry - FALLBACK_STOP_ATR * atr if direction == "BUY" else entry + FALLBACK_STOP_ATR * atr
         return {"source": None, "level": None, "stop": fallback, "basis": "ATR_FALLBACK_LOWER_CONFIDENCE",
-                "quality": 0.0, "candidate_trace": [], "structural": False}
-    source, level, quality = min(candidates, key=lambda x: abs(entry - x[1]))
-    stop = level - RISK_ATR_BUFFER * atr if direction == "BUY" else level + RISK_ATR_BUFFER * atr
-    return {"source": source, "level": level, "stop": stop, "basis": "STRUCTURAL_LEVEL_PLUS_ATR_BUFFER",
-            "quality": quality, "candidate_trace": candidates, "structural": True}
+                "quality": 0.0, "risk_atr": FALLBACK_STOP_ATR, "candidate_trace": [], "structural": False}
+    valid = [x for x in evaluated if x["width_valid"]]
+    selected = max(valid, key=lambda x: (x["quality"], -x["risk_atr"])) if valid else min(evaluated, key=lambda x: x["risk_atr"])
+    return {"source": selected["source"], "level": selected["level"], "stop": selected["stop"],
+            "basis": "STRUCTURAL_LEVEL_PLUS_ATR_BUFFER", "quality": selected["quality"],
+            "risk_atr": selected["risk_atr"], "candidate_trace": evaluated, "structural": True,
+            "selection_rule": "BEST_STRUCTURAL_QUALITY_WITH_VALID_ATR_WIDTH" if valid else "NEAREST_STRUCTURAL_LEVEL_FALLBACK"}
 
 
 def _historical_mae(bars: list[dict[str, Any]], direction: str) -> dict[str, Any]:
-    """Compute MAE from completed historical hypothetical entries, never from candles before current entry."""
     end = len(bars) - MAE_HORIZON_BARS - 1
     start = max(ATR_PERIOD + 1, len(bars) - MAE_LOOKBACK - MAE_HORIZON_BARS - 1)
     values: list[float] = []
@@ -403,13 +411,28 @@ def _execution(snapshot: dict[str, Any], atr: float) -> dict[str, Any]:
             "cost_ok": atr > 0 and cost_atr <= MAX_EXECUTION_COST_ATR}
 
 
+def _wilson_interval(wins: int, losses: int, z: float = WILSON_Z) -> tuple[float, float]:
+    n = wins + losses
+    if n <= 0:
+        return 0.0, 1.0
+    p = wins / n
+    z2 = z * z
+    denom = 1.0 + z2 / n
+    centre = p + z2 / (2.0 * n)
+    spread = z * sqrt((p * (1.0 - p) / n) + (z2 / (4.0 * n * n)))
+    return max(0.0, (centre - spread) / denom), min(1.0, (centre + spread) / denom)
+
+
 def _historical_probability(snapshot: dict[str, Any], direction: str, setup: str) -> dict[str, Any]:
     records = snapshot.get("historical_outcomes") or snapshot.get("setup_history") or snapshot.get("historical_trades")
     if not isinstance(records, list):
         return {"state": "UNQUANTIFIED", "probability": None, "quality": None, "sample": 0,
-                "source": None, "source_engine": None, "stress_probability": None, "trusted": False,
-                "minimum_probability": MIN_PROBABILITY, "method": "NO_SETUP_HISTORY_AVAILABLE"}
+                "source": None, "source_engine": None, "stress_probability": None,
+                "wilson_lower": None, "wilson_upper": None, "decision_probability": None,
+                "trusted": False, "minimum_probability": MIN_PROBABILITY,
+                "method": "NO_SETUP_HISTORY_AVAILABLE"}
     matches: list[dict[str, Any]] = []
+    setup_key = _text(setup)
     for row in records:
         if not isinstance(row, dict):
             continue
@@ -417,7 +440,11 @@ def _historical_probability(snapshot: dict[str, Any], direction: str, setup: str
         rsetup = _text(row.get("setup") or row.get("setup_family") or row.get("setup_type"))
         if rdir and rdir != direction:
             continue
-        if rsetup and setup != "UNKNOWN" and rsetup != _text(setup):
+        # When E6 has identified a concrete setup, unlabeled or differently
+        # labeled outcomes are not allowed to masquerade as setup evidence.
+        if setup_key != "UNKNOWN" and rsetup != setup_key:
+            continue
+        if setup_key == "UNKNOWN" and rsetup:
             continue
         matches.append(row)
     wins = losses = 0
@@ -436,15 +463,23 @@ def _historical_probability(snapshot: dict[str, Any], direction: str, setup: str
     if n == 0:
         return {"state": "UNQUANTIFIED", "probability": None, "quality": None, "sample": 0,
                 "source": "historical_outcomes", "source_engine": "SNAPSHOT", "stress_probability": None,
-                "trusted": False, "minimum_probability": MIN_PROBABILITY, "method": "NO_RESOLVED_OUTCOMES"}
+                "wilson_lower": None, "wilson_upper": None, "decision_probability": None,
+                "trusted": False, "minimum_probability": MIN_PROBABILITY, "method": "NO_RESOLVED_SETUP_OUTCOMES"}
     p = (wins + 1.0) / (n + 2.0)
-    quality = min(100.0, 55.0 + 45.0 * min(1.0, n / 100.0))
-    trusted = quality >= MIN_PROBABILITY_QUALITY and n >= MIN_PROBABILITY_SAMPLE
+    lower, upper = _wilson_interval(wins, losses)
+    interval_width = max(0.0, upper - lower)
+    sample_quality = min(100.0, 55.0 + 45.0 * min(1.0, n / 100.0))
+    quality = max(0.0, min(100.0, sample_quality * (1.0 - 0.50 * interval_width)))
+    decision_probability = lower
+    trusted = (n >= MIN_PROBABILITY_SAMPLE and quality >= MIN_PROBABILITY_QUALITY
+               and lower >= MIN_WILSON_LOWER)
+    stress_probability = max(0.0, decision_probability - PROBABILITY_STRESS)
     return {"state": "TRUSTED" if trusted else "UNTRUSTED", "probability": p, "quality": quality,
             "sample": n, "wins": wins, "losses": losses, "source": "historical_outcomes",
-            "source_engine": "SNAPSHOT", "stress_probability": max(0.0, p - PROBABILITY_STRESS),
+            "source_engine": "SNAPSHOT", "stress_probability": stress_probability,
+            "wilson_lower": lower, "wilson_upper": upper, "decision_probability": decision_probability,
             "trusted": trusted, "minimum_probability": MIN_PROBABILITY,
-            "method": "SETUP_DIRECTION_CONDITIONED_LAPLACE"}
+            "method": "SETUP_DIRECTION_CONDITIONED_WILSON"}
 
 
 def _probability(e7: dict[str, Any], snapshot: dict[str, Any], direction: str, setup: str) -> dict[str, Any]:
@@ -461,11 +496,19 @@ def _probability(e7: dict[str, Any], snapshot: dict[str, Any], direction: str, s
             if 0.0 < p <= 1.0:
                 q = _num(source.get("probability_quality"), 0.0)
                 n = int(_num(source.get("probability_sample"), 0.0))
-                trusted = q >= MIN_PROBABILITY_QUALITY and n >= MIN_PROBABILITY_SAMPLE
+                lower = _num(source.get("probability_lower_bound"), 0.0)
+                upper = _num(source.get("probability_upper_bound"), 1.0)
+                if lower <= 0.0 or upper < lower:
+                    lower, upper = _wilson_interval(int(round(p * n)), max(0, n - int(round(p * n)))) if n else (0.0, 1.0)
+                decision_probability = lower if n else p
+                trusted = (q >= MIN_PROBABILITY_QUALITY and n >= MIN_PROBABILITY_SAMPLE
+                           and decision_probability >= MIN_WILSON_LOWER)
                 return {"state": "TRUSTED" if trusted else "UNTRUSTED", "probability": p,
                         "quality": q, "sample": n, "source": key, "source_engine": source_name,
-                        "stress_probability": max(0.0, p - PROBABILITY_STRESS), "trusted": trusted,
-                        "minimum_probability": MIN_PROBABILITY, "method": "UPSTREAM_PROBABILITY_FALLBACK"}
+                        "stress_probability": max(0.0, decision_probability - PROBABILITY_STRESS),
+                        "wilson_lower": lower, "wilson_upper": upper,
+                        "decision_probability": decision_probability, "trusted": trusted,
+                        "minimum_probability": MIN_PROBABILITY, "method": "UPSTREAM_PROBABILITY_WITH_CONFIDENCE_BOUND"}
     return hist
 
 
@@ -749,11 +792,15 @@ def analyze_e8(snapshot: dict[str, Any], results: dict[str, EngineResult]) -> En
         f"nominal_rr={geometry['nominal_rr']:.6f}", f"real_rr={geometry['real_rr']:.6f}",
         f"target={target.get('source') or 'NONE'}", f"target_selection={target.get('selection_rule')}",
         f"target_realism={target_realism['score']:.6f}", f"stop_quality={stop_quality['score']:.6f}",
+        f"stop_selection={stop_plan.get('selection_rule')}",
         f"space={space['state']}", f"survival={survival['state']}",
         f"mae_method={survival.get('method')}", f"mae_samples={survival.get('sample', 0)}",
         f"execution_cost_atr={execution['cost_atr']:.6f}",
         f"probability={probability.get('probability') if probability.get('probability') is not None else 'UNQUANTIFIED'}",
         f"probability_sample={probability.get('sample', 0)}", f"probability_method={probability.get('method')}",
+        f"wilson_lower={probability.get('wilson_lower') if probability.get('wilson_lower') is not None else 'UNQUANTIFIED'}",
+        f"wilson_upper={probability.get('wilson_upper') if probability.get('wilson_upper') is not None else 'UNQUANTIFIED'}",
+        f"decision_probability={probability.get('decision_probability') if probability.get('decision_probability') is not None else 'UNQUANTIFIED'}",
         f"stress_probability={probability.get('stress_probability') if probability.get('stress_probability') is not None else 'UNQUANTIFIED'}",
         f"breakeven_probability={economics.get('breakeven_probability') if economics.get('breakeven_probability') is not None else 'UNQUANTIFIED'}",
         f"economic_margin={economics.get('economic_margin') if economics.get('economic_margin') is not None else 'UNQUANTIFIED'}",
