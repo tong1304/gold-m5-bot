@@ -20,3 +20,5 @@ jobs:
         run: python -m py_compile production_v2/e3_brain.py production_v2/e9_brain.py
       - name: Run surgery regression tests
         run: PYTHONPATH=. python -m pytest -q production_v2/tests/test_structure_governance_surgery.py
+      - name: Verification marker
+        run: echo "STRUCTURE_GOVERNANCE_SURGERY_VERIFIED"
