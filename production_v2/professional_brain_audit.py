@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from .shared_market_picture import audit_shared_market_picture_contract
+
 ENGINE_ORDER = ("E1", "E2", "E3", "E4", "E5", "E6", "E7", "E8", "E9")
 REQUIRED_BY_ENGINE = {
     "E1": ("finding", "confidence", "counter_evidence"), "E2": ("finding", "opportunity_state", "missing_evidence"),
@@ -61,4 +63,11 @@ def opportunity_potential(outputs: dict[str,dict[str,Any]]) -> dict[str,Any]:
 
 def audit_all(outputs: dict[str,dict[str,Any]]) -> dict[str,Any]:
     per_engine={eid:audit_engine(eid,outputs.get(eid,{})) for eid in ENGINE_ORDER}
-    return {"per_engine":per_engine,"overall_score":round(sum(x["score"] for x in per_engine.values())/len(per_engine),2),"opportunity":opportunity_potential(outputs),"authority":"AUDIT_ONLY_E9_REMAINS_FINAL_AUTHORITY"}
+    shared_audit = audit_shared_market_picture_contract(outputs)
+    for engine_id in ENGINE_ORDER:
+        per_engine[engine_id]["shared_market_picture_contract"] = {
+            "passed": engine_id in shared_audit["covered_brains"] and engine_id not in shared_audit["mismatched_brains"] and engine_id not in shared_audit["missing_contract_brains"],
+            "picture_id": (outputs.get(engine_id, {}).get("market_picture_contract") or {}).get("picture_id"),
+            "authority": "NON_AUTHORITATIVE_CONTRACT_AUDIT",
+        }
+    return {"per_engine":per_engine,"overall_score":round(sum(x["score"] for x in per_engine.values())/len(per_engine),2),"opportunity":opportunity_potential(outputs),"shared_market_picture_contract":shared_audit,"authority":"AUDIT_ONLY_E9_REMAINS_FINAL_AUTHORITY"}
