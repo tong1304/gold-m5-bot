@@ -20,6 +20,8 @@ on:
       - 'production_v2/e1_professional_core_v17.py'
       - 'production_v2/e1_professional_core_v18.py'
       - 'production_v2/pipeline.py'
+      - 'production_v2/shared_market_picture.py'
+      - 'tests/test_shared_market_picture_contract.py'
       - 'tests/test_e1_professional_v10.py'
       - 'tests/test_e1_professional_v11.py'
       - 'tests/test_e1_professional_reasoning.py'
@@ -62,6 +64,7 @@ jobs:
           python -m py_compile production_v2/pipeline.py
       - name: Run E1 professional tests
         run: |
+          python -m pytest -q tests/test_shared_market_picture_contract.py
           python -m pytest -q tests/test_e1_professional_v10.py
           python -m pytest -q tests/test_e1_professional_v11.py
           python -m pytest -q tests/test_e1_professional_reasoning.py
