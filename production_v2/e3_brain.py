@@ -4,7 +4,7 @@ from statistics import mean
 from typing import Any
 
 QUESTION = "What is price structure communicating?"
-ARCHITECTURE = "E3_PROFESSIONAL_MARKET_STRUCTURE_CAUSAL_V6"
+ARCHITECTURE = "E3_PROFESSIONAL_MARKET_STRUCTURE_CAUSAL_V7"
 UP, DOWN, NEUTRAL, MIXED = "UP", "DOWN", "NEUTRAL", "MIXED"
 MIN_CANDLES = 40
 INTERNAL_RADIUS, EXTERNAL_RADIUS = 2, 5
@@ -139,8 +139,10 @@ def _semantic(highs, lows):
     return {
         "state": state,
         "latest_directional_event": events[-1] if events else None,
-        "latest_hh": _latest(highs, {"HH"}), "latest_hl": _latest(lows, {"HL"}),
-        "latest_lh": _latest(highs, {"LH"}), "latest_ll": _latest(lows, {"LL"}),
+        "latest_hh": _latest(highs, {"HH"}),
+        "latest_hl": _latest(lows, {"HL"}),
+        "latest_lh": _latest(highs, {"LH"}),
+        "latest_ll": _latest(lows, {"LL"}),
         "structural_sequence": "→".join(x["label"] for x in events[-12:]),
         "transitions": transitions[-12:],
         "basis": "ORDERED_CONFIRMED_SWINGS",
@@ -149,13 +151,6 @@ def _semantic(highs, lows):
 
 
 def _protected(highs, lows):
-    """Return causal protected levels, not merely the latest swing of each type.
-
-    A bullish protected low is the latest confirmed HL that existed before the
-    impulse HH which established the current bullish leg.  Bearish protection is
-    symmetric.  This prevents an unrelated later pivot from silently replacing
-    the level that actually carries structural invalidation authority.
-    """
     hh = _latest(highs, {"HH"})
     lh = _latest(highs, {"LH"})
     ll = _latest(lows, {"LL"})
@@ -168,6 +163,7 @@ def _protected(highs, lows):
             if p.get("label") == "HL"
             and p["index"] < hh["index"]
             and p["confirmation_index"] <= hh["confirmation_index"]
+            and p["price"] < hh["price"]
         ]
         if candidates:
             bullish_low = candidates[-1]
@@ -181,10 +177,26 @@ def _protected(highs, lows):
             if p.get("label") == "LH"
             and p["index"] < ll["index"]
             and p["confirmation_index"] <= ll["confirmation_index"]
+            and p["price"] > ll["price"]
         ]
         if candidates:
             bearish_high = candidates[-1]
             bearish_anchor = ll
+
+    invalid_reasons = []
+    if hh and bullish_low is None and _latest(lows, {"HL"}) is not None:
+        invalid_reasons.append("BULLISH_PROTECTED_LOW_GE_ANCHOR_HIGH")
+    if ll and bearish_high is None and _latest(highs, {"LH"}) is not None:
+        invalid_reasons.append("BEARISH_PROTECTED_HIGH_LE_ANCHOR_LOW")
+    if bullish_low and bearish_high and bearish_high["price"] <= bullish_low["price"]:
+        invalid_reasons.append("PROTECTED_HIGH_LE_PROTECTED_LOW")
+
+    integrity = "VALID" if not invalid_reasons else "INVALID"
+    if integrity == "INVALID":
+        bullish_low = None
+        bearish_high = None
+        bullish_anchor = None
+        bearish_anchor = None
 
     return {
         "protected_high": bearish_high,
@@ -194,6 +206,8 @@ def _protected(highs, lows):
         "bullish_basis": "HL_PROTECTED_BY_CONFIRMED_HH" if bullish_low else "NONE",
         "bearish_basis": "LH_PROTECTED_BY_CONFIRMED_LL" if bearish_high else "NONE",
         "authority_rule": "CAUSAL_ANCHOR_REQUIRED",
+        "integrity": integrity,
+        "integrity_reasons": invalid_reasons,
     }
 
 
@@ -253,21 +267,12 @@ def _failed_break(bars, highs, lows, current, atr):
 
 
 def _sweep_reclaim(bars, highs, lows, atr):
-    """Detect a sweep/reclaim on the current closed candle using the nearest
-    causally relevant confirmed liquidity pool on each side, rather than only
-    the latest pivot. The event is valid only when the same candle both sweeps
-    and closes back through the level by the minimum reclaim distance.
-    """
     if not bars or atr <= 0:
         return {"event": "NO_SWEEP_RECLAIM", "direction": NEUTRAL, "confirmed": False, "lifecycle": "NONE", "current": False}
     current = len(bars) - 1
     found = []
-
     high_candidates = [p for p in highs if p["confirmation_index"] <= current - 1 and p.get("label") in {"HH", "LH", "EQH"}]
     low_candidates = [p for p in lows if p["confirmation_index"] <= current - 1 and p.get("label") in {"HL", "LL", "EQL"}]
-
-    # Prefer the nearest level actually touched by the current candle.  This
-    # avoids letting a distant old swing outrank a fresh, relevant liquidity pool.
     for pivot in high_candidates:
         sweep = (bars[current]["high"] - pivot["price"]) / atr
         reclaimed = bars[current]["close"] < pivot["price"]
@@ -276,7 +281,6 @@ def _sweep_reclaim(bars, highs, lows, atr):
             proximity = abs(bars[current]["close"] - pivot["price"]) / atr
             quality = (reclaim_distance, -proximity, pivot["index"])
             found.append((quality, {"event": "SWEEP_RECLAIM", "direction": DOWN, "confirmed": True, "closed_candle_confirmed": True, "current": True, "level": pivot["price"], "swing_index": pivot["index"], "sweep_candle_index": current, "sweep_distance_atr": round(sweep, 4), "reclaim_distance_atr": round(reclaim_distance, 4), "liquidity_type": "EQUAL_HIGH" if pivot["label"] == "EQH" else "STRUCTURAL_SWING", "lifecycle": "RECLAIM"}))
-
     for pivot in low_candidates:
         sweep = (pivot["price"] - bars[current]["low"]) / atr
         reclaimed = bars[current]["close"] > pivot["price"]
@@ -285,7 +289,6 @@ def _sweep_reclaim(bars, highs, lows, atr):
             proximity = abs(bars[current]["close"] - pivot["price"]) / atr
             quality = (reclaim_distance, -proximity, pivot["index"])
             found.append((quality, {"event": "SWEEP_RECLAIM", "direction": UP, "confirmed": True, "closed_candle_confirmed": True, "current": True, "level": pivot["price"], "swing_index": pivot["index"], "sweep_candle_index": current, "sweep_distance_atr": round(sweep, 4), "reclaim_distance_atr": round(reclaim_distance, 4), "liquidity_type": "EQUAL_LOW" if pivot["label"] == "EQL" else "STRUCTURAL_SWING", "lifecycle": "RECLAIM"}))
-
     return max(found, key=lambda x: x[0])[1] if found else {"event": "NO_SWEEP_RECLAIM", "direction": NEUTRAL, "confirmed": False, "lifecycle": "NONE", "current": False}
 
 
@@ -302,7 +305,9 @@ def _invalidation(bars, protected, state):
     return {"event": "NO_INVALIDATION", "invalidated": False, "direction": state, "level": None, "basis": "PROTECTED_LEVEL_HOLDS" if state in {UP, DOWN} else "NO_DIRECTIONAL_STRUCTURE"}
 
 
-def _lifecycle(external, internal, bos, failed, sweep, invalidation):
+def _lifecycle(external, internal, bos, failed, sweep, invalidation, protected):
+    if protected.get("integrity") == "INVALID":
+        return "INVALID_DATA"
     if invalidation.get("invalidated"):
         return "INVALIDATED"
     if sweep.get("confirmed"):
@@ -336,36 +341,50 @@ def analyze_e3(bars):
     failed = _failed_break(clean, external_h, external_l, current, atr)
     sweep = _sweep_reclaim(clean, external_h, external_l, atr)
     invalidation = _invalidation(clean, protected, external["state"])
-    lifecycle = _lifecycle(external, internal, bos, failed, sweep, invalidation)
+    lifecycle = _lifecycle(external, internal, bos, failed, sweep, invalidation, protected)
 
-    if invalidation["invalidated"]:
+    if protected["integrity"] == "INVALID":
+        finding = "STRUCTURE_DATA_INVALID"
+        direction = NEUTRAL
+    elif invalidation["invalidated"]:
         finding = invalidation["event"]
+        direction = external["state"]
     elif sweep["confirmed"]:
         finding = "SWEEP_RECLAIM"
+        direction = sweep.get("direction", NEUTRAL)
     elif failed["confirmed"]:
         finding = "FAILED_BOS"
+        direction = failed.get("direction", NEUTRAL)
     elif bos["confirmed"]:
         finding = bos["event"]
+        direction = bos.get("direction", NEUTRAL)
     elif external["state"] == UP:
         finding = "BULLISH_STRUCTURE"
+        direction = UP
     elif external["state"] == DOWN:
         finding = "BEARISH_STRUCTURE"
+        direction = DOWN
     elif internal["state"] in {UP, DOWN}:
         finding = "STRUCTURE_FORMING"
+        direction = internal["state"]
     else:
         finding = "STRUCTURE_TRANSITION"
+        direction = NEUTRAL
 
-    direction = bos.get("direction") if bos.get("confirmed") else external["state"]
     observations = [
         f"external_state={external['state']}", f"internal_state={internal['state']}",
         f"sequence={external['structural_sequence'] or 'NONE'}",
         f"protected_high={protected['protected_high']['price'] if protected['protected_high'] else 'NONE'}",
         f"protected_low={protected['protected_low']['price'] if protected['protected_low'] else 'NONE'}",
+        f"protected_integrity={protected['integrity']}",
+        f"protected_integrity_reasons={','.join(protected['integrity_reasons']) or 'NONE'}",
         f"bos={bos['event']}", f"choch={'CHOCH' if bos.get('event') == 'CHOCH' else 'NO'}",
         f"failed_break={failed['event']}", f"liquidity={sweep['event']}",
         f"lifecycle={lifecycle}", f"invalidation={invalidation['event']}",
     ]
     reasons = ["CAUSAL_STRUCTURE_ANALYSIS", "CLOSED_CANDLE_ONLY", "CONFIRMED_PIVOTS_ONLY", "NO_LOOKAHEAD", "PROTECTED_LEVEL_CAUSALITY", "STRUCTURE_LIFECYCLE_EXPLICIT", "EVENT_MUST_OCCUR_ON_CURRENT_CLOSED_CANDLE"]
+    if protected["integrity"] == "INVALID":
+        reasons.extend(["STRUCTURE_INTEGRITY_VALIDATION", *protected["integrity_reasons"], "STRUCTURE_AUTHORITY_REVOKED"])
     if bos.get("confirmed"):
         reasons.append("BREAK_REQUIRES_PROTECTED_LEVEL_CROSS")
     if sweep.get("confirmed"):
@@ -373,16 +392,18 @@ def analyze_e3(bars):
     if invalidation.get("invalidated"):
         reasons.append(invalidation["basis"])
 
+    structure_state = NEUTRAL if protected["integrity"] == "INVALID" else external["state"]
     return {
         "engine": "E3", "role": "MARKET_STRUCTURE_ANALYST", "architecture": ARCHITECTURE,
-        "question": QUESTION, "status": "OK", "finding": finding,
+        "question": QUESTION, "status": "OK" if protected["integrity"] == "VALID" else "STRUCTURE_DATA_INVALID", "finding": finding,
         "direction": direction, "observations": observations, "reasons": reasons,
         "decision_authority": "E9_ONLY", "trade_decision": None,
         "data_quality": {"valid_bars": len(clean), "rejected": rejected, "current_index": current},
-        "structure_state": external["state"], "internal_state": internal["state"],
+        "structure_state": structure_state, "internal_state": internal["state"],
         "external_structure": external, "internal_structure": internal,
         "protected_structure": protected, "bos": bos, "choch": bos if bos.get("event") == "CHOCH" else {"event": "NO_CHOCH", "confirmed": False},
         "failed_break": failed, "liquidity": sweep, "invalidation": invalidation,
         "structure_lifecycle": lifecycle,
+        "structure_integrity": protected["integrity"],
         "pivots": {"external_highs": external_h[-12:], "external_lows": external_l[-12:], "internal_highs": internal_h[-12:], "internal_lows": internal_l[-12:]},
     }
