@@ -42,7 +42,7 @@ def test_shared_picture_excludes_unclosed_candle_and_freezes_cutoff():
     assert all(bar.get("is_closed") is not False for bar in market_data["bars"])
 
 
-def test_each_brain_exposes_fact_interpretation_and_decision_contract():
+def test_each_brain_exposes_fact_interpretation_and_local_decision_contract():
     picture = build_shared_market_picture({"symbol": "TEST", "timeframe": "M5", "bars": _bars()})
 
     e1 = attach_brain_view("E1", {"finding": "RANGE"}, picture)
@@ -52,7 +52,8 @@ def test_each_brain_exposes_fact_interpretation_and_decision_contract():
     assert e1["evidence_audit"]["interpretation"]["classification"] == "INTERPRETATION"
     assert e1["evidence_audit"]["facts"]["source_ids"]
     assert e1["evidence_audit"]["interpretation"]["source_ids"] == ["E1"]
-    assert e1["evidence_audit"]["decision"]["source_ids"] == []
+    assert e1["evidence_audit"]["decision"]["classification"] == "DECISION"
+    assert e1["evidence_audit"]["decision"]["source_ids"] == ["E1"]
     assert e9["evidence_audit"]["decision"]["classification"] == "DECISION"
     assert e9["evidence_audit"]["decision"]["source_ids"] == ["E9"]
 
