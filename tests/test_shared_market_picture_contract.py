@@ -79,7 +79,10 @@ def test_shared_picture_rejects_direct_input_without_explicit_closure_proof():
     bar = _bar()
     bar.pop("is_closed")
     with pytest.raises(ValueError, match="CLOSED_CANDLE_STATUS_REQUIRED"):
-        build_shared_market_picture({"symbol": "XAU/USD", "timeframe": "M5", "bars": [bar]})
+        build_shared_market_picture({
+            "symbol": "XAU/USD", "timeframe": "M5", "bars": [bar],
+            "closed_candle_only": True, "lookahead_allowed": False,
+        })
 
 
 def test_shared_picture_rejects_cutoff_timestamp_without_timestamped_bar_evidence():
@@ -88,6 +91,7 @@ def test_shared_picture_rejects_cutoff_timestamp_without_timestamped_bar_evidenc
     with pytest.raises(ValueError, match="CUTOFF_TIMESTAMP_REQUIRES_TIMESTAMPED_CANDLES"):
         build_shared_market_picture({
             "symbol": "XAU/USD", "timeframe": "M5", "bars": [bar],
+            "closed_candle_only": True, "lookahead_allowed": False,
             "data_cutoff_timestamp": "2026-09-01T05:00:00Z",
         })
 
