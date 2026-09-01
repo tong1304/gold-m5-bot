@@ -7,8 +7,8 @@ from .contracts import EngineResult
 
 NAME = "Setup Brain"
 QUESTION = "What setup is forming, in what direction, and at what stage?"
-ARCHITECTURE = "E6_OPPORTUNITY_THESIS_ENGINE_V42"
-VERSION = "42.0"
+ARCHITECTURE = "E6_OPPORTUNITY_THESIS_ENGINE_V43"
+VERSION = "43.0"
 MIN_BARS = 60
 ATR_PERIOD = 14
 MIN_SPACE_ATR = 0.75
@@ -199,21 +199,32 @@ def _candidate(direction: str, auction: dict[str, Any], e1: dict[str, Any], e2: 
     favorable_location = ("FAVORABLE" in location or location in {"AT_SUPPORT", "AT_RESISTANCE"}
                           or "FAVORABLE_LOCATION" in _text(e5.get("finding")))
 
+    # V43 hard causal gate: E6 may stage an early hypothesis only when E2 is
+    # unresolved but E3/E4 independently prove a strong, terminal causal path.
+    # Directional bias, a pending auction, or a mixed/transition structure alone
+    # can never manufacture a setup. This keeps thesis formation separate from
+    # confirmation while preventing E6 from becoming a second E2.
+    if e2_unresolved:
+        strong_independent_path = (
+            terminal
+            and event_direction == direction
+            and (internal == direction or external == direction or direction in e3_finding)
+        )
+        if not strong_independent_path:
+            return None
+
     if direction == "BUY" and ("BOS_UP" in e3_finding or bos in {"BOS_UP", "UP", "BREAK", "BOS", "YES"}) and ("HIGH_ACCEPTANCE" in event or "HIGH_BREAK" in event):
-        return "BREAKOUT_RETEST", 72.0, ["E3_BOS_UP", "E4_HIGH_ACCEPTANCE_OR_BREAK", "E6_THESIS_FORMED_BEFORE_E2_PROOF"]
+        return "BREAKOUT_RETEST", 72.0, ["E3_BOS_UP", "E4_HIGH_ACCEPTANCE_OR_BREAK", "E6_CAUSAL_GATE_PASSED"]
     if direction == "SELL" and ("BOS_DOWN" in e3_finding or bos in {"BOS_DOWN", "DOWN", "BREAK", "BOS", "YES"}) and ("LOW_ACCEPTANCE" in event or "LOW_BREAK" in event):
-        return "BREAKOUT_RETEST", 72.0, ["E3_BOS_DOWN", "E4_LOW_ACCEPTANCE_OR_BREAK", "E6_THESIS_FORMED_BEFORE_E2_PROOF"]
+        return "BREAKOUT_RETEST", 72.0, ["E3_BOS_DOWN", "E4_LOW_ACCEPTANCE_OR_BREAK", "E6_CAUSAL_GATE_PASSED"]
 
     rejection = any(x in event for x in ("SWEEP_REJECTION", "FAILED_BREAK_RECLAIM", "HIGH_REJECTION", "LOW_REJECTION"))
     if event_direction == direction and rejection:
         if terminal and e2_confirmed:
             return "LIQUIDITY_REVERSAL", 86.0, ["E4_TERMINAL_LIQUIDITY_RESPONSE", "E2_OPPORTUNITY_CONFIRMED"]
         if e2_unresolved and (internal == direction or external == direction or direction in e3_finding):
-            return "LIQUIDITY_REVERSAL", 62.0, ["E4_LIQUIDITY_RESPONSE", "E3_STRUCTURE_RESPONSE", "E6_THESIS_FORMED_BEFORE_E2_PROOF"]
+            return "LIQUIDITY_REVERSAL", 62.0, ["E4_LIQUIDITY_RESPONSE", "E3_STRUCTURE_RESPONSE", "E6_CAUSAL_GATE_PASSED"]
 
-    # V42: acceptance can create a FORMING hypothesis even when E3 is MIXED/TRANSITION.
-    # E1 directional context + E2 developing opportunity + E4 acceptance + E5 location/value
-    # form a causal thesis; E7/E8/E9 still control confirmation, economics and permission.
     acceptance = "ACCEPTANCE" in event and event_direction == direction
     context_support = pressure == direction or trend == direction or direction in e1_finding
     value_support = favorable_location or value_state in {"DISCOUNT", "PREMIUM"} or "ACCEPTED" in value_response
@@ -222,7 +233,7 @@ def _candidate(direction: str, auction: dict[str, Any], e1: dict[str, Any], e2: 
         if terminal and e2_confirmed:
             return "AUCTION_ACCEPTANCE_CONTINUATION", 82.0, ["E4_TERMINAL_AUCTION_ACCEPTANCE", "E2_OPPORTUNITY_CONFIRMED"]
         if e2_unresolved and context_support and value_support:
-            evidence = ["E4_AUCTION_ACCEPTANCE_CANDIDATE", "E6_THESIS_FORMED_BEFORE_E2_PROOF"]
+            evidence = ["E4_AUCTION_ACCEPTANCE_CANDIDATE", "E6_CAUSAL_GATE_PASSED"]
             evidence.append("E3_STRUCTURE_SUPPORT" if structure_support else "E3_STRUCTURE_NOT_YET_CONFIRMATORY")
             if favorable_location:
                 evidence.append("E5_FAVORABLE_LOCATION")
@@ -231,7 +242,7 @@ def _candidate(direction: str, auction: dict[str, Any], e1: dict[str, Any], e2: 
     break_event = any(x in event for x in ("BREAKOUT", "BOS", "FAILED_BREAK_RECLAIM")) or bos in {"BREAK", "BOS", "YES"}
     if break_event and ("RETEST" in e3_finding or "RECLAIM" in e3_finding or terminal):
         if e2_confirmed or (e2_unresolved and (internal == direction or external == direction)):
-            return "BREAKOUT_RETEST", 68.0 if e2_confirmed else 58.0, ["E3_CONFIRMED_BREAK_STRUCTURE", "E6_THESIS_FORMED_BEFORE_E2_PROOF"]
+            return "BREAKOUT_RETEST", 68.0 if e2_confirmed else 58.0, ["E3_CONFIRMED_BREAK_STRUCTURE", "E6_CAUSAL_GATE_PASSED"]
 
     aligned = trend == direction == internal == external
     transition = any("TRANSITION" in x for x in (market_state, e1_finding, e3_finding))
@@ -331,9 +342,28 @@ def analyze_e6(snapshot: dict[str, Any], upstream: dict[str, EngineResult]) -> E
     if internal != "NEUTRAL" and external != "NEUTRAL" and internal != external: blockers.append("STRUCTURE_CONFLICT")
     if "MIXED" in structure_finding or "TRANSITION" in structure_finding: blockers.append("STRUCTURE_TRANSITION")
     if direction in {"BUY", "SELL"} and not space["space_sufficient"]: blockers.append("STRUCTURAL_SPACE_INSUFFICIENT")
+    if e2_unresolved: blockers.append("E2_OPPORTUNITY_UNRESOLVED")
     blockers = _dedupe(blockers)
 
     candidate = _candidate(direction, auction, e1, e2, e3, e5)
+    # E6 must not emit a thesis from directional context alone. When E2 is
+    # unresolved, a candidate is accepted only if _candidate() found the strong
+    # independent E3/E4 causal path and the trade geometry has usable space.
+    if e2_unresolved and (candidate is None or not space["space_sufficient"]):
+        missing = ["E2_CLOSED_CANDLE_OPPORTUNITY_CONFIRMATION", "INDEPENDENT_E3_E4_CAUSAL_SETUP_PROOF"]
+        if not space["space_sufficient"]:
+            missing.append(f"STRUCTURAL_SPACE_{MIN_SPACE_ATR:.2f}_ATR")
+        primary = "STRUCTURAL_SPACE_INSUFFICIENT" if not space["space_sufficient"] else "E2_OPPORTUNITY_UNRESOLVED"
+        return _result(state="ABSENT", setup="NONE", direction=direction, maturity="UNRESOLVED",
+                       thesis="No causal setup hypothesis survives current closed-candle evidence.", quality=0, confidence=70, exists=False,
+                       observations=direction_support + ["E6_CAUSAL_GATE=BLOCKED"], support=direction_support,
+                       counter=blockers, missing=missing,
+                       next_event="WAIT_FOR_E2_OPPORTUNITY_PROOF_OR_TERMINAL_E3_E4_CAUSAL_EVENT",
+                       primary_blocker=primary,
+                       secondary_blockers=[x for x in blockers if x != primary],
+                       trace={"direction_source": direction_source, "space_diagnostic": space, "context_is_not_setup": True,
+                              "thesis_status": "ABSENT", "e6_causal_gate": "BLOCKED", "e2_unresolved": True})
+
     if candidate is None:
         missing = ["CAUSAL_SETUP_CHAIN"]
         if e2_unresolved: missing.append("E2_CLOSED_CANDLE_OPPORTUNITY_CONFIRMATION")
@@ -375,7 +405,8 @@ def analyze_e6(snapshot: dict[str, Any], upstream: dict[str, EngineResult]) -> E
              "selected_hypothesis": setup, "candidate_identity": identity, "candidate_identity_basis": "E4_EVENT_ID" if auction["event_id"] else "E4_EVENT_LEVEL",
              "direction_source": direction_source, "thesis_status": "ALIVE", "e2_proof_pending": e2_unresolved,
              "auction_proof_pending": not auction["terminal"], "space_is_constraint_not_invalidation": True, "context_is_not_setup": False,
-             "e6_owns_thesis": True, "e7_owns_confirmation": True, "e8_owns_trade_economics": True, "e9_owns_trade_decision": True}
+             "e6_owns_thesis": True, "e7_owns_confirmation": True, "e8_owns_trade_economics": True, "e9_owns_trade_decision": True,
+             "e6_causal_gate": "PASSED"}
     candidates = [{"name": setup, "direction": direction, "causal_score": quality, "stage": stage,
                    "supporting_evidence": evidence, "counter_evidence": counter, "missing_proof": missing}]
     invalidation = ["closed-candle structure invalidates directional thesis", "opposing confirmed auction response"]
