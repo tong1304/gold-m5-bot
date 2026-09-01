@@ -8,31 +8,30 @@ from .contracts import EngineResult
 NAME = "Master Decision Brain"
 QUESTION = "Who controls the market, does the E6 thesis survive, are E7/E8 proof gates complete, and is the opportunity economically executable?"
 ARCHITECTURE = "E9_FOUR_LAYER_GOVERNANCE"
-VERSION = "66.0"
+VERSION = "67.0"
 
 DIRECTIONS = {"BUY", "SELL"}
 PROVEN = {"PROVEN", "CONFIRMED", "VALIDATED", "TRADE_READY"}
 READY = {"READY", "RISK_READY", "ECONOMICALLY_ACCEPTABLE", "TRADE_READY", "VALIDATED", "PASS", "PASSED", "COMPLETE"}
 ECONOMIC_BLOCKERS = {
-    "INVALID_TRADE_GEOMETRY", "INVALID_RISK_GEOMETRY", "RISK_GEOMETRY_INVALID",
-    "REAL_RR_BELOW_MINIMUM", "EXECUTION_COST_TOO_HIGH", "STRUCTURAL_SURVIVAL_NOT_PROVEN",
-    "EFFECTIVE_SPACE_UNRELIABLE", "EFFECTIVE_SPACE_BELOW_MINIMUM", "STRESSED_PROBABILITY_BELOW_MINIMUM",
-    "TARGET_REALISM_TOO_LOW", "STOP_QUALITY_TOO_LOW", "PROBABILITY_EDGE_NOT_TRUSTWORTHY",
-    "NO_USABLE_STRUCTURAL_TARGET", "RISK_QUALITY_BELOW_DECISION_THRESHOLD",
-    "HISTORICAL_SAMPLE_INSUFFICIENT", "PROFIT_EDGE_NOT_PROVEN", "PROFIT_EXPECTANCY_UNQUANTIFIED",
+    "INVALID_TRADE_GEOMETRY", "INVALID_RISK_GEOMETRY", "RISK_GEOMETRY_INVALID", "REAL_RR_BELOW_MINIMUM",
+    "EXECUTION_COST_TOO_HIGH", "STRUCTURAL_SURVIVAL_NOT_PROVEN", "EFFECTIVE_SPACE_UNRELIABLE",
+    "EFFECTIVE_SPACE_BELOW_MINIMUM", "STRESSED_PROBABILITY_BELOW_MINIMUM", "TARGET_REALISM_TOO_LOW",
+    "STOP_QUALITY_TOO_LOW", "PROBABILITY_EDGE_NOT_TRUSTWORTHY", "NO_USABLE_STRUCTURAL_TARGET",
+    "RISK_QUALITY_BELOW_DECISION_THRESHOLD", "HISTORICAL_SAMPLE_INSUFFICIENT", "PROFIT_EDGE_NOT_PROVEN",
+    "PROFIT_EXPECTANCY_UNQUANTIFIED",
 }
 HARD_CONFLICTS = {
-    "THESIS_INVALIDATED", "MARKET_STATE_CONFLICT", "STRUCTURE_THESIS_CONFLICT",
-    "OPPOSING_LIQUIDITY_THESIS", "EXTERNAL_INTERNAL_STRUCTURE_CONFLICT",
-    "E6_THESIS_INVALIDATED", "E7_CONFIRMATION_INVALIDATED", "E8_RISK_INVALIDATED",
-    "STRUCTURE_INVALIDATED", "BULLISH_STRUCTURE_INVALIDATED", "BEARISH_STRUCTURE_INVALIDATED",
-    "E3_STRUCTURE_INVALIDATED", "E3_THESIS_INVALIDATED",
+    "THESIS_INVALIDATED", "MARKET_STATE_CONFLICT", "STRUCTURE_THESIS_CONFLICT", "OPPOSING_LIQUIDITY_THESIS",
+    "EXTERNAL_INTERNAL_STRUCTURE_CONFLICT", "E6_THESIS_INVALIDATED", "E7_CONFIRMATION_INVALIDATED", "E8_RISK_INVALIDATED",
+    "STRUCTURE_INVALIDATED", "BULLISH_STRUCTURE_INVALIDATED", "BEARISH_STRUCTURE_INVALIDATED", "E3_STRUCTURE_INVALIDATED", "E3_THESIS_INVALIDATED",
 }
 OPPORTUNITY_BLOCKERS = {
     "DIRECTIONAL_EDGE_NOT_ESTABLISHED", "NO_ELIGIBLE_OPPORTUNITY_PATH", "INSUFFICIENT_OPPOSING_SPACE",
     "OPPOSING_SPACE_CONSTRAINED", "LOCATION_NOT_ADVANTAGEOUS", "AUCTION_ACCEPTANCE_NOT_PROVEN",
     "AUCTION_CONFIRMATION_PENDING", "NO_FRESH_LIQUIDITY_CONFIRMATION",
 }
+NO_THESIS_SETUP = {"", "NONE", "UNKNOWN", "NO_SETUP", "NO_PLAUSIBLE_SETUP", "UNRESOLVED"}
 
 
 def _out(engine: EngineResult | None) -> dict[str, Any]:
@@ -75,6 +74,10 @@ def _codes(output: dict[str, Any]) -> list[str]:
     return _dedupe(values)
 
 
+def _engine_codes(engine: EngineResult | None) -> list[str]:
+    return _dedupe(_codes(_out(engine)) + list(engine.reason_codes or ())) if engine else []
+
+
 def _walk(value: Any):
     if isinstance(value, dict):
         yield value
@@ -83,10 +86,6 @@ def _walk(value: Any):
     elif isinstance(value, (list, tuple, set)):
         for child in value:
             yield from _walk(child)
-
-
-def _engine_codes(engine: EngineResult | None) -> list[str]:
-    return _dedupe(_codes(_out(engine)) + list(engine.reason_codes or ())) if engine else []
 
 
 def _direction(*values: Any) -> str:
@@ -116,12 +115,12 @@ def _state(output: dict[str, Any], keys: tuple[str, ...], default: str = "UNRESO
 def _e6_identity(e6: dict[str, Any]) -> tuple[str, str, str]:
     finding = _text(e6.get("finding"))
     codes = set(_codes(e6))
-    if codes & {"NO_SURVIVING_SETUP", "NO_ELIGIBLE_SETUP", "SETUP_REJECTED", "SETUP_INVALIDATED"} or "NO SURVIVING SETUP" in finding:
+    if codes & {"NO_SURVIVING_SETUP", "NO_ELIGIBLE_SETUP", "SETUP_REJECTED", "SETUP_INVALIDATED", "E6_THESIS_INVALIDATED"} or "NO SURVIVING SETUP" in finding or "NO PLAUSIBLE SETUP" in finding:
         return "NEUTRAL", "UNKNOWN", "UNRESOLVED"
     setup = ""
-    for key in ("setup", "setup_family", "candidate_setup", "candidate_setup_thesis", "setup_type", "thesis_setup", "selected_hypothesis"):
+    for key in ("setup", "setup_family", "candidate_setup", "setup_type", "thesis_setup", "selected_hypothesis"):
         value = e6.get(key)
-        if value not in (None, "") and _text(value) not in {"UNKNOWN", "NONE", "NO_SETUP", "UNRESOLVED"}:
+        if value not in (None, "") and _text(value) not in NO_THESIS_SETUP:
             setup = _text(value)
             break
     direction = _direction(e6.get("direction"), e6.get("direction_thesis"), e6.get("thesis_direction"), e6.get("selected_direction"))
@@ -174,6 +173,32 @@ def _setup_state(e6: dict[str, Any]) -> str:
     return _thesis_state(e6)
 
 
+def _has_surviving_thesis(e6: dict[str, Any], identity: tuple[str, str, str]) -> bool:
+    direction, setup, _ = identity
+    state = _thesis_state(e6)
+    return direction in DIRECTIONS and setup not in NO_THESIS_SETUP and state in {"HYPOTHESIS", "VALIDATING", "MATURE"}
+
+
+def classify_lifecycle(e6: dict[str, Any], e7: dict[str, Any], e8: dict[str, Any]) -> dict[str, Any]:
+    direction, setup, thesis = _e6_identity(e6)
+    if not _has_surviving_thesis(e6, (direction, setup, thesis)):
+        return {
+            "stage": "NO_THESIS", "e6_state": _thesis_state(e6), "e7_state": "NOT_APPLICABLE",
+            "e8_state": "NOT_APPLICABLE", "reason": "NO_SURVIVING_E6_THESIS", "direction": "NEUTRAL",
+            "setup": "UNKNOWN", "thesis": "UNRESOLVED",
+        }
+    e7_codes = set(_codes(e7))
+    e7_state = _state(e7, ("confirmation_state", "confirmation", "proof_state"), "PENDING")
+    e7_proven = e7_state in PROVEN or bool(e7_codes & {"CONFIRMATION_PROVEN", "CAUSAL_FOLLOW_THROUGH_PROVEN", "VALID_CLOSED_CANDLE_TRIGGER", "TRIGGER_CONFIRMED"})
+    e8_state = _state(e8, ("economic_state", "risk_state", "decision_state", "plan_status"), "UNRESOLVED")
+    return {
+        "stage": "THESIS_MATURE" if _setup_state(e6) == "MATURE" else "THESIS_FORMING",
+        "e6_state": _thesis_state(e6), "e7_state": "PROVEN" if e7_proven else "PENDING",
+        "e8_state": "READY" if e8_state in READY else "WAITING_FOR_E7" if not e7_proven else "WAITING_FOR_E8",
+        "reason": "E6_THESIS_PRESENT", "direction": direction, "setup": setup, "thesis": thesis,
+    }
+
+
 def _market_control(upstream: dict[str, EngineResult]) -> dict[str, Any]:
     e1, e2, e3, e4, e5 = (_out(upstream.get(k)) for k in ("E1", "E2", "E3", "E4", "E5"))
     votes: list[tuple[str, str, float]] = []
@@ -212,12 +237,10 @@ def _confirmation(e7: dict[str, Any]) -> tuple[str, bool]:
     codes = set(_codes(e7))
     if codes & {"E7_CONFIRMATION_INVALIDATED", "CONFIRMATION_INVALIDATED"}:
         return "INVALIDATED", False
-    explicit_negative = {"PROOF_GATES_INCOMPLETE", "VALID_CLOSED_CANDLE_TRIGGER_MISSING", "TRIGGER_OBSERVED_NOT_AUTOMATIC_CONFIRMATION", "LIQUIDITY_RECLAIM_LEVEL_REQUIRED"}
-    if codes & explicit_negative:
+    if codes & {"PROOF_GATES_INCOMPLETE", "VALID_CLOSED_CANDLE_TRIGGER_MISSING", "TRIGGER_OBSERVED_NOT_AUTOMATIC_CONFIRMATION", "LIQUIDITY_RECLAIM_LEVEL_REQUIRED"}:
         return "PENDING", False
     confirmation = _state(e7, ("confirmation_state", "confirmation", "proof_state"))
-    trigger = any(e7.get(k) is True for k in ("trigger_observed", "valid_trigger", "closed_candle_trigger"))
-    trigger = trigger or _state(e7, ("trigger_state", "trigger", "entry_trigger")) in PROVEN
+    trigger = any(e7.get(k) is True for k in ("trigger_observed", "valid_trigger", "closed_candle_trigger")) or _state(e7, ("trigger_state", "trigger", "entry_trigger")) in PROVEN
     proven = confirmation in PROVEN or bool(codes & {"CONFIRMATION_PROVEN", "CAUSAL_FOLLOW_THROUGH_PROVEN", "VALID_CLOSED_CANDLE_TRIGGER", "TRIGGER_CONFIRMED"})
     return ("PROVEN" if proven and trigger else "PENDING"), bool(proven and trigger)
 
@@ -230,7 +253,7 @@ def _economic(e8: dict[str, Any]) -> tuple[str, bool, list[str]]:
     state = _state(e8, ("risk_state", "economic_state", "decision_state", "plan_status"))
     verified = e8.get("verified") is True or e8.get("trade_plan_verified") is True
     ready = (state in READY or verified) and not blockers
-    return ("BLOCKED" if blockers else ("READY" if ready else "UNRESOLVED")), bool(ready), blockers
+    return ("BLOCKED" if blockers else "READY" if ready else "UNRESOLVED"), bool(ready), blockers
 
 
 def _plan_valid(e8: dict[str, Any], direction: str) -> bool:
@@ -238,7 +261,8 @@ def _plan_valid(e8: dict[str, Any], direction: str) -> bool:
     if direction not in DIRECTIONS:
         return False
     try:
-        entry = float(plan["entry"]); stop = float(plan["stop_loss"])
+        entry = float(plan["entry"])
+        stop = float(plan["stop_loss"])
         target = float(plan.get("take_profit_2", plan.get("take_profit", plan.get("tp2"))))
     except (KeyError, TypeError, ValueError):
         return False
@@ -259,7 +283,8 @@ def _plan_valid(e8: dict[str, Any], direction: str) -> bool:
 def _hard_conflicts(upstream: dict[str, EngineResult]) -> list[str]:
     found: list[str] = []
     for engine_id in ("E1", "E2", "E3", "E4", "E5", "E6", "E7", "E8"):
-        engine = upstream.get(engine_id); output = _out(engine)
+        engine = upstream.get(engine_id)
+        output = _out(engine)
         for code in _engine_codes(engine):
             if code in HARD_CONFLICTS:
                 found.append(code)
@@ -282,79 +307,88 @@ def _alignment(control: dict[str, Any], thesis_direction: str) -> tuple[str, str
 
 def analyze_e9(snapshot: dict[str, Any], upstream: dict[str, EngineResult]) -> EngineResult:
     del snapshot
-    e2, e4, e6, e8 = (_out(upstream.get(k)) for k in ("E2", "E4", "E6", "E8"))
+    e2, e4, e6, e7, e8 = (_out(upstream.get(k)) for k in ("E2", "E4", "E6", "E7", "E8"))
     control = _market_control(upstream)
-    direction, setup, thesis = _e6_identity(e6)
-    thesis_state = _thesis_state(e6)
-    setup_state = _setup_state(e6)
-    confirmation_state, confirmation_proven = _confirmation(_out(upstream.get("E7")))
+    identity = _e6_identity(e6)
+    direction, setup, thesis = identity
+    lifecycle = classify_lifecycle(e6, e7, e8)
+
+    # Governance lifecycle: E6 owns thesis existence. E7/E8 are downstream gates only after E6 survives.
+    if lifecycle["stage"] == "NO_THESIS":
+        auction = {
+            "event": _text(e4.get("event") or e4.get("auction_event") or e4.get("liquidity_event") or "UNRESOLVED"),
+            "auction_state": _text(e4.get("auction_state") or "UNRESOLVED"),
+            "liquidity_taker": _text(e4.get("liquidity_taker") or "UNCLEAR"),
+            "response_actor": _text(e4.get("response_actor") or "UNCLEAR"),
+        }
+        reasons = ["E9_FOUR_LAYER_GOVERNANCE", "E6_THESIS_OWNER", "NO_SURVIVING_E6_THESIS", "E7_NOT_APPLICABLE", "E8_NOT_APPLICABLE"]
+        output = {
+            "decision": "NO_TRADE", "final_governance": "NO_THESIS", "governance_decision": "NO_THESIS",
+            "governance_reason": "NO_SURVIVING_E6_THESIS", "governance_blockers": ["NO_SURVIVING_E6_THESIS"],
+            "next_required_events": ["E6_NEW_SURVIVING_SETUP_THESIS"], "execution_state": "BLOCKED", "all_gates_pass": False,
+            "direction": "NEUTRAL", "thesis_direction": "NEUTRAL", "setup": "UNKNOWN", "thesis": "UNRESOLVED",
+            "thesis_state": "UNRESOLVED", "thesis_lifecycle_source": "E6", "setup_state": "UNRESOLVED",
+            "confirmation_state": "NOT_APPLICABLE", "economic_state": "NOT_APPLICABLE", "economic_blockers": [],
+            "hard_conflicts": [], "opportunity_blockers": [], "market_control_state": control["market_control_state"],
+            "control_direction": control["control_direction"], "control_confidence": control["control_confidence"],
+            "control_scores": control["control_scores"], "control_evidence": control["control_evidence"],
+            "dominant_control_evidence": control["dominant_control_evidence"],
+            "control_summary": f"{control['market_control_state']} direction={control['control_direction']} confidence={control['control_confidence']} scores={control['control_scores']}",
+            "evidence_alignment": "UNRESOLVED", "evidence_alignment_reason": "NO_E6_THESIS_TO_ALIGN", "auction": auction,
+            "proof_summary": {"e6_thesis": "UNRESOLVED", "e6_setup": "UNRESOLVED", "e7_confirmation": "NOT_APPLICABLE", "e8_economics": "NOT_APPLICABLE", "e8_blockers": [], "hard_conflicts": []},
+            "governance_layers": {"market_control": "MARKET_CONTROL", "thesis_control": "E6_OWNER", "proof_control": "E7_CONFIRMATION_AND_E8_ECONOMICS", "final_governance": "E9_FINAL_AUTHORITY"},
+            "authority_contract": {"market_bias_owner": "E1-E5_MARKET_EVIDENCE", "trade_thesis_owner": "E6", "setup_proof_owner": "E7", "trade_economics_owner": "E8", "final_decision_owner": "E9", "e9_may_rewrite_e6_thesis": False, "e9_may_bypass_e7": False, "e9_may_bypass_e8": False},
+            "proof_gates": {"e6_thesis_present": False, "e6_setup_mature": False, "e7_confirmation_proven": False, "e8_economics_ready": False, "trade_geometry_valid": False, "hard_conflict_clear": True, "market_alignment_clear": True, "opportunity_path_clear": True},
+            "market_control_explanation": {"who_controls_market": control["market_control_state"], "control_direction": control["control_direction"], "confidence": control["control_confidence"], "why_not_trade": "NO_SURVIVING_E6_THESIS", "dominant_evidence": control["dominant_control_evidence"]},
+            "opportunity_state": "NO_THESIS", "opportunity": {"direction": "NEUTRAL", "setup": "UNKNOWN", "state": "NO_THESIS", "do_not_execute": True, "economic_blockers": [], "opportunity_blockers": []},
+            "reason_codes": reasons, "reasons": reasons, "architecture": ARCHITECTURE, "version": VERSION, "lifecycle": lifecycle,
+        }
+        return EngineResult("E9", NAME, False, float(control["control_confidence"]), output, tuple(reasons))
+
+    alignment, alignment_reason = _alignment(control, direction)
+    confirmation_state, confirmation_proven = _confirmation(e7)
     economic_state, economic_ready, economic_blockers = _economic(e8)
     hard_conflicts = _hard_conflicts(upstream)
-    alignment, alignment_reason = _alignment(control, direction)
     e2_codes = set(_engine_codes(upstream.get("E2")))
     opportunity_blockers = sorted(c for c in e2_codes if c in OPPORTUNITY_BLOCKERS)
-
-    # E9 is a governor, not a thesis generator. A market bias never substitutes for E6, E7, or E8.
     gates = {
-        "e6_thesis_present": direction in DIRECTIONS and setup not in {"", "UNKNOWN"} and thesis_state in {"HYPOTHESIS", "VALIDATING", "MATURE"},
-        "e6_setup_mature": setup_state == "MATURE",
-        "e7_confirmation_proven": confirmation_proven,
-        "e8_economics_ready": economic_ready,
-        "trade_geometry_valid": _plan_valid(e8, direction),
-        "hard_conflict_clear": not hard_conflicts,
-        "market_alignment_clear": alignment != "CONFLICTED",
-        "opportunity_path_clear": not opportunity_blockers,
+        "e6_thesis_present": True, "e6_setup_mature": _setup_state(e6) == "MATURE", "e7_confirmation_proven": confirmation_proven,
+        "e8_economics_ready": economic_ready, "trade_geometry_valid": _plan_valid(e8, direction), "hard_conflict_clear": not hard_conflicts,
+        "market_alignment_clear": alignment != "CONFLICTED", "opportunity_path_clear": not opportunity_blockers,
     }
-    all_gates_pass = all(gates.values())
     missing: list[str] = []
-    if not gates["e6_thesis_present"]: missing.append("E6_THESIS_NOT_ACTIONABLE")
     if not gates["e6_setup_mature"]: missing.append("E6_SETUP_NOT_MATURE")
     if not gates["e7_confirmation_proven"]: missing.append("E7_CONFIRMATION_REQUIRED")
     if not gates["e8_economics_ready"]: missing.append("E8_TRADE_ECONOMICS_REQUIRED")
     if not gates["trade_geometry_valid"]: missing.append("TRADE_PLAN_NOT_VALID")
     if not gates["market_alignment_clear"]: missing.append("MARKET_CONTROL_THESIS_CONFLICT")
     if not gates["opportunity_path_clear"]: missing.extend(opportunity_blockers)
-
     if hard_conflicts:
-        governance = "REJECTED_HARD_CONFLICT"; decision = "NO_TRADE"; reason = "HARD_CONFLICT_BLOCKS_EXECUTION"
-    elif all_gates_pass:
-        governance = "EXECUTE"; decision = direction; reason = "ALL_FOUR_GOVERNANCE_LAYERS_PASSED"
+        governance, decision, reason = "REJECTED_HARD_CONFLICT", "NO_TRADE", "HARD_CONFLICT_BLOCKS_EXECUTION"
+    elif all(gates.values()):
+        governance, decision, reason = "EXECUTE", direction, "ALL_FOUR_GOVERNANCE_LAYERS_PASSED"
     else:
-        governance = "WAIT_FOR_PROOF"; decision = "NO_TRADE"; reason = missing[0] if missing else "PROOF_GATES_INCOMPLETE"
-
-    reason_codes = ["E9_FOUR_LAYER_GOVERNANCE", "MARKET_CONTROL_SYNTHESIZED", "E6_THESIS_OWNER", "E7_SETUP_SPECIFIC_PROOF_REQUIRED", "E8_TRADE_ECONOMICS_REQUIRED", reason]
-    reason_codes.extend(opportunity_blockers); reason_codes.extend(economic_blockers); reason_codes.extend(hard_conflicts); reason_codes.extend(missing)
-    if not confirmation_proven: reason_codes.append("WAITING_FOR_E7_PROOF")
-    if not economic_ready: reason_codes.append("WAITING_FOR_E8_ECONOMICS")
-    reason_codes = _dedupe(reason_codes)
-
-    auction = {"event": _text(e4.get("event") or e4.get("auction_event") or e4.get("liquidity_event") or "UNRESOLVED"),
-               "auction_state": _text(e4.get("auction_state") or "UNRESOLVED"),
-               "liquidity_taker": _text(e4.get("liquidity_taker") or "UNCLEAR"),
-               "response_actor": _text(e4.get("response_actor") or "UNCLEAR")}
+        governance, decision, reason = "WAIT_FOR_PROOF", "NO_TRADE", missing[0] if missing else "PROOF_GATES_INCOMPLETE"
+    reasons = _dedupe(["E9_FOUR_LAYER_GOVERNANCE", "MARKET_CONTROL_SYNTHESIZED", "E6_THESIS_OWNER", "E7_SETUP_SPECIFIC_PROOF_REQUIRED", "E8_TRADE_ECONOMICS_REQUIRED", reason] + opportunity_blockers + economic_blockers + hard_conflicts + missing + (["WAITING_FOR_E7_PROOF"] if not confirmation_proven else []) + (["WAITING_FOR_E8_ECONOMICS"] if not economic_ready else []))
+    auction = {"event": _text(e4.get("event") or e4.get("auction_event") or e4.get("liquidity_event") or "UNRESOLVED"), "auction_state": _text(e4.get("auction_state") or "UNRESOLVED"), "liquidity_taker": _text(e4.get("liquidity_taker") or "UNCLEAR"), "response_actor": _text(e4.get("response_actor") or "UNCLEAR")}
     output = {
         "decision": decision, "final_governance": governance, "governance_decision": governance, "governance_reason": reason,
-        "governance_blockers": _dedupe(missing + opportunity_blockers + economic_blockers + hard_conflicts),
-        "next_required_events": _dedupe(missing), "execution_state": "APPROVED" if governance == "EXECUTE" else "BLOCKED",
-        "all_gates_pass": all_gates_pass, "direction": direction if direction in DIRECTIONS else "NEUTRAL", "thesis_direction": direction,
-        "setup": setup, "thesis": thesis, "thesis_state": thesis_state, "thesis_lifecycle_source": "E6",
-        "setup_state": setup_state, "confirmation_state": confirmation_state, "economic_state": economic_state,
-        "economic_blockers": economic_blockers, "hard_conflicts": hard_conflicts, "opportunity_blockers": opportunity_blockers,
-        "market_control_state": control["market_control_state"], "control_direction": control["control_direction"],
-        "control_confidence": control["control_confidence"], "control_scores": control["control_scores"],
-        "control_evidence": control["control_evidence"], "dominant_control_evidence": control["dominant_control_evidence"],
-        "control_summary": f"{control['market_control_state']} direction={control['control_direction']} confidence={control['control_confidence']} scores={control['control_scores']}",
+        "governance_blockers": _dedupe(missing + opportunity_blockers + economic_blockers + hard_conflicts), "next_required_events": _dedupe(missing),
+        "execution_state": "APPROVED" if governance == "EXECUTE" else "BLOCKED", "all_gates_pass": all(gates.values()),
+        "direction": direction, "thesis_direction": direction, "setup": setup, "thesis": thesis, "thesis_state": _thesis_state(e6),
+        "thesis_lifecycle_source": "E6", "setup_state": _setup_state(e6), "confirmation_state": confirmation_state,
+        "economic_state": economic_state, "economic_blockers": economic_blockers, "hard_conflicts": hard_conflicts,
+        "opportunity_blockers": opportunity_blockers, "market_control_state": control["market_control_state"], "control_direction": control["control_direction"],
+        "control_confidence": control["control_confidence"], "control_scores": control["control_scores"], "control_evidence": control["control_evidence"],
+        "dominant_control_evidence": control["dominant_control_evidence"], "control_summary": f"{control['market_control_state']} direction={control['control_direction']} confidence={control['control_confidence']} scores={control['control_scores']}",
         "evidence_alignment": "CONFLICTED" if alignment == "CONFLICTED" or hard_conflicts else ("ALIGNED" if alignment == "ALIGNED" else "UNRESOLVED"),
         "evidence_alignment_reason": alignment_reason, "auction": auction,
-        "proof_summary": {"e6_thesis": thesis_state, "e6_setup": setup_state, "e7_confirmation": confirmation_state,
-                           "e8_economics": economic_state, "e8_blockers": economic_blockers, "hard_conflicts": hard_conflicts},
+        "proof_summary": {"e6_thesis": _thesis_state(e6), "e6_setup": _setup_state(e6), "e7_confirmation": confirmation_state, "e8_economics": economic_state, "e8_blockers": economic_blockers, "hard_conflicts": hard_conflicts},
         "governance_layers": {"market_control": "MARKET_CONTROL", "thesis_control": "E6_OWNER", "proof_control": "E7_CONFIRMATION_AND_E8_ECONOMICS", "final_governance": "E9_FINAL_AUTHORITY"},
-        "authority_contract": {"market_bias_owner": "E1-E5_MARKET_EVIDENCE", "trade_thesis_owner": "E6", "setup_proof_owner": "E7", "trade_economics_owner": "E8", "final_decision_owner": "E9",
-                               "e9_may_rewrite_e6_thesis": False, "e9_may_bypass_e7": False, "e9_may_bypass_e8": False},
-        "proof_gates": gates,
-        "market_control_explanation": {"who_controls_market": control["market_control_state"], "control_direction": control["control_direction"], "confidence": control["control_confidence"], "why_not_trade": reason, "dominant_evidence": control["dominant_control_evidence"]},
+        "authority_contract": {"market_bias_owner": "E1-E5_MARKET_EVIDENCE", "trade_thesis_owner": "E6", "setup_proof_owner": "E7", "trade_economics_owner": "E8", "final_decision_owner": "E9", "e9_may_rewrite_e6_thesis": False, "e9_may_bypass_e7": False, "e9_may_bypass_e8": False},
+        "proof_gates": gates, "market_control_explanation": {"who_controls_market": control["market_control_state"], "control_direction": control["control_direction"], "confidence": control["control_confidence"], "why_not_trade": reason, "dominant_evidence": control["dominant_control_evidence"]},
         "opportunity_state": "WATCH" if governance == "WAIT_FOR_PROOF" else ("REJECTED" if governance == "REJECTED_HARD_CONFLICT" else "EXECUTE"),
         "opportunity": {"direction": direction, "setup": setup, "state": governance, "do_not_execute": governance != "EXECUTE", "economic_blockers": economic_blockers, "opportunity_blockers": opportunity_blockers},
-        "reason_codes": reason_codes, "reasons": reason_codes, "architecture": ARCHITECTURE, "version": VERSION,
+        "reason_codes": reasons, "reasons": reasons, "architecture": ARCHITECTURE, "version": VERSION, "lifecycle": lifecycle,
     }
-    return EngineResult("E9", NAME, governance == "EXECUTE", float(control["control_confidence"]), output, tuple(reason_codes))
+    return EngineResult("E9", NAME, governance == "EXECUTE", float(control["control_confidence"]), output, tuple(reasons))
