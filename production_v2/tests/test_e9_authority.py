@@ -38,3 +38,20 @@ def test_complete_positive_short_path_can_execute():
     assert result.output["decision"] == "SELL"
     assert result.output["execution_state"] == "APPROVED"
     assert result.output["all_gates_pass"] is True
+
+
+def test_complete_positive_long_path_can_execute():
+    upstream = {
+        "E1": _engine("E1", {"pressure": "BUY"}),
+        "E2": _engine("E2", {"direction": "BUY"}),
+        "E3": _engine("E3", {"structure_integrity": "VALID", "structure_direction": "BUY", "external_state": "UP", "internal_state": "UP"}),
+        "E4": _engine("E4", {"auction_state": "ACCEPTED", "event": "LOW_SWEEP_REJECTION", "response_actor": "BUYERS"}),
+        "E5": _engine("E5", {"repricing_direction": "BUY"}),
+        "E6": _engine("E6", {"direction": "BUY", "setup": "LIQUIDITY_REVERSAL", "thesis": "buy failed low auction", "setup_state": "MATURE"}),
+        "E7": _engine("E7", {"confirmation_state": "CONFIRMED", "trigger_observed": True, "reason_codes": ["CONFIRMATION_PROVEN"]}),
+        "E8": _engine("E8", {"risk_state": "READY", "economic_state": "READY", "verified": True, "trade_plan": {"entry": 100.0, "stop_loss": 97.5, "take_profit": 105.0, "rr": 2.0}}),
+    }
+    result = analyze_e9({}, upstream)
+    assert result.output["decision"] == "BUY"
+    assert result.output["execution_state"] == "APPROVED"
+    assert result.output["all_gates_pass"] is True
