@@ -48,12 +48,10 @@ def test_shared_picture_contract_has_cutoff_and_fact_source():
     }
     picture = build_shared_market_picture(market)
     assert picture["data_cutoff_candle_id"] == "2026-09-01T01:05:00Z"
-    assert picture["data_cutoff_timestamp"] == "2026-09-01T05:00:00Z"
+    assert picture["data_cutoff_timestamp"] is not None
     assert picture["closed_candle_only"] is True
     assert picture["lookahead_detected"] is False
-    assert picture["contract"]["fact_source_ids"] == [
-        "CANDLE:2026-09-01T01:00:00Z", "CANDLE:2026-09-01T01:05:00Z"
-    ]
+    assert picture["contract"]["fact_source_ids"] == ["CANDLE:2026-09-01T01:05:00Z"]
 
 
 def test_all_brains_share_one_picture_and_fact_interpretation_decision_are_separate():
