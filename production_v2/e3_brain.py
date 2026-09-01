@@ -4,7 +4,7 @@ from statistics import mean
 from typing import Any
 
 QUESTION = "What is price structure communicating?"
-ARCHITECTURE = "E3_PROFESSIONAL_MARKET_STRUCTURE_CAUSAL_V7"
+ARCHITECTURE = "E3_PROFESSIONAL_MARKET_STRUCTURE_CAUSAL_V8"
 UP, DOWN, NEUTRAL, MIXED = "UP", "DOWN", "NEUTRAL", "MIXED"
 MIN_CANDLES = 40
 INTERNAL_RADIUS, EXTERNAL_RADIUS = 2, 5
@@ -150,62 +150,94 @@ def _semantic(highs, lows):
     }
 
 
-def _protected(highs, lows):
-    hh = _latest(highs, {"HH"})
-    lh = _latest(highs, {"LH"})
-    ll = _latest(lows, {"LL"})
+def _protected(highs, lows, external_state):
+    """Build protected structure from one active causal regime.
 
-    bullish_low = None
+    The previous implementation independently selected a bullish HL and a
+    bearish LH, then compared them. In mixed/repricing conditions those two
+    levels can belong to different structural regimes and legitimately cross,
+    producing the false PROTECTED_HIGH_LE_PROTECTED_LOW integrity failure.
+
+    Directional structure must have one active causal anchor:
+      UP   -> latest HH is the external break level; prior confirmed HL is the
+              protected invalidation level.
+      DOWN -> latest LL is the external break level; prior confirmed LH is the
+              protected invalidation level.
+      MIXED/NEUTRAL -> no directional protected structure is asserted.
+    """
+    protected_high = None
+    protected_low = None
     bullish_anchor = None
-    if hh:
-        candidates = [
-            p for p in lows
-            if p.get("label") == "HL"
-            and p["index"] < hh["index"]
-            and p["confirmation_index"] <= hh["confirmation_index"]
-            and p["price"] < hh["price"]
-        ]
-        if candidates:
-            bullish_low = candidates[-1]
-            bullish_anchor = hh
-
-    bearish_high = None
     bearish_anchor = None
-    if ll:
-        candidates = [
-            p for p in highs
-            if p.get("label") == "LH"
-            and p["index"] < ll["index"]
-            and p["confirmation_index"] <= ll["confirmation_index"]
-            and p["price"] > ll["price"]
-        ]
-        if candidates:
-            bearish_high = candidates[-1]
-            bearish_anchor = ll
-
     invalid_reasons = []
-    if hh and bullish_low is None and _latest(lows, {"HL"}) is not None:
-        invalid_reasons.append("BULLISH_PROTECTED_LOW_GE_ANCHOR_HIGH")
-    if ll and bearish_high is None and _latest(highs, {"LH"}) is not None:
-        invalid_reasons.append("BEARISH_PROTECTED_HIGH_LE_ANCHOR_LOW")
-    if bullish_low and bearish_high and bearish_high["price"] <= bullish_low["price"]:
-        invalid_reasons.append("PROTECTED_HIGH_LE_PROTECTED_LOW")
+    completeness = "NONE"
 
-    integrity = "VALID" if not invalid_reasons else "INVALID"
-    if integrity == "INVALID":
-        bullish_low = None
-        bearish_high = None
+    if external_state == UP:
+        hh = _latest(highs, {"HH"})
+        if hh:
+            candidates = [
+                p for p in lows
+                if p.get("label") == "HL"
+                and p["index"] < hh["index"]
+                and p["confirmation_index"] <= hh["confirmation_index"]
+                and p["price"] < hh["price"]
+            ]
+            protected_high = hh
+            bullish_anchor = hh
+            if candidates:
+                protected_low = candidates[-1]
+                completeness = "COMPLETE"
+            else:
+                completeness = "BREAK_LEVEL_ONLY"
+                invalid_reasons.append("BULLISH_PROTECTED_LOW_UNCONFIRMED_OR_MISSING")
+
+    elif external_state == DOWN:
+        ll = _latest(lows, {"LL"})
+        if ll:
+            candidates = [
+                p for p in highs
+                if p.get("label") == "LH"
+                and p["index"] < ll["index"]
+                and p["confirmation_index"] <= ll["confirmation_index"]
+                and p["price"] > ll["price"]
+            ]
+            protected_low = ll
+            bearish_anchor = ll
+            if candidates:
+                protected_high = candidates[-1]
+                completeness = "COMPLETE"
+            else:
+                completeness = "BREAK_LEVEL_ONLY"
+                invalid_reasons.append("BEARISH_PROTECTED_HIGH_UNCONFIRMED_OR_MISSING")
+
+    else:
+        completeness = "NO_DIRECTIONAL_REGIME"
+        invalid_reasons.append("NO_SINGLE_ACTIVE_DIRECTIONAL_REGIME")
+
+    if protected_high and protected_low and protected_high["price"] <= protected_low["price"]:
+        invalid_reasons.append("CAUSAL_PROTECTED_LEVEL_ORDER_INVALID")
+        protected_high = None
+        protected_low = None
         bullish_anchor = None
         bearish_anchor = None
+        completeness = "INVALID"
+
+    # Missing secondary invalidation level is incomplete evidence, not corrupt
+    # OHLC/structure data. Keep integrity VALID so E3 can describe structure,
+    # while downstream gates can require completeness before trading.
+    integrity = "INVALID" if "CAUSAL_PROTECTED_LEVEL_ORDER_INVALID" in invalid_reasons else "VALID"
 
     return {
-        "protected_high": bearish_high,
-        "protected_low": bullish_low,
+        "protected_high": protected_high,
+        "protected_low": protected_low,
         "bullish_anchor": bullish_anchor,
         "bearish_anchor": bearish_anchor,
-        "bullish_basis": "HL_PROTECTED_BY_CONFIRMED_HH" if bullish_low else "NONE",
-        "bearish_basis": "LH_PROTECTED_BY_CONFIRMED_LL" if bearish_high else "NONE",
-        "authority_rule": "CAUSAL_ANCHOR_REQUIRED",
+        "bullish_basis": "HL_PROTECTED_BY_CONFIRMED_HH" if external_state == UP and protected_low else "NONE",
+        "bearish_basis": "LH_PROTECTED_BY_CONFIRMED_LL" if external_state == DOWN and protected_high else "NONE",
+        "break_level_basis": "LATEST_CONFIRMED_HH" if external_state == UP and protected_high else "LATEST_CONFIRMED_LL" if external_state == DOWN and protected_low else "NONE",
+        "authority_rule": "SINGLE_ACTIVE_CAUSAL_REGIME",
+        "active_regime": external_state,
+        "completeness": completeness,
         "integrity": integrity,
         "integrity_reasons": invalid_reasons,
     }
@@ -336,7 +368,7 @@ def analyze_e3(bars):
     external_h, external_l = _label(ext_h, ext_l, atr)
     internal_h, internal_l = _label(int_h, int_l, atr)
     external, internal = _semantic(external_h, external_l), _semantic(internal_h, internal_l)
-    protected = _protected(external_h, external_l)
+    protected = _protected(external_h, external_l, external["state"])
     bos = _break_event(clean, protected, external, current, atr)
     failed = _failed_break(clean, external_h, external_l, current, atr)
     sweep = _sweep_reclaim(clean, external_h, external_l, atr)
@@ -377,14 +409,18 @@ def analyze_e3(bars):
         f"protected_high={protected['protected_high']['price'] if protected['protected_high'] else 'NONE'}",
         f"protected_low={protected['protected_low']['price'] if protected['protected_low'] else 'NONE'}",
         f"protected_integrity={protected['integrity']}",
+        f"protected_completeness={protected['completeness']}",
+        f"protected_active_regime={protected['active_regime']}",
         f"protected_integrity_reasons={','.join(protected['integrity_reasons']) or 'NONE'}",
         f"bos={bos['event']}", f"choch={'CHOCH' if bos.get('event') == 'CHOCH' else 'NO'}",
         f"failed_break={failed['event']}", f"liquidity={sweep['event']}",
         f"lifecycle={lifecycle}", f"invalidation={invalidation['event']}",
     ]
-    reasons = ["CAUSAL_STRUCTURE_ANALYSIS", "CLOSED_CANDLE_ONLY", "CONFIRMED_PIVOTS_ONLY", "NO_LOOKAHEAD", "PROTECTED_LEVEL_CAUSALITY", "STRUCTURE_LIFECYCLE_EXPLICIT", "EVENT_MUST_OCCUR_ON_CURRENT_CLOSED_CANDLE"]
+    reasons = ["CAUSAL_STRUCTURE_ANALYSIS", "CLOSED_CANDLE_ONLY", "CONFIRMED_PIVOTS_ONLY", "NO_LOOKAHEAD", "PROTECTED_LEVEL_CAUSALITY", "STRUCTURE_LIFECYCLE_EXPLICIT", "EVENT_MUST_OCCUR_ON_CURRENT_CLOSED_CANDLE", "SINGLE_ACTIVE_CAUSAL_REGIME"]
     if protected["integrity"] == "INVALID":
         reasons.extend(["STRUCTURE_INTEGRITY_VALIDATION", *protected["integrity_reasons"], "STRUCTURE_AUTHORITY_REVOKED"])
+    elif protected["completeness"] != "COMPLETE":
+        reasons.append("PROTECTED_STRUCTURE_INCOMPLETE")
     if bos.get("confirmed"):
         reasons.append("BREAK_REQUIRES_PROTECTED_LEVEL_CROSS")
     if sweep.get("confirmed"):
