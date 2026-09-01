@@ -1,0 +1,19 @@
+name: Shared Market Picture Contract
+
+on:
+  push:
+    branches: [production-v2]
+  workflow_dispatch:
+
+jobs:
+  contract:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.11"
+      - name: Install test dependencies
+        run: python -m pip install --upgrade pip pytest
+      - name: Run shared market picture contract tests
+        run: python -m pytest -q tests/test_shared_market_picture_contract.py
