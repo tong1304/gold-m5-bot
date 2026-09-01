@@ -9,7 +9,8 @@ def test_shared_picture_has_stable_cycle_identity_and_brain_views_reference_it()
     picture = build_shared_market_picture({"symbol": "TEST", "timeframe": "M5", "bars": bars})
 
     assert picture["picture_id"]
-    assert picture["picture_id"] == picture["candle_identity"]
+    assert picture["picture_id"].startswith("SMP1:")
+    assert picture["candle_identity"] == bars[-1]["timestamp"]
 
     e1 = attach_brain_view("E1", {"finding": "RANGE"}, picture)
     e6 = attach_brain_view("E6", {"finding": "SETUP"}, picture)
