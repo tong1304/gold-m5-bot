@@ -30,12 +30,7 @@ def _load_historical_calibration():
     try:
         from .e9_learning import load_records
         records = load_records(path)
-        completed = [
-            record.__dict__
-            for record in records
-            if str(record.outcome or "").upper() in {"WIN", "LOSS", "TIMEOUT"}
-            and record.realized_r is not None
-        ]
+        completed = [record.__dict__ for record in records if str(record.outcome or "").upper() in {"WIN", "LOSS", "TIMEOUT"} and record.realized_r is not None]
         logger.info("[PRODUCTION V2] E9 calibration loaded path=%s completed=%d", path, len(completed))
         return completed
     except Exception:
@@ -49,10 +44,7 @@ def _text(value) -> str:
 
 def _direction_from_output(output: dict) -> str:
     """Extract directional intent without inventing a trade thesis."""
-    for value in (
-        output.get("direction"), output.get("opportunity_direction"), output.get("market_direction"),
-        output.get("structure_direction"), output.get("pressure"), output.get("finding"), output.get("market_state"),
-    ):
+    for value in (output.get("direction"), output.get("opportunity_direction"), output.get("market_direction"), output.get("structure_direction"), output.get("pressure"), output.get("finding"), output.get("market_state")):
         text = _text(value)
         if text in {"BUY", "UP", "BULLISH", "TREND_UP"} or text.startswith(("BUY ", "BUY_", "BUY:")):
             return "BUY"
@@ -81,15 +73,20 @@ def _current_opportunity_input(result, candle: str) -> dict:
     e7 = engines.get("E7", {})
     e8 = engines.get("E8", {})
     e9 = engines.get("E9", {})
+    reconciliation = reconcile_causal_evidence(engines)
 
     e6_direction = _direction_from_output(e6)
     e6_setup = _text(e6.get("setup") or e6.get("setup_family") or e6.get("setup_type"))
     e6_state = _text(e6.get("setup_state") or e6.get("opportunity_stage") or e6.get("state") or e6.get("finding"))
     e6_reasons = [_text(x) for x in (e6.get("reason_codes") or e6.get("reasons") or [])]
 
-    real_setup = e6_direction in {"BUY", "SELL"} and e6_setup not in {"", "UNKNOWN", "NONE", "NO_SETUP"}
+    real_setup = (
+        e6_direction in {"BUY", "SELL"}
+        and e6_setup not in {"", "UNKNOWN", "NONE", "NO_SETUP"}
+        and reconciliation.get("state") == "CAUSAL_SETUP"
+        and not reconciliation.get("reasons")
+    )
     pending_direction, pending_setup, pending_evidence, reconciliation_wait_for = _pending_upstream_thesis(engines)
-    reconciliation = reconcile_causal_evidence(engines)
 
     if real_setup and not any(token in e6_state for token in ("INVALIDATED", "NO_SETUP")) and "CAUSAL_SETUP_PROOF_INCOMPLETE" not in e6_reasons:
         direction = e6_direction
@@ -118,22 +115,10 @@ def _current_opportunity_input(result, candle: str) -> dict:
     confirmation = _text(e7.get("confirmation_state") or e7.get("confirmation") or "")
     profit_edge = e8.get("profit_edge") if isinstance(e8.get("profit_edge"), dict) else {}
     e9_decision = _text(e9.get("decision") or result.decision)
-    ready = bool(
-        real_setup and candidate and e6_state in {"MATURE", "TRADE_READY", "CONFIRMED"}
-        and confirmation in {"PROVEN", "CONFIRMED"} and bool(profit_edge.get("trusted"))
-        and not profit_edge.get("blockers")
-    )
+    ready = bool(real_setup and candidate and e6_state in {"MATURE", "TRADE_READY", "CONFIRMED"} and confirmation in {"PROVEN", "CONFIRMED"} and bool(profit_edge.get("trusted")) and not profit_edge.get("blockers"))
     executed = bool(e9_decision in {"BUY", "SELL"} and result.gate_passed)
-    invalidated = bool(
-        any(token in e6_state for token in ("INVALIDATED",))
-        or any("INVALIDATED" in code or "HARD_VETO" in code for code in e6_reasons)
-    )
-    return {
-        "candidate": candidate, "direction": direction, "setup": setup, "ready": ready,
-        "invalidated": invalidated, "executed": executed, "thesis_status": thesis_status,
-        "candle": candle, "lifecycle_source": lifecycle_source, "upstream_evidence": pending_evidence,
-        "wait_for": wait_for,
-    }
+    invalidated = bool(any(token in e6_state for token in ("INVALIDATED",)) or any("INVALIDATED" in code or "HARD_VETO" in code for code in e6_reasons))
+    return {"candidate": candidate, "direction": direction, "setup": setup, "ready": ready, "invalidated": invalidated, "executed": executed, "thesis_status": thesis_status, "candle": candle, "lifecycle_source": lifecycle_source, "upstream_evidence": pending_evidence, "wait_for": wait_for}
 
 
 def _run_with_lifecycle(self, market_data, *, wait_bars=0, resume_state=None, historical_calibration=None):
@@ -144,9 +129,7 @@ def _run_with_lifecycle(self, market_data, *, wait_bars=0, resume_state=None, hi
         market_data = dict(market_data)
         market_data["opportunity_resume_state"] = dict(previous)
         resume_state = dict(previous)
-    result = _ORIGINAL_PIPELINE_RUN(
-        self, market_data, wait_bars=wait_bars, resume_state=resume_state, historical_calibration=historical_calibration,
-    )
+    result = _ORIGINAL_PIPELINE_RUN(self, market_data, wait_bars=wait_bars, resume_state=resume_state, historical_calibration=historical_calibration)
     candle = str(market_data.get("candle_close_timestamp") or "")
     current = _current_opportunity_input(result, candle)
     lifecycle = advance_opportunity(previous, current)
@@ -159,13 +142,7 @@ def _run_with_lifecycle(self, market_data, *, wait_bars=0, resume_state=None, hi
     risk["lifecycle_source"] = current.get("lifecycle_source")
     risk["upstream_evidence"] = current.get("upstream_evidence", [])
     risk["wait_for"] = current.get("wait_for", [])
-    print(
-        f"[PRODUCTION V2] {symbol} OPPORTUNITY_LIFECYCLE state={lifecycle.get('state')} "
-        f"continuity={lifecycle.get('continuity')} bars_waited={lifecycle.get('bars_waited', 0)} "
-        f"opportunity_id={lifecycle.get('opportunity_id')} source={current.get('lifecycle_source')} "
-        f"candle={candle} next={risk['next_required_event']} wait_for={','.join(risk['wait_for'])}",
-        flush=True,
-    )
+    print(f"[PRODUCTION V2] {symbol} OPPORTUNITY_LIFECYCLE state={lifecycle.get('state')} continuity={lifecycle.get('continuity')} bars_waited={lifecycle.get('bars_waited', 0)} opportunity_id={lifecycle.get('opportunity_id')} source={current.get('lifecycle_source')} candle={candle} next={risk['next_required_event']} wait_for={','.join(risk['wait_for'])}", flush=True)
     return result.__class__(result.symbol, result.timeframe, result.decision, result.gate_passed, result.score, result.engines, risk, result.reason_codes)
 
 
