@@ -62,6 +62,7 @@ def reconcile_causal_evidence(engines: dict[str, dict[str, Any]]) -> dict[str, A
     e2_eligible = not any(token in e2_reasons for token in ("THESIS_INVALIDATED", "HARD_VETO"))
     e2_path_blocked = "NO_ELIGIBLE_OPPORTUNITY_PATH" in e2_reasons
     e2_developing = any(token in e2_text for token in ("DEVELOPING", "PENDING", "CONFIRMED"))
+    e2_confirmed = "CONFIRMED" in e2_text
     if not e2_eligible:
         reasons.append("E2_OPPORTUNITY_UNRESOLVED")
         wait_for.append("E2_ELIGIBLE_OPPORTUNITY_PATH")
@@ -111,13 +112,15 @@ def reconcile_causal_evidence(engines: dict[str, dict[str, Any]]) -> dict[str, A
     # while the market thesis is alive rather than erase the opportunity itself.
     e1_e3_aligned = e1_direction == direction and e3_direction == direction
     auction_present = e4_pending or e4_confirmed or bool(_text(e4.get("event") or e4.get("finding")))
-    if e1_e3_aligned and auction_present and not e2_developing:
+    if e1_e3_aligned and auction_present and e2_eligible and not e2_confirmed:
         evidence.extend(["E1_DIRECTIONAL_CONTEXT", "E3_STRUCTURE_SUPPORT"])
+        if e2_developing:
+            evidence.append("E2_DEVELOPING_OPPORTUNITY")
         if e4_direction == direction:
             evidence.append("E4_DIRECTIONAL_EVENT")
         if not space_ok:
             evidence.append("SPACE_CONSTRAINT_TRACKED_NOT_OPPORTUNITY_INVALIDATION")
-        if e2_path_blocked:
+        if e2_path_blocked or not e2_developing:
             reasons.append("E2_OPPORTUNITY_PATH_UNPROVEN")
         wait_for.append("E2_OPPORTUNITY_CONFIRMATION")
         wait_for.append("E6_CAUSAL_SETUP_PROOF")
@@ -128,7 +131,7 @@ def reconcile_causal_evidence(engines: dict[str, dict[str, Any]]) -> dict[str, A
         return {"state": "OPPORTUNITY_WATCH", "direction": direction, "ready": False, "evidence": list(dict.fromkeys(evidence)), "reasons": list(dict.fromkeys(reasons)), "wait_for": list(dict.fromkeys(wait_for))}
 
     if e2_eligible and (e4_pending or e4_confirmed) and space_ok:
-        if "CONFIRMED" in e2_text:
+        if e2_confirmed:
             return {"state": "THESIS_CONFIRMED_SETUP_NOT_FORMED", "direction": direction, "ready": False, "evidence": evidence, "reasons": reasons, "wait_for": wait_for + ["E6_CAUSAL_SETUP_PROOF"]}
         if e2_developing:
             return {"state": "DEVELOPING_THESIS", "direction": direction, "ready": False, "evidence": evidence, "reasons": reasons, "wait_for": wait_for + ["E6_CAUSAL_SETUP_PROOF"]}
