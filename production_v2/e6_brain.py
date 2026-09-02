@@ -5,8 +5,8 @@ from typing import Any
 from .contracts import EngineResult
 from .e6_brain_legacy import analyze_e6 as _legacy_analyze_e6
 
-ARCHITECTURE = "E6_OPPORTUNITY_THESIS_ENGINE_V50"
-VERSION = "50.0"
+ARCHITECTURE = "E6_OPPORTUNITY_THESIS_ENGINE_V51"
+VERSION = "51.0"
 
 
 def _text(value: Any) -> str:
@@ -71,9 +71,6 @@ def _e4_direction(e4: dict[str, Any]) -> str:
     if "LOW_LIQUIDITY_INTERACTION" in event and taker != "NEUTRAL":
         return taker
 
-    # A failed-break-reclaim is directional by the side that reclaimed the level,
-    # not by the liquidity taker that was trapped. Prefer the explicit response
-    # actor before generic BREAK token inference.
     if "LOW_FAILED_BREAK_RECLAIM" in event or "HIGH_FAILED_BREAK_RECLAIM" in event:
         if actor != "NEUTRAL":
             return actor
@@ -120,7 +117,19 @@ def _causal_opportunity(upstream: dict[str, Any]) -> dict[str, Any] | None:
     hard_conflicts: list[str] = []
     missing_internal_proof: list[str] = []
 
-    core = e1_direction if e1_direction != "NEUTRAL" else external
+    # Execution-grade E6 still needs aligned evidence. For opportunity discovery,
+    # however, an unresolved E2 may track one strong structural anchor when E4
+    # independently points in the same direction. This prevents a single opposing
+    # E1 context reading from erasing a developing opportunity before confirmation.
+    if e1_direction != "NEUTRAL" and external != "NEUTRAL" and e1_direction != external:
+        if unresolved and e4_direction == external:
+            core = external
+            counter_evidence.append("E1_COUNTER_EVIDENCE")
+        else:
+            return None
+    else:
+        core = e1_direction if e1_direction != "NEUTRAL" else external
+
     if core == "NEUTRAL":
         return None
 
@@ -170,7 +179,11 @@ def _causal_opportunity(upstream: dict[str, Any]) -> dict[str, Any] | None:
     if space < 0.75:
         missing.append("STRUCTURAL_SPACE_INSUFFICIENT")
     missing.extend(missing_internal_proof)
-    support = ["E1_DIRECTIONAL_CORE", "E3_EXTERNAL_STRUCTURE_SUPPORT", "E4_DIRECTIONAL_AUCTION_EVIDENCE"]
+    support = ["E3_EXTERNAL_STRUCTURE_SUPPORT", "E4_DIRECTIONAL_AUCTION_EVIDENCE"]
+    if e1_direction == core:
+        support.insert(0, "E1_DIRECTIONAL_CORE")
+    elif e1_direction != "NEUTRAL":
+        counter_evidence.append("E1_COUNTER_EVIDENCE")
     if internal_status == "ALIGNED":
         support.append("E3_INTERNAL_STRUCTURE_SUPPORT")
     if favorable:
@@ -179,7 +192,7 @@ def _causal_opportunity(upstream: dict[str, Any]) -> dict[str, Any] | None:
         "direction": core,
         "family": family,
         "space": round(space, 4),
-        "support": support,
+        "support": list(dict.fromkeys(support)),
         "missing": list(dict.fromkeys(missing)),
         "counter_evidence": list(dict.fromkeys(counter_evidence)),
         "hard_conflicts": list(dict.fromkeys(hard_conflicts)),
@@ -199,6 +212,7 @@ def _watch_result(legacy: EngineResult, opportunity: dict[str, Any]) -> EngineRe
     contested = (
         opportunity.get("internal_status") in {"COUNTERFLOW", "UNRESOLVED_COUNTERFLOW"}
         or "STRUCTURAL_SPACE_INSUFFICIENT" in missing
+        or bool(counter_evidence)
     )
     stage = "CONTESTED" if contested else "FORMING"
     state = "THESIS_CONTESTED" if contested else "FORMING"
