@@ -6,6 +6,7 @@ from .market_data import normalize_market_data
 from . import pipeline as pipeline_module
 from .pipeline import ProductionPipeline
 from .bootstrap_surgery import install as install_bootstrap_surgery
+from .brain_handoff import attach_result_chain
 from .professional_opportunity_surgery import enrich_decision
 from .statistics import build_statistics, store
 
@@ -15,6 +16,7 @@ install_bootstrap_surgery(pipeline_module)
 pipeline = ProductionPipeline()
 app.config["PRODUCTION_V2_LIVE_REQUIRED"] = True
 _runtime_started = False
+_last_opportunity_lifecycle: dict[str, dict] = {}
 ARCHITECTURE = "SINGLE_AXIS:E1 -> E2 -> E3 -> E4 -> E5 -> E6 -> E7 -> E8 -> E9 -> OPPORTUNITY_SYNTHESIS"
 
 
@@ -37,6 +39,29 @@ def _load_historical_calibration():
     except Exception:
         logger.exception("[PRODUCTION V2] E9 calibration load failed path=%s", path)
         return None
+
+
+def _connect_brains(result):
+    """Attach the complete evidence handoff and retain the current watch state."""
+    result = attach_result_chain(result)
+    symbol = str(result.symbol or "UNKNOWN").upper()
+    lifecycle = dict(result.risk.get("opportunity_lifecycle") or {})
+    previous = dict(_last_opportunity_lifecycle.get(symbol) or {})
+    if previous and lifecycle.get("state") == "WAITING" and previous.get("state") == "WAITING":
+        lifecycle["continuity"] = "CONTINUING_EXISTING_OPPORTUNITY"
+        lifecycle["previous_state"] = previous
+        lifecycle["bars_waited"] = int(previous.get("bars_waited", 0) or 0) + 1
+    elif lifecycle.get("state") == "WAITING":
+        lifecycle["continuity"] = "NEW_OPPORTUNITY_WATCH"
+        lifecycle["bars_waited"] = 0
+    else:
+        lifecycle["continuity"] = "NO_ACTIVE_PENDING_OPPORTUNITY"
+        lifecycle["bars_waited"] = 0
+    _last_opportunity_lifecycle[symbol] = lifecycle
+    risk = dict(result.risk)
+    risk["opportunity_lifecycle"] = lifecycle
+    risk["next_required_event"] = lifecycle.get("next_required_event")
+    return result.__class__(result.symbol, result.timeframe, result.decision, result.gate_passed, result.score, result.engines, risk, result.reason_codes)
 
 
 def start_production_runtime():
@@ -80,6 +105,7 @@ def signal():
     try:
         market_data = normalize_market_data(request.get_json(silent=True) or {})
         result = pipeline.run(market_data, historical_calibration=_load_historical_calibration())
+        result = _connect_brains(result)
         result = enrich_decision(result)
         price = market_data["bars"][-1]["close"] if market_data["bars"] else None
         store.record(result, price)
