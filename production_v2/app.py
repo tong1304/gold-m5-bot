@@ -118,6 +118,14 @@ def _run_with_lifecycle(self, market_data, *, wait_bars=0, resume_state=None, hi
     risk["opportunity_lifecycle"] = lifecycle
     risk["next_required_event"] = "NEXT_CLOSED_M5_CANDLE" if lifecycle.get("state") in {"WAITING", "READY"} else None
     risk["wait_bars"] = int(lifecycle.get("bars_waited", 0) or 0)
+    print(
+        f"[PRODUCTION V2] {symbol} OPPORTUNITY_LIFECYCLE "
+        f"state={lifecycle.get('state')} continuity={lifecycle.get('continuity')} "
+        f"bars_waited={lifecycle.get('bars_waited', 0)} "
+        f"opportunity_id={lifecycle.get('opportunity_id')} "
+        f"candle={candle} next={risk['next_required_event']}",
+        flush=True,
+    )
     return result.__class__(result.symbol, result.timeframe, result.decision, result.gate_passed, result.score, result.engines, risk, result.reason_codes)
 
 
