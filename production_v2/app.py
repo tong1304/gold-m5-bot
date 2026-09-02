@@ -8,6 +8,7 @@ from .pipeline import ProductionPipeline
 from .bootstrap_surgery import install as install_bootstrap_surgery
 from .brain_handoff import attach_result_chain
 from .professional_opportunity_surgery import enrich_decision
+from .opportunity_lifecycle import advance_opportunity
 from .statistics import build_statistics, store
 
 logger = logging.getLogger(__name__)
@@ -41,26 +42,99 @@ def _load_historical_calibration():
         return None
 
 
-def _connect_brains(result):
-    """Attach the complete evidence handoff and retain the current watch state."""
-    result = attach_result_chain(result)
-    symbol = str(result.symbol or "UNKNOWN").upper()
-    lifecycle = dict(result.risk.get("opportunity_lifecycle") or {})
+def _text(value) -> str:
+    return str(value or "").upper().strip()
+
+
+def _current_opportunity_input(result, candle: str) -> dict:
+    engines = {engine.engine_id: engine.output or {} for engine in result.engines}
+    e6 = engines.get("E6", {})
+    e7 = engines.get("E7", {})
+    e8 = engines.get("E8", {})
+    e9 = engines.get("E9", {})
+
+    direction = _text(e6.get("direction") or e6.get("direction_thesis") or e6.get("thesis_direction"))
+    setup = _text(e6.get("setup") or e6.get("setup_family") or e6.get("setup_type"))
+    e6_state = _text(e6.get("setup_state") or e6.get("opportunity_stage") or e6.get("state") or e6.get("finding"))
+    e6_reasons = [_text(x) for x in (e6.get("reason_codes") or e6.get("reasons") or [])]
+    confirmation = _text(e7.get("confirmation_state") or e7.get("confirmation") or "")
+    profit_edge = e8.get("profit_edge") if isinstance(e8.get("profit_edge"), dict) else {}
+    e9_decision = _text(e9.get("decision") or result.decision)
+
+    candidate = bool(
+        direction in {"BUY", "SELL"}
+        and setup not in {"", "UNKNOWN", "NONE", "NO_SETUP"}
+        and not any(token in e6_state for token in ("INVALIDATED", "NO_SETUP"))
+        and "CAUSAL_SETUP_PROOF_INCOMPLETE" not in e6_reasons
+    )
+    ready = bool(
+        candidate
+        and e6_state in {"MATURE", "TRADE_READY", "CONFIRMED"}
+        and confirmation in {"PROVEN", "CONFIRMED"}
+        and bool(profit_edge.get("trusted"))
+        and not profit_edge.get("blockers")
+    )
+    executed = bool(e9_decision in {"BUY", "SELL"} and result.gate_passed)
+    invalidated = bool(
+        any(token in e6_state for token in ("INVALIDATED",))
+        or any("INVALIDATED" in code or "HARD_VETO" in code for code in e6_reasons)
+    )
+    return {
+        "candidate": candidate,
+        "direction": direction,
+        "setup": setup,
+        "ready": ready,
+        "invalidated": invalidated,
+        "executed": executed,
+        "candle": candle,
+    }
+
+
+def _run_with_lifecycle(self, market_data, *, wait_bars=0, resume_state=None, historical_calibration=None):
+    """Run the full E1-E9 analysis while preserving a still-valid opportunity.
+
+    Re-analysis on every new closed candle is intentional: the market must be
+    re-validated. Lifecycle state prevents a valid opportunity from being
+    forgotten between candles; it never bypasses E1-E9 or E9 authority.
+    """
+    symbol = str(market_data.get("symbol") or "UNKNOWN").upper()
     previous = dict(_last_opportunity_lifecycle.get(symbol) or {})
-    if previous and lifecycle.get("state") == "WAITING" and previous.get("state") == "WAITING":
-        lifecycle["continuity"] = "CONTINUING_EXISTING_OPPORTUNITY"
-        lifecycle["previous_state"] = previous
-        lifecycle["bars_waited"] = int(previous.get("bars_waited", 0) or 0) + 1
-    elif lifecycle.get("state") == "WAITING":
-        lifecycle["continuity"] = "NEW_OPPORTUNITY_WATCH"
-        lifecycle["bars_waited"] = 0
-    else:
-        lifecycle["continuity"] = "NO_ACTIVE_PENDING_OPPORTUNITY"
-        lifecycle["bars_waited"] = 0
+    if previous.get("state") in {"WAITING", "READY"}:
+        market_data = dict(market_data)
+        market_data["opportunity_resume_state"] = dict(previous)
+        resume_state = dict(previous)
+    result = _ORIGINAL_PIPELINE_RUN(
+        self,
+        market_data,
+        wait_bars=wait_bars,
+        resume_state=resume_state,
+        historical_calibration=historical_calibration,
+    )
+    candle = str(market_data.get("candle_close_timestamp") or "")
+    current = _current_opportunity_input(result, candle)
+    lifecycle = advance_opportunity(previous, current)
     _last_opportunity_lifecycle[symbol] = lifecycle
     risk = dict(result.risk)
     risk["opportunity_lifecycle"] = lifecycle
-    risk["next_required_event"] = lifecycle.get("next_required_event")
+    risk["next_required_event"] = "NEXT_CLOSED_M5_CANDLE" if lifecycle.get("state") in {"WAITING", "READY"} else None
+    risk["wait_bars"] = int(lifecycle.get("bars_waited", 0) or 0)
+    return result.__class__(result.symbol, result.timeframe, result.decision, result.gate_passed, result.score, result.engines, risk, result.reason_codes)
+
+
+_ORIGINAL_PIPELINE_RUN = ProductionPipeline.run
+ProductionPipeline.run = _run_with_lifecycle
+
+
+def _connect_brains(result):
+    """Attach evidence handoff without resetting the lifecycle owned by runtime."""
+    result = attach_result_chain(result)
+    symbol = str(result.symbol or "UNKNOWN").upper()
+    lifecycle = dict(result.risk.get("opportunity_lifecycle") or _last_opportunity_lifecycle.get(symbol) or {})
+    _last_opportunity_lifecycle[symbol] = lifecycle
+    risk = dict(result.risk)
+    risk["opportunity_lifecycle"] = lifecycle
+    risk["next_required_event"] = "NEXT_CLOSED_M5_CANDLE" if lifecycle.get("state") in {"WAITING", "READY"} else None
+    risk["wait_bars"] = int(lifecycle.get("bars_waited", 0) or 0)
     return result.__class__(result.symbol, result.timeframe, result.decision, result.gate_passed, result.score, result.engines, risk, result.reason_codes)
 
 
