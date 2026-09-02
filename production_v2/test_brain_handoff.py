@@ -1,4 +1,5 @@
-from production_v2.brain_handoff import build_handoff, build_lifecycle
+from production_v2.brain_handoff import attach_result_chain, build_handoff, build_lifecycle
+from production_v2.contracts import DecisionResult, EngineResult
 
 
 def test_handoff_preserves_upstream_evidence_and_authority_boundary():
@@ -43,3 +44,16 @@ def test_lifecycle_keeps_pending_opportunity_alive_until_invalidated():
     assert lifecycle["direction"] == "SELL"
     assert lifecycle["next_required_event"] in {"RECLAIM_AND_FOLLOW_THROUGH", "PRICE_RESPONSE_AT_VALUE_OR_STRUCTURE", "REGIME_ACCEPTANCE_AND_FOLLOW_THROUGH"}
     assert lifecycle["trade_authorized"] is False
+
+
+def test_attach_result_chain_exposes_all_nine_handoffs_and_lifecycle():
+    engines = tuple(
+        EngineResult(engine_id, engine_id, False, 0.0, {"direction": "SELL", "opportunity_stage": "FORMING"}, ())
+        for engine_id in ("E1", "E2", "E3", "E4", "E5", "E6", "E7", "E8", "E9")
+    )
+    result = DecisionResult("XAUUSD", "M5", "NO_TRADE", False, 0.0, engines, {})
+    enriched = attach_result_chain(result)
+    assert tuple(enriched.risk["brain_handoffs"]) == ("E1", "E2", "E3", "E4", "E5", "E6", "E7", "E8", "E9")
+    assert set(enriched.risk["brain_handoff_packets"]) == set(enriched.risk["brain_handoffs"])
+    assert enriched.risk["opportunity_lifecycle"]["authority"] == "E9"
+    assert enriched.risk["opportunity_lifecycle"]["trade_authorized"] is False
