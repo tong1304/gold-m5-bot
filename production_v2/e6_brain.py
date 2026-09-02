@@ -5,8 +5,8 @@ from typing import Any
 from .contracts import EngineResult
 from .e6_brain_legacy import analyze_e6 as _legacy_analyze_e6
 
-ARCHITECTURE = "E6_OPPORTUNITY_THESIS_ENGINE_V52"
-VERSION = "52.0"
+ARCHITECTURE = "E6_OPPORTUNITY_THESIS_ENGINE_V53"
+VERSION = "53.0"
 
 
 def _text(value: Any) -> str:
@@ -118,6 +118,11 @@ def _causal_opportunity(upstream: dict[str, Any]) -> dict[str, Any] | None:
     missing_internal_proof: list[str] = []
 
     if e1_direction != "NEUTRAL" and external != "NEUTRAL" and e1_direction != external:
+        # A genuine single-anchor transition may survive an opposing E1 only
+        # when E2 is still unresolved and E4 independently confirms the E3
+        # external direction. This is the narrow exception that preserves
+        # early opportunity discovery without letting internal counterflow
+        # manufacture a thesis.
         if unresolved and e4_direction == external:
             core = external
             counter_evidence.append("E1_COUNTER_EVIDENCE")
@@ -127,6 +132,20 @@ def _causal_opportunity(upstream: dict[str, Any]) -> dict[str, Any] | None:
         core = e1_direction if e1_direction != "NEUTRAL" else external
 
     if core == "NEUTRAL":
+        return None
+
+    # Anchor authority: E3 external structure is supporting structure, not a
+    # standalone directional thesis. A directional E1 or E2 anchor must exist
+    # unless the explicit single-anchor transition exception above applies.
+    primary_anchor = e1_direction != "NEUTRAL" or e2_direction != "NEUTRAL"
+    single_anchor_exception = (
+        e1_direction != "NEUTRAL"
+        and external != "NEUTRAL"
+        and e1_direction != external
+        and unresolved
+        and e4_direction == external
+    )
+    if not primary_anchor and not single_anchor_exception:
         return None
 
     if external != "NEUTRAL" and external != core:
@@ -180,6 +199,8 @@ def _causal_opportunity(upstream: dict[str, Any]) -> dict[str, Any] | None:
         support.insert(0, "E1_DIRECTIONAL_CORE")
     elif e1_direction != "NEUTRAL":
         counter_evidence.append("E1_COUNTER_EVIDENCE")
+    if e2_direction == core:
+        support.insert(0, "E2_DIRECTIONAL_ANCHOR")
     if internal_status == "ALIGNED":
         support.append("E3_INTERNAL_STRUCTURE_SUPPORT")
     if favorable:
