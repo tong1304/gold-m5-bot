@@ -17,4 +17,4 @@ jobs:
       - name: Compile bootstrap surgery
         run: python -m py_compile production_v2/bootstrap_surgery.py
       - name: Run bootstrap surgery tests
-        run: python -m pytest -q production_v2/test_bootstrap_surgery.py
+        run: python -m pytest -q production_v2/test_bootstrap_surgery.py production_v2/test_opportunity_chain_surgery.py
