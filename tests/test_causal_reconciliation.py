@@ -63,3 +63,22 @@ def test_real_e6_setup_cannot_bypass_causal_conflict():
     assert result["state"] == "NO_SETUP"
     assert result["ready"] is False
     assert "DIRECTIONAL_CONFLICT" in result["reasons"]
+
+
+def test_aligned_market_evidence_creates_profit_opportunity_watch_even_before_e2_confirmation():
+    result = reconcile_causal_evidence(
+        {
+            "E1": {"pressure": "UP", "trend_state": "NONE", "market_state": "COMPRESSION"},
+            "E2": {"direction": "NEUTRAL", "opportunity_maturity": "UNPROVEN", "reasons": ["DIRECTIONAL_EDGE_NOT_ESTABLISHED"]},
+            "E3": {"structure_direction": "BUY", "active_regime": "UP"},
+            "E4": {"auction_state": "PENDING", "direction": "BUY", "event": "HIGH_ACCEPTANCE_CANDIDATE"},
+            "E5": {"value_state": "DISCOUNT", "value_response": "ACCEPTING_VALUE", "available_space_atr_long": 1.10},
+            "E6": {"setup": "NO_SETUP"},
+        }
+    )
+    assert result["state"] == "OPPORTUNITY_WATCH"
+    assert result["direction"] == "BUY"
+    assert result["ready"] is False
+    assert "E2_OPPORTUNITY_CONFIRMATION" in result["wait_for"]
+    assert "AUCTION_CONFIRMATION" in result["wait_for"]
+    assert "E6_CAUSAL_SETUP_PROOF" in result["wait_for"]
