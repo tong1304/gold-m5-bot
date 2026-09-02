@@ -245,3 +245,49 @@ def test_e6_single_e3_anchor_survives_opposing_e1_while_e2_is_unresolved():
     assert "E1_COUNTER_EVIDENCE" in out["counter_evidence"]
     assert "E3_EXTERNAL_STRUCTURE_SUPPORT" in out["supporting_evidence"]
     assert "E2_OPPORTUNITY_CONFIRMATION" in out["missing_proof"]
+
+
+def test_e6_legacy_setup_cannot_bypass_missing_causal_opportunity():
+    upstream = {
+        "E1": Result({
+            "directional_pressure": "DOWN",
+            "pressure": "DOWN",
+            "trend_state": "NONE",
+            "finding": "MARKET_STATE=RANGE; STRUCTURE=BEARISH; PRESSURE=DOWN",
+        }),
+        "E2": Result({
+            "direction": "NEUTRAL",
+            "finding": "NEUTRAL opportunity is emerging based on closed-candle evidence.",
+            "opportunity_state": "UNRESOLVED",
+            "reasons": ["DIRECTIONAL_EDGE_NOT_ESTABLISHED"],
+        }),
+        "E3": Result({
+            "finding": "BULLISH_STRUCTURE",
+            "internal_state": "DOWN",
+            "external_state": "UP",
+            "bos": "NO_BREAK",
+        }),
+        "E4": Result({
+            "event": "LOW_ACCEPTANCE_CANDIDATE",
+            "auction_state": "PENDING",
+            "direction": "DOWN",
+            "liquidity_taker": "SELLERS",
+            "response_actor": "SELLERS",
+            "event_level": 77296.52,
+            "event_id": "2026-09-02T21:55:00Z|LOW_ACCEPTANCE_CANDIDATE|LOW|77296.52|DOWN",
+        }),
+        "E5": Result({
+            "finding": "FAVORABLE_LOCATION",
+            "value_state": "DISCOUNT",
+            "value_response": "REJECTED_BELOW_VALUE",
+            "available_space_atr_long": 1.3253,
+            "available_space_atr_short": 0.5327,
+        }),
+    }
+
+    out = analyze_e6({"bars": _bars()}, upstream).output
+
+    assert out.get("setup") in {None, "", "NONE", "NO_SETUP", "UNKNOWN"}
+    assert out.get("state") in {None, "", "ABSENT", "NO_SETUP"}
+    assert out.get("trade_ready") is not True
+    assert out.get("watch_only") is not True
