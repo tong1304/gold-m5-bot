@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 ACTIVE_STATES = {"WAITING", "READY"}
+ACTIVE_THESIS_STATES = {"FORMING", "VALIDATING", "MATURE", "CONFIRMED", "TRADE_READY"}
 
 
 def _text(value: Any) -> str:
@@ -18,11 +19,13 @@ def _identity(direction: Any, setup: Any) -> str:
 
 
 def advance_opportunity(previous: dict[str, Any] | None, current: dict[str, Any]) -> dict[str, Any]:
-    """Advance one opportunity across closed candles without authorizing trades.
+    """Advance an opportunity across closed candles without changing trade gates.
 
-    The current candle is always re-evaluated by E1-E9. This function only
-    preserves a still-valid opportunity identity and its waiting history; it
-    never lowers a gate or invents a setup.
+    E1-E9 are still re-evaluated on every new closed candle. Lifecycle state is
+    only retained when the current candle explicitly preserves the same causal
+    thesis or independently produces the same candidate. Missing evidence is
+    not treated as an automatic invalidation; explicit invalidation remains a
+    hard stop. E9 remains the sole execution authority.
     """
     previous = dict(previous or {})
     current = dict(current or {})
@@ -31,6 +34,7 @@ def advance_opportunity(previous: dict[str, Any] | None, current: dict[str, Any]
     ready = bool(current.get("ready"))
     invalidated = bool(current.get("invalidated"))
     executed = bool(current.get("executed"))
+    thesis_status = _text(current.get("thesis_status"))
     current_direction = _text(current.get("direction"))
     current_setup = _text(current.get("setup"))
     identity = _identity(current_direction, current_setup)
@@ -51,7 +55,7 @@ def advance_opportunity(previous: dict[str, Any] | None, current: dict[str, Any]
         }
 
     if previous_state in ACTIVE_STATES:
-        if invalidated or not candidate:
+        if invalidated:
             return {
                 **previous,
                 "state": "INVALIDATED",
@@ -59,15 +63,15 @@ def advance_opportunity(previous: dict[str, Any] | None, current: dict[str, Any]
                 "bars_waited": int(previous.get("bars_waited", 0) or 0),
                 "last_evaluated_candle": candle,
                 "trade_authorized": False,
-                "invalidation_reason": "CURRENT_CANDLE_INVALIDATED" if invalidated else "OPPORTUNITY_NO_LONGER_VALID",
+                "invalidation_reason": "CURRENT_CANDLE_INVALIDATED",
             }
-        if previous_id and identity != previous_id:
+
+        if previous_id and identity and identity != previous_id:
+            reason = "DIRECTION_OR_SETUP_CHANGED"
             if previous_direction and current_direction != previous_direction:
                 reason = "DIRECTION_CHANGED"
             elif previous_setup and current_setup != previous_setup:
                 reason = "SETUP_CHANGED"
-            else:
-                reason = "DIRECTION_OR_SETUP_CHANGED"
             return {
                 **previous,
                 "state": "INVALIDATED",
@@ -77,6 +81,30 @@ def advance_opportunity(previous: dict[str, Any] | None, current: dict[str, Any]
                 "trade_authorized": False,
                 "invalidation_reason": reason,
             }
+
+        same_identity = bool(previous_id and identity == previous_id)
+        thesis_preserved = same_identity and thesis_status in ACTIVE_THESIS_STATES
+        if candidate and not same_identity:
+            return {
+                **previous,
+                "state": "INVALIDATED",
+                "continuity": "OPPORTUNITY_INVALIDATED",
+                "bars_waited": int(previous.get("bars_waited", 0) or 0),
+                "last_evaluated_candle": candle,
+                "trade_authorized": False,
+                "invalidation_reason": "DIRECTION_OR_SETUP_CHANGED",
+            }
+        if not candidate and not thesis_preserved:
+            return {
+                **previous,
+                "state": "INVALIDATED",
+                "continuity": "OPPORTUNITY_INVALIDATED",
+                "bars_waited": int(previous.get("bars_waited", 0) or 0),
+                "last_evaluated_candle": candle,
+                "trade_authorized": False,
+                "invalidation_reason": "THESIS_NOT_PRESERVED",
+            }
+
         bars_waited = int(previous.get("bars_waited", 0) or 0) + 1
         return {
             **previous,
