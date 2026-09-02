@@ -14,6 +14,8 @@ _BOOTSTRAP_REASON_CODES = {
     "CONDITIONAL_SAMPLE_RELAXED",
 }
 _CAUSAL_SETUPS = {"LIQUIDITY_REVERSAL", "AUCTION_ACCEPTANCE_CONTINUATION", "BREAKOUT_RETEST"}
+_REJECTION_EVENTS = ("SWEEP_REJECTION", "FAILED_BREAK_RECLAIM", "HIGH_REJECTION", "LOW_REJECTION")
+_ACCEPTANCE_EVENTS = ("ACCEPTANCE",)
 
 
 def _bootstrap_probability() -> dict[str, Any]:
@@ -54,10 +56,164 @@ def _bootstrap_eligible(g: dict[str, Any]) -> bool:
     )
 
 
+def _text(v: Any) -> str:
+    return str(v or "").upper().strip()
+
+
+def _num(v: Any, default: float = 0.0) -> float:
+    try:
+        x = float(v)
+        return x if x == x else default
+    except (TypeError, ValueError):
+        return default
+
+
+def _payload(upstream: dict[str, EngineResult], key: str) -> dict[str, Any]:
+    result = upstream.get(key)
+    return dict(result.output or {}) if result else {}
+
+
+def _direction(v: Any) -> str:
+    x = _text(v)
+    if x in {"BUY", "BULLISH", "UP", "LONG", "BUYERS", "TREND_UP"}: return "BUY"
+    if x in {"SELL", "BEARISH", "DOWN", "SHORT", "SELLERS", "TREND_DOWN"}: return "SELL"
+    return "NEUTRAL"
+
+
+def _rescue_e6_causal_candidate(original: EngineResult, upstream: dict[str, EngineResult]) -> EngineResult:
+    """Preserve a causal market event as an E6 thesis even when E2 is still developing.
+
+    This does not authorize a trade. E7 still owns entry confirmation and E8/E9
+    retain independent permission gates.
+    """
+    out = dict(original.output or {})
+    if bool(out.get("setup_exists")):
+        return original
+
+    e1, e2, e3, e4, e5 = (_payload(upstream, key) for key in ("E1", "E2", "E3", "E4", "E5"))
+    event = _text(e4.get("event", e4.get("finding")))
+    event_direction = _direction(e4.get("direction"))
+    pressure = _direction(e1.get("directional_pressure", e1.get("pressure")))
+    direction = event_direction if event_direction != "NEUTRAL" else pressure
+    e2_finding = _text(e2.get("finding", e2.get("state")))
+    e3_finding = _text(e3.get("finding", e3.get("structure_state")))
+    invalid = bool(e3.get("structure_invalidated") is True or e3.get("active_invalidation") is True or _text(e3.get("lifecycle")) == "INVALIDATED")
+    location = _text(e5.get("finding"))
+    structural_location = _text(e5.get("structural_location"))
+    favorable = "FAVORABLE_LOCATION" in location or structural_location in {"AT_SUPPORT", "AT_RESISTANCE"}
+    space_key = "available_space_atr_long" if direction == "BUY" else "available_space_atr_short"
+    space = _num(e5.get(space_key))
+    rejection = any(token in event for token in _REJECTION_EVENTS)
+    acceptance = any(token in event for token in _ACCEPTANCE_EVENTS)
+
+    # Conservative rescue: the causal event itself plus directional pressure,
+    # favorable location, and adequate space are enough to form a hypothesis.
+    # E2 disagreement or E3 mixed structure prevents automatic maturation.
+    if invalid or direction not in {"BUY", "SELL"} or event_direction != direction:
+        return original
+    if pressure != direction or not favorable or space < 0.75:
+        return original
+    if not (rejection or acceptance):
+        return original
+
+    setup = "LIQUIDITY_REVERSAL" if rejection else "AUCTION_ACCEPTANCE_CONTINUATION"
+    quality = 68.0 if rejection else 64.0
+    reasons = ["E4_CAUSAL_MARKET_EVENT", "E1_DIRECTIONAL_PRESSURE", "E5_FAVORABLE_LOCATION", "E5_ADEQUATE_SPACE"]
+    if "OPPORTUNITY IS DEVELOPING" in e2_finding or "DEVELOPING" in e2_finding:
+        reasons.append("E2_DEVELOPING_NOT_REQUIRED_FOR_THESIS_FORMATION")
+    if "MIXED" in e3_finding:
+        reasons.append("E3_MIXED_STRUCTURE_RETAINED_AS_COUNTER_EVIDENCE")
+
+    out.update({
+        "state": "FORMING",
+        "setup_state": "FORMING",
+        "setup": setup,
+        "setup_family": setup,
+        "candidate_setup": setup,
+        "candidate_setup_thesis": f"{direction} {setup} is forming from a causal E4 event with directional pressure, favorable location, and adequate structural space.",
+        "direction": direction,
+        "direction_thesis": f"{direction} thesis is supported by E1 pressure and E4 causal event.",
+        "stage": "FORMING",
+        "formation_stage": "FORMING",
+        "lifecycle": "FORMING",
+        "maturity": "HYPOTHESIS",
+        "finding": f"{direction} {setup} is forming: causal market event survives initial E6 screening.",
+        "thesis": f"{direction} {setup} is forming: causal market event survives initial E6 screening.",
+        "thesis_owner": "E6",
+        "setup_exists": True,
+        "trade_ready": False,
+        "trade_permission": False,
+        "trade_readiness": "AWAITING_E7_E8_PROOF",
+        "setup_quality": quality,
+        "confidence": 76.0,
+        "supporting_evidence": reasons,
+        "counter_evidence": ["E2_OPPORTUNITY_STILL_DEVELOPING"] if "DEVELOPING" in e2_finding else [],
+        "missing_evidence": ["E7_SETUP_SPECIFIC_CLOSED_CANDLE_CONFIRMATION"],
+        "missing_proof": ["E7_SETUP_SPECIFIC_CLOSED_CANDLE_CONFIRMATION"],
+        "next_required_evidence": ["E7_SETUP_SPECIFIC_CLOSED_CANDLE_CONFIRMATION"],
+        "next_required_event": "E7_SETUP_SPECIFIC_CLOSED_CANDLE_CONFIRMATION",
+        "reason_codes": reasons,
+        "primary_blocker": "E7_CONFIRMATION_REQUIRED",
+        "secondary_blockers": ["E2_OPPORTUNITY_UNRESOLVED"] if "DEVELOPING" in e2_finding else [],
+        "governance_blockers": ["E7_CONFIRMATION_REQUIRED"],
+        "candidate_states": [{"name": setup, "direction": direction, "causal_score": quality, "stage": "FORMING"}],
+        "selected_hypothesis": setup,
+        "candidate_setups": [setup],
+        "reasoning_trace": {
+            "summary": "E4 causal event -> E6 thesis formation",
+            "decision": "FORM_OPPORTUNITY_THESIS_NOT_TRADE",
+            "candidate_discovery": "CAUSAL_EVENT_SURVIVAL",
+            "e2_proof_pending": True,
+            "e3_structure_counter_evidence": "MIXED" in e3_finding,
+            "space_atr": space,
+            "space_is_constraint_not_invalidation": True,
+            "e6_owns_thesis": True,
+            "e7_owns_confirmation": True,
+            "e8_owns_trade_economics": True,
+            "e9_owns_trade_decision": True,
+        },
+        "space_diagnostic": {
+            "available_space_atr": space,
+            "minimum_required_space_atr": 0.75,
+            "space_sufficient": True,
+            "source": "E5_DIRECTIONAL_SPACE",
+        },
+    })
+    return EngineResult(original.engine_id, original.name, False, max(float(original.score or 0.0), quality), out, tuple(dict.fromkeys(reasons)))
+
+
+def _gate_e8_applicability(original: EngineResult, results: dict[str, EngineResult]) -> EngineResult:
+    """E8 must evaluate economics only when E6 owns a surviving thesis."""
+    e6 = results.get("E6")
+    e6_out = dict(e6.output or {}) if e6 else {}
+    if bool(e6_out.get("setup_exists")):
+        return original
+    out = dict(original.output or {})
+    out.update({
+        "state": "NOT_APPLICABLE",
+        "economic_state": "NOT_APPLICABLE",
+        "risk_state": "NOT_APPLICABLE",
+        "risk_ready": False,
+        "verified": False,
+        "trade_plan_verified": False,
+        "gate_passed": False,
+        "bootstrap_mode": False,
+        "reasons": ["E6_THESIS_REQUIRED"],
+        "reason_codes": ["E6_THESIS_REQUIRED"],
+        "primary_blocker": "E6_THESIS_REQUIRED",
+        "secondary_blockers": [],
+        "trade_plan": {},
+        "applicability": "BLOCKED_NO_SURVIVING_E6_THESIS",
+        "next_required_event": "E6_SURVIVING_CAUSAL_SETUP_THESIS",
+    })
+    return EngineResult(original.engine_id, original.name, False, original.score, out, ("E6_THESIS_REQUIRED",))
+
+
 def _promote_independent_e6(original, snapshot, upstream):
     result = original(snapshot, upstream)
     if not isinstance(result, EngineResult):
         return result
+    result = _rescue_e6_causal_candidate(result, upstream)
     out = dict(result.output or {})
     state = str(out.get("setup_state") or out.get("state") or "").upper()
     setup = str(out.get("setup") or out.get("setup_family") or "").upper()
@@ -84,9 +240,12 @@ def _promote_independent_e6(original, snapshot, upstream):
 
 
 def _bootstrap_e8_result(original, snapshot, results):
-    result = original(snapshot, results)
-    if not isinstance(result, EngineResult):
-        return result
+    gated = _gate_e8_applicability(original(snapshot, results), results)
+    if not isinstance(gated, EngineResult):
+        return gated
+    if str(gated.output.get("state")) == "NOT_APPLICABLE":
+        return gated
+    result = gated
     out = dict(result.output or {})
     probability = dict(out.get("probability") or {})
     sample = int(probability.get("sample", 0) or 0)
@@ -105,10 +264,6 @@ def _bootstrap_e8_result(original, snapshot, results):
     sensitivity = dict(out.get("sensitivity") or {})
     risk_quality = dict(out.get("risk_quality") or {})
 
-    # Recompute the probability-dependent economic/sensitivity checks with an
-    # explicit neutral prior. This is not historical evidence and never claims
-    # to be calibrated; it only prevents a brand-new system from being locked
-    # forever before its first resolved trade outcomes exist.
     p = _bootstrap_probability()
     rr = float(geometry.get("real_rr", 0.0) or 0.0)
     stress_p = p["stress_probability"]
@@ -133,7 +288,6 @@ def _bootstrap_e8_result(original, snapshot, results):
         "mode": "BOOTSTRAP_NEUTRAL_PRIOR",
     }
 
-    # Sensitivity is recomputed from the same 47% stressed prior.
     atr = float(out.get("atr14") or 0.0)
     entry = float(out.get("entry") or 0.0)
     stop = float((out.get("stop_plan") or {}).get("stop") or 0.0)
@@ -143,7 +297,8 @@ def _bootstrap_e8_result(original, snapshot, results):
         def ev(e: float, s: float, t: float) -> float:
             risk = abs(e - s) / atr
             reward = abs(t - e) / atr
-            real_rr = max(0.0, reward - float(execution.get("cost_atr", 0.0) or 0.0)) / max(risk + float(execution.get("cost_atr", 0.0) or 0.0), 1e-9)
+            cost = float(execution.get("cost_atr", 0.0) or 0.0)
+            real_rr = max(0.0, reward - cost) / max(risk + cost, 1e-9)
             return stress_p * real_rr - (1.0 - stress_p)
         ew = entry + (0.20 * atr if direction == "BUY" else -0.20 * atr)
         sw = stop - (0.20 * atr if direction == "BUY" else -0.20 * atr)
