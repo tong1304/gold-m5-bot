@@ -82,3 +82,21 @@ def test_aligned_market_evidence_creates_profit_opportunity_watch_even_before_e2
     assert "E2_OPPORTUNITY_CONFIRMATION" in result["wait_for"]
     assert "AUCTION_CONFIRMATION" in result["wait_for"]
     assert "E6_CAUSAL_SETUP_PROOF" in result["wait_for"]
+
+
+def test_structural_space_constraint_does_not_erase_a_valid_profit_opportunity_watch():
+    result = reconcile_causal_evidence(
+        {
+            "E1": {"structure_direction": "BUY", "pressure": "UP", "market_state": "COMPRESSION"},
+            "E2": {"direction": "NEUTRAL", "opportunity_maturity": "UNPROVEN"},
+            "E3": {"structure_direction": "BUY", "active_regime": "UP"},
+            "E4": {"auction_state": "PENDING", "direction": "BUY", "event": "HIGH_ACCEPTANCE_CANDIDATE"},
+            "E5": {"value_state": "DISCOUNT", "value_response": "ACCEPTING_VALUE", "available_space_atr_long": 0.49},
+            "E6": {"setup": "NO_SETUP"},
+        }
+    )
+    assert result["state"] == "OPPORTUNITY_WATCH"
+    assert result["direction"] == "BUY"
+    assert result["ready"] is False
+    assert "STRUCTURAL_SPACE_INSUFFICIENT" in result["reasons"]
+    assert "SUFFICIENT_STRUCTURAL_SPACE" in result["wait_for"]
