@@ -46,11 +46,7 @@ def reconcile_causal_evidence(engines: dict[str, dict[str, Any]]) -> dict[str, A
     """Reconcile E1-E6 into opportunity discovery and non-executable setup states."""
     engines = {key: dict(value or {}) for key, value in (engines or {}).items()}
     e1, e2, e3, e4, e5, e6 = (engines.get(key, {}) for key in ("E1", "E2", "E3", "E4", "E5", "E6"))
-
-    e1_direction = _direction(e1)
-    e2_direction = _direction(e2)
-    e3_direction = _direction(e3)
-    e4_direction = _event_direction(e4)
+    e1_direction, e2_direction, e3_direction, e4_direction = _direction(e1), _direction(e2), _direction(e3), _event_direction(e4)
     votes = [d for d in (e1_direction, e2_direction, e3_direction) if d in {"BUY", "SELL"}]
     buy_votes, sell_votes = votes.count("BUY"), votes.count("SELL")
     direction = "BUY" if buy_votes >= 2 and buy_votes > sell_votes else "SELL" if sell_votes >= 2 and sell_votes > buy_votes else "NEUTRAL"
@@ -60,9 +56,7 @@ def reconcile_causal_evidence(engines: dict[str, dict[str, Any]]) -> dict[str, A
 
     if direction == "NEUTRAL":
         return {"state": "NO_SETUP", "direction": "NEUTRAL", "ready": False, "evidence": evidence, "reasons": ["DIRECTIONAL_CONFLICT"], "wait_for": ["DIRECTIONAL_EDGE", "E6_CAUSAL_SETUP_PROOF"]}
-
-    conflicting = any(d in {"BUY", "SELL"} and d != direction for d in (e1_direction, e2_direction, e3_direction, e4_direction))
-    if conflicting:
+    if any(d in {"BUY", "SELL"} and d != direction for d in (e1_direction, e2_direction, e3_direction, e4_direction)):
         return {"state": "NO_SETUP", "direction": "NEUTRAL", "ready": False, "evidence": evidence, "reasons": ["DIRECTIONAL_CONFLICT"], "wait_for": ["DIRECTIONAL_ALIGNMENT", "E6_CAUSAL_SETUP_PROOF"]}
 
     e2_text = " ".join(_text(e2.get(key)) for key in ("finding", "opportunity_maturity", "state"))
@@ -99,20 +93,24 @@ def reconcile_causal_evidence(engines: dict[str, dict[str, Any]]) -> dict[str, A
         evidence.append("E6_SETUP_PRESENT")
         return {"state": "CAUSAL_SETUP", "direction": direction, "ready": True, "evidence": evidence, "reasons": reasons, "wait_for": wait_for}
 
-    # Opportunity-first discovery: an aligned E1/E3 directional core plus an
-    # active auction and usable space is worth tracking even before E2 promotes
-    # it. This is a WATCH state only; it can never authorize execution.
+    # Opportunity-first discovery deliberately does NOT require usable target
+    # space. Space is an execution/economics constraint; it should be monitored
+    # while the market thesis is alive rather than erase the opportunity itself.
     e1_e3_aligned = e1_direction == direction and e3_direction == direction
     e4_aligned = e4_direction in {"NEUTRAL", direction}
     auction_present = e4_pending or e4_confirmed or bool(_text(e4.get("event") or e4.get("finding")))
-    if e1_e3_aligned and e4_aligned and auction_present and space_ok and not e2_developing:
+    if e1_e3_aligned and e4_aligned and auction_present and not e2_developing:
         evidence.extend(["E1_DIRECTIONAL_CONTEXT", "E3_STRUCTURE_SUPPORT"])
         if e4_direction == direction:
             evidence.append("E4_DIRECTIONAL_EVENT")
+        if not space_ok:
+            evidence.append("SPACE_CONSTRAINT_TRACKED_NOT_OPPORTUNITY_INVALIDATION")
         if e2_path_blocked:
             reasons.append("E2_OPPORTUNITY_PATH_UNPROVEN")
         wait_for.append("E2_OPPORTUNITY_CONFIRMATION")
         wait_for.append("E6_CAUSAL_SETUP_PROOF")
+        if not space_ok:
+            wait_for.append("SUFFICIENT_STRUCTURAL_SPACE")
         return {"state": "OPPORTUNITY_WATCH", "direction": direction, "ready": False, "evidence": list(dict.fromkeys(evidence)), "reasons": list(dict.fromkeys(reasons)), "wait_for": list(dict.fromkeys(wait_for))}
 
     if e2_eligible and (e4_pending or e4_confirmed) and space_ok:
