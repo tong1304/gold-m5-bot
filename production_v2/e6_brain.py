@@ -6,7 +6,7 @@ from .contracts import EngineResult
 from .e6_brain_legacy import analyze_e6 as _legacy_analyze_e6
 
 ARCHITECTURE = "E6_OPPORTUNITY_THESIS_ENGINE_V51"
-VERSION = "51.0"
+VERSION = "51.1"
 
 
 def _text(value: Any) -> str:
@@ -117,10 +117,6 @@ def _causal_opportunity(upstream: dict[str, Any]) -> dict[str, Any] | None:
     hard_conflicts: list[str] = []
     missing_internal_proof: list[str] = []
 
-    # Execution-grade E6 still needs aligned evidence. For opportunity discovery,
-    # however, an unresolved E2 may track one strong structural anchor when E4
-    # independently points in the same direction. This prevents a single opposing
-    # E1 context reading from erasing a developing opportunity before confirmation.
     if e1_direction != "NEUTRAL" and external != "NEUTRAL" and e1_direction != external:
         if unresolved and e4_direction == external:
             core = external
@@ -209,10 +205,13 @@ def _watch_result(legacy: EngineResult, opportunity: dict[str, Any]) -> EngineRe
     counter_evidence = list(dict.fromkeys(opportunity.get("counter_evidence", [])))
     hard_conflicts = list(dict.fromkeys(opportunity.get("hard_conflicts", [])))
 
+    # Internal counterflow is expected during thesis formation. It is missing
+    # confirmation, but it is not by itself a contested thesis. Contestation is
+    # reserved for stronger contradictions (e.g. opposing E1 anchor) or a
+    # materially constrained structural space that changes trade survivability.
     contested = (
-        opportunity.get("internal_status") in {"COUNTERFLOW", "UNRESOLVED_COUNTERFLOW"}
+        "E1_COUNTER_EVIDENCE" in counter_evidence
         or "STRUCTURAL_SPACE_INSUFFICIENT" in missing
-        or bool(counter_evidence)
     )
     stage = "CONTESTED" if contested else "FORMING"
     state = "THESIS_CONTESTED" if contested else "FORMING"
