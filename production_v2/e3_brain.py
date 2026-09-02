@@ -204,7 +204,11 @@ def _protected(highs, lows, external_state):
             protected_low = ll
             bearish_anchor = ll
             if candidates:
-                protected_high = candidates[-1]
+                # The protected high is the causal LH that established the
+                # active down-regime anchor, not the later repricing LH that
+                # formed inside the already-established leg. Select the first
+                # qualifying confirmed LH for a stable causal anchor.
+                protected_high = candidates[0]
                 completeness = "COMPLETE"
             else:
                 completeness = "BREAK_LEVEL_ONLY"
@@ -222,9 +226,6 @@ def _protected(highs, lows, external_state):
         bearish_anchor = None
         completeness = "INVALID"
 
-    # Missing secondary invalidation level is incomplete evidence, not corrupt
-    # OHLC/structure data. Keep integrity VALID so E3 can describe structure,
-    # while downstream gates can require completeness before trading.
     integrity = "INVALID" if "CAUSAL_PROTECTED_LEVEL_ORDER_INVALID" in invalid_reasons else "VALID"
 
     return {
