@@ -61,6 +61,7 @@ def _current_opportunity_input(result, candle: str) -> dict:
     profit_edge = e8.get("profit_edge") if isinstance(e8.get("profit_edge"), dict) else {}
     e9_decision = _text(e9.get("decision") or result.decision)
 
+    thesis_status = e6_state if e6_state in {"FORMING", "VALIDATING", "MATURE", "CONFIRMED", "TRADE_READY"} else "NONE"
     candidate = bool(
         direction in {"BUY", "SELL"}
         and setup not in {"", "UNKNOWN", "NONE", "NO_SETUP"}
@@ -86,6 +87,7 @@ def _current_opportunity_input(result, candle: str) -> dict:
         "ready": ready,
         "invalidated": invalidated,
         "executed": executed,
+        "thesis_status": thesis_status,
         "candle": candle,
     }
 
