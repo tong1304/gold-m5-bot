@@ -100,3 +100,56 @@ def test_e6_generic_high_liquidity_interaction_uses_buyer_taker_as_directional_e
     assert out["trade_ready"] is False
     assert "E3_INTERNAL_COUNTER_EVIDENCE" in out["counter_evidence"]
     assert "E3_INTERNAL_COUNTER_EVIDENCE" not in out["hard_conflicts"]
+
+
+def test_e6_exact_constrained_counterflow_keeps_a_contested_thesis_alive():
+    upstream = _upstream(space_long=0.2527)
+    upstream["E1"] = Result({
+        "directional_pressure": "UP",
+        "pressure": "UP",
+        "trend_state": "NONE",
+        "finding": "MARKET_STATE=RANGE; STRUCTURE=BULLISH; COUNTER_EVIDENCE_PRESENT",
+    })
+    upstream["E2"] = Result({
+        "direction": "NEUTRAL",
+        "finding": "NEUTRAL opportunity is emerging based on closed-candle evidence.",
+        "opportunity_state": "UNRESOLVED",
+        "reason_codes": ["DIRECTIONAL_EDGE_NOT_ESTABLISHED"],
+    })
+    upstream["E3"] = Result({
+        "finding": "BULLISH_STRUCTURE",
+        "internal_state": "DOWN",
+        "external_state": "UP",
+        "bos": "NONE",
+    })
+    upstream["E4"] = Result({
+        "event": "LOW_FAILED_BREAK_RECLAIM",
+        "auction_state": "PENDING",
+        "direction": "UP",
+        "liquidity_taker": "SELLERS",
+        "response_actor": "BUYERS",
+        "event_level": 4375.02,
+        "event_id": "gold-2026-09-02T21:35:00Z",
+        "quality": 72.75,
+    })
+    upstream["E5"] = Result({
+        "finding": "FAVORABLE_LOCATION",
+        "value_state": "EQUILIBRIUM",
+        "value_response": "WAIT_CONFIRMATION",
+        "available_space_atr_long": 0.2527,
+        "available_space_atr_short": 0.6565,
+    })
+
+    out = analyze_e6({"bars": _bars()}, upstream).output
+
+    assert out["state"] == "THESIS_CONTESTED"
+    assert out["setup"] == "OPPORTUNITY_THESIS"
+    assert out["opportunity_stage"] == "CONTESTED"
+    assert out["direction"] == "BUY"
+    assert out["trade_ready"] is False
+    assert out["watch_only"] is True
+    assert "E2_OPPORTUNITY_CONFIRMATION" in out["missing_proof"]
+    assert "E3_INTERNAL_STRUCTURE_ALIGNMENT" in out["missing_proof"]
+    assert "STRUCTURAL_SPACE_INSUFFICIENT" in out["missing_proof"]
+    assert "E3_INTERNAL_COUNTER_EVIDENCE" in out["counter_evidence"]
+    assert out["hard_conflicts"] == []
