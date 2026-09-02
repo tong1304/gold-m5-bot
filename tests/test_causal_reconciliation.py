@@ -100,3 +100,21 @@ def test_structural_space_constraint_does_not_erase_a_valid_profit_opportunity_w
     assert result["ready"] is False
     assert "STRUCTURAL_SPACE_INSUFFICIENT" in result["reasons"]
     assert "SUFFICIENT_STRUCTURAL_SPACE" in result["wait_for"]
+
+
+def test_counterflow_e4_is_tracked_not_promoted_to_directional_conflict_when_e1_e3_core_agrees():
+    result = reconcile_causal_evidence(
+        {
+            "E1": {"pressure": "UP", "trend_state": "NONE", "market_state": "RANGE"},
+            "E2": {"direction": "NEUTRAL", "opportunity_maturity": "UNPROVEN"},
+            "E3": {"structure_direction": "BUY", "active_regime": "UP"},
+            "E4": {"auction_state": "PENDING", "direction": "SELL", "event": "HIGH_FAILED_BREAK_RECLAIM"},
+            "E5": {"value_state": "DISCOUNT", "value_response": "ACCEPTING_VALUE", "available_space_atr_long": 1.20},
+            "E6": {"setup": "NO_SETUP"},
+        }
+    )
+    assert result["state"] == "CONTESTED_OPPORTUNITY_WATCH"
+    assert result["direction"] == "BUY"
+    assert result["ready"] is False
+    assert "E4_COUNTERFLOW_EVENT" in result["reasons"]
+    assert "E4_DIRECTIONAL_RESOLUTION" in result["wait_for"]
