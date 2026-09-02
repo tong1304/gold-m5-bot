@@ -213,7 +213,7 @@ class LiveService:
                         value = nested.get(key)
                         if isinstance(value, (list, tuple)): observations.extend(value)
                         elif value: observations.append(value)
-        return {"question": question, "conclusion": str(conclusion), "observations": [str(x) for x in observations[:12]], "reasons": sorted(set(str(x) for x in reasons))[:16], "role": output.get("reasoning_role", "SPECIALIST_EVIDENCE")}
+        return {"question": question, "conclusion": str(conclusion), "observations": [str(x) for x in observations[:12]], "reasons": sorted(set(str(x) for x in reasons))[:16], "role": output.get("reasoning_role", "TRADE_ECONOMICS_RISK")}
 
     def _trace_result(self, alias: str, result) -> None:
         state = result.risk.get("engine_state"); blocked_by = result.risk.get("blocked_by")
