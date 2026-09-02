@@ -54,17 +54,22 @@ def _direction_from_output(output: dict) -> str:
 
 
 def _pending_upstream_thesis(engines: dict[str, dict]) -> tuple[str, str, list[str], list[str]]:
-    """Return only a causally reconciled upstream watch and its wait conditions."""
+    """Return an opportunity watch before entry proof, preserving causal wait conditions."""
     reconciliation = reconcile_causal_evidence(engines)
     state = reconciliation.get("state")
-    if state not in {"DEVELOPING_THESIS", "THESIS_CONFIRMED_SETUP_NOT_FORMED"}:
+    if state not in {"OPPORTUNITY_WATCH", "DEVELOPING_THESIS", "THESIS_CONFIRMED_SETUP_NOT_FORMED"}:
         return "NEUTRAL", "", [], list(reconciliation.get("wait_for") or [])
     direction = _text(reconciliation.get("direction"))
     if direction not in {"BUY", "SELL"}:
         return "NEUTRAL", "", [], list(reconciliation.get("wait_for") or [])
     evidence = list(reconciliation.get("evidence") or [])
-    evidence.append("E2_OPPORTUNITY_CONFIRMED" if state == "THESIS_CONFIRMED_SETUP_NOT_FORMED" else "E2_OPPORTUNITY_DEVELOPING")
-    return direction, "OPPORTUNITY_WATCH", evidence, list(reconciliation.get("wait_for") or [])
+    if state == "THESIS_CONFIRMED_SETUP_NOT_FORMED":
+        evidence.append("E2_OPPORTUNITY_CONFIRMED")
+    elif state == "DEVELOPING_THESIS":
+        evidence.append("E2_OPPORTUNITY_DEVELOPING")
+    else:
+        evidence.append("OPPORTUNITY_SCOUTING_ACTIVE")
+    return direction, "OPPORTUNITY_WATCH", list(dict.fromkeys(evidence)), list(reconciliation.get("wait_for") or [])
 
 
 def _current_opportunity_input(result, candle: str) -> dict:
@@ -100,7 +105,7 @@ def _current_opportunity_input(result, candle: str) -> dict:
         setup = pending_setup
         thesis_status = "CONFIRMED" if reconciliation.get("state") == "THESIS_CONFIRMED_SETUP_NOT_FORMED" else "FORMING"
         candidate = True
-        lifecycle_source = "E2_E4_UPSTREAM_WATCH"
+        lifecycle_source = "OPPORTUNITY_SCOUT"
         wait_for = reconciliation_wait_for or ["E6_CAUSAL_SETUP_PROOF"]
         if "E6_CAUSAL_SETUP_PROOF" not in wait_for:
             wait_for.append("E6_CAUSAL_SETUP_PROOF")
@@ -190,7 +195,7 @@ def index():
 
 @app.get("/health")
 def health():
-    return jsonify({"status": "ok" if _runtime_started else "degraded", "system": "9-ENGINE", "version": "production-v2", "architecture": ARCHITECTURE, "sub_engines": False, "parallel_peer_analysis": False, "decision_authority": "E9", "legacy_runtime": False, "live_runtime": "RUNNING" if _runtime_started else "NOT_RUNNING", "timeframe": "M5"}), (200 if _runtime_started else 503)
+    return jsonify({"status": "ok" if _runtime_started else "degraded", "system": "9-ENGINE", "version": "production-v2", "architecture": ARCHITECTURE, "sub_engines": False, "parallel_peer_analysis": False, "decision_authority": "E9", "legacy_runtime": False, "timeframe": "M5"}), (200 if _runtime_started else 503)
 
 
 @app.get("/api/statistics")
