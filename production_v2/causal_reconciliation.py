@@ -10,9 +10,9 @@ def _text(value: Any) -> str:
 def _direction(output: dict[str, Any]) -> str:
     for value in (output.get("direction"), output.get("opportunity_direction"), output.get("structure_direction"), output.get("pressure"), output.get("trend_state"), output.get("finding")):
         text = _text(value)
-        if text in {"BUY", "UP", "BULLISH", "TREND_UP"} or text.startswith(("BUY ", "BUY_", "BUY:")):
+        if text in {"BUY", "UP", "BULLISH", "TREND_UP"} or text.startswith(("BUY ", "BUY_", "BUY:", "BULLISH_")):
             return "BUY"
-        if text in {"SELL", "DOWN", "BEARISH", "TREND_DOWN"} or text.startswith(("SELL ", "SELL_", "SELL:")):
+        if text in {"SELL", "DOWN", "BEARISH", "TREND_DOWN"} or text.startswith(("SELL ", "SELL_", "SELL:", "BEARISH_")):
             return "SELL"
     return "NEUTRAL"
 
@@ -56,8 +56,6 @@ def reconcile_causal_evidence(engines: dict[str, dict[str, Any]]) -> dict[str, A
 
     if direction == "NEUTRAL":
         return {"state": "NO_SETUP", "direction": "NEUTRAL", "ready": False, "evidence": evidence, "reasons": ["DIRECTIONAL_CONFLICT"], "wait_for": ["DIRECTIONAL_EDGE", "E6_CAUSAL_SETUP_PROOF"]}
-    if any(d in {"BUY", "SELL"} and d != direction for d in (e1_direction, e2_direction, e3_direction, e4_direction)):
-        return {"state": "NO_SETUP", "direction": "NEUTRAL", "ready": False, "evidence": evidence, "reasons": ["DIRECTIONAL_CONFLICT"], "wait_for": ["DIRECTIONAL_ALIGNMENT", "E6_CAUSAL_SETUP_PROOF"]}
 
     e2_text = " ".join(_text(e2.get(key)) for key in ("finding", "opportunity_maturity", "state"))
     e2_reasons = _text(e2.get("reasons"))
@@ -67,6 +65,21 @@ def reconcile_causal_evidence(engines: dict[str, dict[str, Any]]) -> dict[str, A
     if not e2_eligible:
         reasons.append("E2_OPPORTUNITY_UNRESOLVED")
         wait_for.append("E2_ELIGIBLE_OPPORTUNITY_PATH")
+
+    # An opposing E4 event is counter-flow evidence, not automatic opportunity
+    # invalidation when the E1/E3 directional core agrees. It becomes a hard
+    # conflict only when the upstream directional core itself disagrees.
+    e4_counterflow = e4_direction in {"BUY", "SELL"} and e4_direction != direction
+    core_aligned = e1_direction == direction and e3_direction == direction
+    e2_opposes_core = e2_direction in {"BUY", "SELL"} and e2_direction != direction
+    if e2_opposes_core:
+        return {"state": "NO_SETUP", "direction": "NEUTRAL", "ready": False, "evidence": evidence, "reasons": ["DIRECTIONAL_CONFLICT", "E2_DIRECTION_CONFLICT"], "wait_for": ["DIRECTIONAL_ALIGNMENT", "E6_CAUSAL_SETUP_PROOF"]}
+    if e4_counterflow and not core_aligned:
+        return {"state": "NO_SETUP", "direction": "NEUTRAL", "ready": False, "evidence": evidence, "reasons": ["DIRECTIONAL_CONFLICT"], "wait_for": ["DIRECTIONAL_ALIGNMENT", "E6_CAUSAL_SETUP_PROOF"]}
+    if e4_counterflow:
+        reasons.append("E4_COUNTERFLOW_EVENT")
+        evidence.append("E4_COUNTERFLOW_IS_COUNTER_EVIDENCE_NOT_INVALIDATION")
+        wait_for.append("E4_DIRECTIONAL_RESOLUTION")
 
     e4_state = _text(e4.get("auction_state") or e4.get("auction_phase"))
     e4_pending = e4_state in {"PENDING", "AWAITING_CONFIRMATION", "CONFIRMATION_PENDING"}
@@ -97,9 +110,8 @@ def reconcile_causal_evidence(engines: dict[str, dict[str, Any]]) -> dict[str, A
     # space. Space is an execution/economics constraint; it should be monitored
     # while the market thesis is alive rather than erase the opportunity itself.
     e1_e3_aligned = e1_direction == direction and e3_direction == direction
-    e4_aligned = e4_direction in {"NEUTRAL", direction}
     auction_present = e4_pending or e4_confirmed or bool(_text(e4.get("event") or e4.get("finding")))
-    if e1_e3_aligned and e4_aligned and auction_present and not e2_developing:
+    if e1_e3_aligned and auction_present and not e2_developing:
         evidence.extend(["E1_DIRECTIONAL_CONTEXT", "E3_STRUCTURE_SUPPORT"])
         if e4_direction == direction:
             evidence.append("E4_DIRECTIONAL_EVENT")
@@ -111,6 +123,8 @@ def reconcile_causal_evidence(engines: dict[str, dict[str, Any]]) -> dict[str, A
         wait_for.append("E6_CAUSAL_SETUP_PROOF")
         if not space_ok:
             wait_for.append("SUFFICIENT_STRUCTURAL_SPACE")
+        if e4_counterflow:
+            return {"state": "CONTESTED_OPPORTUNITY_WATCH", "direction": direction, "ready": False, "evidence": list(dict.fromkeys(evidence)), "reasons": list(dict.fromkeys(reasons)), "wait_for": list(dict.fromkeys(wait_for))}
         return {"state": "OPPORTUNITY_WATCH", "direction": direction, "ready": False, "evidence": list(dict.fromkeys(evidence)), "reasons": list(dict.fromkeys(reasons)), "wait_for": list(dict.fromkeys(wait_for))}
 
     if e2_eligible and (e4_pending or e4_confirmed) and space_ok:
