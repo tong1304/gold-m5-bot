@@ -5,8 +5,8 @@ from typing import Any
 from .contracts import EngineResult
 from .e6_brain_legacy import analyze_e6 as _legacy_analyze_e6
 
-ARCHITECTURE = "E6_OPPORTUNITY_THESIS_ENGINE_V48"
-VERSION = "48.0"
+ARCHITECTURE = "E6_OPPORTUNITY_THESIS_ENGINE_V49"
+VERSION = "49.0"
 
 
 def _text(value: Any) -> str:
@@ -41,6 +41,7 @@ def _e2_unresolved(e2: dict[str, Any]) -> bool:
         or maturity in {"UNPROVEN", "EMERGING", "DEVELOPING"}
         or "OPPORTUNITY IS DEVELOPING" in finding
         or "OPPORTUNITY IS EMERGING" in finding
+        or "OPPORTUNITY IS EMERGING" in finding.replace("NEUTRAL ", "")
     )
 
 
@@ -65,9 +66,6 @@ def _e4_direction(e4: dict[str, Any]) -> str:
     taker = _direction(e4.get("liquidity_taker"))
     actor = _direction(e4.get("response_actor"))
 
-    # Generic interaction events do not carry a direction field. When the
-    # liquidity taker is explicit, it is valid directional evidence for the
-    # forming thesis, but it is NOT confirmation of the auction outcome.
     if "HIGH_LIQUIDITY_INTERACTION" in event and taker != "NEUTRAL":
         return taker
     if "LOW_LIQUIDITY_INTERACTION" in event and taker != "NEUTRAL":
@@ -108,9 +106,6 @@ def _causal_opportunity(upstream: dict[str, Any]) -> dict[str, Any] | None:
     hard_conflicts: list[str] = []
     missing_internal_proof: list[str] = []
 
-    # E1 + E3 external define the directional core. Internal disagreement is
-    # lower-timeframe counterflow: it delays setup proof but does not erase a
-    # causal opportunity while the external core remains intact.
     core = e1_direction if e1_direction != "NEUTRAL" else external
     if core == "NEUTRAL":
         return None
@@ -186,13 +181,22 @@ def _watch_result(legacy: EngineResult, opportunity: dict[str, Any]) -> EngineRe
     missing = list(dict.fromkeys(opportunity["missing"]))
     counter_evidence = list(dict.fromkeys(opportunity.get("counter_evidence", [])))
     hard_conflicts = list(dict.fromkeys(opportunity.get("hard_conflicts", [])))
+
+    contested = (
+        opportunity.get("internal_status") in {"COUNTERFLOW", "UNRESOLVED_COUNTERFLOW"}
+        or "STRUCTURAL_SPACE_INSUFFICIENT" in missing
+    )
+    stage = "CONTESTED" if contested else "FORMING"
+    state = "THESIS_CONTESTED" if contested else "FORMING"
+    setup = "OPPORTUNITY_THESIS" if contested else "OPPORTUNITY_WATCH"
+
     output.update({
         "architecture": ARCHITECTURE,
         "version": VERSION,
-        "state": "FORMING",
-        "setup_state": "FORMING",
-        "opportunity_stage": "FORMING",
-        "setup": "OPPORTUNITY_WATCH",
+        "state": state,
+        "setup_state": state,
+        "opportunity_stage": stage,
+        "setup": setup,
         "setup_family": opportunity["family"],
         "candidate_type": "OPPORTUNITY_CANDIDATE",
         "direction": direction,
@@ -200,17 +204,17 @@ def _watch_result(legacy: EngineResult, opportunity: dict[str, Any]) -> EngineRe
         "thesis_direction": direction,
         "trade_ready": False,
         "gate_passed": False,
-        "thesis_status": "FORMING",
-        "finding": f"{direction} opportunity thesis is forming; internal structure is {opportunity['internal_status']} and trade setup is not yet proven.",
-        "thesis": f"{direction} opportunity remains valid while external directional evidence persists; internal counterflow is tracked as counter-evidence, not automatic invalidation.",
+        "thesis_status": stage,
+        "finding": f"{direction} opportunity thesis is {stage.lower()}; internal structure is {opportunity['internal_status']} and trade setup is not yet proven.",
+        "thesis": f"{direction} opportunity remains trackable while external directional evidence persists; counterflow and constrained space are retained as counter-evidence rather than erasing the thesis.",
         "supporting_evidence": opportunity["support"],
         "counter_evidence": counter_evidence,
         "hard_conflicts": hard_conflicts,
         "missing_proof": missing,
         "next_required_event": "E2_OPPORTUNITY_CONFIRMATION,E4_AUCTION_FOLLOW_THROUGH,E3_INTERNAL_STRUCTURE_ALIGNMENT,E6_CAUSAL_SETUP_PROOF,E7_CONFIRMATION",
         "wait_for": "E2_OPPORTUNITY_CONFIRMATION,E4_AUCTION_FOLLOW_THROUGH,E3_INTERNAL_STRUCTURE_ALIGNMENT,E6_CAUSAL_SETUP_PROOF,E7_CONFIRMATION",
-        "candidate_identity": f"OPPORTUNITY_WATCH:{direction}:{opportunity['family']}",
-        "opportunity_id": f"{direction}|OPPORTUNITY_WATCH",
+        "candidate_identity": f"OPPORTUNITY_THESIS:{direction}:{opportunity['family']}" if contested else f"OPPORTUNITY_WATCH:{direction}:{opportunity['family']}",
+        "opportunity_id": f"{direction}|OPPORTUNITY_THESIS" if contested else f"{direction}|OPPORTUNITY_WATCH",
         "event_id": opportunity["event_id"],
         "available_space_atr": opportunity["space"],
         "watch_only": True,
