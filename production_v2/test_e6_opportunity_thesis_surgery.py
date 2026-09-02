@@ -196,3 +196,52 @@ def test_e6_infers_failed_break_reclaim_direction_from_event_when_direction_fiel
     assert out["direction"] == "BUY"
     assert out["hard_conflicts"] == []
     assert "E4_DIRECTIONAL_CONFLICT" not in out["hard_conflicts"]
+
+
+def test_e6_single_e3_anchor_survives_opposing_e1_while_e2_is_unresolved():
+    upstream = _upstream(space_long=0.7466)
+    upstream["E1"] = Result({
+        "directional_pressure": "DOWN",
+        "pressure": "DOWN",
+        "trend_state": "NONE",
+        "finding": "MARKET_STATE=RANGE; STRUCTURE=BEARISH; PRESSURE=DOWN",
+    })
+    upstream["E2"] = Result({
+        "direction": "NEUTRAL",
+        "finding": "NEUTRAL opportunity is emerging based on closed-candle evidence.",
+        "opportunity_state": "UNRESOLVED",
+        "reasons": ["DIRECTIONAL_EDGE_NOT_ESTABLISHED"],
+    })
+    upstream["E3"] = Result({
+        "finding": "BULLISH_STRUCTURE",
+        "internal_state": "DOWN",
+        "external_state": "UP",
+        "bos": "NO_BREAK",
+    })
+    upstream["E4"] = Result({
+        "event": "LOW_FAILED_BREAK_RECLAIM",
+        "auction_state": "PENDING",
+        "liquidity_taker": "SELLERS",
+        "response_actor": "BUYERS",
+        "event_level": 77296.52,
+        "event_id": "2026-09-02T21:50:00Z|LOW_FAILED_BREAK_RECLAIM|LOW|77296.52|UP",
+    })
+    upstream["E5"] = Result({
+        "finding": "FAVORABLE_LOCATION",
+        "value_state": "EQUILIBRIUM",
+        "value_response": "REJECTED_BELOW_VALUE",
+        "available_space_atr_long": 0.7466,
+        "available_space_atr_short": 0.3101,
+    })
+
+    out = analyze_e6({"bars": _bars()}, upstream).output
+
+    assert out["state"] == "THESIS_CONTESTED"
+    assert out["setup"] == "OPPORTUNITY_THESIS"
+    assert out["direction"] == "BUY"
+    assert out["trade_ready"] is False
+    assert out["watch_only"] is True
+    assert out["hard_conflicts"] == []
+    assert "E1_COUNTER_EVIDENCE" in out["counter_evidence"]
+    assert "E3_EXTERNAL_STRUCTURE_SUPPORT" in out["supporting_evidence"]
+    assert "E2_OPPORTUNITY_CONFIRMATION" in out["missing_proof"]
