@@ -5,8 +5,8 @@ from typing import Any
 from .contracts import EngineResult
 from .e6_brain_legacy import analyze_e6 as _legacy_analyze_e6
 
-ARCHITECTURE = "E6_OPPORTUNITY_THESIS_ENGINE_V46"
-VERSION = "46.0"
+ARCHITECTURE = "E6_OPPORTUNITY_THESIS_ENGINE_V47"
+VERSION = "47.0"
 
 
 def _text(value: Any) -> str:
@@ -93,19 +93,46 @@ def _causal_opportunity(upstream: dict[str, Any]) -> dict[str, Any] | None:
     event = _e4_event(e4)
     unresolved = _e2_unresolved(e2)
 
-    # E2 opposition is a hard blocker for a forming thesis. E1/E3 core must
-    # agree; E4 is treated as auction evidence, not an unconditional veto.
-    core = e1_direction if e1_direction != "NEUTRAL" and internal == e1_direction and external in {e1_direction, "NEUTRAL"} else "NEUTRAL"
-    if core == "NEUTRAL" and internal != "NEUTRAL" and external == internal:
-        core = internal
+    counter_evidence: list[str] = []
+    hard_conflicts: list[str] = []
+    missing_internal_proof: list[str] = []
+
+    # The professional distinction is between the external directional core
+    # and lower-timeframe/internal counterflow. Internal disagreement is
+    # evidence against immediate execution, but it is not enough to erase a
+    # still-causal opportunity while E1 + E3 external remain aligned.
+    core = e1_direction if e1_direction != "NEUTRAL" else external
     if core == "NEUTRAL":
         return None
+
+    if external != "NEUTRAL" and external != core:
+        hard_conflicts.append("E3_EXTERNAL_STRUCTURE_CONFLICT")
+        return None
+
+    if internal == core:
+        internal_status = "ALIGNED"
+    elif internal == "NEUTRAL":
+        internal_status = "UNRESOLVED"
+        counter_evidence.append("E3_INTERNAL_EVIDENCE_UNRESOLVED")
+        missing_internal_proof.append("E3_INTERNAL_STRUCTURE_ALIGNMENT")
+    elif internal in {"BUY", "SELL", "UP", "DOWN"}:
+        internal_status = "COUNTERFLOW"
+        counter_evidence.append("E3_INTERNAL_COUNTER_EVIDENCE")
+        missing_internal_proof.append("E3_INTERNAL_STRUCTURE_ALIGNMENT")
+    else:
+        internal_status = "UNRESOLVED"
+        counter_evidence.append("E3_INTERNAL_EVIDENCE_UNRESOLVED")
+        missing_internal_proof.append("E3_INTERNAL_STRUCTURE_ALIGNMENT")
+
     if e2_direction != "NEUTRAL" and e2_direction != core:
+        hard_conflicts.append("E2_DIRECTIONAL_CONFLICT")
         return None
     if not unresolved:
         return None
     if e4_direction not in {"NEUTRAL", core}:
+        hard_conflicts.append("E4_DIRECTIONAL_CONFLICT")
         return None
+
     directional_event = any(token in event for token in ("ACCEPTANCE", "REJECTION", "SWEEP", "FAILED_BREAK", "BREAK", "RECLAIM"))
     if not directional_event:
         return None
@@ -123,7 +150,10 @@ def _causal_opportunity(upstream: dict[str, Any]) -> dict[str, Any] | None:
         missing.insert(1, "E4_AUCTION_FOLLOW_THROUGH")
     if space < 0.75:
         missing.append("STRUCTURAL_SPACE_INSUFFICIENT")
-    support = ["E1_DIRECTIONAL_CORE", "E3_STRUCTURE_SUPPORT", "E4_DIRECTIONAL_AUCTION_EVIDENCE"]
+    missing.extend(missing_internal_proof)
+    support = ["E1_DIRECTIONAL_CORE", "E3_EXTERNAL_STRUCTURE_SUPPORT", "E4_DIRECTIONAL_AUCTION_EVIDENCE"]
+    if internal_status == "ALIGNED":
+        support.append("E3_INTERNAL_STRUCTURE_SUPPORT")
     if favorable:
         support.append("E5_LOCATION_VALUE_SUPPORT")
     return {
@@ -132,8 +162,11 @@ def _causal_opportunity(upstream: dict[str, Any]) -> dict[str, Any] | None:
         "space": round(space, 4),
         "support": support,
         "missing": list(dict.fromkeys(missing)),
+        "counter_evidence": list(dict.fromkeys(counter_evidence)),
+        "hard_conflicts": list(dict.fromkeys(hard_conflicts)),
         "event": event,
         "event_id": str(e4.get("event_id") or e4.get("event_candle_id") or ""),
+        "internal_status": internal_status,
     }
 
 
@@ -141,6 +174,8 @@ def _watch_result(legacy: EngineResult, opportunity: dict[str, Any]) -> EngineRe
     output = dict(legacy.output or {})
     direction = opportunity["direction"]
     missing = list(dict.fromkeys(opportunity["missing"]))
+    counter_evidence = list(dict.fromkeys(opportunity.get("counter_evidence", [])))
+    hard_conflicts = list(dict.fromkeys(opportunity.get("hard_conflicts", [])))
     output.update({
         "architecture": ARCHITECTURE,
         "version": VERSION,
@@ -156,12 +191,14 @@ def _watch_result(legacy: EngineResult, opportunity: dict[str, Any]) -> EngineRe
         "trade_ready": False,
         "gate_passed": False,
         "thesis_status": "FORMING",
-        "finding": f"{direction} opportunity thesis is forming; trade setup is not yet proven.",
-        "thesis": f"{direction} opportunity is worth monitoring across closed M5 candles before execution proof is complete.",
+        "finding": f"{direction} opportunity thesis is forming; internal structure is {opportunity['internal_status']} and trade setup is not yet proven.",
+        "thesis": f"{direction} opportunity remains valid while external directional evidence persists; internal counterflow is tracked as counter-evidence, not automatic invalidation.",
         "supporting_evidence": opportunity["support"],
+        "counter_evidence": counter_evidence,
+        "hard_conflicts": hard_conflicts,
         "missing_proof": missing,
-        "next_required_event": "E2_OPPORTUNITY_CONFIRMATION,E4_AUCTION_FOLLOW_THROUGH,E6_CAUSAL_SETUP_PROOF,E7_CONFIRMATION",
-        "wait_for": "E2_OPPORTUNITY_CONFIRMATION,E4_AUCTION_FOLLOW_THROUGH,E6_CAUSAL_SETUP_PROOF,E7_CONFIRMATION",
+        "next_required_event": "E2_OPPORTUNITY_CONFIRMATION,E4_AUCTION_FOLLOW_THROUGH,E3_INTERNAL_STRUCTURE_ALIGNMENT,E6_CAUSAL_SETUP_PROOF,E7_CONFIRMATION",
+        "wait_for": "E2_OPPORTUNITY_CONFIRMATION,E4_AUCTION_FOLLOW_THROUGH,E3_INTERNAL_STRUCTURE_ALIGNMENT,E6_CAUSAL_SETUP_PROOF,E7_CONFIRMATION",
         "candidate_identity": f"OPPORTUNITY_WATCH:{direction}:{opportunity['family']}",
         "opportunity_id": f"{direction}|OPPORTUNITY_WATCH",
         "event_id": opportunity["event_id"],
