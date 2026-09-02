@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from typing import Any
 
 ENGINE_ORDER = ("E1", "E2", "E3", "E4", "E5", "E6", "E7", "E8", "E9")
@@ -24,11 +25,7 @@ def _direction(output: dict[str, Any]) -> str:
 
 
 def build_handoff(engine_id: str, output: dict[str, Any], upstream_outputs: dict[str, dict[str, Any]] | None) -> dict[str, Any]:
-    """Build an immutable-style evidence packet for the next brain.
-
-    The packet carries upstream observations forward but explicitly prevents a
-    downstream specialist from becoming authoritative over another specialist.
-    """
+    """Build a compact evidence packet for the next brain."""
     out = dict(output or {})
     upstream = {key: dict(value or {}) for key, value in (upstream_outputs or {}).items()}
     return {
@@ -52,15 +49,9 @@ def build_lifecycle(results: dict[str, Any]) -> dict[str, Any]:
     directions = [_direction(outputs[key]) for key in ("E2", "E4", "E5", "E6") if key in outputs]
     direction = "SELL" if directions.count("SELL") > directions.count("BUY") else "BUY" if directions.count("BUY") > directions.count("SELL") else "NEUTRAL"
 
-    invalidated = any(
-        "INVALID" in _text(outputs[key].get("opportunity_stage") or outputs[key].get("state"))
-        for key in outputs
-    )
+    invalidated = any("INVALID" in _text(outputs[key].get("opportunity_stage") or outputs[key].get("state")) for key in outputs)
     waiting_stages = {"AUCTION_PENDING", "REGIME_DEVELOPING", "FORMING", "WAITING_CONFIRMATION"}
-    waiting = any(
-        _text(outputs[key].get("opportunity_stage") or outputs[key].get("state")) in waiting_stages
-        for key in outputs
-    )
+    waiting = any(_text(outputs[key].get("opportunity_stage") or outputs[key].get("state")) in waiting_stages for key in outputs)
 
     if invalidated:
         state = "INVALIDATED"
@@ -77,10 +68,39 @@ def build_lifecycle(results: dict[str, Any]) -> dict[str, Any]:
         ),
         None,
     )
-    return {
-        "state": state,
-        "direction": direction,
-        "next_required_event": next_required_event,
-        "trade_authorized": False,
-        "authority": "E9",
+    return {"state": state, "direction": direction, "next_required_event": next_required_event, "trade_authorized": False, "authority": "E9"}
+
+
+def attach_result_chain(result: Any) -> Any:
+    """Expose the nine-brain chain on an existing DecisionResult.
+
+    This is observability/state handoff only. It never changes decision or
+    gate authority and therefore cannot manufacture a BUY/SELL.
+    """
+    engines = {engine.engine_id: engine for engine in result.engines}
+    packets: dict[str, dict[str, Any]] = {}
+    evidence_inputs = {
+        "E1": (), "E2": ("E1",), "E3": (), "E4": ("E1", "E3"),
+        "E5": ("E1", "E3", "E4"), "E6": ("E1", "E2", "E3", "E4", "E5"),
+        "E7": ("E4", "E6"), "E8": ("E5", "E6", "E7"),
+        "E9": ("E1", "E2", "E3", "E4", "E5", "E6", "E7", "E8"),
     }
+    for engine_id in ENGINE_ORDER:
+        engine = engines.get(engine_id)
+        if not engine:
+            continue
+        upstream = {key: engines[key].output for key in evidence_inputs[engine_id] if key in engines}
+        packets[engine_id] = build_handoff(engine_id, engine.output, upstream)
+
+    lifecycle = build_lifecycle(engines)
+    risk = dict(result.risk or {})
+    risk["brain_handoffs"] = list(packets)
+    risk["brain_handoff_packets"] = packets
+    risk["opportunity_lifecycle"] = lifecycle
+    risk["handoff_contract"] = {
+        "mode": "SEQUENTIAL_SHARED_EVIDENCE",
+        "closed_candle_only": True,
+        "downstream_may_not_rewrite_upstream": True,
+        "e9_final_authority": True,
+    }
+    return replace(result, risk=risk)
