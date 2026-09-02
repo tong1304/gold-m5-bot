@@ -1,0 +1,22 @@
+name: opportunity-lifecycle-tests
+on:
+  push:
+    branches: [production-v2]
+  pull_request:
+    branches: [production-v2]
+
+env:
+  PRODUCTION_V2_DISABLE_LIVE: "1"
+
+jobs:
+  lifecycle:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.11'
+      - name: Install test dependencies
+        run: python -m pip install --upgrade pip pytest
+      - name: Run lifecycle tests
+        run: python -m pytest -q production_v2/test_opportunity_lifecycle.py
