@@ -47,3 +47,19 @@ def test_confirmed_upstream_without_e6_setup_is_not_a_ready_setup():
     assert result["state"] == "THESIS_CONFIRMED_SETUP_NOT_FORMED"
     assert result["ready"] is False
     assert "E6_CAUSAL_SETUP_PROOF" in result["wait_for"]
+
+
+def test_real_e6_setup_cannot_bypass_causal_conflict():
+    result = reconcile_causal_evidence(
+        {
+            "E1": {"pressure": "DOWN", "trend_state": "NONE"},
+            "E2": {"direction": "BUY", "opportunity_maturity": "DEVELOPING"},
+            "E3": {"structure_direction": "BUY", "active_regime": "UP"},
+            "E4": {"auction_state": "CONFIRMED", "direction": "BUY"},
+            "E5": {"available_space_atr_long": 1.50},
+            "E6": {"direction": "BUY", "setup": "SWEEP_RECLAIM", "setup_state": "CONFIRMED"},
+        }
+    )
+    assert result["state"] == "NO_SETUP"
+    assert result["ready"] is False
+    assert "DIRECTIONAL_CONFLICT" in result["reasons"]
