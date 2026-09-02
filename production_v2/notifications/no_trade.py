@@ -50,21 +50,32 @@ def _engines(result: Any) -> list[Any]:
         return []
 
 
+def _output(engine: Any) -> dict[str, Any]:
+    if hasattr(engine, "output"):
+        value = getattr(engine, "output", {})
+        return value if isinstance(value, dict) else {}
+    if isinstance(engine, dict):
+        value = engine.get("output")
+        return value if isinstance(value, dict) else engine
+    return {}
+
+
+def _text(value: Any) -> str:
+    return " ".join(str(value or "").split())
+
+
 def _engine_compact(engine: Any, expected_id: str) -> str:
-    """Return only a bounded engine conclusion for the single NO_TRADE alert."""
+    """Report the engine's real conclusion/state; never collapse valid output to UNRESOLVED."""
     if hasattr(engine, "engine_id"):
         engine_id = str(engine.engine_id)
         finding = _engine_finding(engine)
     elif isinstance(engine, dict):
         engine_id = str(engine.get("engine_id") or engine.get("id") or expected_id)
-        output = engine.get("output") if isinstance(engine.get("output"), dict) else engine
-
         class _EngineView:
             pass
-
         view = _EngineView()
         view.engine_id = engine_id
-        view.output = output
+        view.output = _output(engine)
         view.reason_codes = tuple(engine.get("reason_codes") or engine.get("reasons") or ())
         view.gate_passed = engine.get("gate_passed")
         finding = _engine_finding(view)
@@ -72,14 +83,89 @@ def _engine_compact(engine: Any, expected_id: str) -> str:
         engine_id = expected_id
         finding = "ANALYSIS_DATA_MISSING"
 
-    finding = " ".join(str(finding).split())
+    output = _output(engine)
+    finding = _text(finding)
+
+    # The compact NO_TRADE alert must expose the same state the live trace exposes.
+    # E9 is always reported from its actual decision, not from a generic fallback.
+    if engine_id == "E9":
+        finding = _text(output.get("decision") or finding or "NO_TRADE")
+    elif engine_id == "E1":
+        market_state = _text(output.get("market_state") or output.get("professional_reasoning", {}).get("market_state"))
+        volatility = _text(output.get("volatility_state") or output.get("professional_reasoning", {}).get("volatility_state"))
+        structure = _text(output.get("structure_state") or output.get("professional_reasoning", {}).get("structure_state"))
+        pressure = _text(output.get("directional_pressure") or output.get("professional_reasoning", {}).get("directional_pressure"))
+        trend = _text(output.get("trend_state") or output.get("professional_reasoning", {}).get("trend_state"))
+        transition = _text(output.get("transition") or output.get("professional_reasoning", {}).get("transition"))
+        parts = []
+        if market_state: parts.append(f"MARKET_STATE={market_state}")
+        if volatility: parts.append(f"VOLATILITY={volatility}")
+        if structure: parts.append(f"STRUCTURE={structure}")
+        if pressure: parts.append(f"PRESSURE={pressure}")
+        if trend: parts.append(f"TREND_STATE={trend}")
+        if transition: parts.append(f"TRANSITION={transition}")
+        if parts: finding = "; ".join(parts)
+    elif engine_id == "E2":
+        decision = _text(output.get("opportunity_decision") or output.get("opportunity_state") or output.get("opportunity_stage"))
+        direction = _text(output.get("opportunity_direction") or output.get("direction"))
+        if decision and direction and any(token in decision for token in ("DEVELOP", "FORM", "PENDING", "WATCH")):
+            finding = f"{direction} opportunity is developing based on closed-candle evidence"
+        elif decision:
+            finding = f"{direction + ' ' if direction else ''}{decision}"
+    elif engine_id == "E4":
+        finding = _text(output.get("finding") or output.get("analyst_conclusion") or finding)
+    elif engine_id == "E5":
+        value = _text(output.get("value") or output.get("value_position") or output.get("value_state"))
+        response = _text(output.get("value_response"))
+        repricing = _text(output.get("repricing_state"))
+        if value or response or repricing:
+            finding = "FAVORABLE_LOCATION: " + ", ".join(x for x in (
+                f"value={value}" if value else "",
+                f"response={response}" if response else "",
+                f"repricing={repricing}" if repricing else "",
+            ) if x)
+    elif engine_id == "E6":
+        direction = _text(output.get("direction") or output.get("opportunity_direction"))
+        setup = _text(output.get("setup") or output.get("setup_family") or output.get("setup_type"))
+        state = _text(output.get("setup_state") or output.get("opportunity_state") or output.get("opportunity_stage"))
+        if direction and setup:
+            finding = f"{direction} {setup}" + (f" is {state.lower()}" if state else "")
+        elif setup:
+            finding = setup + (f" is {state.lower()}" if state else "")
+    elif engine_id == "E7":
+        confirmation = _text(output.get("confirmation_state") or output.get("confirmation") or finding)
+        if confirmation: finding = confirmation
+    elif engine_id == "E8":
+        finding = _text(output.get("analyst_conclusion") or output.get("finding") or output.get("trade_economics_state") or finding)
+
+    finding = finding or "ANALYSIS_DATA_MISSING"
     if len(finding) > 180:
         finding = finding[:177].rstrip() + "..."
     return f"{engine_id}: {finding}"
 
 
+def _lifecycle_lines(result: Any) -> list[str]:
+    lifecycle = getattr(result, "risk", {}).get("opportunity_lifecycle") or {}
+    if not isinstance(lifecycle, dict) or not lifecycle.get("state"):
+        return []
+    state = _text(lifecycle.get("state"))
+    continuity = _text(lifecycle.get("continuity"))
+    bars_waited = int(lifecycle.get("bars_waited", 0) or 0)
+    opportunity_id = _text(lifecycle.get("opportunity_id"))
+    next_event = _text(getattr(result, "risk", {}).get("next_required_event") or lifecycle.get("next_required_event"))
+    lines = [
+        "🔄 OPPORTUNITY LIFECYCLE",
+        f"สถานะ: {state}",
+    ]
+    if continuity: lines.append(f"continuity={continuity}")
+    if opportunity_id: lines.append(f"opportunity_id={opportunity_id}")
+    lines.append(f"bars_waited={bars_waited}")
+    if next_event: lines.append(f"next={next_event}")
+    return lines
+
+
 def format_no_trade(results: dict[str, Any], notified_at: datetime | None = None) -> str:
-    """Build one compact NO_TRADE alert; detailed evidence stays in logs/API."""
+    """Build one NO_TRADE alert from actual E1-E9 outputs plus lifecycle state."""
     now = notified_at or datetime.now(BANGKOK_TZ)
     lines = [
         "🚫 NO_TRADE — ยังไม่มีการออกออเดอร์",
@@ -95,6 +181,7 @@ def format_no_trade(results: dict[str, Any], notified_at: datetime | None = None
         for engine_id in ("E1", "E2", "E3", "E4", "E5", "E6", "E7", "E8", "E9"):
             engine = engines_by_id.get(engine_id)
             lines.append(_engine_compact(engine, engine_id) if engine is not None else f"{engine_id}: ANALYSIS_DATA_MISSING")
+        lines += _lifecycle_lines(result)
         lines += [
             "🎯 FINAL: NO_TRADE",
             f"เหตุผลหลัก: {_main_reason(result)}",
@@ -102,7 +189,8 @@ def format_no_trade(results: dict[str, Any], notified_at: datetime | None = None
 
     lines += [
         "",
-        "🔄 วิเคราะห์ใหม่เมื่อแท่ง M5 ปิดถัดไป",
+        "🔄 รอหลักฐานเพิ่มเติมเมื่อแท่ง M5 ปิดถัดไป",
+        "📌 Opportunity Lifecycle จะถูกเก็บต่อข้ามแท่งเมื่อยังไม่ถูก Invalidate",
         "📌 E9 เท่านั้นเป็น Final Decision Authority",
     ]
     return "\n".join(lines)
