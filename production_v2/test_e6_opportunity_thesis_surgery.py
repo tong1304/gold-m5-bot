@@ -153,3 +153,46 @@ def test_e6_exact_constrained_counterflow_keeps_a_contested_thesis_alive():
     assert "STRUCTURAL_SPACE_INSUFFICIENT" in out["missing_proof"]
     assert "E3_INTERNAL_COUNTER_EVIDENCE" in out["counter_evidence"]
     assert out["hard_conflicts"] == []
+
+
+def test_e6_infers_failed_break_reclaim_direction_from_event_when_direction_field_is_absent():
+    upstream = _upstream(space_long=0.2527)
+    upstream["E1"] = Result({
+        "directional_pressure": "UP",
+        "pressure": "UP",
+        "trend_state": "NONE",
+        "finding": "MARKET_STATE=RANGE; STRUCTURE=BULLISH; COUNTER_EVIDENCE_PRESENT",
+    })
+    upstream["E2"] = Result({
+        "direction": "NEUTRAL",
+        "finding": "NEUTRAL opportunity is emerging based on closed-candle evidence.",
+        "opportunity_state": "UNRESOLVED",
+    })
+    upstream["E3"] = Result({
+        "finding": "BULLISH_STRUCTURE",
+        "internal_state": "DOWN",
+        "external_state": "UP",
+        "bos": "NONE",
+    })
+    upstream["E4"] = Result({
+        "event": "LOW_FAILED_BREAK_RECLAIM",
+        "auction_state": "PENDING",
+        "liquidity_taker": "SELLERS",
+        "response_actor": "BUYERS",
+        "event_level": 4375.02,
+        "event_id": "gold-runtime-regression",
+    })
+    upstream["E5"] = Result({
+        "finding": "FAVORABLE_LOCATION",
+        "value_state": "EQUILIBRIUM",
+        "available_space_atr_long": 0.2527,
+        "available_space_atr_short": 0.6565,
+    })
+
+    out = analyze_e6({"bars": _bars()}, upstream).output
+
+    assert out["state"] == "THESIS_CONTESTED"
+    assert out["setup"] == "OPPORTUNITY_THESIS"
+    assert out["direction"] == "BUY"
+    assert out["hard_conflicts"] == []
+    assert "E4_DIRECTIONAL_CONFLICT" not in out["hard_conflicts"]
