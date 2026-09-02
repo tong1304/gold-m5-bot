@@ -57,7 +57,7 @@ def _pending_upstream_thesis(engines: dict[str, dict]) -> tuple[str, str, list[s
     """Return an opportunity watch before entry proof, preserving causal wait conditions."""
     reconciliation = reconcile_causal_evidence(engines)
     state = reconciliation.get("state")
-    if state not in {"OPPORTUNITY_WATCH", "DEVELOPING_THESIS", "THESIS_CONFIRMED_SETUP_NOT_FORMED"}:
+    if state not in {"OPPORTUNITY_WATCH", "CONTESTED_OPPORTUNITY_WATCH", "DEVELOPING_THESIS", "THESIS_CONFIRMED_SETUP_NOT_FORMED"}:
         return "NEUTRAL", "", [], list(reconciliation.get("wait_for") or [])
     direction = _text(reconciliation.get("direction"))
     if direction not in {"BUY", "SELL"}:
@@ -67,6 +67,8 @@ def _pending_upstream_thesis(engines: dict[str, dict]) -> tuple[str, str, list[s
         evidence.append("E2_OPPORTUNITY_CONFIRMED")
     elif state == "DEVELOPING_THESIS":
         evidence.append("E2_OPPORTUNITY_DEVELOPING")
+    elif state == "CONTESTED_OPPORTUNITY_WATCH":
+        evidence.append("CONTESTED_OPPORTUNITY_SCOUTING_ACTIVE")
     else:
         evidence.append("OPPORTUNITY_SCOUTING_ACTIVE")
     return direction, "OPPORTUNITY_WATCH", list(dict.fromkeys(evidence)), list(reconciliation.get("wait_for") or [])
