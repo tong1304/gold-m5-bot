@@ -18,7 +18,7 @@ def test_active_thesis_without_new_candidate_is_preserved():
         "executed": False,
         "direction": "SELL",
         "setup": "LIQUIDITY_REVERSAL",
-        "thesis_status": "ACTIVE",
+        "thesis_status": "FORMING",
         "candle": "2026-09-02T10:05:00Z",
     }
 
