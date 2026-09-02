@@ -294,12 +294,7 @@ def test_e6_legacy_setup_cannot_bypass_missing_causal_opportunity():
 
 
 def test_e6_internal_and_e4_counterflow_cannot_create_sell_without_directional_anchor():
-    """Regression for BTC runtime: E1 DOWN + E3 external UP/internal DOWN + E2 neutral + E4 DOWN.
-
-    Internal structure and liquidity response may describe a counterflow event,
-    but they are not sufficient to manufacture a new SELL thesis while the
-    external structural anchor disagrees and E2 has not established direction.
-    """
+    """Regression for BTC runtime: E1 DOWN + E3 external UP/internal DOWN + E2 neutral + E4 DOWN."""
     upstream = _upstream(space_long=2.6934)
     upstream["E1"] = Result({
         "directional_pressure": "DOWN",
@@ -336,6 +331,47 @@ def test_e6_internal_and_e4_counterflow_cannot_create_sell_without_directional_a
         "value_response": "REJECTED_BELOW_VALUE",
         "available_space_atr_long": 2.6934,
         "available_space_atr_short": 0.3717,
+    })
+
+    out = analyze_e6({"bars": _bars()}, upstream).output
+
+    assert out["state"] in {"NO_SETUP", "ABSENT"}
+    assert out["setup"] in {"NO_SETUP", "", "NONE", "UNKNOWN"}
+    assert out["direction"] == "NEUTRAL"
+    assert out["trade_ready"] is False
+    assert out["watch_only"] is not True
+    assert "NO_CAUSAL_OPPORTUNITY" in out["reason_codes"]
+
+
+def test_e6_external_structure_and_liquidity_alone_cannot_create_directional_thesis_when_e1_and_e2_are_neutral():
+    """E3 external state is structural evidence, not a standalone execution thesis."""
+    upstream = _upstream(space_long=1.8)
+    upstream["E1"] = Result({
+        "directional_pressure": "NEUTRAL",
+        "pressure": "NEUTRAL",
+        "trend_state": "NONE",
+        "finding": "MARKET_STATE=TRANSITION; DIRECTION=NEUTRAL",
+    })
+    upstream["E2"] = Result({
+        "direction": "NEUTRAL",
+        "finding": "NEUTRAL",
+        "opportunity_state": "UNRESOLVED",
+        "reasons": ["DIRECTIONAL_EDGE_NOT_ESTABLISHED"],
+    })
+    upstream["E3"] = Result({
+        "finding": "BULLISH_STRUCTURE",
+        "internal_state": "UP",
+        "external_state": "UP",
+        "bos": "NONE",
+    })
+    upstream["E4"] = Result({
+        "event": "HIGH_ACCEPTANCE_CANDIDATE",
+        "auction_state": "PENDING",
+        "direction": "BUY",
+        "liquidity_taker": "BUYERS",
+        "response_actor": "BUYERS",
+        "event_level": 4326.7,
+        "event_id": "neutral-anchor-regression",
     })
 
     out = analyze_e6({"bars": _bars()}, upstream).output
