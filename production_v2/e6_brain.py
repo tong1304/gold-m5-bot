@@ -5,8 +5,8 @@ from typing import Any
 from .contracts import EngineResult
 from .e6_brain_legacy import analyze_e6 as _legacy_analyze_e6
 
-ARCHITECTURE = "E6_OPPORTUNITY_THESIS_ENGINE_V47"
-VERSION = "47.0"
+ARCHITECTURE = "E6_OPPORTUNITY_THESIS_ENGINE_V48"
+VERSION = "48.0"
 
 
 def _text(value: Any) -> str:
@@ -60,14 +60,25 @@ def _e4_direction(e4: dict[str, Any]) -> str:
     direction = _direction(e4.get("direction"))
     if direction != "NEUTRAL":
         return direction
+
     event = _text(e4.get("event", e4.get("finding")))
+    taker = _direction(e4.get("liquidity_taker"))
+    actor = _direction(e4.get("response_actor"))
+
+    # Generic interaction events do not carry a direction field. When the
+    # liquidity taker is explicit, it is valid directional evidence for the
+    # forming thesis, but it is NOT confirmation of the auction outcome.
+    if "HIGH_LIQUIDITY_INTERACTION" in event and taker != "NEUTRAL":
+        return taker
+    if "LOW_LIQUIDITY_INTERACTION" in event and taker != "NEUTRAL":
+        return taker
     if any(token in event for token in ("LOW_ACCEPTANCE", "LOW_BREAK", "LOW_SWEEP_REJECTION", "LOW_FAILED_BREAK_RECLAIM", "LOW_REJECTION")):
         return "BUY" if "ACCEPTANCE" not in event and "BREAK" not in event else ("SELL" if "LOW_ACCEPTANCE" in event or "LOW_BREAK" in event else "BUY")
     if any(token in event for token in ("HIGH_ACCEPTANCE", "HIGH_BREAK")):
         return "BUY"
     if any(token in event for token in ("HIGH_SWEEP_REJECTION", "HIGH_FAILED_BREAK_RECLAIM", "HIGH_REJECTION")):
         return "SELL"
-    return "NEUTRAL"
+    return actor if actor != "NEUTRAL" else "NEUTRAL"
 
 
 def _e4_event(e4: dict[str, Any]) -> str:
@@ -132,7 +143,7 @@ def _causal_opportunity(upstream: dict[str, Any]) -> dict[str, Any] | None:
         hard_conflicts.append("E4_DIRECTIONAL_CONFLICT")
         return None
 
-    directional_event = any(token in event for token in ("ACCEPTANCE", "REJECTION", "SWEEP", "FAILED_BREAK", "BREAK", "RECLAIM"))
+    directional_event = any(token in event for token in ("ACCEPTANCE", "REJECTION", "SWEEP", "FAILED_BREAK", "BREAK", "RECLAIM", "LIQUIDITY_INTERACTION"))
     if not directional_event:
         return None
 
@@ -143,9 +154,9 @@ def _causal_opportunity(upstream: dict[str, Any]) -> dict[str, Any] | None:
     if not favorable and space <= 0.0:
         return None
 
-    family = "AUCTION_ACCEPTANCE_CONTINUATION" if "ACCEPTANCE" in event else "LIQUIDITY_RESPONSE" if any(token in event for token in ("REJECTION", "SWEEP", "FAILED_BREAK", "RECLAIM")) else "STRUCTURAL_OPPORTUNITY"
+    family = "AUCTION_ACCEPTANCE_CONTINUATION" if "ACCEPTANCE" in event else "LIQUIDITY_RESPONSE" if any(token in event for token in ("REJECTION", "SWEEP", "FAILED_BREAK", "RECLAIM", "LIQUIDITY_INTERACTION")) else "STRUCTURAL_OPPORTUNITY"
     missing = ["E2_OPPORTUNITY_CONFIRMATION", "E6_CAUSAL_SETUP_PROOF", "E7_CONFIRMATION"]
-    if "PENDING" in _text(e4.get("auction_state", e4.get("state"))) or "CANDIDATE" in event:
+    if "PENDING" in _text(e4.get("auction_state", e4.get("state"))) or "CANDIDATE" in event or "LIQUIDITY_INTERACTION" in event:
         missing.insert(1, "E4_AUCTION_FOLLOW_THROUGH")
     if space < 0.75:
         missing.append("STRUCTURAL_SPACE_INSUFFICIENT")
