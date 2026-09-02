@@ -97,10 +97,9 @@ def _causal_opportunity(upstream: dict[str, Any]) -> dict[str, Any] | None:
     hard_conflicts: list[str] = []
     missing_internal_proof: list[str] = []
 
-    # The professional distinction is between the external directional core
-    # and lower-timeframe/internal counterflow. Internal disagreement is
-    # evidence against immediate execution, but it is not enough to erase a
-    # still-causal opportunity while E1 + E3 external remain aligned.
+    # E1 + E3 external define the directional core. Internal disagreement is
+    # lower-timeframe counterflow: it delays setup proof but does not erase a
+    # causal opportunity while the external core remains intact.
     core = e1_direction if e1_direction != "NEUTRAL" else external
     if core == "NEUTRAL":
         return None
@@ -111,14 +110,14 @@ def _causal_opportunity(upstream: dict[str, Any]) -> dict[str, Any] | None:
 
     if internal == core:
         internal_status = "ALIGNED"
-    elif internal == "NEUTRAL":
-        internal_status = "UNRESOLVED"
-        counter_evidence.append("E3_INTERNAL_EVIDENCE_UNRESOLVED")
-        missing_internal_proof.append("E3_INTERNAL_STRUCTURE_ALIGNMENT")
-    elif internal in {"BUY", "SELL", "UP", "DOWN"}:
+    elif internal in {"BUY", "SELL", "UP", "DOWN"} and internal != core:
         internal_status = "COUNTERFLOW"
         counter_evidence.append("E3_INTERNAL_COUNTER_EVIDENCE")
         missing_internal_proof.append("E3_INTERNAL_STRUCTURE_ALIGNMENT")
+    elif internal == "MIXED":
+        internal_status = "UNRESOLVED_COUNTERFLOW"
+        counter_evidence.append("E3_INTERNAL_COUNTER_EVIDENCE")
+        missing_internal_proof.extend(["E3_INTERNAL_EVIDENCE_UNRESOLVED", "E3_INTERNAL_STRUCTURE_ALIGNMENT"])
     else:
         internal_status = "UNRESOLVED"
         counter_evidence.append("E3_INTERNAL_EVIDENCE_UNRESOLVED")
