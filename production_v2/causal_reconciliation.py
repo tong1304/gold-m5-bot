@@ -37,11 +37,24 @@ def _space_ok(e5: dict[str, Any], direction: str) -> bool:
     return True
 
 
-def reconcile_causal_evidence(engines: dict[str, dict[str, Any]]) -> dict[str, Any]:
-    """Reconcile E1-E6 evidence into a non-executable causal thesis state.
+def _event_direction(e4: dict[str, Any]) -> str:
+    direction = _direction(e4)
+    if direction != "NEUTRAL":
+        return direction
+    event = _text(e4.get("event") or e4.get("finding"))
+    if any(token in event for token in ("HIGH_ACCEPTANCE", "HIGH_BREAK", "HIGH_SWEEP_REJECTION", "HIGH_FAILED_BREAK_RECLAIM")):
+        return "BUY" if "ACCEPTANCE" in event or "BREAK" in event and "RECLAIM" not in event else "SELL"
+    if any(token in event for token in ("LOW_ACCEPTANCE", "LOW_BREAK", "LOW_SWEEP_REJECTION", "LOW_FAILED_BREAK_RECLAIM")):
+        return "SELL" if "ACCEPTANCE" in event or "BREAK" in event and "RECLAIM" not in event else "BUY"
+    return "NEUTRAL"
 
-    This function deliberately prefers NO_SETUP over a fabricated thesis when
-    directional evidence conflicts. It does not authorize trades.
+
+def reconcile_causal_evidence(engines: dict[str, dict[str, Any]]) -> dict[str, Any]:
+    """Reconcile E1-E6 into opportunity discovery and non-executable setup states.
+
+    Opportunity discovery is intentionally broader than executable setup proof:
+    aligned market/structure/auction/value evidence can create an OPPORTUNITY_WATCH
+    even while E2 or E6 remains unresolved. This never authorizes a trade.
     """
     engines = {key: dict(value or {}) for key, value in (engines or {}).items()}
     e1, e2, e3, e4, e5, e6 = (engines.get(key, {}) for key in ("E1", "E2", "E3", "E4", "E5", "E6"))
@@ -49,7 +62,7 @@ def reconcile_causal_evidence(engines: dict[str, dict[str, Any]]) -> dict[str, A
     e1_direction = _direction(e1)
     e2_direction = _direction(e2)
     e3_direction = _direction(e3)
-    e4_direction = _direction(e4)
+    e4_direction = _event_direction(e4)
 
     votes = [d for d in (e1_direction, e2_direction, e3_direction) if d in {"BUY", "SELL"}]
     buy_votes = votes.count("BUY")
@@ -73,7 +86,8 @@ def reconcile_causal_evidence(engines: dict[str, dict[str, Any]]) -> dict[str, A
 
     e2_text = " ".join(_text(e2.get(key)) for key in ("finding", "opportunity_maturity", "state"))
     e2_reasons = _text(e2.get("reasons"))
-    e2_eligible = not any(token in e2_reasons for token in ("NO_ELIGIBLE_OPPORTUNITY_PATH", "THESIS_INVALIDATED", "HARD_VETO"))
+    e2_eligible = not any(token in e2_reasons for token in ("THESIS_INVALIDATED", "HARD_VETO"))
+    e2_path_blocked = "NO_ELIGIBLE_OPPORTUNITY_PATH" in e2_reasons
     e2_developing = any(token in e2_text for token in ("DEVELOPING", "PENDING", "CONFIRMED"))
     if not e2_eligible:
         reasons.append("E2_OPPORTUNITY_UNRESOLVED")
@@ -81,7 +95,7 @@ def reconcile_causal_evidence(engines: dict[str, dict[str, Any]]) -> dict[str, A
 
     e4_state = _text(e4.get("auction_state") or e4.get("auction_phase"))
     e4_pending = e4_state in {"PENDING", "AWAITING_CONFIRMATION", "CONFIRMATION_PENDING"}
-    e4_confirmed = e4_state in {"CONFIRMED", "TERMINALLY_CONFIRMED"}
+    e4_confirmed = e4_state in {"CONFIRMED", "TERMINALLY_CONFIRMED", "ACCEPTED", "RECLAIMED"} or "TERMINAL" in e4_state
     if e4_pending:
         evidence.append("E4_AUCTION_PENDING")
         wait_for.append("AUCTION_CONFIRMATION")
@@ -90,7 +104,8 @@ def reconcile_causal_evidence(engines: dict[str, dict[str, Any]]) -> dict[str, A
     else:
         wait_for.append("LIQUIDITY_CONFIRMATION")
 
-    if _space_ok(e5, direction):
+    space_ok = _space_ok(e5, direction)
+    if space_ok:
         evidence.append("STRUCTURAL_SPACE_ACCEPTABLE")
     else:
         reasons.append("STRUCTURAL_SPACE_INSUFFICIENT")
@@ -103,7 +118,28 @@ def reconcile_causal_evidence(engines: dict[str, dict[str, Any]]) -> dict[str, A
         evidence.append("E6_SETUP_PRESENT")
         return {"state": "CAUSAL_SETUP", "direction": direction, "ready": True, "evidence": evidence, "reasons": reasons, "wait_for": wait_for}
 
-    if e2_eligible and (e4_pending or e4_confirmed) and _space_ok(e5, direction):
+    # Profit-first scouting layer: preserve a real opportunity before E2/E6
+    # have completed their proof. E2 remains a wait condition, not an automatic
+    # opportunity killer, unless the thesis is explicitly invalidated or vetoed.
+    e1_e3_aligned = e1_direction == direction and e3_direction == direction
+    e4_aligned = e4_direction in {"NEUTRAL", direction}
+    auction_present = e4_pending or e4_confirmed or bool(_text(e4.get("event") or e4.get("finding")))
+    if e1_e3_aligned and e4_aligned and auction_present and space_ok:
+        evidence.extend(["E1_DIRECTIONAL_CONTEXT", "E3_STRUCTURE_SUPPORT"])
+        if e4_direction == direction:
+            evidence.append("E4_DIRECTIONAL_EVENT")
+        if e2_path_blocked:
+            reasons.append("E2_OPPORTUNITY_PATH_UNPROVEN")
+            wait_for.append("E2_OPPORTUNITY_CONFIRMATION")
+        elif not e2_eligible:
+            wait_for.append("E2_ELIGIBLE_OPPORTUNITY_PATH")
+        elif not e2_developing:
+            wait_for.append("E2_OPPORTUNITY_CONFIRMATION")
+        if "E6_CAUSAL_SETUP_PROOF" not in wait_for:
+            wait_for.append("E6_CAUSAL_SETUP_PROOF")
+        return {"state": "OPPORTUNITY_WATCH", "direction": direction, "ready": False, "evidence": list(dict.fromkeys(evidence)), "reasons": list(dict.fromkeys(reasons)), "wait_for": list(dict.fromkeys(wait_for))}
+
+    if e2_eligible and (e4_pending or e4_confirmed) and space_ok:
         if "CONFIRMED" in e2_text:
             return {"state": "THESIS_CONFIRMED_SETUP_NOT_FORMED", "direction": direction, "ready": False, "evidence": evidence, "reasons": reasons, "wait_for": wait_for + ["E6_CAUSAL_SETUP_PROOF"]}
         if e2_developing:
