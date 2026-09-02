@@ -74,3 +74,29 @@ def test_e6_mixed_internal_structure_is_counter_evidence_not_hard_conflict():
     assert out["trade_ready"] is False
     assert "E3_INTERNAL_COUNTER_EVIDENCE" in out["counter_evidence"]
     assert "E3_INTERNAL_EVIDENCE_UNRESOLVED" in out["missing_proof"]
+
+
+def test_e6_generic_high_liquidity_interaction_uses_buyer_taker_as_directional_evidence():
+    upstream = _upstream()
+    upstream["E4"] = Result({
+        "event": "HIGH_LIQUIDITY_INTERACTION",
+        "auction_state": "PENDING",
+        "liquidity_taker": "BUYERS",
+        "response_actor": "UNCLEAR",
+        "liquidity_type": "EQUAL_LIQUIDITY",
+        "event_level": 4375.02,
+        "event_id": "gold-2026-09-02T17:45:00Z",
+    })
+    upstream["E3"] = Result({
+        "finding": "BULLISH_STRUCTURE",
+        "internal_state": "DOWN",
+        "external_state": "UP",
+        "bos": "NO_BREAK",
+    })
+    out = analyze_e6({"bars": _bars()}, upstream).output
+    assert out["state"] == "FORMING"
+    assert out["setup"] == "OPPORTUNITY_WATCH"
+    assert out["direction"] == "BUY"
+    assert out["trade_ready"] is False
+    assert "E3_INTERNAL_COUNTER_EVIDENCE" in out["counter_evidence"]
+    assert "E3_INTERNAL_COUNTER_EVIDENCE" not in out["hard_conflicts"]
