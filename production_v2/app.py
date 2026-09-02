@@ -66,10 +66,11 @@ def _direction_from_output(output: dict) -> str:
 
 
 def _pending_upstream_thesis(engines: dict[str, dict]) -> tuple[str, str, list[str]]:
-    """Build a watch-only thesis from E2/E4 when downstream setup is incomplete.
+    """Build a watch-only thesis from explicit E2/E4 pending evidence.
 
-    This is deliberately NOT an executable setup. It only gives the lifecycle
-    enough identity to remember a developing opportunity across closed candles.
+    This is deliberately NOT an executable setup. It gives lifecycle state an
+    identity only when the upstream brains explicitly say an opportunity is
+    developing or an auction/confirmation is pending.
     """
     e2 = engines.get("E2", {})
     e4 = engines.get("E4", {})
@@ -80,18 +81,30 @@ def _pending_upstream_thesis(engines: dict[str, dict]) -> tuple[str, str, list[s
     if direction not in {"BUY", "SELL"}:
         return "NEUTRAL", "", []
 
-    e2_text = " ".join(_text(e2.get(key)) for key in ("finding", "opportunity_maturity", "state", "reasons"))
-    e4_text = " ".join(_text(e4.get(key)) for key in ("finding", "auction_state", "event", "reasons"))
+    e2_finding = _text(e2.get("finding"))
+    e2_maturity = _text(e2.get("opportunity_maturity"))
+    e2_state = _text(e2.get("state"))
+    e2_reasons = _text(e2.get("reasons"))
+    e4_finding = _text(e4.get("finding"))
+    e4_auction_state = _text(e4.get("auction_state") or e4.get("auction_phase"))
+    e4_event = _text(e4.get("event") or e4.get("auction_event") or e4.get("liquidity_event"))
+    e4_reasons = _text(e4.get("reasons"))
     e5_text = " ".join(_text(e5.get(key)) for key in ("finding", "value_response", "repricing_state", "reasons"))
-    pending_markers = ("DEVELOPING", "PENDING", "CONFIRMATION_PENDING", "FOLLOW_THROUGH", "AUCTION")
-    has_pending = any(marker in f"{e2_text} {e4_text}" for marker in pending_markers)
+
+    e2_developing = any(token in " ".join((e2_finding, e2_maturity, e2_state)) for token in ("DEVELOPING", "PENDING"))
+    e4_pending = e4_auction_state in {"PENDING", "AWAITING_CONFIRMATION", "CONFIRMATION_PENDING"}
+    e4_pending_finding = any(token in e4_finding for token in ("SWEEP", "FAILED_BREAK", "RECLAIM")) and any(token in e4_reasons for token in ("PENDING", "NOT_TERMINALLY_CONFIRMED", "CONFIRMATION_NOT_PROVEN"))
+    has_pending = e2_developing or e4_pending or e4_pending_finding
     if not has_pending:
         return direction, "", []
 
     evidence: list[str] = []
-    for source, text in (("E2", e2_text), ("E4", e4_text), ("E5", e5_text)):
-        if text and any(marker in text for marker in pending_markers):
-            evidence.append(f"{source}_PENDING_EVIDENCE")
+    if e2_developing:
+        evidence.append("E2_OPPORTUNITY_DEVELOPING")
+    if e4_pending or e4_pending_finding:
+        evidence.append("E4_AUCTION_PENDING")
+    if e4_event:
+        evidence.append("E4_EVENT_PRESENT")
     if "SPACE_CONSTRAINED" in e5_text:
         evidence.append("TARGET_SPACE_CURRENTLY_CONSTRAINED")
     return direction, "OPPORTUNITY_WATCH", evidence
@@ -111,8 +124,6 @@ def _current_opportunity_input(result, candle: str) -> dict:
     e6_state = _text(e6.get("setup_state") or e6.get("opportunity_stage") or e6.get("state") or e6.get("finding"))
     e6_reasons = [_text(x) for x in (e6.get("reason_codes") or e6.get("reasons") or [])]
 
-    # First preference remains a real E6 thesis. If E6 has no causal setup,
-    # preserve only a watch-only upstream opportunity from E2/E4.
     real_setup = e6_direction in {"BUY", "SELL"} and e6_setup not in {"", "UNKNOWN", "NONE", "NO_SETUP"}
     pending_direction, pending_setup, pending_evidence = _pending_upstream_thesis(engines)
     if real_setup and not any(token in e6_state for token in ("INVALIDATED", "NO_SETUP")) and "CAUSAL_SETUP_PROOF_INCOMPLETE" not in e6_reasons:
