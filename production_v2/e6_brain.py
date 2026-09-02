@@ -5,8 +5,8 @@ from typing import Any
 from .contracts import EngineResult
 from .e6_brain_legacy import analyze_e6 as _legacy_analyze_e6
 
-ARCHITECTURE = "E6_OPPORTUNITY_THESIS_ENGINE_V51"
-VERSION = "51.1"
+ARCHITECTURE = "E6_OPPORTUNITY_THESIS_ENGINE_V52"
+VERSION = "52.0"
 
 
 def _text(value: Any) -> str:
@@ -205,10 +205,6 @@ def _watch_result(legacy: EngineResult, opportunity: dict[str, Any]) -> EngineRe
     counter_evidence = list(dict.fromkeys(opportunity.get("counter_evidence", [])))
     hard_conflicts = list(dict.fromkeys(opportunity.get("hard_conflicts", [])))
 
-    # Internal counterflow is expected during thesis formation. It is missing
-    # confirmation, but it is not by itself a contested thesis. Contestation is
-    # reserved for stronger contradictions (e.g. opposing E1 anchor) or a
-    # materially constrained structural space that changes trade survivability.
     contested = (
         "E1_COUNTER_EVIDENCE" in counter_evidence
         or "STRUCTURAL_SPACE_INSUFFICIENT" in missing
@@ -252,12 +248,61 @@ def _watch_result(legacy: EngineResult, opportunity: dict[str, Any]) -> EngineRe
     return EngineResult(legacy.engine_id, legacy.name, False, legacy.score, output, tuple(missing))
 
 
+def _no_surviving_causal_thesis(legacy: EngineResult) -> EngineResult:
+    output = dict(legacy.output or {})
+    output.update({
+        "architecture": ARCHITECTURE,
+        "version": VERSION,
+        "state": "NO_SETUP",
+        "setup_state": "NO_SETUP",
+        "opportunity_stage": "ABSENT",
+        "setup": "NO_SETUP",
+        "setup_family": "",
+        "candidate_type": "NONE",
+        "direction": "NEUTRAL",
+        "direction_thesis": "NEUTRAL",
+        "thesis_direction": "NEUTRAL",
+        "trade_ready": False,
+        "gate_passed": False,
+        "thesis_status": "ABSENT",
+        "finding": "No surviving causal opportunity thesis from E1-E5; legacy pattern output is suppressed.",
+        "thesis": "E6 cannot create an independent setup when upstream causal evidence does not support an opportunity.",
+        "supporting_evidence": [],
+        "counter_evidence": [],
+        "hard_conflicts": [],
+        "missing_proof": ["E1_E2_E3_E4_E5_CAUSAL_OPPORTUNITY"],
+        "next_required_event": "NEW_CAUSAL_OPPORTUNITY_FROM_E1_E5",
+        "wait_for": "NEW_CAUSAL_OPPORTUNITY_FROM_E1_E5",
+        "candidate_identity": "",
+        "opportunity_id": "",
+        "event_id": "",
+        "available_space_atr": 0.0,
+        "watch_only": False,
+        "execution_authority": "E9",
+        "reason_codes": ["NO_CAUSAL_OPPORTUNITY"],
+        "reasons": ["NO_CAUSAL_OPPORTUNITY"],
+    })
+    return EngineResult(legacy.engine_id, legacy.name, False, legacy.score, output, ("NO_CAUSAL_OPPORTUNITY",))
+
+
 def analyze_e6(market_data: dict[str, Any], upstream: dict[str, EngineResult]) -> EngineResult:
     legacy = _legacy_analyze_e6(market_data, upstream)
-    current = _out(legacy)
-    if _text(current.get("state")) not in {"ABSENT", "NO_SETUP"} and _text(current.get("setup")) not in {"NONE", "NO_SETUP", "UNKNOWN"}:
-        return legacy
     opportunity = _causal_opportunity(upstream)
+
+    # E1-E5 causal evidence is the gate. A legacy E6 pattern may enrich a
+    # surviving causal thesis, but it must never manufacture one on its own.
     if opportunity is None:
+        return _no_surviving_causal_thesis(legacy)
+
+    current = _out(legacy)
+    legacy_direction = _direction(current.get("direction"))
+    legacy_setup = _text(current.get("setup"))
+    legacy_has_setup = (
+        _text(current.get("state")) not in {"ABSENT", "NO_SETUP"}
+        and legacy_setup not in {"", "NONE", "NO_SETUP", "UNKNOWN"}
+    )
+
+    if legacy_has_setup and legacy_direction == opportunity["direction"]:
         return legacy
+
     return _watch_result(legacy, opportunity)
