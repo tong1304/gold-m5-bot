@@ -78,29 +78,13 @@ class LiveService:
                 market_open[alias] = False
                 self._runtime_errors[alias] = f"market status: {exc}"
 
-        # Only markets that are currently open and have completed an E1-E9
-        # evaluation participate in the NO_TRADE decision. A closed market
-        # must not block notification for another open market.
-        active_results = {
-            alias: result
-            for alias, result in self._latest_results.items()
-            if alias in symbols and market_open.get(alias, False)
-        }
+        active_results = {alias: result for alias, result in self._latest_results.items() if alias in symbols and market_open.get(alias, False)}
         if not active_results:
-            # Nothing is tradable now; let the normal market-status alert
-            # report MARKET_CLOSED instead of emitting a misleading NO_TRADE.
             self._last_no_trade_slot = slot
             return
-
-        # A real authorized trade takes precedence over NO_TRADE.
-        if any(
-            getattr(result, "decision", None) in {"BUY", "SELL"}
-            and bool(getattr(result, "gate_passed", False))
-            for result in active_results.values()
-        ):
+        if any(getattr(result, "decision", None) in {"BUY", "SELL"} and bool(getattr(result, "gate_passed", False)) for result in active_results.values()):
             self._last_no_trade_slot = slot
             return
-
         try:
             send_no_trade(dict(active_results), now)
             self._last_no_trade_slot = slot
@@ -119,7 +103,6 @@ class LiveService:
 
     @staticmethod
     def _reasoning(engine) -> dict:
-        """Expose each engine's own reasoning; E9 alone has trade authority."""
         output = engine.output or {}
         reasoning = output.get("professional_reasoning") or {}
         specialists = output.get("specialists") or {}
@@ -133,71 +116,48 @@ class LiveService:
             conclusion = f"MARKET_STATE={market_state}; VOLATILITY={volatility}; STRUCTURE={structure}; PRESSURE={pressure}; TREND_STATE={trend_state}; TRANSITION={transition}"
             observations = []
             brain_evidence = output.get("evidence") or reasoning.get("evidence") or []
-            if isinstance(brain_evidence, (list, tuple)):
-                observations.extend(str(x) for x in brain_evidence if x)
+            if isinstance(brain_evidence, (list, tuple)): observations.extend(str(x) for x in brain_evidence if x)
             trace = output.get("reasoning_trace") or []
-            if isinstance(trace, (list, tuple)):
-                observations.extend(str(x) for x in trace if x)
+            if isinstance(trace, (list, tuple)): observations.extend(str(x) for x in trace if x)
             for key in ("directional_pressure", "trend_state", "volatility_state", "structure_state", "compression", "expansion", "transition"):
                 value = reasoning.get(key) or output.get(key)
-                if value is not None:
-                    observations.append(f"{key}={value}")
+                if value is not None: observations.append(f"{key}={value}")
             if isinstance(specialists, dict):
                 for item in specialists.values():
                     if not isinstance(item, dict): continue
                     observations.extend(str(x) for x in (item.get("observations") or []) if x)
             return {"question": reasoning.get("question") or output.get("question") or output.get("specialist_question"), "conclusion": str(conclusion), "observations": list(dict.fromkeys(observations))[:12], "reasons": sorted(set(str(x) for x in (engine.reason_codes or [])))[:16], "role": "MARKET_STATE_ANALYST"}
         if engine.engine_id == "E2":
-            core_observations = output.get("observations") or []
-            evidence = output.get("evidence") or []
-            decision_factors = output.get("decision_factors") or []
-            counter = output.get("counter_evidence") or []
-            missing = output.get("missing_evidence") or []
-            reasons = list(engine.reason_codes or [])
             observations = []
-            observations.extend(str(x) for x in core_observations if x)
-            observations.extend(str(x) for x in evidence if x)
-            observations.extend(str(x) for x in decision_factors if x)
-            observations.extend(f"counter_evidence={x}" for x in counter if x)
-            observations.extend(f"missing_evidence={x}" for x in missing if x)
+            for source in (output.get("observations") or [], output.get("evidence") or [], output.get("decision_factors") or []): observations.extend(str(x) for x in source if x)
+            observations.extend(f"counter_evidence={x}" for x in (output.get("counter_evidence") or []) if x)
+            observations.extend(f"missing_evidence={x}" for x in (output.get("missing_evidence") or []) if x)
+            reasons = list(engine.reason_codes or [])
             if not reasons and output.get("opportunity_decision"): reasons.append(str(output["opportunity_decision"]))
             return {"question": reasoning.get("question") or output.get("question") or "What opportunity is the market offering right now?", "conclusion": str(reasoning.get("conclusion") or output.get("thesis") or "UNRESOLVED"), "observations": list(dict.fromkeys(observations))[:12], "reasons": sorted(set(str(x) for x in reasons if str(x).strip()))[:16], "role": output.get("reasoning_role", "OPPORTUNITY_REGIME_ANALYST")}
         if engine.engine_id == "E3":
-            e3_question = reasoning.get("question") or output.get("question") or "What is price structure communicating?"
-            e3_finding = reasoning.get("finding") or reasoning.get("conclusion") or output.get("finding") or "STRUCTURE_UNRESOLVED"
             observations = []
             for source in (output.get("observations"), output.get("evidence"), reasoning.get("evidence")):
                 if isinstance(source, (list, tuple)): observations.extend(str(x) for x in source if x)
-            reasons = list(engine.reason_codes or [])
-            reasons.extend(reasoning.get("reason_codes") or [])
-            reasons.extend(output.get("reasons") or [])
-            return {"question": e3_question, "conclusion": str(e3_finding), "observations": list(dict.fromkeys(observations))[:12], "reasons": sorted(set(str(x) for x in reasons if str(x).strip()))[:16], "role": "MARKET_STRUCTURE_ANALYST"}
+            reasons = list(engine.reason_codes or []) + list(reasoning.get("reason_codes") or []) + list(output.get("reasons") or [])
+            return {"question": reasoning.get("question") or output.get("question") or "What is price structure communicating?", "conclusion": str(reasoning.get("finding") or reasoning.get("conclusion") or output.get("finding") or "STRUCTURE_UNRESOLVED"), "observations": list(dict.fromkeys(observations))[:12], "reasons": sorted(set(str(x) for x in reasons if str(x).strip()))[:16], "role": "MARKET_STRUCTURE_ANALYST"}
         if engine.engine_id == "E4":
-            e4_question = reasoning.get("question") or output.get("question") or "Where is liquidity, who took it, and did price accept or reject the auction?"
-            e4_finding = reasoning.get("conclusion") or output.get("analyst_conclusion") or output.get("finding") or "UNRESOLVED"
             observations = []
             for source in (output.get("observations"), reasoning.get("evidence")):
                 if isinstance(source, (list, tuple)): observations.extend(str(x) for x in source if x)
             audit = output.get("audit") or {}
             for key in ("closed_candle_only", "no_lookahead", "liquidity_side", "liquidity_kind", "touches", "freshness", "event", "event_age_bars", "actor_identification", "auction_state", "lifecycle", "follow_through_bars", "consecutive_confirmation_bars", "true_acceptance_gate", "contextual_hint_not_authority"):
                 if key in audit: observations.append(f"{key}={audit[key]}")
-            reasons = list(engine.reason_codes or [])
-            reasons.extend(output.get("reasons") or [])
-            return {"question": e4_question, "conclusion": str(e4_finding), "observations": list(dict.fromkeys(observations))[:20], "reasons": sorted(set(str(x) for x in reasons if str(x).strip()))[:20], "role": "LIQUIDITY_AUCTION_ANALYST"}
+            reasons = list(engine.reason_codes or []) + list(output.get("reasons") or [])
+            return {"question": reasoning.get("question") or output.get("question") or "Where is liquidity, who took it, and did price accept or reject the auction?", "conclusion": str(reasoning.get("conclusion") or output.get("analyst_conclusion") or output.get("finding") or "UNRESOLVED"), "observations": list(dict.fromkeys(observations))[:20], "reasons": sorted(set(str(x) for x in reasons if str(x).strip()))[:20], "role": "LIQUIDITY_AUCTION_ANALYST"}
         if engine.engine_id == "E5":
-            e5_state = output.get("location_state") or reasoning.get("thesis") or "E5_DATA_UNRESOLVED"
-            e5_direction = output.get("direction") or "NEUTRAL"
-            e5_quality = output.get("location_quality") or "UNKNOWN"
-            question = reasoning.get("question") or output.get("question") or "Is current location advantageous?"
             observations = list(output.get("observations") or [])
-            trace = output.get("reasoning_trace") or []
-            observations.extend(str(x) for x in trace if x)
-            observations.append(f"direction={e5_direction}")
-            observations.append(f"location_quality={e5_quality}")
+            observations.extend(str(x) for x in (output.get("reasoning_trace") or []) if x)
+            observations.append(f"direction={output.get('direction', 'NEUTRAL')}")
+            observations.append(f"location_quality={output.get('location_quality', 'UNKNOWN')}")
             observations.append(f"preferred_location={output.get('preferred_location', 'NONE')}")
-            reasons = list(engine.reason_codes or [])
-            reasons.extend(output.get("counter_evidence") or [])
-            return {"question": question, "conclusion": str(e5_state), "observations": list(dict.fromkeys(str(x) for x in observations if str(x)))[:16], "reasons": sorted(set(str(x) for x in reasons if str(x).strip()))[:20], "role": "LOCATION_VALUE_ANALYST"}
+            reasons = list(engine.reason_codes or []) + list(output.get("counter_evidence") or [])
+            return {"question": reasoning.get("question") or output.get("question") or "Is current location advantageous?", "conclusion": str(output.get("location_state") or reasoning.get("thesis") or "E5_DATA_UNRESOLVED"), "observations": list(dict.fromkeys(str(x) for x in observations if str(x)))[:16], "reasons": sorted(set(str(x) for x in reasons if str(x).strip()))[:20], "role": "LOCATION_VALUE_ANALYST"}
         conclusion = reasoning.get("conclusion") or output.get("analyst_conclusion") or output.get("finding") or "UNRESOLVED"
         question = reasoning.get("question") or output.get("question") or output.get("specialist_question")
         observations = []
@@ -207,12 +167,6 @@ class LiveService:
                 if not isinstance(item, dict): continue
                 observations.extend(item.get("observations") or [])
                 reasons.extend(item.get("reason_codes") or [])
-                nested = item.get("output")
-                if isinstance(nested, dict):
-                    for key in ("reason", "reasons", "observation", "observations", "finding", "findings"):
-                        value = nested.get(key)
-                        if isinstance(value, (list, tuple)): observations.extend(value)
-                        elif value: observations.append(value)
         return {"question": question, "conclusion": str(conclusion), "observations": [str(x) for x in observations[:12]], "reasons": sorted(set(str(x) for x in reasons))[:16], "role": output.get("reasoning_role", "TRADE_ECONOMICS_RISK")}
 
     def _trace_result(self, alias: str, result) -> None:
@@ -230,30 +184,46 @@ class LiveService:
         while True:
             for alias in self.data.symbols():
                 try:
-                    raw = self.data.candles(alias); payload = normalize_market_data(raw)
+                    raw = self.data.candles(alias)
+                    # Normalize only tradable/open payloads. GOLD can legitimately
+                    # return an empty-bar MARKET_CLOSED payload during its daily
+                    # exchange break; normalizing that payload raises "bars are
+                    # required" and incorrectly reports a runtime failure.
+                    if raw.get("market_state") == "MARKET_CLOSED" and not raw.get("bars"):
+                        self._runtime_errors.pop(alias, None)
+                        print(f"[PRODUCTION V2] {alias} MARKET_CLOSED action=SKIP_EVALUATION", flush=True)
+                        continue
+                    payload = normalize_market_data(raw)
                     if payload["bars"]:
-                        self._last_prices[alias] = payload["bars"][-1]["close"]; store.update_price(alias, self._last_prices[alias])
+                        self._last_prices[alias] = payload["bars"][-1]["close"]
+                        store.update_price(alias, self._last_prices[alias])
                     candle = payload.get("candle_close_timestamp") or ""
                     if not candle:
-                        if raw.get("market_state") == "MARKET_CLOSED":
-                            self._runtime_errors.pop(alias, None)
-                            print(f"[PRODUCTION V2] {alias} MARKET_CLOSED action=SKIP_EVALUATION", flush=True)
-                        else:
-                            self._runtime_errors[alias] = "ไม่พบ candle timestamp"
+                        self._runtime_errors[alias] = "ไม่พบ candle timestamp"
                         continue
                     age = self._candle_age_seconds(candle)
                     if age is not None and age > self.max_candle_age_seconds:
-                        print(f"[PRODUCTION V2] {alias} STALE_CANDLE candle={candle} age_seconds={int(age)} action=SKIP_EVALUATION", flush=True); self._runtime_errors[alias] = f"stale candle: {candle}"; continue
+                        print(f"[PRODUCTION V2] {alias} STALE_CANDLE candle={candle} age_seconds={int(age)} action=SKIP_EVALUATION", flush=True)
+                        self._runtime_errors[alias] = f"stale candle: {candle}"
+                        continue
                     if self._last_candle.get(alias) == candle:
-                        print(f"[PRODUCTION V2] {alias} DUPLICATE_CANDLE candle={candle} action=SKIP_EVALUATION", flush=True); continue
+                        print(f"[PRODUCTION V2] {alias} DUPLICATE_CANDLE candle={candle} action=SKIP_EVALUATION", flush=True)
+                        continue
                     self._last_candle[alias] = candle
                     print(f"[PRODUCTION V2] {alias} LSE M5 new closed candle bars={len(raw.get('bars') or [])} candle={candle}", flush=True)
                     result = self.pipeline.run(payload)
-                    self._runtime_errors.pop(alias, None); self._latest_results[alias] = result; store.record(result, self._last_prices.get(alias)); self._trace_result(alias, result)
-                    if result.decision in {"BUY", "SELL"} and result.gate_passed: send_decision(result)
+                    self._runtime_errors.pop(alias, None)
+                    self._latest_results[alias] = result
+                    store.record(result, self._last_prices.get(alias))
+                    self._trace_result(alias, result)
+                    if result.decision in {"BUY", "SELL"} and result.gate_passed:
+                        send_decision(result)
                 except Exception as exc:
-                    self._runtime_errors[alias] = str(exc); print(f"[PRODUCTION V2] {alias} ERROR {exc}", flush=True)
-            self._send_aligned_no_trade(); self._send_aligned_status(); time.sleep(self.interval)
+                    self._runtime_errors[alias] = str(exc)
+                    print(f"[PRODUCTION V2] {alias} ERROR {exc}", flush=True)
+            self._send_aligned_no_trade()
+            self._send_aligned_status()
+            time.sleep(self.interval)
 
 
 _service = None
