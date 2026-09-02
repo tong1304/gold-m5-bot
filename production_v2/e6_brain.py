@@ -5,8 +5,8 @@ from typing import Any
 from .contracts import EngineResult
 from .e6_brain_legacy import analyze_e6 as _legacy_analyze_e6
 
-ARCHITECTURE = "E6_OPPORTUNITY_THESIS_ENGINE_V49"
-VERSION = "49.0"
+ARCHITECTURE = "E6_OPPORTUNITY_THESIS_ENGINE_V50"
+VERSION = "50.0"
 
 
 def _text(value: Any) -> str:
@@ -70,12 +70,26 @@ def _e4_direction(e4: dict[str, Any]) -> str:
         return taker
     if "LOW_LIQUIDITY_INTERACTION" in event and taker != "NEUTRAL":
         return taker
-    if any(token in event for token in ("LOW_ACCEPTANCE", "LOW_BREAK", "LOW_SWEEP_REJECTION", "LOW_FAILED_BREAK_RECLAIM", "LOW_REJECTION")):
-        return "BUY" if "ACCEPTANCE" not in event and "BREAK" not in event else ("SELL" if "LOW_ACCEPTANCE" in event or "LOW_BREAK" in event else "BUY")
-    if any(token in event for token in ("HIGH_ACCEPTANCE", "HIGH_BREAK")):
+
+    # A failed-break-reclaim is directional by the side that reclaimed the level,
+    # not by the liquidity taker that was trapped. Prefer the explicit response
+    # actor before generic BREAK token inference.
+    if "LOW_FAILED_BREAK_RECLAIM" in event or "HIGH_FAILED_BREAK_RECLAIM" in event:
+        if actor != "NEUTRAL":
+            return actor
+        if "UP" in event:
+            return "BUY"
+        if "DOWN" in event:
+            return "SELL"
+
+    if "LOW_SWEEP_REJECTION" in event or "LOW_REJECTION" in event:
         return "BUY"
-    if any(token in event for token in ("HIGH_SWEEP_REJECTION", "HIGH_FAILED_BREAK_RECLAIM", "HIGH_REJECTION")):
+    if "HIGH_SWEEP_REJECTION" in event or "HIGH_REJECTION" in event:
         return "SELL"
+    if "LOW_ACCEPTANCE" in event or "LOW_BREAK" in event:
+        return "SELL"
+    if "HIGH_ACCEPTANCE" in event or "HIGH_BREAK" in event:
+        return "BUY"
     return actor if actor != "NEUTRAL" else "NEUTRAL"
 
 
