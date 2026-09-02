@@ -31,9 +31,13 @@ def advance_opportunity(previous: dict[str, Any] | None, current: dict[str, Any]
     ready = bool(current.get("ready"))
     invalidated = bool(current.get("invalidated"))
     executed = bool(current.get("executed"))
-    identity = _identity(current.get("direction"), current.get("setup"))
+    current_direction = _text(current.get("direction"))
+    current_setup = _text(current.get("setup"))
+    identity = _identity(current_direction, current_setup)
     previous_state = _text(previous.get("state"))
     previous_id = _text(previous.get("opportunity_id"))
+    previous_direction = _text(previous.get("direction"))
+    previous_setup = _text(previous.get("setup"))
 
     if executed:
         return {
@@ -58,6 +62,12 @@ def advance_opportunity(previous: dict[str, Any] | None, current: dict[str, Any]
                 "invalidation_reason": "CURRENT_CANDLE_INVALIDATED" if invalidated else "OPPORTUNITY_NO_LONGER_VALID",
             }
         if previous_id and identity != previous_id:
+            if previous_direction and current_direction != previous_direction:
+                reason = "DIRECTION_CHANGED"
+            elif previous_setup and current_setup != previous_setup:
+                reason = "SETUP_CHANGED"
+            else:
+                reason = "DIRECTION_OR_SETUP_CHANGED"
             return {
                 **previous,
                 "state": "INVALIDATED",
@@ -65,7 +75,7 @@ def advance_opportunity(previous: dict[str, Any] | None, current: dict[str, Any]
                 "bars_waited": int(previous.get("bars_waited", 0) or 0),
                 "last_evaluated_candle": candle,
                 "trade_authorized": False,
-                "invalidation_reason": "DIRECTION_OR_SETUP_CHANGED",
+                "invalidation_reason": reason,
             }
         bars_waited = int(previous.get("bars_waited", 0) or 0) + 1
         return {
@@ -83,8 +93,8 @@ def advance_opportunity(previous: dict[str, Any] | None, current: dict[str, Any]
             "state": "READY" if ready else "WAITING",
             "continuity": "NEW_OPPORTUNITY_READY" if ready else "NEW_OPPORTUNITY_WATCH",
             "opportunity_id": identity,
-            "direction": _text(current.get("direction")),
-            "setup": _text(current.get("setup")),
+            "direction": current_direction,
+            "setup": current_setup,
             "bars_waited": 0,
             "origin_candle": candle,
             "last_evaluated_candle": candle,
