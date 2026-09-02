@@ -24,15 +24,7 @@ def _is_pending_watch(setup: Any) -> bool:
 
 
 def advance_opportunity(previous: dict[str, Any] | None, current: dict[str, Any]) -> dict[str, Any]:
-    """Advance an opportunity across closed candles without changing trade gates.
-
-    E1-E9 are still re-evaluated on every new closed candle. An upstream
-    opportunity can now create a WAITING lifecycle before E6 has a complete
-    setup. A later E6 setup may promote that same directional opportunity
-    instead of being incorrectly treated as a new/incompatible thesis.
-    Explicit invalidation and direction changes remain hard stops. E9 remains
-    the sole execution authority.
-    """
+    """Advance an opportunity across closed candles without changing trade gates."""
     previous = dict(previous or {})
     current = dict(current or {})
     candle = _text(current.get("candle"))
@@ -84,12 +76,39 @@ def advance_opportunity(previous: dict[str, Any] | None, current: dict[str, Any]
             }
 
         same_identity = bool(previous_id and identity == previous_id)
+        current_is_watch = candidate and current_direction in {"BUY", "SELL"} and _is_pending_watch(current_setup)
+        previous_is_real_setup = bool(previous_setup and not _is_pending_watch(previous_setup))
+
+        # If a real E6 thesis loses its causal setup but upstream E2/E4 still
+        # has explicit pending evidence, keep the directional watch alive. This
+        # is a downgrade in thesis strength, not a promotion and not a reset.
+        downgraded_to_watch = bool(
+            previous_direction in {"BUY", "SELL"}
+            and current_direction == previous_direction
+            and previous_is_real_setup
+            and current_is_watch
+        )
+        if downgraded_to_watch:
+            return {
+                **previous,
+                "state": "WAITING",
+                "continuity": "DOWNGRADED_TO_UPSTREAM_WATCH",
+                "opportunity_id": _identity(current_direction, current_setup),
+                "direction": current_direction,
+                "setup": current_setup,
+                "bars_waited": int(previous.get("bars_waited", 0) or 0) + 1,
+                "last_evaluated_candle": candle,
+                "trade_authorized": False,
+                "invalidation_reason": None,
+            }
+
         pending_to_setup = bool(
             previous_direction in {"BUY", "SELL"}
             and current_direction == previous_direction
             and _is_pending_watch(previous_setup)
             and candidate
             and current_setup not in {"", "UNKNOWN", "NONE", "NO_SETUP"}
+            and not _is_pending_watch(current_setup)
         )
 
         if pending_to_setup:
