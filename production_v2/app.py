@@ -46,30 +46,100 @@ def _text(value) -> str:
     return str(value or "").upper().strip()
 
 
+def _direction_from_output(output: dict) -> str:
+    """Extract directional intent without inventing a trade thesis."""
+    for value in (
+        output.get("direction"),
+        output.get("opportunity_direction"),
+        output.get("market_direction"),
+        output.get("structure_direction"),
+        output.get("pressure"),
+        output.get("finding"),
+        output.get("market_state"),
+    ):
+        text = _text(value)
+        if text in {"BUY", "UP", "BULLISH", "TREND_UP"} or text.startswith(("BUY ", "BUY_", "BUY:")):
+            return "BUY"
+        if text in {"SELL", "DOWN", "BEARISH", "TREND_DOWN"} or text.startswith(("SELL ", "SELL_", "SELL:")):
+            return "SELL"
+    return "NEUTRAL"
+
+
+def _pending_upstream_thesis(engines: dict[str, dict]) -> tuple[str, str, list[str]]:
+    """Build a watch-only thesis from E2/E4 when downstream setup is incomplete.
+
+    This is deliberately NOT an executable setup. It only gives the lifecycle
+    enough identity to remember a developing opportunity across closed candles.
+    """
+    e2 = engines.get("E2", {})
+    e4 = engines.get("E4", {})
+    e5 = engines.get("E5", {})
+    direction = _direction_from_output(e2)
+    if direction not in {"BUY", "SELL"}:
+        direction = _direction_from_output(e4)
+    if direction not in {"BUY", "SELL"}:
+        return "NEUTRAL", "", []
+
+    e2_text = " ".join(_text(e2.get(key)) for key in ("finding", "opportunity_maturity", "state", "reasons"))
+    e4_text = " ".join(_text(e4.get(key)) for key in ("finding", "auction_state", "event", "reasons"))
+    e5_text = " ".join(_text(e5.get(key)) for key in ("finding", "value_response", "repricing_state", "reasons"))
+    pending_markers = ("DEVELOPING", "PENDING", "CONFIRMATION_PENDING", "FOLLOW_THROUGH", "AUCTION")
+    has_pending = any(marker in f"{e2_text} {e4_text}" for marker in pending_markers)
+    if not has_pending:
+        return direction, "", []
+
+    evidence: list[str] = []
+    for source, text in (("E2", e2_text), ("E4", e4_text), ("E5", e5_text)):
+        if text and any(marker in text for marker in pending_markers):
+            evidence.append(f"{source}_PENDING_EVIDENCE")
+    if "SPACE_CONSTRAINED" in e5_text:
+        evidence.append("TARGET_SPACE_CURRENTLY_CONSTRAINED")
+    return direction, "OPPORTUNITY_WATCH", evidence
+
+
 def _current_opportunity_input(result, candle: str) -> dict:
     engines = {engine.engine_id: engine.output or {} for engine in result.engines}
+    e2 = engines.get("E2", {})
+    e4 = engines.get("E4", {})
     e6 = engines.get("E6", {})
     e7 = engines.get("E7", {})
     e8 = engines.get("E8", {})
     e9 = engines.get("E9", {})
 
-    direction = _text(e6.get("direction") or e6.get("direction_thesis") or e6.get("thesis_direction"))
-    setup = _text(e6.get("setup") or e6.get("setup_family") or e6.get("setup_type"))
+    e6_direction = _direction_from_output(e6)
+    e6_setup = _text(e6.get("setup") or e6.get("setup_family") or e6.get("setup_type"))
     e6_state = _text(e6.get("setup_state") or e6.get("opportunity_stage") or e6.get("state") or e6.get("finding"))
     e6_reasons = [_text(x) for x in (e6.get("reason_codes") or e6.get("reasons") or [])]
+
+    # First preference remains a real E6 thesis. If E6 has no causal setup,
+    # preserve only a watch-only upstream opportunity from E2/E4.
+    real_setup = e6_direction in {"BUY", "SELL"} and e6_setup not in {"", "UNKNOWN", "NONE", "NO_SETUP"}
+    pending_direction, pending_setup, pending_evidence = _pending_upstream_thesis(engines)
+    if real_setup and not any(token in e6_state for token in ("INVALIDATED", "NO_SETUP")) and "CAUSAL_SETUP_PROOF_INCOMPLETE" not in e6_reasons:
+        direction = e6_direction
+        setup = e6_setup
+        thesis_status = e6_state if e6_state in {"FORMING", "VALIDATING", "MATURE", "CONFIRMED", "TRADE_READY"} else "FORMING"
+        candidate = True
+        lifecycle_source = "E6_SETUP"
+    elif pending_setup:
+        direction = pending_direction
+        setup = pending_setup
+        thesis_status = "FORMING"
+        candidate = True
+        lifecycle_source = "E2_E4_UPSTREAM_WATCH"
+    else:
+        direction = e6_direction
+        setup = e6_setup
+        thesis_status = "NONE"
+        candidate = False
+        lifecycle_source = "NONE"
+
     confirmation = _text(e7.get("confirmation_state") or e7.get("confirmation") or "")
     profit_edge = e8.get("profit_edge") if isinstance(e8.get("profit_edge"), dict) else {}
     e9_decision = _text(e9.get("decision") or result.decision)
-
-    thesis_status = e6_state if e6_state in {"FORMING", "VALIDATING", "MATURE", "CONFIRMED", "TRADE_READY"} else "NONE"
-    candidate = bool(
-        direction in {"BUY", "SELL"}
-        and setup not in {"", "UNKNOWN", "NONE", "NO_SETUP"}
-        and not any(token in e6_state for token in ("INVALIDATED", "NO_SETUP"))
-        and "CAUSAL_SETUP_PROOF_INCOMPLETE" not in e6_reasons
-    )
     ready = bool(
-        candidate
+        real_setup
+        and candidate
         and e6_state in {"MATURE", "TRADE_READY", "CONFIRMED"}
         and confirmation in {"PROVEN", "CONFIRMED"}
         and bool(profit_edge.get("trusted"))
@@ -89,15 +159,16 @@ def _current_opportunity_input(result, candle: str) -> dict:
         "executed": executed,
         "thesis_status": thesis_status,
         "candle": candle,
+        "lifecycle_source": lifecycle_source,
+        "upstream_evidence": pending_evidence,
     }
 
 
 def _run_with_lifecycle(self, market_data, *, wait_bars=0, resume_state=None, historical_calibration=None):
-    """Run the full E1-E9 analysis while preserving a still-valid opportunity.
+    """Run full E1-E9 analysis while preserving a still-valid opportunity.
 
-    Re-analysis on every new closed candle is intentional: the market must be
-    re-validated. Lifecycle state prevents a valid opportunity from being
-    forgotten between candles; it never bypasses E1-E9 or E9 authority.
+    Re-analysis on every new closed candle is intentional. Lifecycle state only
+    remembers a developing opportunity; it never bypasses E1-E9 or E9 authority.
     """
     symbol = str(market_data.get("symbol") or "UNKNOWN").upper()
     previous = dict(_last_opportunity_lifecycle.get(symbol) or {})
@@ -120,12 +191,15 @@ def _run_with_lifecycle(self, market_data, *, wait_bars=0, resume_state=None, hi
     risk["opportunity_lifecycle"] = lifecycle
     risk["next_required_event"] = "NEXT_CLOSED_M5_CANDLE" if lifecycle.get("state") in {"WAITING", "READY"} else None
     risk["wait_bars"] = int(lifecycle.get("bars_waited", 0) or 0)
+    risk["lifecycle_source"] = current.get("lifecycle_source")
+    risk["upstream_evidence"] = current.get("upstream_evidence", [])
     print(
         f"[PRODUCTION V2] {symbol} OPPORTUNITY_LIFECYCLE "
         f"state={lifecycle.get('state')} continuity={lifecycle.get('continuity')} "
         f"bars_waited={lifecycle.get('bars_waited', 0)} "
         f"opportunity_id={lifecycle.get('opportunity_id')} "
-        f"candle={candle} next={risk['next_required_event']}",
+        f"source={current.get('lifecycle_source')} candle={candle} "
+        f"next={risk['next_required_event']}",
         flush=True,
     )
     return result.__class__(result.symbol, result.timeframe, result.decision, result.gate_passed, result.score, result.engines, risk, result.reason_codes)
@@ -136,7 +210,7 @@ ProductionPipeline.run = _run_with_lifecycle
 
 
 def _connect_brains(result):
-    """Attach evidence handoff without resetting the lifecycle owned by runtime."""
+    """Attach evidence handoff without resetting lifecycle owned by runtime."""
     result = attach_result_chain(result)
     symbol = str(result.symbol or "UNKNOWN").upper()
     lifecycle = dict(result.risk.get("opportunity_lifecycle") or _last_opportunity_lifecycle.get(symbol) or {})
