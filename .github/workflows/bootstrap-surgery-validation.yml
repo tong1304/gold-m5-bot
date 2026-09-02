@@ -1,0 +1,20 @@
+name: Bootstrap surgery validation
+
+on:
+  push:
+    branches: [production-v2]
+
+jobs:
+  bootstrap-surgery:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install test dependencies
+        run: python -m pip install --upgrade pip pytest
+      - name: Compile bootstrap surgery
+        run: python -m py_compile production_v2/bootstrap_surgery.py
+      - name: Run bootstrap surgery tests
+        run: python -m pytest -q production_v2/test_bootstrap_surgery.py
