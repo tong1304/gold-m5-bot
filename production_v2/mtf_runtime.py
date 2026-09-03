@@ -111,7 +111,15 @@ def install(pipeline_module, market_data_module) -> None:
     original_e1 = pipeline_module.analyze_e1
     original_e2 = pipeline_module.analyze_e2
     original_run = pipeline_module.ProductionPipeline.run
-    original_candles = market_data_module.LiveMarketData.candles
+
+    # LiveMarketData is defined in live_data.py. Keep the adapter tolerant of
+    # callers that historically passed the normalization-only market_data
+    # module, but fail with a clear error instead of an import-time AttributeError.
+    live_market_data = getattr(market_data_module, "LiveMarketData", None)
+    if live_market_data is None:
+        from . import live_data as live_data_module
+        live_market_data = live_data_module.LiveMarketData
+    original_candles = live_market_data.candles
 
     def analyze_e1_wrapper(bars):
         context = _CONTEXT.get() or {}
@@ -175,10 +183,8 @@ def install(pipeline_module, market_data_module) -> None:
         result = original_candles(self, alias, limit=max(limit, 300))
         if not isinstance(result, dict) or not result.get("bars"):
             return result
-        bars = list(result.get("bars") or [])
         result = dict(result)
-        # The provider timestamp identifies the M5 candle start. The runtime
-        # anchor must identify its close, because evaluation is close-only.
+        bars = list(result.get("bars") or [])
         latest_close = bars[-1].get("candle_close_timestamp")
         if latest_close:
             result["candle_close_timestamp"] = latest_close
@@ -193,5 +199,5 @@ def install(pipeline_module, market_data_module) -> None:
     pipeline_module.analyze_e1 = analyze_e1_wrapper
     pipeline_module.analyze_e2 = analyze_e2_wrapper
     pipeline_module.ProductionPipeline.run = run_wrapper
-    market_data_module.LiveMarketData.candles = candles_wrapper
+    live_market_data.candles = candles_wrapper
     _INSTALLED = True
