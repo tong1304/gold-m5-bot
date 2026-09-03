@@ -4,7 +4,8 @@ from __future__ import annotations
 
 E8 owns trade economics, not thesis formation. When E6 has only an
 opportunity watch / candidate (or no surviving setup), E8 must remain
-NOT_APPLICABLE and must not manufacture secondary probability/profit blockers.
+NOT_APPLICABLE and must not execute economic analysis or manufacture
+secondary probability/profit blockers.
 """
 
 from typing import Any
@@ -27,7 +28,7 @@ def _has_surviving_thesis(e6: dict[str, Any]) -> bool:
     setup = _text(e6.get("setup") or e6.get("setup_type") or e6.get("setup_family"))
     if setup in _WATCH_SETUPS or setup in _NO_SETUP:
         return False
-    if e6.get("watch_only") is True or e6.get("trade_ready") is False and setup in _WATCH_SETUPS:
+    if e6.get("watch_only") is True or (e6.get("trade_ready") is False and setup in _WATCH_SETUPS):
         return False
     status = _text(e6.get("thesis_status") or e6.get("setup_state") or e6.get("state"))
     if status in {"NO_SETUP", "UNKNOWN", "NONE", "INVALIDATED", "CONTESTED_WATCH", "FORMING"} and setup in _NO_SETUP:
@@ -42,16 +43,16 @@ def _has_surviving_thesis(e6: dict[str, Any]) -> bool:
     return direction in {"BUY", "SELL"} and setup not in _NO_SETUP and setup not in _WATCH_SETUPS
 
 
-def _not_applicable(original: EngineResult, e6: dict[str, Any]) -> EngineResult:
-    out = _output(original)
+def _not_applicable(_original: Any, e6: dict[str, Any]) -> EngineResult:
+    """Return a pure boundary result; the original E8 must not execute here."""
     direction = _text(e6.get("direction") or e6.get("thesis_direction")) or "NEUTRAL"
     setup = _text(e6.get("setup") or e6.get("setup_type") or e6.get("setup_family")) or "UNKNOWN"
     reasons = ["E6_THESIS_REQUIRED"]
-    out.update({
+    out = {
         "finding": "NOT_APPLICABLE",
         "direction": direction,
         "setup": setup,
-        "confirmation": _text(out.get("confirmation")) or "NOT_APPLICABLE",
+        "confirmation": "NOT_APPLICABLE",
         "economic_state": "NOT_APPLICABLE",
         "risk_ready": False,
         "gate_passed": False,
@@ -68,8 +69,8 @@ def _not_applicable(original: EngineResult, e6: dict[str, Any]) -> EngineResult:
         "professional_rule": "E8_REQUIRES_SURVIVING_E6_THESIS;E8_DOES_NOT_CREATE_THESIS",
         "decision_authority": "E9",
         "applicability": "NOT_APPLICABLE_WITHOUT_SURVIVING_E6_THESIS",
-    })
-    return EngineResult("E8", original.name, False, 0.0, out, tuple(reasons))
+    }
+    return EngineResult("E8", "Trade Economics Brain", False, 0.0, out, tuple(reasons))
 
 
 def install(e8_module) -> None:
@@ -81,7 +82,7 @@ def install(e8_module) -> None:
         e6_result = results.get("E6")
         e6 = _output(e6_result) if e6_result else {}
         if not _has_surviving_thesis(e6):
-            return _not_applicable(original(snapshot, results), e6)
+            return _not_applicable(original, e6)
         return original(snapshot, results)
 
     e8_module.analyze_e8 = guarded
