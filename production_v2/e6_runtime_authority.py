@@ -7,7 +7,7 @@ from .e6_opportunity_guard import _direction, _fallback_opportunity, _watch
 
 
 WATCH_SETUPS = {"OPPORTUNITY_WATCH", "OPPORTUNITY_CANDIDATE", "OPPORTUNITY_THESIS"}
-RUNTIME_AUTHORITY_VERSION = "E6_FINAL_OPPORTUNITY_MEMBRANE_V5"
+RUNTIME_AUTHORITY_VERSION = "E6_FINAL_OPPORTUNITY_MEMBRANE_V6"
 
 
 def _out(result: Any) -> dict[str, Any]:
@@ -21,7 +21,17 @@ def _falseish(value: Any) -> bool:
         return value is False
     if isinstance(value, (int, float)):
         return value == 0
-    return str(value).strip().upper() in {"", "FALSE", "NO", "NONE", "NULL", "N/A", "NOT_READY", "NOT_READY"}
+    return str(value).strip().upper() in {"", "FALSE", "NO", "NONE", "NULL", "N/A", "NOT_READY"}
+
+
+def _watch_marked(output: dict[str, Any]) -> bool:
+    setup = str(output.get("setup") or "").upper().strip()
+    candidate_type = str(output.get("candidate_type") or "").upper().strip()
+    return (
+        setup in WATCH_SETUPS
+        or candidate_type == "OPPORTUNITY_CANDIDATE"
+        or output.get("watch_only") is True
+    )
 
 
 def _has_no_setup(result: EngineResult) -> bool:
@@ -46,12 +56,11 @@ def _has_no_setup(result: EngineResult) -> bool:
 
 
 def _normalize_watch_semantics(output: dict[str, Any]) -> dict[str, Any]:
-    """Keep human-readable E6 finding aligned with structured watch state."""
+    """Keep human-readable E6 finding aligned with any authoritative watch marker."""
     normalized = dict(output)
-    setup = str(normalized.get("setup") or "").upper().strip()
-    if setup not in WATCH_SETUPS:
+    if not _watch_marked(normalized):
         return normalized
-    if normalized.get("watch_only") is not True or normalized.get("trade_ready") is True:
+    if not _falseish(normalized.get("trade_ready")):
         return normalized
 
     direction = _direction(
@@ -75,23 +84,29 @@ def _normalize_watch_semantics(output: dict[str, Any]) -> dict[str, Any]:
         "VALIDATING": "being validated",
         "WATCHING": "being watched",
     }.get(stage, stage.lower().replace("_", " "))
+    normalized["setup"] = "OPPORTUNITY_WATCH"
+    normalized["candidate_type"] = "OPPORTUNITY_CANDIDATE"
+    normalized["watch_only"] = True
+    normalized["trade_ready"] = False
+    normalized["gate_passed"] = False
+    normalized["trade_permission"] = False
     normalized["finding"] = (
         f"{direction} opportunity is {stage_text}; causal setup is not yet proven."
         if direction != "NEUTRAL"
         else f"Opportunity is {stage_text}; causal setup is not yet proven."
     )
-    normalized.setdefault("next_required_event", "NEXT_CLOSED_M5_CANDLE")
     normalized["runtime_authority"] = RUNTIME_AUTHORITY_VERSION
-    normalized["runtime_semantic_boundary"] = "WATCH_STATE_MUST_NOT_EXPOSE_LEGACY_NO_SETUP"
+    normalized["runtime_semantic_boundary"] = "WATCH_STATE_MUST_NOT_EXPOSE_LEGACY_SETUP_CLAIM"
+    normalized.setdefault("next_required_event", "NEXT_CLOSED_M5_CANDLE")
     return normalized
 
 
 def _runtime_watch_or_original(result: EngineResult, upstream: dict[str, EngineResult]) -> EngineResult:
-    """Apply the final E6 membrane after every legacy E6 path."""
+    """Apply the final E6 membrane after every legacy and enrichment path."""
     out = _out(result)
     setup = str(out.get("setup") or "").upper().strip()
 
-    if setup in WATCH_SETUPS and out.get("watch_only") is True and not _falseish(out.get("trade_ready")):
+    if _watch_marked(out) and _falseish(out.get("trade_ready")):
         normalized = _normalize_watch_semantics(out)
         return EngineResult(result.engine_id, result.name, False, result.score, normalized, result.reason_codes)
 
