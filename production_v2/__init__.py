@@ -16,6 +16,7 @@ from .bootstrap_surgery import install as _install_bootstrap_surgery
 from .e7_thesis_boundary import install as _install_e7_thesis_boundary
 from .e6_pending_counterflow_runtime import install as _install_e6_pending_counterflow_runtime
 from .e6_opportunity_guard import install as _install_e6_opportunity_guard
+from .e6_runtime_authority import install as _install_e6_runtime_authority
 from .e8_applicability_boundary import install as _install_e8_applicability_boundary
 from .e9_watch_boundary import install as _install_e9_watch_boundary
 from .mtf_runtime import install as _install_mtf_runtime
@@ -27,9 +28,11 @@ _install_bootstrap_surgery(_pipeline_module)
 # Freeze one M5 snapshot and route M15 context only to E1/E2.
 _install_mtf_runtime(_pipeline_module, _market_data_module)
 
-# E6 owns causal thesis formation.
+# E6 owns causal thesis formation; the final opportunity membrane runs after
+# all legacy/pending wrappers so a stale NO_SETUP result cannot cross E6's API.
 _install_e6_pending_counterflow_runtime(_e6_module)
 _install_e6_opportunity_guard(_e6_module)
+_install_e6_runtime_authority(_e6_module)
 _pipeline_module.analyze_e6 = _e6_module.analyze_e6
 
 # E8 owns trade economics and is not applicable without a surviving E6 thesis.
