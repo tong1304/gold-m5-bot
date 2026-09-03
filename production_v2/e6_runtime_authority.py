@@ -7,7 +7,7 @@ from .e6_opportunity_guard import _direction, _fallback_opportunity, _watch
 
 
 WATCH_SETUPS = {"OPPORTUNITY_WATCH", "OPPORTUNITY_CANDIDATE", "OPPORTUNITY_THESIS"}
-RUNTIME_AUTHORITY_VERSION = "E6_FINAL_OPPORTUNITY_MEMBRANE_V3"
+RUNTIME_AUTHORITY_VERSION = "E6_FINAL_OPPORTUNITY_MEMBRANE_V4"
 
 
 def _out(result: Any) -> dict[str, Any]:
@@ -30,10 +30,6 @@ def _has_no_setup(result: EngineResult) -> bool:
         "NO CAUSAL SETUP HYPOTHESIS" in finding
         or "NO SURVIVING CAUSAL OPPORTUNITY THESIS" in finding
     )
-    # setup/setup_family labels are classifications, not proof. A legacy E6
-    # path can populate LIQUIDITY_RESPONSE while its own finding still says
-    # that no causal setup survives. That contradictory state must enter the
-    # final E6 membrane so upstream E1-E5 evidence can form an opportunity watch.
     if legacy_no_causal_finding and not out.get("trade_ready") and not out.get("gate_passed"):
         return True
     return setup in {"", "NO_SETUP", "UNKNOWN", "NONE"} and "NO_CAUSAL_OPPORTUNITY" in reasons
@@ -80,6 +76,59 @@ def _normalize_watch_semantics(output: dict[str, Any]) -> dict[str, Any]:
     return normalized
 
 
+def _runtime_watch_or_original(result: EngineResult, upstream: dict[str, EngineResult]) -> EngineResult:
+    """Apply the final E6 membrane after every legacy E6 path.
+
+    The legacy reasoner is allowed to reject a trade setup, but it must not
+    erase a still-valid E1-E5 opportunity candidate. If the closed-candle
+    evidence can form a candidate, convert that contradiction into an explicit
+    watch and leave E7/E8/E9 to decide whether it can ever become a trade.
+    """
+    out = _out(result)
+    setup = str(out.get("setup") or "").upper().strip()
+
+    if setup in WATCH_SETUPS and out.get("watch_only") is True and out.get("trade_ready") is not True:
+        normalized = _normalize_watch_semantics(out)
+        return EngineResult(
+            result.engine_id,
+            result.name,
+            False,
+            result.score,
+            normalized,
+            result.reason_codes,
+        )
+
+    if not _has_no_setup(result):
+        return result
+
+    candidate = _fallback_opportunity(upstream)
+    if candidate is None:
+        # Keep the original result when the evidence genuinely cannot form an
+        # opportunity. This is intentionally fail-closed; no synthetic trade is
+        # created by this membrane.
+        print(
+            "[PRODUCTION V2] E6_RUNTIME_MEMBRANE "
+            f"version={RUNTIME_AUTHORITY_VERSION} action=NO_RESCUE candidate=NONE",
+            flush=True,
+        )
+        return result
+
+    watch = _watch(result, candidate)
+    watch_out = _normalize_watch_semantics(dict(watch.output or {}))
+    watch_out["runtime_rescue_reason"] = "CAUSAL_E1_E5_EVIDENCE_SURVIVES_LEGACY_NO_SETUP"
+    watch_out["runtime_direction_source"] = _direction(candidate.get("direction"))
+    watch_out["runtime_candidate_family"] = candidate.get("family")
+    watch_out["runtime_candidate_event_id"] = candidate.get("event_id")
+    return EngineResult(
+        watch.engine_id,
+        watch.name,
+        False,
+        watch.score,
+        watch_out,
+        watch.reason_codes,
+    )
+
+
 def install(e6_module) -> None:
     if getattr(e6_module, "_E6_RUNTIME_AUTHORITY_INSTALLED", False):
         return
@@ -90,39 +139,7 @@ def install(e6_module) -> None:
         result = original(market_data, upstream)
         if not isinstance(result, EngineResult):
             return result
-
-        out = _out(result)
-        setup = str(out.get("setup") or "").upper().strip()
-        if setup in WATCH_SETUPS and out.get("watch_only") is True and out.get("trade_ready") is not True:
-            normalized = _normalize_watch_semantics(out)
-            return EngineResult(
-                result.engine_id,
-                result.name,
-                result.gate_passed,
-                result.score,
-                normalized,
-                result.reason_codes,
-            )
-
-        if not _has_no_setup(result):
-            return result
-
-        candidate = _fallback_opportunity(upstream)
-        if candidate is None:
-            return result
-
-        watch = _watch(result, candidate)
-        watch_out = _normalize_watch_semantics(dict(watch.output or {}))
-        watch_out["runtime_rescue_reason"] = "CAUSAL_E1_E5_EVIDENCE_SURVIVES_LEGACY_NO_SETUP"
-        watch_out["runtime_direction_source"] = _direction(candidate.get("direction"))
-        return EngineResult(
-            watch.engine_id,
-            watch.name,
-            False,
-            watch.score,
-            watch_out,
-            watch.reason_codes,
-        )
+        return _runtime_watch_or_original(result, upstream)
 
     e6_module.analyze_e6 = runtime_authority
     e6_module._E6_RUNTIME_AUTHORITY_INSTALLED = True
