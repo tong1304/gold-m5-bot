@@ -9,14 +9,13 @@ def _engine(engine_id, output):
 def test_e6_tracks_btc_causal_opportunity_before_trigger_proof():
     upstream = {
         "E1": _engine("E1", {
-            "directional_pressure": "UP",
+            "directional_pressure": "BALANCED",
             "market_state": "TRANSITION",
             "trend_state": "NONE",
         }),
         "E2": _engine("E2", {
             "finding": "UP opportunity is developing",
             "opportunity_state": "DEVELOPING",
-            "opportunity_direction": "UP",
             "counter_evidence": ["AUCTION_CONFIRMATION_PENDING", "LOCATION_NOT_ADVANTAGEOUS"],
         }),
         "E3": _engine("E3", {
