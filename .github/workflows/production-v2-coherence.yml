@@ -22,6 +22,7 @@ jobs:
           python -m pytest -q
           production_v2/test_runtime_binding_order_regression.py
           tests/test_mtf_snapshot_contract.py
+          tests/test_opportunity_blocking_telemetry.py
           tests/test_e6_pending_counterflow_inference.py
           tests/test_e8_applicability_boundary.py
           tests/test_opportunity_lifecycle_e6_watch_boundary.py
