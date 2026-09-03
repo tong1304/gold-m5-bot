@@ -15,7 +15,9 @@ def _out(result: Any) -> dict[str, Any]:
 
 def _has_no_setup(result: EngineResult) -> bool:
     out = _out(result)
-    setup = str(out.get("setup") or out.get("setup_family") or "").upper().strip()
+    # setup_family is a strategy/family label, not proof that E6 has a setup.
+    # A legacy path may populate it while setup remains empty/NO_SETUP.
+    setup = str(out.get("setup") or "").upper().strip()
     finding = str(out.get("finding") or "").upper().strip()
     reasons = {
         str(code).upper().strip()
@@ -48,10 +50,17 @@ def _normalize_watch_semantics(output: dict[str, Any]) -> dict[str, Any]:
         normalized.get("direction"),
         normalized.get("bias"),
         normalized.get("market_direction"),
+        normalized.get("thesis_direction"),
+        normalized.get("direction_thesis"),
     )
     if direction not in {"BUY", "SELL"}:
         direction = "NEUTRAL"
-    stage = str(normalized.get("stage") or "FORMING").strip().upper()
+    stage = str(
+        normalized.get("stage")
+        or normalized.get("opportunity_stage")
+        or normalized.get("thesis_status")
+        or "FORMING"
+    ).strip().upper()
     stage_text = {
         "FORMING": "forming",
         "CONTESTED": "contested",
