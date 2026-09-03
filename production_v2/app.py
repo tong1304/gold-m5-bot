@@ -132,7 +132,7 @@ def _run_with_lifecycle(self, market_data, *, wait_bars=0, resume_state=None, hi
     """Re-run E1-E9 on each closed candle while preserving only a still-valid thesis."""
     symbol = str(market_data.get("symbol") or "UNKNOWN").upper()
     previous = dict(_last_opportunity_lifecycle.get(symbol) or {})
-    if previous.get("state") in {"WAITING", "READY"}:
+    if previous.get("state") in {"WATCHING", "WAITING", "READY"}:
         market_data = dict(market_data)
         market_data["opportunity_resume_state"] = dict(previous)
         resume_state = dict(previous)
@@ -144,7 +144,7 @@ def _run_with_lifecycle(self, market_data, *, wait_bars=0, resume_state=None, hi
     _last_opportunity_lifecycle[symbol] = lifecycle
     risk = dict(result.risk)
     risk["opportunity_lifecycle"] = lifecycle
-    risk["next_required_event"] = "NEXT_CLOSED_M5_CANDLE" if lifecycle.get("state") in {"WAITING", "READY"} else None
+    risk["next_required_event"] = "NEXT_CLOSED_M5_CANDLE" if lifecycle.get("state") in {"WATCHING", "WAITING", "READY"} else None
     risk["wait_bars"] = int(lifecycle.get("bars_waited", 0) or 0)
     risk["lifecycle_source"] = current.get("lifecycle_source")
     risk["upstream_evidence"] = current.get("upstream_evidence", [])
@@ -165,7 +165,7 @@ def _connect_brains(result):
     _last_opportunity_lifecycle[symbol] = lifecycle
     risk = dict(result.risk)
     risk["opportunity_lifecycle"] = lifecycle
-    risk["next_required_event"] = "NEXT_CLOSED_M5_CANDLE" if lifecycle.get("state") in {"WAITING", "READY"} else None
+    risk["next_required_event"] = "NEXT_CLOSED_M5_CANDLE" if lifecycle.get("state") in {"WATCHING", "WAITING", "READY"} else None
     risk["wait_bars"] = int(lifecycle.get("bars_waited", 0) or 0)
     return result.__class__(result.symbol, result.timeframe, result.decision, result.gate_passed, result.score, result.engines, risk, result.reason_codes)
 
