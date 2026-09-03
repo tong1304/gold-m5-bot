@@ -7,19 +7,10 @@ from .contracts import EngineResult
 _WATCH_SETUPS = {"OPPORTUNITY_WATCH", "OPPORTUNITY_CANDIDATE", "OPPORTUNITY_THESIS"}
 _DIRECTIONS = {"BUY", "SELL"}
 _HARD_CONFLICTS = {
-    "THESIS_INVALIDATED",
-    "E6_THESIS_INVALIDATED",
-    "E7_CONFIRMATION_INVALIDATED",
-    "E8_RISK_INVALIDATED",
-    "STRUCTURE_INVALIDATED",
-    "BULLISH_STRUCTURE_INVALIDATED",
-    "BEARISH_STRUCTURE_INVALIDATED",
-    "E3_STRUCTURE_INVALIDATED",
-    "E3_THESIS_INVALIDATED",
-    "STRUCTURE_INTEGRITY_INVALID",
-    "PROTECTED_LEVEL_GEOMETRY_INVALID",
-    "EXECUTION_IMPOSSIBLE",
-    "DATA_INTEGRITY_INVALID",
+    "THESIS_INVALIDATED", "E6_THESIS_INVALIDATED", "E7_CONFIRMATION_INVALIDATED", "E8_RISK_INVALIDATED",
+    "STRUCTURE_INVALIDATED", "BULLISH_STRUCTURE_INVALIDATED", "BEARISH_STRUCTURE_INVALIDATED",
+    "E3_STRUCTURE_INVALIDATED", "E3_THESIS_INVALIDATED", "STRUCTURE_INTEGRITY_INVALID",
+    "PROTECTED_LEVEL_GEOMETRY_INVALID", "EXECUTION_IMPOSSIBLE", "DATA_INTEGRITY_INVALID",
     "SHARED_MARKET_PICTURE_CONTRACT_BLOCKED",
 }
 
@@ -58,47 +49,37 @@ def _has_hard_invalidation(upstream: dict[str, EngineResult]) -> bool:
 def _watch_result(direction: str, setup: str) -> EngineResult:
     reasons = ["E9_FINAL_GOVERNANCE", "E6_OPPORTUNITY_WATCH", "WAITING_FOR_E7_TRIGGER", "E7_VALID_CLOSED_CANDLE_TRIGGER_REQUIRED"]
     output = {
-        "decision": "NO_TRADE",
-        "final_governance": "WATCH",
-        "governance_decision": "WATCH",
-        "governance_reason": "WAITING_FOR_E7_TRIGGER",
-        "governance_blockers": ["WAITING_FOR_E7_TRIGGER"],
-        "next_required_events": ["E7_VALID_CLOSED_CANDLE_TRIGGER_REQUIRED"],
-        "execution_state": "BLOCKED",
-        "all_gates_pass": False,
-        "direction": direction,
-        "thesis_direction": direction,
-        "setup": setup,
+        "decision": "NO_TRADE", "final_governance": "WATCH", "governance_decision": "WATCH",
+        "governance_reason": "WAITING_FOR_E7_TRIGGER", "governance_blockers": ["WAITING_FOR_E7_TRIGGER"],
+        "next_required_events": ["E7_VALID_CLOSED_CANDLE_TRIGGER_REQUIRED"], "execution_state": "BLOCKED",
+        "all_gates_pass": False, "direction": direction, "thesis_direction": direction, "setup": setup,
         "thesis": f"{direction} opportunity watch is active; E6 thesis proof and E7 closed-candle confirmation are not complete.",
-        "thesis_state": "HYPOTHESIS",
-        "thesis_lifecycle_source": "E6",
-        "setup_state": "FORMING",
-        "confirmation_state": "NOT_APPLICABLE",
-        "economic_state": "NOT_APPLICABLE",
-        "economic_blockers": [],
-        "economic_pending": [],
-        "hard_conflicts": [],
+        "thesis_state": "HYPOTHESIS", "thesis_lifecycle_source": "E6", "setup_state": "FORMING",
+        "confirmation_state": "NOT_APPLICABLE", "economic_state": "NOT_APPLICABLE", "economic_blockers": [],
+        "economic_pending": [], "hard_conflicts": [],
         "proof_summary": {"core_thesis": False, "e6_thesis": "OPPORTUNITY_WATCH", "e7_trigger": "NOT_APPLICABLE", "e8_economics": "NOT_APPLICABLE"},
         "mandatory_gates": {"core_thesis": False, "closed_candle_trigger": False, "survivable_economics": False, "fatal_veto_clear": True},
-        "opportunity_state": "WATCH",
-        "opportunity": {"direction": direction, "setup": setup, "state": "WATCH", "do_not_execute": True},
-        "reason_codes": reasons,
-        "reasons": reasons,
-        "reason_scope": "E6_WATCH_BOUNDARY_ONLY",
-        "authority_contract": {
-            "market_evidence_owner": "E1-E5",
-            "trade_thesis_owner": "E6",
-            "trigger_owner": "E7",
-            "trade_economics_owner": "E8",
-            "final_decision_owner": "E9",
-            "e9_may_rewrite_e6_thesis": False,
-            "e9_may_bypass_e7": False,
-            "e9_may_bypass_e8": False,
-        },
+        "opportunity_state": "WATCH", "opportunity": {"direction": direction, "setup": setup, "state": "WATCH", "do_not_execute": True},
+        "reason_codes": reasons, "reasons": reasons, "reason_scope": "E6_WATCH_BOUNDARY_ONLY",
+        "authority_contract": {"market_evidence_owner": "E1-E5", "trade_thesis_owner": "E6", "trigger_owner": "E7", "trade_economics_owner": "E8", "final_decision_owner": "E9", "e9_may_rewrite_e6_thesis": False, "e9_may_bypass_e7": False, "e9_may_bypass_e8": False},
         "architecture": "E9_FINAL_GOVERNANCE_THESIS_TRIGGER_ECONOMICS",
         "watch_boundary": "E6_WATCH_REQUIRES_E7_BEFORE_E8_ECONOMICS",
+        "governance_layers": {"market_control": "MARKET_CONTROL", "thesis_control": "E6_OWNER", "proof_control": "E7_CONFIRMATION_AND_E8_ECONOMICS", "final_governance": "E9_FINAL_AUTHORITY"},
     }
     return EngineResult("E9", "Master Decision Brain", False, 0.0, output, tuple(reasons))
+
+
+def _restore_governance_layers(result: EngineResult) -> EngineResult:
+    out = _out(result)
+    layers = dict(out.get("governance_layers") or {})
+    layers.update({
+        "market_control": layers.get("market_control", "MARKET_CONTROL"),
+        "thesis_control": layers.get("thesis_control", "E6_OWNER"),
+        "proof_control": layers.get("proof_control", "E7_CONFIRMATION_AND_E8_ECONOMICS"),
+        "final_governance": layers.get("final_governance", "E9_FINAL_AUTHORITY"),
+    })
+    out["governance_layers"] = layers
+    return EngineResult(result.engine_id, result.name, result.gate_passed, result.score, out, result.reason_codes)
 
 
 def install(e9_module) -> None:
@@ -107,12 +88,10 @@ def install(e9_module) -> None:
     original = e9_module.analyze_e9
 
     def guarded(snapshot: dict[str, Any], upstream: dict[str, EngineResult]):
-        e6 = _out(upstream.get("E6"))
-        watch = _watch_state(e6)
-        e8 = _out(upstream.get("E8"))
+        e6 = _out(upstream.get("E6")); watch = _watch_state(e6); e8 = _out(upstream.get("E8"))
         if watch and e8.get("applicability") == "NOT_APPLICABLE_WITHOUT_SURVIVING_E6_THESIS" and not _has_hard_invalidation(upstream):
             return _watch_result(*watch)
-        return original(snapshot, upstream)
+        return _restore_governance_layers(original(snapshot, upstream))
 
     e9_module.analyze_e9 = guarded
     e9_module._E9_WATCH_BOUNDARY_INSTALLED = True
