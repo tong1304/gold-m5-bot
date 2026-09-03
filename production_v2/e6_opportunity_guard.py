@@ -11,9 +11,9 @@ def _text(v: Any) -> str:
 
 def _direction(v: Any) -> str:
     t = _text(v)
-    if t in {"BUY", "BULLISH", "UP", "LONG", "BUYERS", "TREND_UP"}:
+    if t in {"BUY", "BULLISH", "UP", "LONG", "BUYERS", "BUYER", "BUY_CONTROLLED", "TREND_UP"}:
         return "BUY"
-    if t in {"SELL", "BEARISH", "DOWN", "SHORT", "SELLERS", "TREND_DOWN"}:
+    if t in {"SELL", "BEARISH", "DOWN", "SHORT", "SELLERS", "SELLER", "SELL_CONTROLLED", "TREND_DOWN"}:
         return "SELL"
     return "NEUTRAL"
 
@@ -83,11 +83,6 @@ def _fallback_opportunity(upstream: dict[str, EngineResult]) -> dict[str, Any] |
     unresolved = _e2_unresolved(e2)
     counterflow = external != "NEUTRAL" and external != event_direction
     pressure_counterflow = pressure != "NEUTRAL" and pressure != event_direction
-
-    # A pending, current-candle auction response is allowed to remain an
-    # opportunity watch while structure is counterflow. Counterflow is missing
-    # proof, not invalidation. Only a structurally invalidated regime is a hard
-    # veto at this boundary.
     if counterflow and not unresolved and not pending:
         return None
     if pressure_counterflow and not unresolved and not pending:
@@ -172,6 +167,36 @@ def _watch(original: EngineResult, candidate: dict[str, Any]) -> EngineResult:
     return EngineResult(original.engine_id, original.name, False, original.score, out, tuple(missing))
 
 
+def _normalize_existing_watch(result: EngineResult) -> EngineResult:
+    """Repair observability when upstream already marked E6 as a watch.
+
+    Some legacy E6 paths can set the structured watch fields while leaving the
+    old NO_SETUP finding. The state contract is authoritative; the finding must
+    describe the same state rather than contradict it.
+    """
+    out = _out(result)
+    setup = _text(out.get("setup") or out.get("setup_type") or out.get("setup_family"))
+    direction = _direction(out.get("direction"), out.get("thesis_direction"), out.get("direction_thesis"))
+    if setup not in {"OPPORTUNITY_WATCH", "OPPORTUNITY_CANDIDATE", "OPPORTUNITY_THESIS"}:
+        return result
+    if direction not in {"BUY", "SELL"} or out.get("watch_only") is not True or out.get("trade_ready") is True:
+        return result
+    finding = _text(out.get("finding"))
+    if "NO CAUSAL SETUP HYPOTHESIS" not in finding and "NO SURVIVING CAUSAL OPPORTUNITY THESIS" not in finding:
+        return result
+    out["setup"] = "OPPORTUNITY_WATCH"
+    out["candidate_type"] = "OPPORTUNITY_CANDIDATE"
+    out["direction"] = direction
+    out["direction_thesis"] = direction
+    out["thesis_direction"] = direction
+    out["watch_only"] = True
+    out["trade_ready"] = False
+    out["gate_passed"] = False
+    out["finding"] = f"{direction} opportunity is forming; causal event exists but trade setup is not yet proven."
+    out["thesis"] = out.get("thesis") or f"{direction} causal opportunity is watchable; required proof remains pending."
+    return EngineResult(result.engine_id, result.name, False, result.score, out, result.reason_codes)
+
+
 def _should_rescue_watch(result: EngineResult) -> bool:
     out = _out(result)
     setup = _text(out.get("setup"))
@@ -201,6 +226,9 @@ def install(e6_module) -> None:
         result = original(market_data, upstream)
         if not isinstance(result, EngineResult):
             return result
+        normalized = _normalize_existing_watch(result)
+        if normalized is not result:
+            return normalized
         if not _should_rescue_watch(result):
             return result
         candidate = _fallback_opportunity(upstream)
