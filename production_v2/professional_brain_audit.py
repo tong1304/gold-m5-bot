@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from .contracts import EngineResult
 from .shared_market_picture import audit_shared_market_picture_contract
 
 ENGINE_ORDER = ("E1", "E2", "E3", "E4", "E5", "E6", "E7", "E8", "E9")
@@ -31,6 +32,19 @@ def _codes(output: dict[str, Any]) -> list[str]:
         if isinstance(value,(list,tuple,set)): values.extend(value)
         elif value: values.append(value)
     return [str(v).upper().strip() for v in values if str(v).strip()]
+
+
+def _output(value: Any) -> dict[str, Any]:
+    """Normalize the audit input boundary to plain engine-output dictionaries."""
+    if isinstance(value, EngineResult):
+        return dict(value.output or {})
+    if isinstance(value, dict):
+        return dict(value)
+    return {}
+
+
+def _normalize_outputs(outputs: dict[str, Any] | None) -> dict[str, dict[str, Any]]:
+    return {engine_id: _output(outputs.get(engine_id)) for engine_id in ENGINE_ORDER} if outputs else {}
 
 
 def audit_engine(engine_id: str, output: dict[str, Any]) -> dict[str, Any]:
@@ -61,15 +75,17 @@ def opportunity_potential(outputs: dict[str,dict[str,Any]]) -> dict[str,Any]:
     return {"direction":direction,"latent_score":round(min(100,evidence),2),"available_space_atr":round(space,4),"real_rr":round(rr,3),"executable":bool(e9.get("all_gates_pass")),"status":"EXECUTABLE" if e9.get("all_gates_pass") else "WATCH" if evidence>=45 else "LOW_EDGE","setup":setup,"do_not_execute":not bool(e9.get("all_gates_pass")),"profit_edge":edge,"profit_measurement":"CONDITIONAL_EXPECTED_R_AFTER_COST_STRESS","no_profit_guarantee":True}
 
 
-def audit_all(outputs: dict[str,dict[str,Any]]) -> dict[str,Any]:
-    per_engine={eid:audit_engine(eid,outputs.get(eid,{})) for eid in ENGINE_ORDER}
-    shared_audit = audit_shared_market_picture_contract(outputs)
+def audit_all(outputs: dict[str, Any]) -> dict[str,Any]:
+    """Audit either plain output dictionaries or EngineResult mappings."""
+    normalized = _normalize_outputs(outputs)
+    per_engine={eid:audit_engine(eid,normalized.get(eid,{})) for eid in ENGINE_ORDER}
+    shared_audit = audit_shared_market_picture_contract(normalized)
     violating_brains = set(shared_audit.get("violating_brains", ()))
     missing_contract_brains = set(shared_audit.get("missing_contract_brains", ()))
     for engine_id in ENGINE_ORDER:
         per_engine[engine_id]["shared_market_picture_contract"] = {
             "passed": engine_id in shared_audit["covered_brains"] and engine_id not in violating_brains and engine_id not in missing_contract_brains,
-            "picture_id": (outputs.get(engine_id, {}).get("market_picture_contract") or {}).get("picture_id"),
+            "picture_id": (normalized.get(engine_id, {}).get("market_picture_contract") or {}).get("picture_id"),
             "authority": "NON_AUTHORITATIVE_CONTRACT_AUDIT",
         }
-    return {"per_engine":per_engine,"overall_score":round(sum(x["score"] for x in per_engine.values())/len(per_engine),2),"opportunity":opportunity_potential(outputs),"shared_market_picture_contract":shared_audit,"authority":"AUDIT_ONLY_E9_REMAINS_FINAL_AUTHORITY"}
+    return {"per_engine":per_engine,"overall_score":round(sum(x["score"] for x in per_engine.values())/len(per_engine),2),"opportunity":opportunity_potential(normalized),"shared_market_picture_contract":shared_audit,"authority":"AUDIT_ONLY_E9_REMAINS_FINAL_AUTHORITY"}
