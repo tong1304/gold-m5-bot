@@ -7,7 +7,7 @@ from .e6_opportunity_guard import _direction, _fallback_opportunity, _watch
 
 
 WATCH_SETUPS = {"OPPORTUNITY_WATCH", "OPPORTUNITY_CANDIDATE", "OPPORTUNITY_THESIS"}
-RUNTIME_AUTHORITY_VERSION = "E6_FINAL_OPPORTUNITY_MEMBRANE_V2"
+RUNTIME_AUTHORITY_VERSION = "E6_FINAL_OPPORTUNITY_MEMBRANE_V3"
 
 
 def _out(result: Any) -> dict[str, Any]:
@@ -26,14 +26,17 @@ def _has_no_setup(result: EngineResult) -> bool:
             *(result.reason_codes or ()),
         )
     }
-    return (
-        setup in {"", "NO_SETUP", "UNKNOWN", "NONE"}
-        and (
-            "NO_CAUSAL_OPPORTUNITY" in reasons
-            or "NO CAUSAL SETUP HYPOTHESIS" in finding
-            or "NO SURVIVING CAUSAL OPPORTUNITY THESIS" in finding
-        )
+    legacy_no_causal_finding = (
+        "NO CAUSAL SETUP HYPOTHESIS" in finding
+        or "NO SURVIVING CAUSAL OPPORTUNITY THESIS" in finding
     )
+    # setup/setup_family labels are classifications, not proof. A legacy E6
+    # path can populate LIQUIDITY_RESPONSE while its own finding still says
+    # that no causal setup survives. That contradictory state must enter the
+    # final E6 membrane so upstream E1-E5 evidence can form an opportunity watch.
+    if legacy_no_causal_finding and not out.get("trade_ready") and not out.get("gate_passed"):
+        return True
+    return setup in {"", "NO_SETUP", "UNKNOWN", "NONE"} and "NO_CAUSAL_OPPORTUNITY" in reasons
 
 
 def _normalize_watch_semantics(output: dict[str, Any]) -> dict[str, Any]:
