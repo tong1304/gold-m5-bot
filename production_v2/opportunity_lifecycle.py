@@ -33,9 +33,14 @@ def _watch_result(*, current: dict[str, Any], previous: dict[str, Any] | None = 
     candle = _text(current.get("candle"))
     direction = _text(current.get("direction"))
     setup = _text(current.get("setup"))
+    # Preserve the legacy WATCHING state when an already-WATCHING opportunity
+    # continues across a candle. A brand-new pending watch remains WAITING so
+    # callers can distinguish "waiting for the next candle" from an established
+    # watcher that is actively being carried forward.
+    state = "WATCHING" if _text(previous.get("state")) == "WATCHING" else "WAITING"
     return {
         **previous,
-        "state": "WAITING",
+        "state": state,
         "continuity": continuity,
         "opportunity_id": _identity(direction, setup),
         "direction": direction,
@@ -100,7 +105,6 @@ def advance_opportunity(previous: dict[str, Any] | None, current: dict[str, Any]
                 "trade_authorized": False, "invalidation_reason": "UPSTREAM_CAUSAL_EVIDENCE_LOST",
             }
 
-        # A developing watch is intentionally sticky while its upstream evidence survives.
         if previous_is_watch and current_is_watch and same_identity and _has_upstream_evidence(current):
             return _watch_result(current=current, previous=previous, continuity="CONTINUING_UPSTREAM_WATCH")
 
