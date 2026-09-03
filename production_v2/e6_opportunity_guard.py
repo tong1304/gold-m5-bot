@@ -63,6 +63,7 @@ def _fallback_opportunity(upstream: dict[str, EngineResult]) -> dict[str, Any] |
     e1, e2, e3, e4, e5 = (_payload(upstream, k) for k in ("E1", "E2", "E3", "E4", "E5"))
     pressure = _direction(e1.get("directional_pressure", e1.get("pressure")))
     external = _direction(e3.get("external_state", e3.get("direction")))
+    internal = _direction(e3.get("internal_state"))
     auction = _text(e4.get("auction_state", e4.get("state")))
     event = _text(e4.get("event", e4.get("finding")))
     event_direction = _event_direction(e4)
@@ -94,6 +95,10 @@ def _fallback_opportunity(upstream: dict[str, EngineResult]) -> dict[str, Any] |
         missing_structure.append("E3_EXTERNAL_STRUCTURE_ALIGNMENT")
     if pressure != "NEUTRAL" and pressure != event_direction and not _e2_unresolved(e2):
         return None
+    # A mixed/unfinished internal structure is not a hard conflict. It is a
+    # missing proof item for the developing opportunity.
+    if internal != "NEUTRAL" and internal != event_direction and external != "NEUTRAL":
+        return None
     if _text(e3.get("lifecycle")) == "INVALIDATED" or e3.get("structure_invalidated") is True or e3.get("active_invalidation") is True:
         return None
 
@@ -109,8 +114,8 @@ def _fallback_opportunity(upstream: dict[str, EngineResult]) -> dict[str, Any] |
     if auction in {"PENDING", "DEVELOPING", "FORMING"} or "CANDIDATE" in event:
         missing.insert(1 if missing and missing[0] == "E2_OPPORTUNITY_CONFIRMATION" else 0, "E4_AUCTION_FOLLOW_THROUGH")
     if space < 0.75:
+        # Space is an execution/economics constraint, not an opportunity veto.
         missing.append("STRUCTURAL_SPACE_INSUFFICIENT")
-    missing.extend(missing_structure)
     return {
         "direction": event_direction,
         "family": family,
@@ -160,6 +165,21 @@ def _watch(original: EngineResult, candidate: dict[str, Any]) -> EngineResult:
     return EngineResult(original.engine_id, original.name, False, original.score, out, tuple(missing))
 
 
+def _should_rescue_watch(result: EngineResult) -> bool:
+    out = _out(result)
+    setup = _text(out.get("setup"))
+    stage = _text(out.get("opportunity_stage"))
+    state = _text(out.get("state"))
+    if setup in {"OPPORTUNITY_WATCH", "OPPORTUNITY_CANDIDATE", "OPPORTUNITY_THESIS"}:
+        return False
+    if out.get("trade_ready") is True or out.get("gate_passed") is True:
+        return False
+    # Some E6 paths already discovered the causal opportunity but leave the
+    # public setup label unresolved because E7/structural proof is incomplete.
+    # The guard may preserve only a watch; it never upgrades to a trade thesis.
+    return setup in {"", "NO_SETUP", "UNKNOWN"} or stage in {"", "ABSENT", "UNKNOWN"} or state in {"", "NO_SETUP", "UNKNOWN"}
+
+
 def install(e6_module) -> None:
     if getattr(e6_module, "_E6_OPPORTUNITY_GUARD_INSTALLED", False):
         return
@@ -169,16 +189,7 @@ def install(e6_module) -> None:
         result = original(market_data, upstream)
         if not isinstance(result, EngineResult):
             return result
-        out = _out(result)
-        codes = {
-            _text(x)
-            for x in [
-                *(out.get("reason_codes") or []),
-                *(result.reason_codes or ()),
-                *(out.get("reasons") or []),
-            ]
-        }
-        if "NO_CAUSAL_OPPORTUNITY" not in codes:
+        if not _should_rescue_watch(result):
             return result
         candidate = _fallback_opportunity(upstream)
         if candidate is None:
