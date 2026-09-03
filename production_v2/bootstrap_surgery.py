@@ -80,11 +80,26 @@ def _direction(v: Any) -> str:
     return "NEUTRAL"
 
 
+def _event_direction(e4: dict[str, Any]) -> str:
+    """Infer auction direction from explicit direction, response actor, taker, then event side."""
+    for value in (e4.get("direction"), e4.get("response_actor"), e4.get("auction_response"), e4.get("liquidity_taker")):
+        direction = _direction(value)
+        if direction != "NEUTRAL":
+            return direction
+    event = _text(e4.get("event", e4.get("finding")))
+    if any(token in event for token in ("HIGH_SWEEP_REJECTION", "HIGH_FAILED_BREAK_RECLAIM", "HIGH_REJECTION", "HIGH_ACCEPTANCE", "HIGH_BREAK")):
+        return "SELL" if any(token in event for token in _REJECTION_EVENTS) else "BUY"
+    if any(token in event for token in ("LOW_SWEEP_REJECTION", "LOW_FAILED_BREAK_RECLAIM", "LOW_REJECTION", "LOW_ACCEPTANCE", "LOW_BREAK")):
+        return "BUY" if any(token in event for token in _REJECTION_EVENTS) else "SELL"
+    return "NEUTRAL"
+
+
 def _rescue_e6_causal_candidate(original: EngineResult, upstream: dict[str, EngineResult]) -> EngineResult:
     """Preserve a causal market event as an E6 thesis even when E2 is still developing.
 
     This does not authorize a trade. E7 still owns entry confirmation and E8/E9
-    retain independent permission gates.
+    retain independent permission gates. Structural space is allowed to remain a
+    pending trade-economics constraint; it must not erase the opportunity thesis.
     """
     out = dict(original.output or {})
     if bool(out.get("setup_exists")):
@@ -92,7 +107,7 @@ def _rescue_e6_causal_candidate(original: EngineResult, upstream: dict[str, Engi
 
     e1, e2, e3, e4, e5 = (_payload(upstream, key) for key in ("E1", "E2", "E3", "E4", "E5"))
     event = _text(e4.get("event", e4.get("finding")))
-    event_direction = _direction(e4.get("direction"))
+    event_direction = _event_direction(e4)
     pressure = _direction(e1.get("directional_pressure", e1.get("pressure")))
     direction = event_direction if event_direction != "NEUTRAL" else pressure
     e2_finding = _text(e2.get("finding", e2.get("state")))
@@ -100,25 +115,29 @@ def _rescue_e6_causal_candidate(original: EngineResult, upstream: dict[str, Engi
     invalid = bool(e3.get("structure_invalidated") is True or e3.get("active_invalidation") is True or _text(e3.get("lifecycle")) == "INVALIDATED")
     location = _text(e5.get("finding"))
     structural_location = _text(e5.get("structural_location"))
-    favorable = "FAVORABLE_LOCATION" in location or structural_location in {"AT_SUPPORT", "AT_RESISTANCE"}
+    value_state = _text(e5.get("value_state"))
+    favorable = "FAVORABLE_LOCATION" in location or structural_location in {"AT_SUPPORT", "AT_RESISTANCE"} or value_state in {"DISCOUNT", "PREMIUM"}
     space_key = "available_space_atr_long" if direction == "BUY" else "available_space_atr_short"
-    space = _num(e5.get(space_key))
+    raw_space = e5.get(space_key)
+    space = _num(raw_space) if raw_space is not None else 0.0
+    space_known = raw_space is not None
     rejection = any(token in event for token in _REJECTION_EVENTS)
     acceptance = any(token in event for token in _ACCEPTANCE_EVENTS)
 
-    # Conservative rescue: the causal event itself plus directional pressure,
-    # favorable location, and adequate space are enough to form a hypothesis.
-    # E2 disagreement or E3 mixed structure prevents automatic maturation.
     if invalid or direction not in {"BUY", "SELL"} or event_direction != direction:
         return original
-    if pressure != direction or not favorable or space < 0.75:
+    if pressure != direction or not favorable:
         return original
     if not (rejection or acceptance):
         return original
 
     setup = "LIQUIDITY_REVERSAL" if rejection else "AUCTION_ACCEPTANCE_CONTINUATION"
     quality = 68.0 if rejection else 64.0
-    reasons = ["E4_CAUSAL_MARKET_EVENT", "E1_DIRECTIONAL_PRESSURE", "E5_FAVORABLE_LOCATION", "E5_ADEQUATE_SPACE"]
+    reasons = ["E4_CAUSAL_MARKET_EVENT", "E1_DIRECTIONAL_PRESSURE", "E5_FAVORABLE_LOCATION"]
+    if space_known and space >= 0.75:
+        reasons.append("E5_ADEQUATE_SPACE")
+    else:
+        reasons.append("E5_SPACE_PENDING_TRADE_ECONOMICS")
     if "OPPORTUNITY IS DEVELOPING" in e2_finding or "DEVELOPING" in e2_finding:
         reasons.append("E2_DEVELOPING_NOT_REQUIRED_FOR_THESIS_FORMATION")
     if "MIXED" in e3_finding:
@@ -130,7 +149,7 @@ def _rescue_e6_causal_candidate(original: EngineResult, upstream: dict[str, Engi
         "setup": setup,
         "setup_family": setup,
         "candidate_setup": setup,
-        "candidate_setup_thesis": f"{direction} {setup} is forming from a causal E4 event with directional pressure, favorable location, and adequate structural space.",
+        "candidate_setup_thesis": f"{direction} {setup} is forming from a causal E4 event with directional pressure and favorable location.",
         "direction": direction,
         "direction_thesis": f"{direction} thesis is supported by E1 pressure and E4 causal event.",
         "stage": "FORMING",
@@ -175,7 +194,9 @@ def _rescue_e6_causal_candidate(original: EngineResult, upstream: dict[str, Engi
         "space_diagnostic": {
             "available_space_atr": space,
             "minimum_required_space_atr": 0.75,
-            "space_sufficient": True,
+            "space_sufficient": space >= 0.75,
+            "space_known": space_known,
+            "space_pending": not space_known or space < 0.75,
             "source": "E5_DIRECTIONAL_SPACE",
         },
     })
