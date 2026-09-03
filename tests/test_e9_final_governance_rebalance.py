@@ -72,6 +72,7 @@ def test_e9_executes_when_core_thesis_trigger_and_survivable_economics_pass_even
     assert result.output["all_gates_pass"] is True
     assert result.output["opportunity_state"] == "EXECUTE"
     assert result.output["opportunity"]["do_not_execute"] is False
+    assert result.output["supporting_evidence_is_non_veto"] is True
 
 
 def test_e9_watches_a_surviving_thesis_when_trigger_is_not_yet_proven():
@@ -93,7 +94,31 @@ def test_e9_watches_a_surviving_thesis_when_trigger_is_not_yet_proven():
     assert result.output["final_governance"] == "WATCH"
     assert result.output["execution_state"] == "BLOCKED"
     assert result.output["opportunity_state"] == "WATCH"
-    assert "E7_CONFIRMATION_REQUIRED" in result.output["next_required_events"]
+    assert "E7_VALID_CLOSED_CANDLE_TRIGGER_REQUIRED" in result.output["next_required_events"]
+
+
+def test_e9_watches_when_trigger_is_proven_but_economics_are_still_pending():
+    upstream = base_upstream(
+        e6=trade_ready_e6(),
+        e7=trade_ready_e7(),
+        e8={
+            "economic_state": "UNRESOLVED",
+            "historical_outcomes": [],
+            "reason_codes": ["HISTORICAL_SAMPLE_INSUFFICIENT", "PROFIT_EXPECTANCY_UNQUANTIFIED"],
+            "entry": 100.0,
+            "stop_loss": 99.0,
+            "take_profit": 102.0,
+            "rr": 2.0,
+        },
+    )
+
+    result = analyze_e9({}, upstream)
+
+    assert result.output["decision"] == "NO_TRADE"
+    assert result.output["final_governance"] == "WATCH"
+    assert result.output["economic_state"] == "PENDING"
+    assert result.output["economic_pending"]
+    assert result.output["economic_blockers"] == []
 
 
 def test_e9_no_trade_when_e6_has_no_surviving_thesis():
@@ -119,6 +144,6 @@ def test_e9_no_trade_on_fatal_risk_even_when_thesis_and_trigger_are_proven():
     result = analyze_e9({}, upstream)
 
     assert result.output["decision"] == "NO_TRADE"
-    assert result.output["final_governance"] == "REJECTED_HARD_CONFLICT" or result.output["economic_state"] == "BLOCKED"
+    assert result.output["economic_state"] == "BLOCKED"
     assert result.output["execution_state"] == "BLOCKED"
     assert result.output["opportunity"]["do_not_execute"] is True
