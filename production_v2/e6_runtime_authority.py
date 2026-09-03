@@ -35,6 +35,38 @@ def _has_no_setup(result: EngineResult) -> bool:
     )
 
 
+def _normalize_watch_semantics(output: dict[str, Any]) -> dict[str, Any]:
+    """Keep human-readable E6 finding aligned with structured watch state."""
+    normalized = dict(output)
+    setup = str(normalized.get("setup") or "").upper().strip()
+    if setup not in WATCH_SETUPS:
+        return normalized
+    if normalized.get("watch_only") is not True or normalized.get("trade_ready") is True:
+        return normalized
+
+    direction = _direction(
+        normalized.get("direction"),
+        normalized.get("bias"),
+        normalized.get("market_direction"),
+    )
+    if direction not in {"BUY", "SELL"}:
+        direction = "NEUTRAL"
+    stage = str(normalized.get("stage") or "FORMING").strip().upper()
+    stage_text = {
+        "FORMING": "forming",
+        "CONTESTED": "contested",
+        "VALIDATING": "being validated",
+        "WATCHING": "being watched",
+    }.get(stage, stage.lower().replace("_", " "))
+    normalized["finding"] = (
+        f"{direction} opportunity is {stage_text}; causal setup is not yet proven."
+        if direction != "NEUTRAL"
+        else f"Opportunity is {stage_text}; causal setup is not yet proven."
+    )
+    normalized.setdefault("next_required_event", "NEXT_CLOSED_M5_CANDLE")
+    return normalized
+
+
 def install(e6_module) -> None:
     if getattr(e6_module, "_E6_RUNTIME_AUTHORITY_INSTALLED", False):
         return
@@ -49,6 +81,16 @@ def install(e6_module) -> None:
         out = _out(result)
         setup = str(out.get("setup") or "").upper().strip()
         if setup in WATCH_SETUPS and out.get("watch_only") is True and out.get("trade_ready") is not True:
+            normalized = _normalize_watch_semantics(out)
+            if normalized != out:
+                return EngineResult(
+                    result.engine_id,
+                    result.name,
+                    result.gate_passed,
+                    result.score,
+                    normalized,
+                    result.reason_codes,
+                )
             return result
 
         if not _has_no_setup(result):
@@ -59,7 +101,7 @@ def install(e6_module) -> None:
             return result
 
         watch = _watch(result, candidate)
-        watch_out = dict(watch.output or {})
+        watch_out = _normalize_watch_semantics(dict(watch.output or {}))
         watch_out["runtime_authority"] = "E6_FINAL_OPPORTUNITY_MEMBRANE"
         watch_out["runtime_rescue_reason"] = "CAUSAL_E1_E5_EVIDENCE_SURVIVES_LEGACY_NO_SETUP"
         watch_out["runtime_direction_source"] = _direction(
