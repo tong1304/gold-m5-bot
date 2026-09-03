@@ -16,13 +16,7 @@ class EngineResult:
 
 @dataclass(frozen=True)
 class DecisionResult:
-    """Stable public result with compatibility for the production-v2 pipeline call shape.
-
-    Canonical shape is the explicit symbol/timeframe/gate/risk contract. The
-    legacy pipeline constructor also supplies ``state``/``blocked_by``/``wait_bars``
-    and an engine mapping; these are normalized here so the API never exposes a
-    dict where callers expect EngineResult objects.
-    """
+    """Stable public result with compatibility for the production-v2 pipeline call shape."""
     symbol: str = "UNKNOWN"
     timeframe: str = "M5"
     decision: str = "NO_TRADE"
@@ -36,16 +30,14 @@ class DecisionResult:
     wait_bars: int = 0
 
     def __post_init__(self) -> None:
-        engines = self.engines
-        if isinstance(engines, dict):
-            normalized = tuple(value for value in engines.values() if isinstance(value, EngineResult))
+        if isinstance(self.engines, dict):
+            normalized = tuple(value for value in self.engines.values() if isinstance(value, EngineResult))
             object.__setattr__(self, "engines", normalized)
-            engines_by_id = {value.engine_id: value for value in normalized}
         else:
-            normalized = tuple(engines or ())
+            normalized = tuple(self.engines or ())
             object.__setattr__(self, "engines", normalized)
-            engines_by_id = {value.engine_id: value for value in normalized}
 
+        engines_by_id = {value.engine_id: value for value in normalized}
         e9 = engines_by_id.get("E9")
         e9_output = e9.output if e9 else {}
         e8 = engines_by_id.get("E8")
@@ -67,7 +59,13 @@ class DecisionResult:
             object.__setattr__(self, "risk", dict(e8_output))
         if self.reason_codes == () and e9 is not None:
             object.__setattr__(self, "reason_codes", tuple(e9.reason_codes))
-        if self.state == "ANALYSIS_COMPLETE_NO_TRADE" and self.decision in {"BUY", "SELL", "TRADE"} and self.gate_passed:
+
+        # The pipeline historically supplied the no-trade default state even
+        # after E9 had authorized a directional decision. Normalize that stale
+        # compatibility value at the public contract boundary.
+        if self.decision in {"BUY", "SELL", "TRADE"} and self.gate_passed and self.state in {
+            "ANALYSIS_COMPLETE_NO_TRADE", "", None
+        }:
             object.__setattr__(self, "state", "SIGNAL_READY")
 
     @property
