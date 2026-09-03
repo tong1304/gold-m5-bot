@@ -1,9 +1,9 @@
-"""Production-v2: isolated nine-engine trading runtime.
-
-The nine brain files are the only cognitive layer.  No sub-engine,
-monkey-patch, or import-time brain patch is installed here.
-"""
+"""Production-v2: isolated nine-engine trading runtime."""
 
 from .pipeline import ProductionPipeline
+from . import pipeline as _pipeline_module
+from .e7_thesis_boundary import install as _install_e7_thesis_boundary
+
+_install_e7_thesis_boundary(_pipeline_module)
 
 __all__ = ["ProductionPipeline"]
