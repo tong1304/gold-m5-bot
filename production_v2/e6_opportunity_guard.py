@@ -43,9 +43,7 @@ def _event_direction(e4: dict[str, Any]) -> str:
         return "BUY"
     if "LOW_ACCEPTANCE" in event or "LOW_BREAK" in event:
         return "SELL"
-    if "HIGH_LIQUIDITY_INTERACTION" in event:
-        return _direction(e4.get("liquidity_taker"))
-    if "LOW_LIQUIDITY_INTERACTION" in event:
+    if "HIGH_LIQUIDITY_INTERACTION" in event or "LOW_LIQUIDITY_INTERACTION" in event:
         return _direction(e4.get("liquidity_taker"))
     return "NEUTRAL"
 
@@ -77,10 +75,8 @@ def _fallback_opportunity(upstream: dict[str, EngineResult]) -> dict[str, Any] |
         return None
     if external != "NEUTRAL" and external != event_direction:
         return None
-    if pressure != "NEUTRAL" and pressure != event_direction:
-        # A counterflow opportunity is only watchable when E2 is still unresolved.
-        if not _e2_unresolved(e2):
-            return None
+    if pressure != "NEUTRAL" and pressure != event_direction and not _e2_unresolved(e2):
+        return None
     if _text(e3.get("lifecycle")) == "INVALIDATED" or e3.get("structure_invalidated") is True or e3.get("active_invalidation") is True:
         return None
     space_key = "available_space_atr_long" if event_direction == "BUY" else "available_space_atr_short"
@@ -155,7 +151,14 @@ def install(e6_module) -> None:
         if not isinstance(result, EngineResult):
             return result
         out = _out(result)
-        codes = {_text(x) for x in ((out.get("reason_codes") or []) + list(result.reason_codes or ()), (out.get("reasons") or []))[0]}
+        codes = {
+            _text(x)
+            for x in [
+                *(out.get("reason_codes") or []),
+                *(result.reason_codes or ()),
+                *(out.get("reasons") or []),
+            ]
+        }
         if "NO_CAUSAL_OPPORTUNITY" not in codes:
             return result
         candidate = _fallback_opportunity(upstream)
