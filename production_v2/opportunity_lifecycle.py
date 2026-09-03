@@ -100,6 +100,15 @@ def advance_opportunity(previous: dict[str, Any] | None, current: dict[str, Any]
                 "trade_authorized": False, "invalidation_reason": "UPSTREAM_CAUSAL_EVIDENCE_LOST",
             }
 
+        # A developing watch is intentionally sticky while its upstream evidence survives.
+        # It must not be promoted to WAITING merely because thesis_status is FORMING.
+        if previous_is_watch and current_is_watch and same_identity and _has_upstream_evidence(current):
+            return _watch_result(
+                current=current,
+                previous=previous,
+                continuity="CONTINUING_UPSTREAM_WATCH",
+            )
+
         downgraded_to_watch = bool(
             previous_direction in {"BUY", "SELL"} and current_direction == previous_direction
             and previous_is_real_setup and current_is_watch and _has_upstream_evidence(current)
