@@ -69,16 +69,34 @@ def _fallback_opportunity(upstream: dict[str, EngineResult]) -> dict[str, Any] |
     finding = _text(e5.get("finding"))
     value = _text(e5.get("value_state"))
     location = _text(e5.get("structural_location"))
-    favorable = "FAVORABLE_LOCATION" in finding or location in {"AT_SUPPORT", "AT_RESISTANCE"} or value in {"DISCOUNT", "PREMIUM"}
+    favorable = "FAVORABLE_LOCATION" in finding or location in {"AT_SUPPORT", "AT_RESISTANCE"} or value in {"DISCOUNT", "PREMIUM", "EQUILIBRIUM"}
     causal_event = any(x in event for x in ("ACCEPTANCE", "REJECTION", "SWEEP", "FAILED_BREAK", "BREAK", "RECLAIM", "LIQUIDITY_INTERACTION"))
     if not favorable or not causal_event or event_direction == "NEUTRAL":
         return None
+
+    # A pending acceptance that runs against the existing external structure is
+    # a legitimate transition watch, not a confirmed reversal/continuation.
+    # It is allowed only while E2 is unresolved and E4 has not been terminally
+    # confirmed. This preserves the opportunity without promoting a trade.
+    pending_counterflow_acceptance = (
+        external != "NEUTRAL"
+        and external != event_direction
+        and _e2_unresolved(e2)
+        and auction in {"PENDING", "DEVELOPING", "FORMING"}
+        and "ACCEPTANCE" in event
+    )
+    counter: list[str] = []
+    missing_structure: list[str] = []
     if external != "NEUTRAL" and external != event_direction:
-        return None
+        if not pending_counterflow_acceptance:
+            return None
+        counter.append("E3_EXTERNAL_COUNTERFLOW")
+        missing_structure.append("E3_EXTERNAL_STRUCTURE_ALIGNMENT")
     if pressure != "NEUTRAL" and pressure != event_direction and not _e2_unresolved(e2):
         return None
     if _text(e3.get("lifecycle")) == "INVALIDATED" or e3.get("structure_invalidated") is True or e3.get("active_invalidation") is True:
         return None
+
     space_key = "available_space_atr_long" if event_direction == "BUY" else "available_space_atr_short"
     try:
         space = float(e5.get(space_key) or 0.0)
@@ -92,13 +110,14 @@ def _fallback_opportunity(upstream: dict[str, EngineResult]) -> dict[str, Any] |
         missing.insert(1 if missing and missing[0] == "E2_OPPORTUNITY_CONFIRMATION" else 0, "E4_AUCTION_FOLLOW_THROUGH")
     if space < 0.75:
         missing.append("STRUCTURAL_SPACE_INSUFFICIENT")
+    missing.extend(missing_structure)
     return {
         "direction": event_direction,
         "family": family,
         "space": round(space, 4),
         "missing": list(dict.fromkeys(missing)),
         "support": ["E4_DIRECTIONAL_AUCTION_EVIDENCE", "E5_LOCATION_VALUE_SUPPORT"],
-        "counter": ["E1_COUNTER_EVIDENCE"] if pressure not in {"NEUTRAL", event_direction} else [],
+        "counter": list(dict.fromkeys(counter + (["E1_COUNTER_EVIDENCE"] if pressure not in {"NEUTRAL", event_direction} else []))),
         "event_id": str(e4.get("event_id") or e4.get("event_candle_id") or ""),
     }
 
