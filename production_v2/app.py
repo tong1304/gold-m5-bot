@@ -117,24 +117,42 @@ def _current_opportunity_input(result, candle: str) -> dict:
     e6_setup = _text(e6.get("setup") or e6.get("setup_family") or e6.get("setup_type"))
     e6_state = _text(e6.get("setup_state") or e6.get("opportunity_stage") or e6.get("state") or e6.get("finding"))
     e6_reasons = [_text(x) for x in (e6.get("reason_codes") or e6.get("reasons") or [])]
-
-    real_setup = (
+    e6_missing = [_text(x) for x in (e6.get("missing_proof") or e6.get("missing_evidence") or []) if _text(x)]
+    e6_is_invalid = any(token in e6_state for token in ("INVALIDATED", "NO_SETUP")) or any("INVALIDATED" in code or "HARD_VETO" in code for code in e6_reasons)
+    e6_causal_gate = _text(e6.get("e6_causal_gate"))
+    e6_setup_exists = e6.get("setup_exists") is True
+    e6_surviving_setup = bool(
         e6_direction in {"BUY", "SELL"}
         and e6_setup not in {"", "UNKNOWN", "NONE", "NO_SETUP"}
-        and reconciliation.get("state") == "CAUSAL_SETUP"
-        and not reconciliation.get("reasons")
+        and not e6_setup.startswith(("OPPORTUNITY_WATCH", "AUCTION_WATCH", "REGIME_WATCH"))
+        and not e6_is_invalid
+        and (
+            e6_setup_exists
+            or e6_causal_gate == "PASSED"
+            or e6_state in {"FORMING", "VALIDATING", "MATURE", "CONFIRMED", "TRADE_READY", "VALIDATED"}
+        )
+    )
+    real_setup = bool(
+        e6_surviving_setup
+        and (
+            reconciliation.get("state") == "CAUSAL_SETUP"
+            or e6_setup_exists
+            or e6_causal_gate == "PASSED"
+        )
     )
     pending_direction, pending_setup, pending_evidence, reconciliation_wait_for = _pending_upstream_thesis(engines)
     if not pending_setup:
         pending_direction, pending_setup, pending_evidence, reconciliation_wait_for = _e6_pending_thesis(engines)
 
-    if real_setup and not any(token in e6_state for token in ("INVALIDATED", "NO_SETUP")) and "CAUSAL_SETUP_PROOF_INCOMPLETE" not in e6_reasons:
+    if real_setup:
         direction = e6_direction
         setup = e6_setup
         thesis_status = e6_state if e6_state in {"FORMING", "VALIDATING", "MATURE", "CONFIRMED", "TRADE_READY"} else "FORMING"
         candidate = True
         lifecycle_source = "E6_SETUP"
-        wait_for = []
+        wait_for = list(dict.fromkeys(e6_missing))
+        if not wait_for and e6_state not in {"MATURE", "TRADE_READY", "CONFIRMED"}:
+            wait_for = ["E7_SETUP_SPECIFIC_CLOSED_CANDLE_CONFIRMATION"]
     elif pending_setup:
         direction = pending_direction
         setup = pending_setup
@@ -157,7 +175,7 @@ def _current_opportunity_input(result, candle: str) -> dict:
     e9_decision = _text(e9.get("decision") or result.decision)
     ready = bool(real_setup and candidate and e6_state in {"MATURE", "TRADE_READY", "CONFIRMED"} and confirmation in {"PROVEN", "CONFIRMED"} and bool(profit_edge.get("trusted")) and not profit_edge.get("blockers"))
     executed = bool(e9_decision in {"BUY", "SELL"} and result.gate_passed)
-    invalidated = bool(any(token in e6_state for token in ("INVALIDATED",)) or any("INVALIDATED" in code or "HARD_VETO" in code for code in e6_reasons))
+    invalidated = e6_is_invalid or bool(any("INVALIDATED" in code or "HARD_VETO" in code for code in e6_reasons))
     return {"candidate": candidate, "direction": direction, "setup": setup, "ready": ready, "invalidated": invalidated, "executed": executed, "thesis_status": thesis_status, "candle": candle, "lifecycle_source": lifecycle_source, "upstream_evidence": pending_evidence, "wait_for": wait_for}
 
 
