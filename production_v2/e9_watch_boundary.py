@@ -6,6 +6,22 @@ from .contracts import EngineResult
 
 _WATCH_SETUPS = {"OPPORTUNITY_WATCH", "OPPORTUNITY_CANDIDATE", "OPPORTUNITY_THESIS"}
 _DIRECTIONS = {"BUY", "SELL"}
+_HARD_CONFLICTS = {
+    "THESIS_INVALIDATED",
+    "E6_THESIS_INVALIDATED",
+    "E7_CONFIRMATION_INVALIDATED",
+    "E8_RISK_INVALIDATED",
+    "STRUCTURE_INVALIDATED",
+    "BULLISH_STRUCTURE_INVALIDATED",
+    "BEARISH_STRUCTURE_INVALIDATED",
+    "E3_STRUCTURE_INVALIDATED",
+    "E3_THESIS_INVALIDATED",
+    "STRUCTURE_INTEGRITY_INVALID",
+    "PROTECTED_LEVEL_GEOMETRY_INVALID",
+    "EXECUTION_IMPOSSIBLE",
+    "DATA_INTEGRITY_INVALID",
+    "SHARED_MARKET_PICTURE_CONTRACT_BLOCKED",
+}
 
 
 def _text(value: Any) -> str:
@@ -27,22 +43,12 @@ def _watch_state(e6: dict[str, Any]) -> tuple[str, str] | None:
 
 
 def _has_hard_invalidation(upstream: dict[str, EngineResult]) -> bool:
-    fatal = {
-        "THESIS_INVALIDATED",
-        "E6_THESIS_INVALIDATED",
-        "E7_CONFIRMATION_INVALIDATED",
-        "STRUCTURE_INVALIDATED",
-        "E3_STRUCTURE_INVALIDATED",
-        "STRUCTURE_INTEGRITY_INVALID",
-        "EXECUTION_IMPOSSIBLE",
-        "DATA_INTEGRITY_INVALID",
-    }
-    for key in ("E3", "E6", "E7"):
+    for key in ("E1", "E2", "E3", "E4", "E5", "E6", "E7", "E8"):
         output = _out(upstream.get(key))
         values = output.get("reason_codes") or output.get("reasons") or ()
         if isinstance(values, str):
             values = (values,)
-        if any(_text(value) in fatal for value in values):
+        if any(_text(value) in _HARD_CONFLICTS for value in values):
             return True
         if any(_text(output.get(name)).endswith("_INVALIDATED") for name in ("invalidation", "state", "setup_state")):
             return True
