@@ -95,13 +95,25 @@ def _event_direction(e4: dict[str, Any]) -> str:
 
 
 def _rescue_e6_causal_candidate(original: EngineResult, upstream: dict[str, EngineResult]) -> EngineResult:
-    """Preserve a causal market event as an E6 thesis even when E2 is still developing.
+    """Preserve legacy rescue compatibility without promoting an explicit watch.
 
-    This does not authorize a trade. E7 still owns entry confirmation and E8/E9
-    retain independent permission gates. Structural space is allowed to remain a
-    pending trade-economics constraint; it must not erase the opportunity thesis.
+    E6 owns thesis formation, while E7 owns setup confirmation. Once the modern
+    E6 layer has classified the evidence as OPPORTUNITY_WATCH/OPPORTUNITY_THESIS,
+    bootstrap must not relabel it as a causal trade setup merely to make E8
+    applicable. This boundary is especially important for pending auctions.
     """
     out = dict(original.output or {})
+    setup_state = _text(out.get("setup_state", out.get("state")))
+    setup = _text(out.get("setup", out.get("setup_family")))
+    candidate_type = _text(out.get("candidate_type"))
+    opportunity_stage = _text(out.get("opportunity_stage"))
+    if (
+        candidate_type == "OPPORTUNITY_CANDIDATE"
+        or setup in {"OPPORTUNITY_WATCH", "OPPORTUNITY_THESIS"}
+        or opportunity_stage in {"FORMING", "CONTESTED"}
+        and setup in {"OPPORTUNITY_WATCH", "OPPORTUNITY_THESIS"}
+    ):
+        return original
     if bool(out.get("setup_exists")):
         return original
 
