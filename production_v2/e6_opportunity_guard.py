@@ -9,12 +9,14 @@ def _text(v: Any) -> str:
     return str(v or "").upper().strip()
 
 
-def _direction(v: Any) -> str:
-    t = _text(v)
-    if t in {"BUY", "BULLISH", "UP", "LONG", "BUYERS", "BUYER", "BUY_CONTROLLED", "TREND_UP"}:
-        return "BUY"
-    if t in {"SELL", "BEARISH", "DOWN", "SHORT", "SELLERS", "SELLER", "SELL_CONTROLLED", "TREND_DOWN"}:
-        return "SELL"
+def _direction(*values: Any) -> str:
+    """Normalize the first recognized directional value from one or more fields."""
+    for value in values:
+        t = _text(value)
+        if t in {"BUY", "BULLISH", "UP", "LONG", "BUYERS", "BUYER", "BUY_CONTROLLED", "TREND_UP"}:
+            return "BUY"
+        if t in {"SELL", "BEARISH", "DOWN", "SHORT", "SELLERS", "SELLER", "SELL_CONTROLLED", "TREND_DOWN"}:
+            return "SELL"
     return "NEUTRAL"
 
 
