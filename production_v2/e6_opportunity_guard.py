@@ -84,14 +84,10 @@ def _fallback_opportunity(upstream: dict[str, EngineResult]) -> dict[str, Any] |
     counterflow = external != "NEUTRAL" and external != event_direction
     pressure_counterflow = pressure != "NEUTRAL" and pressure != event_direction
 
-    # Counterflow is a watchable opportunity only while the market is unresolved.
-    # It must never become a confirmed thesis or trade by this guard.
     if counterflow and not unresolved:
         return None
     if pressure_counterflow and not unresolved:
         return None
-    # Mixed internal structure is allowed as missing proof, but an explicit
-    # directional internal regime opposing the event is a hard veto.
     if internal in {"BUY", "SELL"} and internal != event_direction:
         return None
     if _text(e3.get("lifecycle")) == "INVALIDATED" or e3.get("structure_invalidated") is True or e3.get("active_invalidation") is True:
@@ -177,12 +173,19 @@ def _should_rescue_watch(result: EngineResult) -> bool:
     setup = _text(out.get("setup"))
     if out.get("trade_ready") is True or out.get("gate_passed") is True:
         return False
-    # Existing OPPORTUNITY_WATCH is intentionally normalized only when its
-    # public semantic finding/reasons were masked by downstream proof gates.
     if setup in {"OPPORTUNITY_WATCH", "OPPORTUNITY_CANDIDATE", "OPPORTUNITY_THESIS"}:
         finding = _text(out.get("finding"))
         reasons = {_text(x) for x in (out.get("reason_codes") or out.get("reasons") or [])}
-        return "NO CAUSAL SETUP HYPOTHESIS" in finding and reasons.issubset({"E2_OPPORTUNITY_CONFIRMATION", "E4_AUCTION_FOLLOW_THROUGH", "E7_CONFIRMATION", "STRUCTURAL_SPACE_INSUFFICIENT", "E3_EXTERNAL_STRUCTURE_ALIGNMENT", "E3_INTERNAL_STRUCTURE_ALIGNMENT"})
+        return "NO CAUSAL SETUP HYPOTHESIS" in finding and reasons.issubset({"E2_OPPORTUNITY_CONFIRMATION", "E4_AUCTION_FOLLOW_THROUGH", "E7_CONFIRMATION", "STRUCTURAL_SPACE_INSUFFICIENT", "E3_EXTERNAL_STRUCTURE_ALIGNMENT", "E3_INTERNAL_STRUCTURE_ALIGNMENT", "E3_INTERNAL_EVIDENCE_UNRESOLVED"})
+    finding = _text(out.get("finding"))
+    reasons = {_text(x) for x in (out.get("reason_codes") or out.get("reasons") or [])}
+    # The legacy E6 path can mask a real E1-E5 causal opportunity as NO_SETUP.
+    # Let the deterministic fallback decide; it is independently gated by
+    # causal event + favorable location + unresolved counterflow rules.
+    if "NO CAUSAL SETUP HYPOTHESIS" in finding or "NO SURVIVING CAUSAL OPPORTUNITY THESIS" in finding:
+        return True
+    if "NO_CAUSAL_OPPORTUNITY" in reasons and setup in {"", "NO_SETUP", "UNKNOWN"}:
+        return True
     stage = _text(out.get("opportunity_stage"))
     state = _text(out.get("state"))
     return setup in {"", "NO_SETUP", "UNKNOWN"} or stage in {"", "ABSENT", "UNKNOWN"} or state in {"", "NO_SETUP", "UNKNOWN"}
