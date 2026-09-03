@@ -6,15 +6,36 @@ from .contracts import EngineResult
 
 WATCH_PREFIXES = ("OPPORTUNITY_WATCH", "AUCTION_WATCH", "REGIME_WATCH")
 NO_SETUP = {"", "NONE", "UNKNOWN", "NO_SETUP", "NO_PLAUSIBLE_SETUP", "UNRESOLVED"}
+CONCRETE_SETUP_STATES = {"FORMING", "VALIDATING", "MATURE", "CONFIRMED", "TRADE_READY", "VALIDATED"}
 
 
 def _text(value: Any) -> str:
     return str(value or "").upper().strip()
 
 
+def _is_concrete_surviving_setup(e6: dict[str, Any]) -> bool:
+    setup = _text(e6.get("setup") or e6.get("setup_family"))
+    state = _text(e6.get("setup_state") or e6.get("state") or e6.get("opportunity_stage"))
+    direction = _text(e6.get("direction") or e6.get("direction_thesis") or e6.get("thesis_direction"))
+    return bool(
+        setup
+        and setup not in NO_SETUP
+        and not setup.startswith(WATCH_PREFIXES)
+        and direction in {"BUY", "SELL"}
+        and (
+            e6.get("setup_exists") is True
+            or state in CONCRETE_SETUP_STATES
+            or _text(e6.get("e6_causal_gate")) == "PASSED"
+        )
+        and _text(e6.get("thesis_status") or e6.get("maturity")) not in {"ABSENT", "INVALIDATED"}
+    )
+
+
 def _is_opportunity_watch(e6: dict[str, Any]) -> bool:
     setup = _text(e6.get("setup") or e6.get("setup_family"))
     candidate_type = _text(e6.get("candidate_type"))
+    if _is_concrete_surviving_setup(e6):
+        return False
     return bool(
         e6.get("watch_only") is True
         or candidate_type == "OPPORTUNITY_CANDIDATE"
@@ -25,10 +46,9 @@ def _is_opportunity_watch(e6: dict[str, Any]) -> bool:
 def enforce_e6_thesis_boundary(original_e7, snapshot: dict[str, Any], upstream: dict[str, EngineResult]) -> EngineResult:
     """Prevent E7 from turning an opportunity watch into a confirmed setup.
 
-    E6 owns the causal setup thesis. An opportunity watch is evidence worth
-    carrying to the next closed candle, but it is not a setup family that E7
-    may confirm. This boundary is intentionally conservative: it only rewrites
-    the E7 result when E6 explicitly marks the candidate as watch-only.
+    E6 owns the causal setup thesis. A concrete E6 setup in FORMING/VALIDATING
+    remains eligible for E7 proof; only an explicit watch/no-setup state is
+    blocked from confirmation.
     """
     result = original_e7(snapshot, upstream)
     e6 = upstream.get("E6")
