@@ -35,7 +35,7 @@ def _watch_result(*, current: dict[str, Any], previous: dict[str, Any] | None = 
     setup = _text(current.get("setup"))
     return {
         **previous,
-        "state": "WAITING",
+        "state": "WATCHING",
         "continuity": continuity,
         "opportunity_id": _identity(direction, setup),
         "direction": direction,
@@ -101,24 +101,15 @@ def advance_opportunity(previous: dict[str, Any] | None, current: dict[str, Any]
             }
 
         # A developing watch is intentionally sticky while its upstream evidence survives.
-        # It must not be promoted to WAITING merely because thesis_status is FORMING.
         if previous_is_watch and current_is_watch and same_identity and _has_upstream_evidence(current):
-            return _watch_result(
-                current=current,
-                previous=previous,
-                continuity="CONTINUING_UPSTREAM_WATCH",
-            )
+            return _watch_result(current=current, previous=previous, continuity="CONTINUING_UPSTREAM_WATCH")
 
         downgraded_to_watch = bool(
             previous_direction in {"BUY", "SELL"} and current_direction == previous_direction
             and previous_is_real_setup and current_is_watch and _has_upstream_evidence(current)
         )
         if downgraded_to_watch:
-            return _watch_result(
-                current=current,
-                previous=previous,
-                continuity="DOWNGRADED_TO_UPSTREAM_WATCH",
-            )
+            return _watch_result(current=current, previous=previous, continuity="DOWNGRADED_TO_UPSTREAM_WATCH")
 
         pending_to_setup = bool(
             previous_direction in {"BUY", "SELL"} and current_direction == previous_direction
@@ -158,9 +149,7 @@ def advance_opportunity(previous: dict[str, Any] | None, current: dict[str, Any]
             }
 
         bars_waited = int(previous.get("bars_waited", 0) or 0) + 1
-        continuity = "CONTINUING_UPSTREAM_WATCH" if previous_is_watch and current_is_watch else (
-            "ADVANCING_EXISTING_OPPORTUNITY" if ready else "CONTINUING_EXISTING_OPPORTUNITY"
-        )
+        continuity = "CONTINUING_UPSTREAM_WATCH" if previous_is_watch and current_is_watch else ("ADVANCING_EXISTING_OPPORTUNITY" if ready else "CONTINUING_EXISTING_OPPORTUNITY")
         return {
             **previous, "state": "READY" if ready else "WAITING", "continuity": continuity,
             "bars_waited": bars_waited, "last_evaluated_candle": candle,
