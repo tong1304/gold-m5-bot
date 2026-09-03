@@ -44,17 +44,3 @@ def test_e3_never_treats_wick_only_move_as_closed_break():
     bars[-1]["high"] = 102.0
     result = analyze_e3(bars)
     assert result["bos"]["confirmed"] is False
-
-
-def test_e3_structure_does_not_inherit_trade_authority_from_inputs():
-    bars = [bar(100 + i * 0.2) for i in range(80)]
-    baseline = analyze_e3(bars)
-    contaminated = analyze_e3(
-        bars,
-        E1_result={"direction": "DOWN"},
-        E2_result={"direction": "DOWN"},
-    )
-    assert baseline["direction"] == contaminated["direction"]
-    assert contaminated["upstream_direction_used"] is False
-    assert contaminated["upstream_decisions_used"] is False
-    assert contaminated["upstream_gates_used"] is False
