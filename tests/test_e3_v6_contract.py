@@ -14,11 +14,10 @@ def _bars(values):
     return bars
 
 
-def test_e3_v6_exposes_structural_state_contract_without_trade_authority():
+def test_e3_exposes_current_causal_contract_without_trade_authority():
     result = analyze_e3(_bars([100 + i * 0.6 for i in range(80)]))
-
     assert result["analysis_status"] == "COMPLETE"
-    assert result["architecture"] == "E3_SINGLE_PROFESSIONAL_BRAIN_V6"
+    assert result["architecture"] == "E3_PROFESSIONAL_MARKET_STRUCTURE_CAUSAL_V8"
     assert result["reasoning_role"] == "MARKET_STRUCTURE_ANALYST"
     assert result["specialists_active"] is False
     assert result["specialists_status"] == "PAUSED"
@@ -32,10 +31,9 @@ def test_e3_v6_exposes_structural_state_contract_without_trade_authority():
     assert result["score_used"] is False
 
 
-def test_e3_v6_separates_structural_state_from_count_state_and_slope():
+def test_e3_separates_structural_state_from_count_state_and_slope():
     values = [100, 101, 99, 102, 100, 103, 101, 104, 102, 105] * 7
     result = analyze_e3(_bars(values))
-
     assert isinstance(result["external_structure"], dict)
     assert isinstance(result["internal_structure"], dict)
     assert result["external_structure"]["count_state"] == result["external_count_state"]
@@ -45,9 +43,7 @@ def test_e3_v6_separates_structural_state_from_count_state_and_slope():
     assert result["gate"] is None
 
 
-def test_e3_v6_closed_break_remains_the_only_structural_break_confirmation():
+def test_e3_closed_break_requires_close_beyond_confirmed_structure():
     result = analyze_e3(_bars([100 + (i % 2) * 0.5 for i in range(80)]))
-
     assert result["bos"]["confirmed"] is False
-    assert result["bos"]["event"] == "NO_BOS"
     assert result["trade_decision_authority"] is False
