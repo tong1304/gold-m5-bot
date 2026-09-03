@@ -2,8 +2,6 @@ from __future__ import annotations
 
 from typing import Any
 
-_INSTALLED = False
-
 
 def _module_name(value: Any) -> str:
     return f"{getattr(value, '__module__', '?')}.{getattr(value, '__name__', type(value).__name__)}"
@@ -12,12 +10,13 @@ def _module_name(value: Any) -> str:
 def install(pipeline_module, e6_module, e8_module, e9_module) -> None:
     """Make final authority bindings deterministic at every live pipeline run.
 
-    Package startup installs several wrappers in sequence.  This final membrane
+    Package startup installs several wrappers in sequence. This final membrane
     deliberately rebinds E6/E8/E9 immediately before execution so a startup
     wrapper cannot leave the pipeline holding an earlier function reference.
+    Installation is tracked on the pipeline module, allowing isolated test
+    pipelines to exercise the membrane independently.
     """
-    global _INSTALLED
-    if _INSTALLED:
+    if getattr(pipeline_module, "_FINAL_RUNTIME_BINDING_INSTALLED", False):
         return
 
     original_run = pipeline_module.ProductionPipeline.run
@@ -43,4 +42,3 @@ def install(pipeline_module, e6_module, e8_module, e9_module) -> None:
 
     pipeline_module.ProductionPipeline.run = run_with_final_bindings
     pipeline_module._FINAL_RUNTIME_BINDING_INSTALLED = True
-    _INSTALLED = True
