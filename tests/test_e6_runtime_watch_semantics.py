@@ -45,6 +45,22 @@ def test_populated_setup_family_does_not_hide_legacy_no_setup():
     assert _has_no_setup(result) is True
 
 
+def test_string_false_readiness_flags_do_not_hide_legacy_no_setup():
+    result = EngineResult(
+        "E6", "SETUP_FORMATION_REASONER", False, 0.0,
+        {
+            "setup": "LIQUIDITY_RESPONSE",
+            "setup_family": "LIQUIDITY_RESPONSE",
+            "finding": "No causal setup hypothesis survives current closed-candle evidence.",
+            "trade_ready": "FALSE",
+            "gate_passed": "false",
+            "reason_codes": ["E4_AUCTION_FOLLOW_THROUGH", "E7_CONFIRMATION"],
+        },
+        ("E4_AUCTION_FOLLOW_THROUGH", "E7_CONFIRMATION"),
+    )
+    assert _has_no_setup(result) is True
+
+
 def test_fallback_forms_watch_from_realistic_closed_candle_evidence():
     upstream = {
         "E1": _r("E1", {"directional_pressure": "BULLISH"}),
@@ -83,4 +99,4 @@ def test_watch_finding_uses_opportunity_stage_and_direction():
         }
     )
     assert output["finding"] == "SELL opportunity is contested; causal setup is not yet proven."
-    assert output["runtime_authority"] == "E6_FINAL_OPPORTUNITY_MEMBRANE_V4"
+    assert output["runtime_authority"] == "E6_FINAL_OPPORTUNITY_MEMBRANE_V5"
