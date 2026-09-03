@@ -12,6 +12,7 @@ from .e6_brain import analyze_e6
 from .e7_brain import analyze_e7
 from .e8_brain import analyze_e8
 from .e9_brain import analyze_e9
+from .e6_runtime_authority import _normalize_watch_semantics
 from .nine_brain_surgery import harden_engine
 from .opportunity_layer import enrich_opportunity, recover_e9
 from .professional_governance import audit_engines, enforce_final_authority
@@ -37,12 +38,24 @@ def _dict_result(engine_id: str, output: dict[str, Any]) -> EngineResult:
     return EngineResult(engine_id, NAMES[engine_id], output.get("gate_passed"), score, output, reasons)
 
 
+def finalize_e6_output(output: dict[str, Any]) -> dict[str, Any]:
+    """Final E6 semantic membrane after all generic enrichment layers.
+
+    Generic enrichment may decorate E6 but must never re-expose a legacy
+    NO_SETUP finding while structured opportunity-watch state is still alive.
+    This membrane changes presentation semantics only; it does not create a
+    thesis, alter direction, loosen gates, or authorize execution.
+    """
+    return _normalize_watch_semantics(dict(output or {}))
+
+
 def _enrich(engine_id: str, result: EngineResult, snapshot: dict[str, Any]) -> EngineResult:
     output = enrich_opportunity(engine_id, result.output, snapshot)
     output = enrich_engine(engine_id, output)
     output = harden_engine(engine_id, output)
     shared = snapshot.get("shared_market_picture")
     if isinstance(shared, dict): output = attach_brain_view(engine_id, output, shared)
+    if engine_id == "E6": output = finalize_e6_output(output)
     return EngineResult(result.engine_id, result.name, result.gate_passed, result.score, output, result.reason_codes)
 
 
@@ -112,9 +125,6 @@ def _attach_profit_edge(results: dict[str, EngineResult], snapshot: dict[str, An
     e8 = results.get("E8")
     if not e8: return
     out = dict(e8.output)
-    # E8 applicability is a hard semantic boundary. Profit-edge calibration is
-    # downstream economics work and must never reopen blockers after E8 has
-    # already declared itself NOT_APPLICABLE because E6 has no surviving thesis.
     if str(out.get("applicability") or "").upper().strip() == "NOT_APPLICABLE_WITHOUT_SURVIVING_E6_THESIS" or str(out.get("finding") or "").upper().strip() == "NOT_APPLICABLE":
         return
     direction = _direction(e6.get("direction") or e6.get("direction_thesis") or e6.get("thesis_direction") or e6.get("finding"))
@@ -149,7 +159,7 @@ def _attach_state_semantics(results: dict[str, EngineResult]) -> None:
     if not e9: return
     out = dict(e9.output)
     out["state_semantics"] = {"market_state":str(e1.get("market_state") or e1.get("trend_state") or "UNKNOWN").upper(),"setup_state":str(e6.get("setup_state") or e6.get("opportunity_stage") or "UNKNOWN").upper(),"confirmation_state":str(e7.get("confirmation_state") or e7.get("confirmation") or "PENDING").upper(),"economic_state":str(e8.get("economic_state") or e8.get("risk_state") or (e8.get("profit_edge") or {}).get("state") or "UNKNOWN").upper(),"execution_state":str(out.get("execution") or "BLOCKED").upper()}
-    results["E9"] = EngineResult(e9.engine_id,e9.name,e9.gate_passed,e9.score,out,e9.reason_codes)
+    results["E9"] = EngineResult(e9.engine_id,e9.name,e9.gate_passed,out,e9.reason_codes) if False else EngineResult(e9.engine_id,e9.name,e9.gate_passed,e9.score,out,e9.reason_codes)
 
 
 class ProductionPipeline:
