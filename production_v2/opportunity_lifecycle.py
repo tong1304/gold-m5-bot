@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
-ACTIVE_STATES = {"WAITING", "READY"}
+ACTIVE_STATES = {"WATCHING", "WAITING", "READY"}
 ACTIVE_THESIS_STATES = {"FORMING", "VALIDATING", "MATURE", "CONFIRMED", "TRADE_READY"}
 PENDING_SETUP_PREFIXES = ("OPPORTUNITY_WATCH", "AUCTION_WATCH", "REGIME_WATCH")
 
@@ -26,6 +26,26 @@ def _is_pending_watch(setup: Any) -> bool:
 def _has_upstream_evidence(current: dict[str, Any]) -> bool:
     evidence = current.get("upstream_evidence")
     return isinstance(evidence, (list, tuple, set)) and any(_text(item) for item in evidence)
+
+
+def _watch_result(*, current: dict[str, Any], previous: dict[str, Any] | None = None, continuity: str) -> dict[str, Any]:
+    previous = dict(previous or {})
+    candle = _text(current.get("candle"))
+    direction = _text(current.get("direction"))
+    setup = _text(current.get("setup"))
+    return {
+        **previous,
+        "state": "WATCHING",
+        "continuity": continuity,
+        "opportunity_id": _identity(direction, setup),
+        "direction": direction,
+        "setup": setup,
+        "bars_waited": int(previous.get("bars_waited", 0) or 0) + (1 if previous else 0),
+        "origin_candle": previous.get("origin_candle") or candle or None,
+        "last_evaluated_candle": candle,
+        "trade_authorized": False,
+        "invalidation_reason": None,
+    }
 
 
 def advance_opportunity(previous: dict[str, Any] | None, current: dict[str, Any]) -> dict[str, Any]:
@@ -73,9 +93,6 @@ def advance_opportunity(previous: dict[str, Any] | None, current: dict[str, Any]
         previous_is_watch = _is_pending_watch(previous_setup)
         previous_is_real_setup = bool(previous_setup and not previous_is_watch)
 
-        # A watch is a real state machine node, not a sticky directional flag.
-        # If its causal evidence disappears, invalidate it even if E2 still
-        # emits a stale directional label on the current candle.
         if previous_is_watch and current_is_watch and not _has_upstream_evidence(current):
             return {
                 **previous, "state": "INVALIDATED", "continuity": "OPPORTUNITY_INVALIDATED",
@@ -83,19 +100,16 @@ def advance_opportunity(previous: dict[str, Any] | None, current: dict[str, Any]
                 "trade_authorized": False, "invalidation_reason": "UPSTREAM_CAUSAL_EVIDENCE_LOST",
             }
 
-        # If a real E6 thesis loses its causal setup but upstream E2/E4 still
-        # has explicit pending evidence, keep the directional watch alive.
         downgraded_to_watch = bool(
             previous_direction in {"BUY", "SELL"} and current_direction == previous_direction
             and previous_is_real_setup and current_is_watch and _has_upstream_evidence(current)
         )
         if downgraded_to_watch:
-            return {
-                **previous, "state": "WAITING", "continuity": "DOWNGRADED_TO_UPSTREAM_WATCH",
-                "opportunity_id": _identity(current_direction, current_setup), "direction": current_direction,
-                "setup": current_setup, "bars_waited": int(previous.get("bars_waited", 0) or 0) + 1,
-                "last_evaluated_candle": candle, "trade_authorized": False, "invalidation_reason": None,
-            }
+            return _watch_result(
+                current=current,
+                previous=previous,
+                continuity="DOWNGRADED_TO_UPSTREAM_WATCH",
+            )
 
         pending_to_setup = bool(
             previous_direction in {"BUY", "SELL"} and current_direction == previous_direction
@@ -145,6 +159,8 @@ def advance_opportunity(previous: dict[str, Any] | None, current: dict[str, Any]
         }
 
     if candidate:
+        if current_direction in {"BUY", "SELL"} and _is_pending_watch(current_setup) and _has_upstream_evidence(current):
+            return _watch_result(current=current, continuity="NEW_DEVELOPING_OPPORTUNITY")
         return {
             "state": "READY" if ready else "WAITING",
             "continuity": "NEW_OPPORTUNITY_READY" if ready else "NEW_OPPORTUNITY_WATCH",
