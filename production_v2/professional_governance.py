@@ -103,7 +103,10 @@ def audit_engines(results: dict[str, Any]) -> dict[str, Any]:
     elif "TRANSITION" in lifecycle: pending_gates.append("E3")
     if per_engine["E4"]["auction_state"] in {"PENDING","UNKNOWN","INITIATIVE","UNRESOLVED"}: pending_gates.append("E4")
     if not per_engine["E7"]["confirmation_passed"]: pending_gates.append("E7")
-    if not per_engine["E8"]["economics_valid"]: all_blockers.append("TRADE_ECONOMICS_NOT_VALID")
+    # E8 can be non-ready because the trade trigger/plan is still forming.
+    # That is a pending proof state, not a fatal governance veto. Explicit E8
+    # hard blockers have already been captured above and remain veto-capable.
+    if not per_engine["E8"]["economics_valid"] and not per_engine["E8"]["hard_blockers"]: pending_gates.append("E8")
 
     all_blockers=list(dict.fromkeys(all_blockers)); all_missing=list(dict.fromkeys(all_missing)); pending_gates=list(dict.fromkeys(pending_gates)); hard_veto=bool(all_blockers)
     next_event=[]
