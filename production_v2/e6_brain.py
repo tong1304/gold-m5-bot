@@ -50,6 +50,11 @@ def _e2_direction(e2: dict[str, Any]) -> str:
         direction = _direction(e2.get(key))
         if direction != "NEUTRAL":
             return direction
+    finding = _text(e2.get("finding", e2.get("state")))
+    if any(token in finding for token in ("UP OPPORTUNITY", "BUY OPPORTUNITY")):
+        return "BUY"
+    if any(token in finding for token in ("DOWN OPPORTUNITY", "SELL OPPORTUNITY")):
+        return "SELL"
     return "NEUTRAL"
 
 
@@ -118,11 +123,6 @@ def _causal_opportunity(upstream: dict[str, Any]) -> dict[str, Any] | None:
     missing_internal_proof: list[str] = []
 
     if e1_direction != "NEUTRAL" and external != "NEUTRAL" and e1_direction != external:
-        # A genuine single-anchor transition may survive an opposing E1 only
-        # when E2 is still unresolved and E4 independently confirms the E3
-        # external direction. This is the narrow exception that preserves
-        # early opportunity discovery without letting internal counterflow
-        # manufacture a thesis.
         if unresolved and e4_direction == external:
             core = external
             counter_evidence.append("E1_COUNTER_EVIDENCE")
@@ -132,11 +132,10 @@ def _causal_opportunity(upstream: dict[str, Any]) -> dict[str, Any] | None:
         core = e1_direction if e1_direction != "NEUTRAL" else external
 
     if core == "NEUTRAL":
+        core = e2_direction
+    if core == "NEUTRAL":
         return None
 
-    # Anchor authority: E3 external structure is supporting structure, not a
-    # standalone directional thesis. A directional E1 or E2 anchor must exist
-    # unless the explicit single-anchor transition exception above applies.
     primary_anchor = e1_direction != "NEUTRAL" or e2_direction != "NEUTRAL"
     single_anchor_exception = (
         e1_direction != "NEUTRAL"
@@ -226,10 +225,7 @@ def _watch_result(legacy: EngineResult, opportunity: dict[str, Any]) -> EngineRe
     counter_evidence = list(dict.fromkeys(opportunity.get("counter_evidence", [])))
     hard_conflicts = list(dict.fromkeys(opportunity.get("hard_conflicts", [])))
 
-    contested = (
-        "E1_COUNTER_EVIDENCE" in counter_evidence
-        or "STRUCTURAL_SPACE_INSUFFICIENT" in missing
-    )
+    contested = "E1_COUNTER_EVIDENCE" in counter_evidence or "STRUCTURAL_SPACE_INSUFFICIENT" in missing
     stage = "CONTESTED" if contested else "FORMING"
     state = "THESIS_CONTESTED" if contested else "FORMING"
     setup = "OPPORTUNITY_THESIS" if contested else "OPPORTUNITY_WATCH"
@@ -310,8 +306,6 @@ def analyze_e6(market_data: dict[str, Any], upstream: dict[str, EngineResult]) -
     legacy = _legacy_analyze_e6(market_data, upstream)
     opportunity = _causal_opportunity(upstream)
 
-    # E1-E5 causal evidence is the gate. A legacy E6 pattern may enrich a
-    # surviving causal thesis, but it must never manufacture one on its own.
     if opportunity is None:
         return _no_surviving_causal_thesis(legacy)
 
