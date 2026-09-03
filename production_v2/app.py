@@ -74,6 +74,37 @@ def _pending_upstream_thesis(engines: dict[str, dict]) -> tuple[str, str, list[s
     return direction, "OPPORTUNITY_WATCH", list(dict.fromkeys(evidence)), list(reconciliation.get("wait_for") or [])
 
 
+def _e6_pending_thesis(engines: dict[str, dict]) -> tuple[str, str, list[str], list[str]]:
+    """Preserve an explicit E6 watch when reconciliation cannot represent it.
+
+    E6 owns the setup thesis boundary. Reconciliation may legitimately remain
+    unresolved while E6 has already identified a causal, non-trade-ready watch.
+    In that case the lifecycle must not collapse the watch to IDLE.
+    """
+    e6 = engines.get("E6") or {}
+    setup = _text(e6.get("setup") or e6.get("setup_type") or e6.get("setup_family"))
+    direction = _direction_from_output(e6)
+    if setup not in {"OPPORTUNITY_WATCH", "OPPORTUNITY_CANDIDATE", "OPPORTUNITY_THESIS"}:
+        return "NEUTRAL", "", [], []
+    if direction not in {"BUY", "SELL"}:
+        return "NEUTRAL", "", [], []
+    if e6.get("watch_only") is not True or e6.get("trade_ready") is True or e6.get("gate_passed") is True:
+        return "NEUTRAL", "", [], []
+    missing = [
+        _text(x) for x in (e6.get("missing_proof") or e6.get("reason_codes") or e6.get("reasons") or [])
+        if _text(x)
+    ]
+    missing = list(dict.fromkeys(missing))
+    if "E6_CAUSAL_SETUP_PROOF" not in missing:
+        missing.append("E6_CAUSAL_SETUP_PROOF")
+    evidence = [
+        _text(x) for x in (e6.get("supporting_evidence") or [])
+        if _text(x)
+    ]
+    evidence.append("E6_OPPORTUNITY_WATCH")
+    return direction, "OPPORTUNITY_WATCH", list(dict.fromkeys(evidence)), missing
+
+
 def _current_opportunity_input(result, candle: str) -> dict:
     engines = {engine.engine_id: engine.output or {} for engine in result.engines}
     e6 = engines.get("E6", {})
@@ -94,6 +125,8 @@ def _current_opportunity_input(result, candle: str) -> dict:
         and not reconciliation.get("reasons")
     )
     pending_direction, pending_setup, pending_evidence, reconciliation_wait_for = _pending_upstream_thesis(engines)
+    if not pending_setup:
+        pending_direction, pending_setup, pending_evidence, reconciliation_wait_for = _e6_pending_thesis(engines)
 
     if real_setup and not any(token in e6_state for token in ("INVALIDATED", "NO_SETUP")) and "CAUSAL_SETUP_PROOF_INCOMPLETE" not in e6_reasons:
         direction = e6_direction
@@ -194,17 +227,14 @@ start_production_runtime()
 def index():
     return jsonify({"system": "9-ENGINE", "version": "production-v2", "architecture": ARCHITECTURE, "sub_engines": False, "parallel_peer_analysis": False, "decision_authority": "E9", "legacy_runtime": False, "live_runtime": "RUNNING" if _runtime_started else "NOT_RUNNING", "environment": os.getenv("RENDER_ENV", "production")})
 
-
 @app.get("/health")
 def health():
     return jsonify({"status": "ok" if _runtime_started else "degraded", "system": "9-ENGINE", "version": "production-v2", "architecture": ARCHITECTURE, "sub_engines": False, "parallel_peer_analysis": False, "decision_authority": "E9", "legacy_runtime": False, "timeframe": "M5"}), (200 if _runtime_started else 503)
-
 
 @app.get("/api/statistics")
 @app.get("/statistics")
 def statistics():
     return jsonify(build_statistics())
-
 
 @app.post("/signal")
 def signal():
@@ -221,7 +251,6 @@ def signal():
     except Exception as exc:
         logger.exception("production-v2 pipeline failure")
         return jsonify({"error": "PIPELINE_ERROR", "detail": str(exc)}), 500
-
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.getenv("PORT", "10000")))
