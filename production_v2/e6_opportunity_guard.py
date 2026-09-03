@@ -51,11 +51,15 @@ def _event_direction(e4: dict[str, Any]) -> str:
 def _e2_unresolved(e2: dict[str, Any]) -> bool:
     text = _text(e2.get("finding", e2.get("state")))
     state = _text(e2.get("opportunity_state", e2.get("opportunity_decision")))
+    maturity = _text(e2.get("opportunity_maturity"))
     return (
         "OPPORTUNITY IS EMERGING" in text
         or "OPPORTUNITY IS DEVELOPING" in text
+        or "UNPROVEN" in text
+        or "NOT PROVEN" in text
         or text in {"UNRESOLVED", "UNPROVEN", "AMBIGUOUS", "WAIT", "EMERGING", "PENDING", "DEVELOPING"}
         or state in {"UNRESOLVED", "UNPROVEN", "AMBIGUOUS", "WAIT", "EMERGING", "PENDING", "DEVELOPING"}
+        or maturity in {"UNPROVEN", "EMERGING", "DEVELOPING"}
     )
 
 
@@ -75,29 +79,20 @@ def _fallback_opportunity(upstream: dict[str, EngineResult]) -> dict[str, Any] |
     if not favorable or not causal_event or event_direction == "NEUTRAL":
         return None
 
-    # A pending acceptance that runs against the existing external structure is
-    # a legitimate transition watch, not a confirmed reversal/continuation.
-    # It is allowed only while E2 is unresolved and E4 has not been terminally
-    # confirmed. This preserves the opportunity without promoting a trade.
-    pending_counterflow_acceptance = (
-        external != "NEUTRAL"
-        and external != event_direction
-        and _e2_unresolved(e2)
-        and auction in {"PENDING", "DEVELOPING", "FORMING"}
-        and "ACCEPTANCE" in event
-    )
-    counter: list[str] = []
-    missing_structure: list[str] = []
-    if external != "NEUTRAL" and external != event_direction:
-        if not pending_counterflow_acceptance:
-            return None
-        counter.append("E3_EXTERNAL_COUNTERFLOW")
-        missing_structure.append("E3_EXTERNAL_STRUCTURE_ALIGNMENT")
-    if pressure != "NEUTRAL" and pressure != event_direction and not _e2_unresolved(e2):
+    pending = auction in {"PENDING", "DEVELOPING", "FORMING"}
+    unresolved = _e2_unresolved(e2)
+    counterflow = external != "NEUTRAL" and external != event_direction
+    pressure_counterflow = pressure != "NEUTRAL" and pressure != event_direction
+
+    # Counterflow is a watchable opportunity only while the market is unresolved.
+    # It must never become a confirmed thesis or trade by this guard.
+    if counterflow and not unresolved:
         return None
-    # A mixed/unfinished internal structure is not a hard conflict. It is a
-    # missing proof item for the developing opportunity.
-    if internal != "NEUTRAL" and internal != event_direction and external != "NEUTRAL":
+    if pressure_counterflow and not unresolved:
+        return None
+    # Mixed internal structure is allowed as missing proof, but an explicit
+    # directional internal regime opposing the event is a hard veto.
+    if internal in {"BUY", "SELL"} and internal != event_direction:
         return None
     if _text(e3.get("lifecycle")) == "INVALIDATED" or e3.get("structure_invalidated") is True or e3.get("active_invalidation") is True:
         return None
@@ -109,21 +104,30 @@ def _fallback_opportunity(upstream: dict[str, EngineResult]) -> dict[str, Any] |
         space = 0.0
     family = "AUCTION_ACCEPTANCE_CONTINUATION" if "ACCEPTANCE" in event else "LIQUIDITY_RESPONSE"
     missing = ["E7_CONFIRMATION"]
-    if _e2_unresolved(e2):
+    if unresolved:
         missing.insert(0, "E2_OPPORTUNITY_CONFIRMATION")
-    if auction in {"PENDING", "DEVELOPING", "FORMING"} or "CANDIDATE" in event:
+    if pending or "CANDIDATE" in event:
         missing.insert(1 if missing and missing[0] == "E2_OPPORTUNITY_CONFIRMATION" else 0, "E4_AUCTION_FOLLOW_THROUGH")
+    if counterflow:
+        missing.append("E3_EXTERNAL_STRUCTURE_ALIGNMENT")
+    if internal == "NEUTRAL" or "MIXED" in _text(e3.get("internal_state")):
+        missing.append("E3_INTERNAL_STRUCTURE_ALIGNMENT")
     if space < 0.75:
-        # Space is an execution/economics constraint, not an opportunity veto.
         missing.append("STRUCTURAL_SPACE_INSUFFICIENT")
+    counter = []
+    if counterflow:
+        counter.append("E3_EXTERNAL_COUNTERFLOW")
+    if pressure_counterflow:
+        counter.append("E1_COUNTER_EVIDENCE")
     return {
         "direction": event_direction,
         "family": family,
         "space": round(space, 4),
         "missing": list(dict.fromkeys(missing)),
         "support": ["E4_DIRECTIONAL_AUCTION_EVIDENCE", "E5_LOCATION_VALUE_SUPPORT"],
-        "counter": list(dict.fromkeys(counter + (["E1_COUNTER_EVIDENCE"] if pressure not in {"NEUTRAL", event_direction} else []))),
+        "counter": list(dict.fromkeys(counter)),
         "event_id": str(e4.get("event_id") or e4.get("event_candle_id") or ""),
+        "contested": bool(counterflow or pressure_counterflow),
     }
 
 
@@ -131,23 +135,26 @@ def _watch(original: EngineResult, candidate: dict[str, Any]) -> EngineResult:
     out = dict(original.output or {})
     direction = candidate["direction"]
     missing = candidate["missing"]
+    contested = bool(candidate.get("contested"))
+    stage = "CONTESTED" if contested else "FORMING"
+    setup = "OPPORTUNITY_WATCH"
     out.update({
-        "state": "FORMING",
-        "setup_state": "FORMING",
-        "opportunity_stage": "FORMING",
-        "setup": "OPPORTUNITY_WATCH",
+        "state": "CONTESTED_WATCH" if contested else "FORMING",
+        "setup_state": "CONTESTED_WATCH" if contested else "FORMING",
+        "opportunity_stage": stage,
+        "setup": setup,
         "setup_family": candidate["family"],
         "candidate_type": "OPPORTUNITY_CANDIDATE",
         "direction": direction,
         "direction_thesis": direction,
         "thesis_direction": direction,
-        "thesis_status": "FORMING",
+        "thesis_status": stage,
         "trade_ready": False,
         "trade_permission": False,
         "gate_passed": False,
         "watch_only": True,
-        "finding": f"{direction} opportunity is forming; causal evidence exists but trade setup is not yet proven.",
-        "thesis": f"{direction} causal opportunity is watchable; E7 confirmation and E8 economics remain pending.",
+        "finding": f"{direction} opportunity is {stage.lower()}; causal event exists but trade setup is not yet proven.",
+        "thesis": f"{direction} causal opportunity is watchable; unresolved evidence and E4/E7 proof remain pending.",
         "supporting_evidence": candidate["support"],
         "counter_evidence": candidate["counter"],
         "hard_conflicts": [],
@@ -168,15 +175,16 @@ def _watch(original: EngineResult, candidate: dict[str, Any]) -> EngineResult:
 def _should_rescue_watch(result: EngineResult) -> bool:
     out = _out(result)
     setup = _text(out.get("setup"))
-    stage = _text(out.get("opportunity_stage"))
-    state = _text(out.get("state"))
-    if setup in {"OPPORTUNITY_WATCH", "OPPORTUNITY_CANDIDATE", "OPPORTUNITY_THESIS"}:
-        return False
     if out.get("trade_ready") is True or out.get("gate_passed") is True:
         return False
-    # Some E6 paths already discovered the causal opportunity but leave the
-    # public setup label unresolved because E7/structural proof is incomplete.
-    # The guard may preserve only a watch; it never upgrades to a trade thesis.
+    # Existing OPPORTUNITY_WATCH is intentionally normalized only when its
+    # public semantic finding/reasons were masked by downstream proof gates.
+    if setup in {"OPPORTUNITY_WATCH", "OPPORTUNITY_CANDIDATE", "OPPORTUNITY_THESIS"}:
+        finding = _text(out.get("finding"))
+        reasons = {_text(x) for x in (out.get("reason_codes") or out.get("reasons") or [])}
+        return "NO CAUSAL SETUP HYPOTHESIS" in finding and reasons.issubset({"E2_OPPORTUNITY_CONFIRMATION", "E4_AUCTION_FOLLOW_THROUGH", "E7_CONFIRMATION", "STRUCTURAL_SPACE_INSUFFICIENT", "E3_EXTERNAL_STRUCTURE_ALIGNMENT", "E3_INTERNAL_STRUCTURE_ALIGNMENT"})
+    stage = _text(out.get("opportunity_stage"))
+    state = _text(out.get("state"))
     return setup in {"", "NO_SETUP", "UNKNOWN"} or stage in {"", "ABSENT", "UNKNOWN"} or state in {"", "NO_SETUP", "UNKNOWN"}
 
 
