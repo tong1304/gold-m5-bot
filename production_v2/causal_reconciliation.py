@@ -74,6 +74,26 @@ def reconcile_causal_evidence(engines: dict[str, dict[str, Any]]) -> dict[str, A
     e2_developing = any(token in e2_text for token in ("DEVELOPING", "PENDING", "EMERGING", "UNRESOLVED"))
     e2_confirmed = "CONFIRMED" in e2_text
 
+    # A direct conflict between the market-state brain and both setup/context
+    # brains is a genuine causal conflict. Do not let a later E6 payload bypass
+    # this upstream veto.
+    if (
+        e1_direction in {"BUY", "SELL"}
+        and e2_direction in {"BUY", "SELL"}
+        and e3_direction in {"BUY", "SELL"}
+        and e1_direction != e2_direction
+        and e1_direction != e3_direction
+        and e2_direction == e3_direction
+    ):
+        return {
+            "state": "NO_SETUP",
+            "direction": "NEUTRAL",
+            "ready": False,
+            "evidence": ["E1_E2_E3_CAUSAL_CONFLICT"],
+            "reasons": ["DIRECTIONAL_CONFLICT", "UPSTREAM_CAUSAL_CONFLICT"],
+            "wait_for": ["DIRECTIONAL_ALIGNMENT", "E6_CAUSAL_SETUP_PROOF"],
+        }
+
     # Execution-grade direction remains the multi-brain vote. If that vote is
     # inconclusive, discovery may use one strong upstream anchor, but only for a
     # non-executable watch state.
@@ -126,6 +146,15 @@ def reconcile_causal_evidence(engines: dict[str, dict[str, Any]]) -> dict[str, A
 
     auction_present = e4_pending or e4_confirmed or bool(_text(e4.get("event") or e4.get("finding")))
     anchor_present = e3_direction == discovery_direction or e1_direction == discovery_direction
+
+    # E2's developing thesis is a lifecycle state in its own right. Preserve it
+    # when no causal contradiction exists; structural space is an E5/E8 trade
+    # economics constraint and must not rewrite the lifecycle state.
+    if e2_eligible and e2_developing and (e4_pending or e4_confirmed):
+        if e2_confirmed:
+            return {"state": "THESIS_CONFIRMED_SETUP_NOT_FORMED", "direction": discovery_direction, "ready": False, "evidence": evidence, "reasons": reasons, "wait_for": wait_for + ["E6_CAUSAL_SETUP_PROOF"]}
+        return {"state": "DEVELOPING_THESIS", "direction": discovery_direction, "ready": False, "evidence": evidence, "reasons": reasons, "wait_for": wait_for + ["E6_CAUSAL_SETUP_PROOF"]}
+
     if anchor_present and auction_present and e2_eligible and not e2_confirmed:
         if e3_direction == discovery_direction:
             evidence.append("E3_DIRECTIONAL_ANCHOR")
@@ -142,7 +171,10 @@ def reconcile_causal_evidence(engines: dict[str, dict[str, Any]]) -> dict[str, A
         wait_for.extend(["E2_OPPORTUNITY_CONFIRMATION", "E6_CAUSAL_SETUP_PROOF"])
         if not space_ok:
             wait_for.append("SUFFICIENT_STRUCTURAL_SPACE")
-        state = "CONTESTED_OPPORTUNITY_WATCH" if e4_counterflow or not space_ok or not e1_e3_aligned else "OPPORTUNITY_WATCH"
+        # Space insufficiency remains an economics gate, not a reason to mark
+        # the opportunity lifecycle as contested. Only directional counterflow
+        # changes the lifecycle state.
+        state = "CONTESTED_OPPORTUNITY_WATCH" if e4_counterflow else "OPPORTUNITY_WATCH"
         return {"state": state, "direction": discovery_direction, "ready": False, "evidence": list(dict.fromkeys(evidence)), "reasons": list(dict.fromkeys(reasons)), "wait_for": list(dict.fromkeys(wait_for))}
 
     if e2_eligible and (e4_pending or e4_confirmed) and space_ok:
