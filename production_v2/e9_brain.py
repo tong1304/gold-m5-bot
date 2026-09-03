@@ -7,12 +7,15 @@ from .contracts import EngineResult
 NAME="Master Decision Brain"
 QUESTION="Does the E6 core thesis survive, is there a valid closed-candle E7 trigger, are E8 economics survivable, and is there any fatal veto?"
 ARCHITECTURE="E9_FINAL_GOVERNANCE_THESIS_TRIGGER_ECONOMICS"
-VERSION="70.1"
+VERSION="70.2"
 DIRECTIONS={"BUY","SELL"}
 PROVEN={"PROVEN","CONFIRMED","VALIDATED","TRADE_READY"}
 READY={"READY","RISK_READY","ECONOMICALLY_ACCEPTABLE","TRADE_READY","VALIDATED","PASS","PASSED","COMPLETE"}
 ECONOMIC_FATAL={"INVALID_TRADE_GEOMETRY","INVALID_RISK_GEOMETRY","RISK_GEOMETRY_INVALID","REAL_RR_BELOW_MINIMUM","EXECUTION_COST_TOO_HIGH","STRUCTURAL_SURVIVAL_NOT_PROVEN","EFFECTIVE_SPACE_UNRELIABLE","EFFECTIVE_SPACE_BELOW_MINIMUM","STRESSED_PROBABILITY_BELOW_MINIMUM","TARGET_REALISM_TOO_LOW","STOP_QUALITY_TOO_LOW","NO_USABLE_STRUCTURAL_TARGET","RISK_QUALITY_BELOW_DECISION_THRESHOLD"}
 ECONOMIC_PENDING={"HISTORICAL_SAMPLE_INSUFFICIENT","PROFIT_EDGE_NOT_PROVEN","PROFIT_EXPECTANCY_UNQUANTIFIED","PROBABILITY_EDGE_NOT_TRUSTWORTHY"}
+# These are only final blockers once E7 has supplied a concrete closed-candle trigger.
+# Before that point, E8 is evaluating a hypothetical plan and its geometry can change.
+PRE_TRIGGER_ECONOMIC_CODES=ECONOMIC_FATAL | {"PROBABILITY_EDGE_NOT_POSITIVE","ECONOMIC_MARGIN_TOO_THIN","SURVIVAL_FRAGILE","ECONOMICS_SENSITIVITY_FRAGILE"}
 HARD_CONFLICTS={"THESIS_INVALIDATED","E6_THESIS_INVALIDATED","E7_CONFIRMATION_INVALIDATED","E8_RISK_INVALIDATED","STRUCTURE_INVALIDATED","BULLISH_STRUCTURE_INVALIDATED","BEARISH_STRUCTURE_INVALIDATED","E3_STRUCTURE_INVALIDATED","E3_THESIS_INVALIDATED","STRUCTURE_INTEGRITY_INVALID","PROTECTED_LEVEL_GEOMETRY_INVALID","EXECUTION_IMPOSSIBLE","DATA_INTEGRITY_INVALID","SHARED_MARKET_PICTURE_CONTRACT_BLOCKED"}
 NO_THESIS_SETUP={"","NONE","UNKNOWN","NO_SETUP","NO_PLAUSIBLE_SETUP","UNRESOLVED"}
 
@@ -23,10 +26,10 @@ def _text(value:Any)->str:
     if isinstance(value,(list,tuple,set)): return " ".join(_text(v) for v in value)
     return str(value or "").upper().strip()
 def _dedupe(values:list[Any])->list[str]:
-    out=[]; seen=set()
+    out=[];seen=set()
     for value in values:
         token=_text(value)
-        if token and token not in seen: seen.add(token); out.append(token)
+        if token and token not in seen: seen.add(token);out.append(token)
     return out
 def _codes(output:dict[str,Any])->list[str]:
     values=[]
@@ -62,7 +65,7 @@ def _state(output:dict[str,Any],keys:tuple[str,...],default="UNRESOLVED")->str:
     return default
 
 def _e6_identity(e6:dict[str,Any]):
-    finding=_text(e6.get("finding")); codes=set(_codes(e6))
+    finding=_text(e6.get("finding"));codes=set(_codes(e6))
     if codes & {"NO_SURVIVING_SETUP","NO_ELIGIBLE_SETUP","SETUP_REJECTED","SETUP_INVALIDATED","E6_THESIS_INVALIDATED"} or "NO SURVIVING SETUP" in finding or "NO PLAUSIBLE SETUP" in finding:return "NEUTRAL","UNKNOWN","UNRESOLVED"
     setup=""
     for key in ("setup","setup_family","candidate_setup","setup_type","thesis_setup","selected_hypothesis"):
@@ -71,7 +74,7 @@ def _e6_identity(e6:dict[str,Any]):
     direction=_direction(e6.get("direction"),e6.get("direction_thesis"),e6.get("thesis_direction"),e6.get("selected_direction"))
     if not setup:
         match=re.match(r"^(BUY|SELL)\s+([A-Z][A-Z0-9_]+)\s+IS\s+(?:A\s+CANDIDATE\s+HYPOTHESIS\s+ONLY|VALIDATING|FORMING|A\s+CANDIDATE|READY)",finding)
-        if match:direction,setup=match.groups()
+        if match: direction,setup=match.groups()
     if not setup:return "NEUTRAL","UNKNOWN","UNRESOLVED"
     thesis=str(e6.get("thesis") or e6.get("candidate_setup_thesis") or e6.get("selected_hypothesis") or finding or "UNRESOLVED").strip()
     return direction,setup,thesis or "UNRESOLVED"
@@ -101,16 +104,25 @@ def _confirmation(e7):
     trigger=any(e7.get(k) is True for k in ("trigger_observed","valid_trigger","closed_candle_trigger")) or _state(e7,("trigger_state","trigger","entry_trigger")) in PROVEN
     proven=confirmation in PROVEN or bool(codes & {"CONFIRMATION_PROVEN","CAUSAL_FOLLOW_THROUGH_PROVEN","VALID_CLOSED_CANDLE_TRIGGER","TRIGGER_CONFIRMED"})
     return ("PROVEN" if proven and trigger else "PENDING"),bool(proven and trigger)
-def _economic(e8):
-    fatal=[]; pending=[]
+def _economic(e8, confirmation_proven=False):
+    fatal=[];pending=[]
     for node in _walk(e8):
-        codes=set(_codes(node)); fatal.extend(c for c in codes if c in ECONOMIC_FATAL); pending.extend(c for c in codes if c in ECONOMIC_PENDING)
-    fatal=_dedupe(fatal); pending=_dedupe(pending)
-    state=_state(e8,("risk_state","economic_state","decision_state","plan_status")); verified=e8.get("verified") is True or e8.get("trade_plan_verified") is True
+        codes=set(_codes(node))
+        for code in codes:
+            if code in ECONOMIC_PENDING: pending.append(code)
+            elif code in ECONOMIC_FATAL:
+                # Before E7 produces the actual closed-candle trigger, these
+                # are hypothetical-plan diagnostics. They must remain pending
+                # so E9 can keep a surviving thesis alive for the next candle.
+                if confirmation_proven: fatal.append(code)
+                else: pending.append(code)
+    fatal=_dedupe(fatal);pending=_dedupe(pending)
+    state=_state(e8,("risk_state","economic_state","decision_state","plan_status"));verified=e8.get("verified") is True or e8.get("trade_plan_verified") is True
     ready=(state in READY or verified) and not fatal and not pending
     if fatal:return "BLOCKED",False,fatal,pending
     if ready:return "READY",True,[],pending
     return "PENDING",False,[],pending
+
 def _plan_valid(e8,direction):
     plan=e8.get("trade_plan") if isinstance(e8.get("trade_plan"),dict) else e8
     if direction not in DIRECTIONS:return False
@@ -124,6 +136,7 @@ def _plan_valid(e8,direction):
             if float(rr)<1.50:return False
         except (TypeError,ValueError):return False
     return True
+
 def _hard_conflicts(upstream):
     found=[]
     for engine_id in ("E1","E2","E3","E4","E5","E6","E7","E8"):
@@ -162,7 +175,7 @@ def _supporting_evidence(upstream):
 def classify_lifecycle(e6,e7,e8):
     direction,setup,thesis=_e6_identity(e6)
     if not _has_surviving_thesis(e6,(direction,setup,thesis)):return {"stage":"NO_THESIS","e6_state":_thesis_state(e6),"e7_state":"NOT_APPLICABLE","e8_state":"NOT_APPLICABLE","reason":"NO_SURVIVING_E6_THESIS","direction":"NEUTRAL","setup":"UNKNOWN","thesis":"UNRESOLVED"}
-    confirmation_state,confirmation_proven=_confirmation(e7);economic_state,economic_ready,_,_= _economic(e8)
+    confirmation_state,confirmation_proven=_confirmation(e7);economic_state,economic_ready,_,_= _economic(e8,confirmation_proven)
     return {"stage":"EXECUTABLE_CANDIDATE" if confirmation_proven and economic_ready else "THESIS_MATURE" if _thesis_state(e6)=="MATURE" else "THESIS_FORMING","e6_state":_thesis_state(e6),"e7_state":confirmation_state,"e8_state":economic_state,"reason":"E6_THESIS_PRESENT","direction":direction,"setup":setup,"thesis":thesis}
 def _no_thesis_output(control,structure_lifecycle,e4):
     reasons=["E9_FINAL_GOVERNANCE","E6_THESIS_OWNER","NO_SURVIVING_E6_THESIS"]
@@ -173,8 +186,12 @@ def analyze_e9(snapshot,upstream):
     e4,e6,e7,e8=(_out(upstream.get(k)) for k in ("E4","E6","E7","E8"));control=_market_control(upstream);direction,setup,thesis=_e6_identity(e6);structure_lifecycle=_text(_out(upstream.get("E3")).get("lifecycle") or _out(upstream.get("E3")).get("structure_lifecycle") or "UNRESOLVED")
     if not _has_surviving_thesis(e6,(direction,setup,thesis)):
         output=_no_thesis_output(control,structure_lifecycle,e4);return EngineResult("E9",NAME,False,float(control["control_confidence"]),output,tuple(output["reason_codes"]))
-    thesis_state=_thesis_state(e6);confirmation_state,confirmation_proven=_confirmation(e7);economic_state,economic_ready,economic_fatal,economic_pending=_economic(e8);hard_conflicts=_hard_conflicts(upstream);plan_present=isinstance(e8.get("trade_plan"),dict) or all(k in e8 for k in ("entry","stop_loss"));plan_valid=_plan_valid(e8,direction) if plan_present else False;supporting=_supporting_evidence(upstream)
-    core_thesis=direction in DIRECTIONS and setup not in NO_THESIS_SETUP and thesis_state in {"HYPOTHESIS","VALIDATING","MATURE"};fatal_veto=bool(hard_conflicts);geometry_fatal=plan_present and not plan_valid;economics_survivable=economic_ready and plan_valid and not economic_fatal and not economic_pending
+    thesis_state=_thesis_state(e6);confirmation_state,confirmation_proven=_confirmation(e7);economic_state,economic_ready,economic_fatal,economic_pending=_economic(e8,confirmation_proven);hard_conflicts=_hard_conflicts(upstream);plan_present=isinstance(e8.get("trade_plan"),dict) or all(k in e8 for k in ("entry","stop_loss"));plan_valid=_plan_valid(e8,direction) if plan_present else False;supporting=_supporting_evidence(upstream)
+    core_thesis=direction in DIRECTIONS and setup not in NO_THESIS_SETUP and thesis_state in {"HYPOTHESIS","VALIDATING","MATURE"};fatal_veto=bool(hard_conflicts)
+    # A trade plan is not an invalid plan merely because E7 has not produced the
+    # actual trigger. Once E7 proves the trigger, plan validity becomes mandatory.
+    geometry_fatal=confirmation_proven and plan_present and not plan_valid
+    economics_survivable=economic_ready and plan_valid and not economic_fatal and not economic_pending
     mandatory={"core_thesis":core_thesis,"closed_candle_trigger":confirmation_proven,"survivable_economics":economics_survivable,"fatal_veto_clear":not fatal_veto and not geometry_fatal}
     if fatal_veto:governance,decision,reason="REJECTED_FATAL","NO_TRADE","FATAL_GOVERNANCE_VETO"
     elif not core_thesis:governance,decision,reason="NO_THESIS","NO_TRADE","NO_SURVIVING_E6_THESIS"
@@ -192,5 +209,5 @@ def analyze_e9(snapshot,upstream):
     if economic_ready and not plan_valid:missing.append("VALID_TRADE_PLAN_REQUIRED")
     reasons=_dedupe(["E9_FINAL_GOVERNANCE","E6_THESIS_OWNER","E7_TRIGGER_OWNER","E8_ECONOMICS_OWNER",reason]+missing+economic_fatal+economic_pending+hard_conflicts)
     conviction_flags=_dedupe(supporting["E2"]+supporting["E4"]+supporting["E5"])
-    output={"decision":decision,"final_governance":governance,"governance_decision":governance,"governance_reason":reason,"governance_blockers":_dedupe(economic_fatal+hard_conflicts+( ["INVALID_TRADE_PLAN"] if geometry_fatal else [])),"next_required_events":missing,"execution_state":"APPROVED" if governance=="EXECUTE" else "BLOCKED","all_gates_pass":governance=="EXECUTE","direction":direction,"thesis_direction":direction,"setup":setup,"thesis":thesis,"thesis_state":thesis_state,"thesis_lifecycle_source":"E6","setup_state":_state(e6,("setup_state","opportunity_stage","maturity"),thesis_state),"structure_lifecycle":structure_lifecycle,"confirmation_state":confirmation_state,"economic_state":economic_state,"economic_blockers":economic_fatal,"economic_pending":economic_pending,"hard_conflicts":hard_conflicts,"supporting_evidence":supporting,"supporting_conviction_flags":conviction_flags,"supporting_evidence_is_non_veto":True,"market_control_state":control["market_control_state"],"control_direction":control["control_direction"],"control_confidence":control["control_confidence"],"control_scores":control["control_scores"],"control_evidence":control["control_evidence"],"dominant_control_evidence":control["dominant_control_evidence"],"control_evidence_quality":control["control_evidence_quality"],"pending_e4_response_excluded":control["pending_e4_response_excluded"],"control_authority_rule":control["authority_rule"],"evidence_alignment":"ALIGNED" if control["control_direction"]==direction else "UNRESOLVED","evidence_alignment_reason":"SUPPORTING_EVIDENCE_ONLY","proof_summary":{"core_thesis":core_thesis,"e6_thesis":thesis_state,"e7_trigger":confirmation_state,"e8_economics":economic_state,"e8_blockers":economic_fatal,"e8_pending":economic_pending},"mandatory_gates":mandatory,"fatal_vetoes":hard_conflicts+(["INVALID_TRADE_PLAN"] if geometry_fatal else []),"authority_contract":{"market_evidence_owner":"E1-E5","trade_thesis_owner":"E6","trigger_owner":"E7","trade_economics_owner":"E8","final_decision_owner":"E9","e9_may_rewrite_e6_thesis":False,"e9_may_bypass_e7":False,"e9_may_bypass_e8":False},"opportunity_state":governance,"opportunity":{"direction":direction,"setup":setup,"state":governance,"do_not_execute":governance!="EXECUTE","economic_blockers":economic_fatal,"economic_pending":economic_pending,"supporting_evidence":supporting},"reason_scope":"THESIS_TRIGGER_ECONOMICS_WITH_SUPPORTING_EVIDENCE","reason_codes":reasons,"reasons":reasons,"architecture":ARCHITECTURE,"version":VERSION,"lifecycle":classify_lifecycle(e6,e7,e8)}
+    output={"decision":decision,"final_governance":governance,"governance_decision":governance,"governance_reason":reason,"governance_blockers":_dedupe(economic_fatal+hard_conflicts+(["INVALID_TRADE_PLAN"] if geometry_fatal else [])),"next_required_events":missing,"execution_state":"APPROVED" if governance=="EXECUTE" else "BLOCKED","all_gates_pass":governance=="EXECUTE","direction":direction,"thesis_direction":direction,"setup":setup,"thesis":thesis,"thesis_state":thesis_state,"thesis_lifecycle_source":"E6","setup_state":_state(e6,("setup_state","opportunity_stage","maturity"),thesis_state),"structure_lifecycle":structure_lifecycle,"confirmation_state":confirmation_state,"economic_state":economic_state,"economic_blockers":economic_fatal,"economic_pending":economic_pending,"hard_conflicts":hard_conflicts,"supporting_evidence":supporting,"supporting_conviction_flags":conviction_flags,"supporting_evidence_is_non_veto":True,"market_control_state":control["market_control_state"],"control_direction":control["control_direction"],"control_confidence":control["control_confidence"],"control_scores":control["control_scores"],"control_evidence":control["control_evidence"],"dominant_control_evidence":control["dominant_control_evidence"],"control_evidence_quality":control["control_evidence_quality"],"pending_e4_response_excluded":control["pending_e4_response_excluded"],"control_authority_rule":control["authority_rule"],"evidence_alignment":"ALIGNED" if control["control_direction"]==direction else "UNRESOLVED","evidence_alignment_reason":"SUPPORTING_EVIDENCE_ONLY","proof_summary":{"core_thesis":core_thesis,"e6_thesis":thesis_state,"e7_trigger":confirmation_state,"e8_economics":economic_state,"e8_blockers":economic_fatal,"e8_pending":economic_pending},"mandatory_gates":mandatory,"fatal_vetoes":hard_conflicts+(["INVALID_TRADE_PLAN"] if geometry_fatal else []),"authority_contract":{"market_evidence_owner":"E1-E5","trade_thesis_owner":"E6","trigger_owner":"E7","trade_economics_owner":"E8","final_decision_owner":"E9","e9_may_rewrite_e6_thesis":False,"e9_may_bypass_e7":False,"e9_may_bypass_e8":False},"opportunity_state":governance,"opportunity":{"direction":direction,"setup":setup,"state":governance,"do_not_execute":governance!="EXECUTE","economic_blockers":economic_fatal,"economic_pending":economic_pending,"supporting_evidence":supporting},"reason_scope":"THESIS_TRIGGER_ECONOMICS_WITH_SUPPORTING_EVIDENCE","reason_codes":reasons,"reasons":reasons,"architecture":ARCHITECTURE,"version":VERSION,"lifecycle":classify_lifecycle(e6,e7,e8)}
     return EngineResult("E9",NAME,governance=="EXECUTE",float(control["control_confidence"]),output,tuple(reasons))
