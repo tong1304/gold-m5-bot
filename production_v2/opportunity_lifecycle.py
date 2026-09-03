@@ -35,7 +35,7 @@ def _watch_result(*, current: dict[str, Any], previous: dict[str, Any] | None = 
     setup = _text(current.get("setup"))
     return {
         **previous,
-        "state": "WATCHING",
+        "state": "WAITING",
         "continuity": continuity,
         "opportunity_id": _identity(direction, setup),
         "direction": direction,
