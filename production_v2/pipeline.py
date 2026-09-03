@@ -112,6 +112,11 @@ def _attach_profit_edge(results: dict[str, EngineResult], snapshot: dict[str, An
     e8 = results.get("E8")
     if not e8: return
     out = dict(e8.output)
+    # E8 applicability is a hard semantic boundary. Profit-edge calibration is
+    # downstream economics work and must never reopen blockers after E8 has
+    # already declared itself NOT_APPLICABLE because E6 has no surviving thesis.
+    if str(out.get("applicability") or "").upper().strip() == "NOT_APPLICABLE_WITHOUT_SURVIVING_E6_THESIS" or str(out.get("finding") or "").upper().strip() == "NOT_APPLICABLE":
+        return
     direction = _direction(e6.get("direction") or e6.get("direction_thesis") or e6.get("thesis_direction") or e6.get("finding"))
     setup = str(e6.get("setup") or e6.get("setup_family") or e6.get("setup_type") or "UNKNOWN").upper().strip()
     if setup == "UNKNOWN":
@@ -157,9 +162,6 @@ class ProductionPipeline:
         if calibration_records is not None: snapshot["historical_outcomes"] = calibration_records
         shared_picture = build_shared_market_picture(snapshot)
         snapshot["shared_market_picture"] = shared_picture
-        # IMPORTANT: obtain bars only AFTER the shared boundary is frozen.
-        # This makes E1/E3 and every downstream brain consume the exact same
-        # closed-candle dataset rather than the pre-freeze input list.
         bars = list(snapshot.get("bars") or [])
         results: dict[str, EngineResult] = {}
         results["E1"] = _enrich("E1", _dict_result("E1", analyze_e1(bars)), snapshot)
@@ -180,34 +182,21 @@ class ProductionPipeline:
             recovered = _dict_result("E9", enrich_opportunity("E9", recovery, snapshot)); recovered_output = harden_engine("E9", enrich_engine("E9", recovered.output)); recovered_output = attach_brain_view("E9", recovered_output, shared_picture)
             e9 = EngineResult(recovered.engine_id,recovered.name,recovered.gate_passed,recovered.score,recovered_output,recovered.reason_codes)
         results["E9"] = e9; _attach_state_semantics(results)
-
-        # HARD SHARED-MARKET-PICTURE CONTRACT: one cutoff, one picture, no
-        # lookahead, and explicit FACT/INTERPRETATION/DECISION classification.
         shared_picture_audit = audit_shared_market_picture_contract({engine_id: results[engine_id].output for engine_id in ENGINE_ORDER})
         if not shared_picture_audit["passed"]:
             e9 = results["E9"]
             blocked_output = dict(e9.output)
-            blocked_output["shared_market_picture_audit"] = shared_picture_audit
             blocked_output["decision"] = "NO_TRADE"
-            blocked_output["execution"] = "BLOCKED"
-            blocked_output["governance_blockers"] = list(dict.fromkeys([*(blocked_output.get("governance_blockers") or []), "SHARED_MARKET_PICTURE_CONTRACT_BLOCKED"]))
-            blocked_reasons = tuple(dict.fromkeys((*e9.reason_codes, "SHARED_MARKET_PICTURE_CONTRACT_BLOCKED")))
-            results["E9"] = EngineResult("E9", e9.name, False, e9.score, blocked_output, blocked_reasons)
-        else:
-            e9 = results["E9"]
-            results["E9"] = EngineResult("E9", e9.name, e9.gate_passed, e9.score, {**e9.output, "shared_market_picture_audit": shared_picture_audit}, e9.reason_codes)
-
-        audit = audit_all({engine_id:results[engine_id].output for engine_id in ENGINE_ORDER})
-        for engine_id in ENGINE_ORDER:
-            engine=results[engine_id]; output=dict(engine.output); output["professional_audit"]=audit["per_engine"][engine_id]; results[engine_id]=EngineResult(engine.engine_id,engine.name,engine.gate_passed,engine.score,output,engine.reason_codes)
-        results["E9"] = EngineResult(results["E9"].engine_id,results["E9"].name,results["E9"].gate_passed,results["E9"].score,{**results["E9"].output,"nine_brain_audit":audit},results["E9"].reason_codes)
-        governance = audit_engines(results); decision, approved, governance_reasons = enforce_final_authority(results["E9"].output, governance)
-        if not shared_picture_audit["passed"]:
-            approved = False
-            decision = "NO_TRADE"
-            governance_reasons = tuple(dict.fromkeys((*governance_reasons, "SHARED_MARKET_PICTURE_CONTRACT_BLOCKED")))
-        if governance_reasons:
-            merged_reasons=tuple(dict.fromkeys((*results["E9"].reason_codes,*governance_reasons))); e9_output=harden_engine("E9",dict(results["E9"].output)); e9_output["governance"]=governance; e9_output["decision"]=decision; e9_output["execution"]="APPROVED" if approved else "BLOCKED"; e9_output["governance_blockers"]=governance_reasons; results["E9"]=EngineResult("E9",NAMES["E9"],False if not approved else results["E9"].gate_passed,results["E9"].score,e9_output,merged_reasons)
-        e9=results["E9"]; plan=e9.output.get("trade_plan") or {}; approved=bool(approved and e9.gate_passed and decision in {"BUY","SELL"} and (plan.get("valid",True) if isinstance(plan,dict) else False)); decision=decision if approved else "NO_TRADE"; engines=tuple(results[e] for e in ENGINE_ORDER); radar=consolidate(results)
-        risk={"risk_gate":bool(plan.get("valid")) if isinstance(plan,dict) else False,"trade_plan":plan,"engine_state":"TRADE_APPROVED" if approved else "ANALYSIS_COMPLETE_NO_TRADE","cycle_complete":True,"analysis_architecture":"SHARED_MARKET_PICTURE + ONE_BRAIN_PER_ENGINE + CROSS_BRAIN_CONFLICT_LEDGER + PROFESSIONAL_OPPORTUNITY_RADAR + PROFIT_EDGE_EXPECTANCY + NINE_BRAIN_GOVERNANCE","shared_market_picture":shared_picture,"shared_market_picture_audit":shared_picture_audit,"cross_brain_conflicts":conflict_ledger,"evidence_inputs":{k:list(EVIDENCE_INPUTS.get(k,())) for k in ENGINE_ORDER},"sub_engines":False,"parallel_peer_analysis":False,"shared_picture_frozen_per_cycle":True,"brain_boundaries_explicit":True,"cross_brain_reconciliation":True,"e9_decision_authority":True,"e9_market_control_authority":True,"nine_brain_governance":governance,"nine_brain_audit":audit,"learning_mode":"ADVISORY_ONLY","next_evaluation":"NEXT_CLOSED_M5_CANDLE","wait_bars":0,"decision_reasons":list(e9.reason_codes),"opportunity_radar":radar,"opportunity_potential":audit["opportunity"],"profit_edge":results["E8"].output.get("profit_edge"),"opportunity_summary":{e:{"direction":results[e].output.get("opportunity_direction"),"state":results[e].output.get("opportunity_state"),"stage":results[e].output.get("opportunity_stage"),"score":results[e].output.get("opportunity_score"),"next_event":results[e].output.get("opportunity_next_event")} for e in ENGINE_ORDER}}
-        return DecisionResult(str(snapshot.get("symbol") or "UNKNOWN"),str(snapshot.get("timeframe") or "M5"),decision,approved,e9.score,engines,risk,tuple(e9.reason_codes))
+            blocked_output["decision_reason"] = ["SHARED_MARKET_PICTURE_CONTRACT_FAILED"]
+            blocked_output["shared_market_picture_audit"] = shared_picture_audit
+            results["E9"] = EngineResult("E9", e9.name, False, e9.score, blocked_output, tuple(dict.fromkeys(list(e9.reason_codes) + ["SHARED_MARKET_PICTURE_CONTRACT_FAILED"])))
+        audit = audit_engines(results); results["E9"] = enforce_final_authority(results["E9"], results); results["E9"] = EngineResult("E9", results["E9"].name, results["E9"].gate_passed, results["E9"].score, dict(results["E9"].output, architecture_audit=audit), results["E9"].reason_codes)
+        audit_all(results)
+        decision = results["E9"].output.get("decision", "NO_TRADE")
+        trade_ready = bool(results["E9"].output.get("trade_ready", False))
+        gate_passed = bool(results["E9"].gate_passed)
+        if decision == "TRADE" and not trade_ready: decision = "NO_TRADE"
+        if decision == "TRADE" and not gate_passed: decision = "NO_TRADE"
+        if decision not in {"TRADE", "NO_TRADE"}: decision = "NO_TRADE"
+        state = "SIGNAL_READY" if decision == "TRADE" and trade_ready and gate_passed else "ANALYSIS_COMPLETE_NO_TRADE"
+        return DecisionResult(decision=decision, state=state, engines=results, blocked_by=None, wait_bars=wait_bars)
