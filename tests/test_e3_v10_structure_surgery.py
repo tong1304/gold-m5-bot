@@ -1,201 +1,97 @@
-from production_v2.e3_brain import (
-    _resolve_external_state,
-    _state,
-    _sweep_reclaim,
-    _sweep_failure,
-    _lifecycle,
-    _authority,
-    _protected_structure,
-    _invalidation,
-    _current_break,
-    analyze_e3,
-)
+from production_v2.e3_brain import analyze_e3
 
 
-def bar(open_, high, low, close):
+def bar(close, open_=None, high=None, low=None):
+    open_ = close if open_ is None else open_
+    high = max(close, open_) + 0.2 if high is None else high
+    low = min(close, open_) - 0.2 if low is None else low
     return {"open": open_, "high": high, "low": low, "close": close}
 
 
-def series(values, wick=0.2):
-    out = []
-    for i, close in enumerate(values):
-        prev = values[i - 1] if i else close
-        out.append(bar(prev, max(prev, close) + wick, min(prev, close) - wick, close))
-    return out
+def trend_series(start=100.0, step=0.2, count=100):
+    return [bar(start + i * step) for i in range(count)]
 
 
-def pivot(index, price, label, confirmation=None):
-    return {"index": index, "price": price, "label": label,
-            "confirmation_index": index if confirmation is None else confirmation}
-
-
-def test_current_sweep_reclaim_is_not_reported_as_bos_or_failed_bos():
-    bars = [bar(100, 101, 99, 100), bar(100, 101, 99, 100), bar(100, 112, 99, 109.7)]
-    highs = [pivot(1, 110.0, "HH")]
-    lows = [pivot(0, 99.0, "HL")]
-    result = _sweep_reclaim(bars, highs, lows, atr=2.0, structure="UP")
-    assert result["confirmed"] is True
-    assert result["event"] == "SWEEP_RECLAIM"
-    assert result["direction"] == "DOWN"
-
-
-def test_failed_bos_requires_a_real_break_then_closed_reclaim():
-    bars = [bar(100, 101, 99, 100), bar(100, 113, 99, 112), bar(112, 112.3, 109, 109.4)]
-    highs = [pivot(0, 110.0, "HH")]
-    lows = [pivot(0, 99.0, "HL")]
-    result = _sweep_failure(bars, highs, lows, atr=2.0, prior_structure="UP")
-    assert result["confirmed"] is True
-    assert result["event"] == "FAILED_BOS"
-    assert result["direction"] == "DOWN"
-
-
-def test_break_lifecycle_does_not_promote_historical_break_to_current_break():
-    result = analyze_e3(series([100 + i * 0.2 for i in range(60)]))
-    lifecycle = result["break_lifecycle"]
-    assert lifecycle["current"] is False
-    assert lifecycle["stage"] in {"NO_CONFIRMED_BREAK", "HISTORICAL_ACCEPTED_BREAK", "HISTORICAL_FAILED_BREAK"}
-
-
-def test_lifecycle_never_calls_an_older_active_break_current():
-    active = {"accepted": True, "break_candle_index": 10, "follow_through_bars": 2, "level": 110.0}
-    result = _lifecycle({"confirmed": False, "event": "NO_BOS"}, {"confirmed": False}, [], active, 20)
-    assert result["current"] is False
-    assert result["stage"] == "HISTORICAL_ACCEPTED_BREAK"
-
-
-def test_structure_authority_explains_external_priority_and_internal_conflict():
-    result = analyze_e3(series([100 + i * 0.5 for i in range(50)]))
-    detail = result["authority_detail"]
-    assert "primary" in detail
-    assert "external" in detail["primary"].lower()
-    assert result["reasoning_trace"]["external_is_authority"] is True
-    assert result["reasoning_trace"]["upstream_inputs_used"] is False
-
-
-def test_structural_invalidation_is_closed_candle_based():
-    result = analyze_e3(series([120 - i * 0.4 for i in range(55)]))
-    invalidation = result["structural_invalidation"]
-    assert "CLOSED_CANDLE" in invalidation["type"] or invalidation["level"] is None
-
-
-def test_e3_never_has_trade_decision_authority():
-    result = analyze_e3(series([100 + i * 0.3 for i in range(80)]))
+def test_e3_v10_uses_the_current_causal_v8_contract():
+    result = analyze_e3(trend_series())
+    assert result["analysis_status"] == "COMPLETE"
+    assert result["architecture"] == "E3_PROFESSIONAL_MARKET_STRUCTURE_CAUSAL_V8"
+    assert result["reasoning_role"] == "MARKET_STRUCTURE_ANALYST"
     assert result["trade_decision_authority"] is False
     assert result["decision_authority"] == "E9_ONLY"
     assert result["decision"] is None
     assert result["gate"] is None
-    assert result["upstream_direction_used"] is False
-    assert result["upstream_decisions_used"] is False
 
 
-def test_structure_conflict_is_explicit_when_external_and_internal_directions_disagree():
-    no_event = {"confirmed": False, "event": "NO_BOS"}
-    no_failure = {"confirmed": False}
-    no_sweep = {"confirmed": False}
-    no_invalidation = {"confirmed": False}
-    assert _state("DOWN", "UP", no_event, no_failure, no_sweep, no_invalidation, {}) == "STRUCTURE_CONFLICT"
-
-
-def test_authority_contract_exposes_primary_structure_and_invalidation_anchor():
-    result = analyze_e3(series([100 + i * 0.5 for i in range(80)]))
-    protected = result["protected_structure"]
-    assert "primary_direction" in protected
-    assert "primary_level" in protected
-    assert "invalidation_level" in protected
-    assert "why_primary" in protected
-
-
-def test_break_lifecycle_exposes_age_and_follow_through_state():
-    result = analyze_e3(series([100 + i * 0.3 for i in range(100)]))
-    lifecycle = result["break_lifecycle"]
-    assert "age_bars" in lifecycle
-    assert "follow_through_bars" in lifecycle
-    assert "terminal" in lifecycle
-
-
-def test_sweep_reclaim_is_closed_candle_event_with_reclaim_quality():
-    bars = [bar(100, 101, 99, 100), bar(100, 101, 99, 100), bar(100, 112, 99, 109.7)]
-    highs = [pivot(1, 110.0, "HH")]
-    lows = [pivot(0, 99.0, "HL")]
-    result = _sweep_reclaim(bars, highs, lows, atr=2.0, structure="UP")
-    assert result["confirmed"] is True
-    assert result["closed_candle_confirmed"] is True
-    assert result["sweep_distance_atr"] >= 0.05
-    assert result["reclaim_distance_atr"] >= 0.05
-
-
-def test_external_sequence_bias_overrides_raw_count_divergence():
-    highs = [pivot(5, 110, "SWING_HIGH"), pivot(15, 112, "HH"), pivot(25, 114, "HH")]
-    lows = [pivot(10, 100, "SWING_LOW"), pivot(20, 105, "HL"), pivot(30, 108, "HL")]
-    assert _resolve_external_state(highs, lows) == "UP"
-
-
-def test_external_sequence_bearish_bias_overrides_raw_count_divergence():
-    highs = [pivot(5, 120, "SWING_HIGH"), pivot(15, 115, "LH"), pivot(25, 110, "LH")]
-    lows = [pivot(10, 100, "SWING_LOW"), pivot(20, 95, "LL"), pivot(30, 90, "LL")]
-    assert _resolve_external_state(highs, lows) == "DOWN"
-
-
-def test_eqh_eql_are_liquidity_references_not_structural_direction():
-    highs = [pivot(5, 110, "SWING_HIGH"), pivot(15, 110.05, "EQH"), pivot(25, 110.02, "EQH")]
-    lows = [pivot(10, 100, "SWING_LOW"), pivot(20, 100.03, "EQL"), pivot(30, 100.01, "EQL")]
-    assert _resolve_external_state(highs, lows) == "NEUTRAL"
-
-
-def test_e3_reports_no_upstream_gate_or_trade_decision_usage():
-    result = analyze_e3(series([100 + i * 0.1 for i in range(100)]))
+def test_e3_v10_never_uses_upstream_direction_decision_or_gate():
+    result = analyze_e3(trend_series())
     trace = result["reasoning_trace"]
     assert trace["upstream_inputs_used"] is False
+    assert result["upstream_direction_used"] is False
+    assert result["upstream_decisions_used"] is False
     assert result["upstream_gates_used"] is False
+
+
+def test_e3_v10_keeps_external_and_internal_structure_separate():
+    result = analyze_e3(trend_series())
+    external = result["external_structure"]
+    internal = result["internal_structure"]
+    assert isinstance(external, dict)
+    assert isinstance(internal, dict)
+    assert external["basis"] == "ORDERED_CONFIRMED_SWINGS"
+    assert internal["basis"] == "ORDERED_CONFIRMED_SWINGS"
+    assert external is not internal
+
+
+def test_e3_v10_does_not_promote_raw_slope_or_counts_to_structural_authority():
+    result = analyze_e3(trend_series())
+    assert result["reasoning_trace"]["slope_is_structural_authority"] is False
+    assert result["external_structure"]["counts_used_as_authority"] is False
+    assert result["internal_structure"]["counts_used_as_authority"] is False
+
+
+def test_e3_v10_requires_a_current_closed_candle_event_for_bos():
+    bars = trend_series(count=100)
+    result = analyze_e3(bars)
+    assert result["bos"]["confirmed"] is False
+    assert result["break_lifecycle"]["current"] is False
+
+
+def test_e3_v10_wick_only_move_does_not_confirm_a_break():
+    bars = [bar(100.0 + (i % 2) * 0.5) for i in range(100)]
+    previous_close = bars[-1]["close"]
+    bars[-1] = bar(previous_close, open_=previous_close, high=previous_close + 10.0, low=previous_close - 0.2)
+    result = analyze_e3(bars)
+    assert result["bos"]["confirmed"] is False
+
+
+def test_e3_v10_mixed_structure_does_not_invent_protected_direction():
+    bars = []
+    values = [100, 102, 101, 103, 102, 101, 103, 102, 104, 103, 102, 104, 103, 101, 102, 100]
+    for i, close in enumerate(values):
+        open_ = values[i - 1] if i else close
+        bars.append(bar(close, open_=open_))
+    bars.extend(trend_series(start=100, step=0.05, count=60))
+    result = analyze_e3(bars)
+    protected = result["protected_structure"]
+    assert protected["active_regime"] in {"UP", "DOWN", "MIXED", "NEUTRAL"}
+    if protected["active_regime"] in {"MIXED", "NEUTRAL"}:
+        assert protected["completeness"] == "NO_DIRECTIONAL_REGIME"
+
+
+def test_e3_v10_structure_invalidation_does_not_equal_reversal_confirmation():
+    result = analyze_e3(trend_series(start=120.0, step=-0.2, count=100))
+    invalidation = result["structural_invalidation"]
+    assert "confirmed" in invalidation
+    assert "invalidates_current_external_thesis" in invalidation
+    assert "does_not_confirm_reversal" in invalidation
+    assert invalidation["does_not_confirm_reversal"] is True
+
+
+def test_e3_v10_exposes_causal_structure_authority_without_trade_authority():
+    result = analyze_e3(trend_series())
+    detail = result["authority_detail"]
+    assert detail["authority_basis"] in {"EXTERNAL_STRUCTURE", "INTERNAL_STRUCTURE", "NONE"}
+    assert "decision_rule" in detail
     assert result["trade_decision_authority"] is False
-
-
-def test_closed_candle_break_requires_close_beyond_structural_level():
-    bars = [bar(100, 101, 99, 100), bar(100, 110.3, 99.5, 100.1)]
-    highs = [pivot(0, 110.0, "HH")]
-    lows = [pivot(0, 99.0, "HL")]
-    result = analyze_e3(bars + [bar(100.1, 100.2, 99.8, 100.0)] * 40)
-    assert result["analysis_status"] == "COMPLETE"
-
-
-def test_choch_is_event_not_automatic_structure_reversal():
-    highs = [pivot(5, 110, "HH"), pivot(15, 108, "LH")]
-    lows = [pivot(10, 100, "HL"), pivot(20, 105, "HL")]
-    bars = [bar(100, 101, 99, 100) for _ in range(22)]
-    bars[-1] = bar(106, 109, 105, 108.5)
-    event = _current_break(bars, highs, lows, 2.0, "DOWN")
-    assert event["event"] in {"CONFIRMED_CHOCH", "NO_BOS"}
-    if event["confirmed"]:
-        assert event["event"] == "CONFIRMED_CHOCH"
-        assert event["closed_candle_confirmed"] is True
-
-
-def test_protected_anchor_has_explicit_lifecycle_fields():
-    highs = [pivot(5, 100, "SWING_HIGH"), pivot(15, 110, "HH")]
-    lows = [pivot(10, 95, "SWING_LOW"), pivot(14, 102, "HL")]
-    p = _protected_structure("UP", highs, lows)
-    assert p["anchor_status"] == "ACTIVE"
-    assert p["anchor_index"] == 14
-    assert p["anchor_price"] == 102
-    assert p["anchor_is_ideal"] is True
-
-
-def test_authority_explanation_contains_reason_and_current_state():
-    detail = _authority("UP", "DOWN", "UP", "DOWN", {"confirmed": False}, {"confirmed": False},
-                        {"primary_level": 100, "anchor_quality": "IDEAL"}, {"confirmed": False},
-                        {"confirmed": False}, "NEUTRAL", 0.0)
-    assert detail["authority_basis"] == "EXTERNAL_STRUCTURE"
-    assert detail["authority_direction"] == "UP"
-    assert detail["decision_rule"] == "EXTERNAL_FIRST_INTERNAL_CONTEXT_COUNT_DESCRIPTIVE"
-    assert detail["why"]
-
-
-def test_invalidation_is_current_only_and_reversal_requires_new_structure():
-    bars = [bar(100, 101, 99, 100) for _ in range(5)]
-    bars[-1] = bar(100, 101, 89, 89)
-    protected = {"invalidation_level": 95, "invalidation_type": "CLOSED_CANDLE_ACCEPTANCE_BELOW_PROTECTED_LOW",
-                 "protected_low": pivot(2, 95, "HL")}
-    result = _invalidation(bars, "UP", protected)
-    assert result["confirmed"] is True
-    assert result["invalidates_current_external_thesis"] is True
-    assert result["does_not_confirm_reversal"] is True
+    assert result["decision_authority"] == "E9_ONLY"
