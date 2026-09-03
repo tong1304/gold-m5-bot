@@ -45,7 +45,7 @@ def test_e8_not_applicable_boundary_does_not_execute_original_engine():
         called["value"] = True
         return EngineResult("E8", "Trade Economics Brain", False, 99.0, {"finding": "SHOULD_NOT_RUN"}, ())
 
-    result = _not_applicable(original({"ignored": True}, {"E6": {}}), {})
+    result = _not_applicable(original, {})
     assert result.output["finding"] == "NOT_APPLICABLE"
     assert result.output["reason_codes"] == ["E6_THESIS_REQUIRED"]
     assert called["value"] is False
