@@ -67,7 +67,9 @@ def _pending_counterflow(upstream: dict[str, EngineResult]) -> bool:
 def install(e6_module) -> None:
     if getattr(e6_module, "_E6_PENDING_COUNTERFLOW_RUNTIME_INSTALLED", False):
         return
+
     original_causal = e6_module._causal_opportunity
+    original_analyze = e6_module.analyze_e6
 
     def causal_with_pending_counterflow(upstream):
         if not _pending_counterflow(upstream):
@@ -90,5 +92,35 @@ def install(e6_module) -> None:
             ]))
         return opportunity
 
+    def analyze_with_e6_contract(market_data, upstream):
+        """Keep E6 output semantically consistent when legacy output is stale.
+
+        A causal opportunity returned by E6 cannot simultaneously carry
+        NO_CAUSAL_OPPORTUNITY. If the legacy layer emits that stale marker while
+        the causal layer has a surviving opportunity, downgrade to an explicit
+        non-trade watch instead of preserving contradictory fields.
+        """
+        result = original_analyze(market_data, upstream)
+        if not isinstance(result, EngineResult):
+            return result
+
+        out = _out(result)
+        stale_no_causal = "NO_CAUSAL_OPPORTUNITY" in {
+            _text(code) for code in (
+                *(out.get("reason_codes") or []),
+                *(result.reason_codes or ()),
+                *(out.get("reasons") or []),
+            )
+        }
+        if not stale_no_causal:
+            return result
+
+        opportunity = e6_module._causal_opportunity(upstream)
+        if opportunity is None:
+            return result
+
+        return e6_module._watch_result(result, opportunity)
+
     e6_module._causal_opportunity = causal_with_pending_counterflow
+    e6_module.analyze_e6 = analyze_with_e6_contract
     e6_module._E6_PENDING_COUNTERFLOW_RUNTIME_INSTALLED = True
