@@ -19,4 +19,4 @@ jobs:
         with:
           python-version: '3.11'
       - run: pip install -r requirements.txt
-      - run: pytest -q tests/test_e9_final_governance_rebalance.py
+      - run: PYTHONPATH=. pytest -q tests/test_e9_final_governance_rebalance.py
