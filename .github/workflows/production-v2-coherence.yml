@@ -15,7 +15,13 @@ jobs:
           python-version: '3.11'
       - name: Install dependencies
         run: python -m pip install -r requirements.txt
-      - name: Runtime binding regression
+      - name: Runtime and MTF regressions
         env:
           PRODUCTION_V2_DISABLE_LIVE: '1'
-        run: python -m pytest -q production_v2/test_runtime_binding_order_regression.py
+        run: >-
+          python -m pytest -q
+          production_v2/test_runtime_binding_order_regression.py
+          tests/test_mtf_snapshot_contract.py
+          tests/test_e6_pending_counterflow_inference.py
+          tests/test_e8_applicability_boundary.py
+          tests/test_opportunity_lifecycle_e6_watch_boundary.py
