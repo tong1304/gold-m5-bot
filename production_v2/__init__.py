@@ -4,10 +4,12 @@ from .pipeline import ProductionPipeline
 from . import pipeline as _pipeline_module
 from . import e6_brain as _e6_module
 from . import e8_brain as _e8_module
+from . import e9_brain as _e9_module
 from .e7_thesis_boundary import install as _install_e7_thesis_boundary
 from .e6_pending_counterflow_runtime import install as _install_e6_pending_counterflow_runtime
 from .e6_opportunity_guard import install as _install_e6_opportunity_guard
 from .e8_applicability_boundary import install as _install_e8_applicability_boundary
+from .e9_watch_boundary import install as _install_e9_watch_boundary
 
 _install_e6_pending_counterflow_runtime(_e6_module)
 _install_e6_opportunity_guard(_e6_module)
@@ -19,6 +21,11 @@ _install_e8_applicability_boundary(_e8_module)
 # pipeline.py also imports analyze_e8 by function reference. Rebind after the
 # applicability guard so E8 cannot evaluate economics without an E6 thesis.
 _pipeline_module.analyze_e8 = _e8_module.analyze_e8
+
+_install_e9_watch_boundary(_e9_module)
+# pipeline.py imports analyze_e9 by function reference as well. Rebind after
+# the watch boundary so E9 cannot turn an E6 watch into economic rejection.
+_pipeline_module.analyze_e9 = _e9_module.analyze_e9
 
 _install_e7_thesis_boundary(_pipeline_module)
 
