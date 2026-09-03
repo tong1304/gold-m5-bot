@@ -7,6 +7,7 @@ from .e6_opportunity_guard import _direction, _fallback_opportunity, _watch
 
 
 WATCH_SETUPS = {"OPPORTUNITY_WATCH", "OPPORTUNITY_CANDIDATE", "OPPORTUNITY_THESIS"}
+RUNTIME_AUTHORITY_VERSION = "E6_FINAL_OPPORTUNITY_MEMBRANE_V2"
 
 
 def _out(result: Any) -> dict[str, Any]:
@@ -15,8 +16,6 @@ def _out(result: Any) -> dict[str, Any]:
 
 def _has_no_setup(result: EngineResult) -> bool:
     out = _out(result)
-    # setup_family is a strategy/family label, not proof that E6 has a setup.
-    # A legacy path may populate it while setup remains empty/NO_SETUP.
     setup = str(out.get("setup") or "").upper().strip()
     finding = str(out.get("finding") or "").upper().strip()
     reasons = {
@@ -73,6 +72,8 @@ def _normalize_watch_semantics(output: dict[str, Any]) -> dict[str, Any]:
         else f"Opportunity is {stage_text}; causal setup is not yet proven."
     )
     normalized.setdefault("next_required_event", "NEXT_CLOSED_M5_CANDLE")
+    normalized["runtime_authority"] = RUNTIME_AUTHORITY_VERSION
+    normalized["runtime_semantic_boundary"] = "WATCH_STATE_MUST_NOT_EXPOSE_LEGACY_NO_SETUP"
     return normalized
 
 
@@ -91,16 +92,14 @@ def install(e6_module) -> None:
         setup = str(out.get("setup") or "").upper().strip()
         if setup in WATCH_SETUPS and out.get("watch_only") is True and out.get("trade_ready") is not True:
             normalized = _normalize_watch_semantics(out)
-            if normalized != out:
-                return EngineResult(
-                    result.engine_id,
-                    result.name,
-                    result.gate_passed,
-                    result.score,
-                    normalized,
-                    result.reason_codes,
-                )
-            return result
+            return EngineResult(
+                result.engine_id,
+                result.name,
+                result.gate_passed,
+                result.score,
+                normalized,
+                result.reason_codes,
+            )
 
         if not _has_no_setup(result):
             return result
@@ -111,11 +110,8 @@ def install(e6_module) -> None:
 
         watch = _watch(result, candidate)
         watch_out = _normalize_watch_semantics(dict(watch.output or {}))
-        watch_out["runtime_authority"] = "E6_FINAL_OPPORTUNITY_MEMBRANE"
         watch_out["runtime_rescue_reason"] = "CAUSAL_E1_E5_EVIDENCE_SURVIVES_LEGACY_NO_SETUP"
-        watch_out["runtime_direction_source"] = _direction(
-            candidate.get("direction"),
-        )
+        watch_out["runtime_direction_source"] = _direction(candidate.get("direction"))
         return EngineResult(
             watch.engine_id,
             watch.name,
