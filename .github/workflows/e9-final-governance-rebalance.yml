@@ -1,0 +1,22 @@
+name: E9 final governance rebalance
+
+on:
+  push:
+    branches: [production-v2]
+    paths:
+      - 'production_v2/e9_brain.py'
+      - 'production_v2/professional_governance.py'
+      - 'tests/test_e9_final_governance_rebalance.py'
+      - '.github/workflows/e9-final-governance-rebalance.yml'
+  workflow_dispatch:
+
+jobs:
+  e9-governance:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: pip install -r requirements.txt
+      - run: pytest -q tests/test_e9_final_governance_rebalance.py
