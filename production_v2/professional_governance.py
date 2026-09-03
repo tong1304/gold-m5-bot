@@ -8,6 +8,8 @@ supporting evidence is recorded for E9 and is not a universal veto.
 
 from typing import Any
 
+from .contracts import EngineResult
+
 ENGINE_ORDER = ("E1", "E2", "E3", "E4", "E5", "E6", "E7", "E8", "E9")
 HARD_BLOCKER_KEYS = ("active_invalidations", "hard_vetoes", "blocking_reasons")
 PENDING_STATES = {"PENDING", "UNRESOLVED", "VALIDATING", "FORMING", "BLOCKED", "WAIT_FOR_PROOF", "INSUFFICIENT_PROOF", "NOT_READY", "UNKNOWN"}
@@ -94,18 +96,12 @@ def audit_engines(results: dict[str, Any]) -> dict[str, Any]:
         if pending: pending_gates.append(engine)
         per_engine[engine]={"present":bool(output),"direction":direction,"maturity":maturity,"auction_state":_auction_state(output),"confirmation_passed":_confirmation(output),"economics_valid":_economics_valid(output),"hard_blockers":list(dict.fromkeys(blockers)),"pending_gate":pending,"missing_evidence":list(dict.fromkeys(missing))}
 
-    # Directional disagreement between evidence brains is a reconciliation input,
-    # not a hard veto. E9 may veto only when an upstream brain explicitly emits a
-    # fatal conflict/invalidation.
     directional_conflict=False
     e3_output=_output(results,"E3"); lifecycle=str(_first(e3_output,"structure_lifecycle","lifecycle") or "").upper()
     if lifecycle == "INVALIDATED": all_blockers.append("STRUCTURE_INVALIDATED")
     elif "TRANSITION" in lifecycle: pending_gates.append("E3")
     if per_engine["E4"]["auction_state"] in {"PENDING","UNKNOWN","INITIATIVE","UNRESOLVED"}: pending_gates.append("E4")
     if not per_engine["E7"]["confirmation_passed"]: pending_gates.append("E7")
-    # E8 can be non-ready because the trade trigger/plan is still forming.
-    # That is a pending proof state, not a fatal governance veto. Explicit E8
-    # hard blockers have already been captured above and remain veto-capable.
     if not per_engine["E8"]["economics_valid"] and not per_engine["E8"]["hard_blockers"]: pending_gates.append("E8")
 
     all_blockers=list(dict.fromkeys(all_blockers)); all_missing=list(dict.fromkeys(all_missing)); pending_gates=list(dict.fromkeys(pending_gates)); hard_veto=bool(all_blockers)
@@ -117,12 +113,8 @@ def audit_engines(results: dict[str, Any]) -> dict[str, Any]:
     return {"architecture":"NINE_BRAIN_PROFESSIONAL_GOVERNANCE_V4","engine_order":list(ENGINE_ORDER),"hard_veto":hard_veto,"hard_vetoes":all_blockers,"pending_gates":pending_gates,"missing_evidence":all_missing,"next_required_event":list(dict.fromkeys(next_event)),"maturity":maturity,"directional_conflict":directional_conflict,"per_engine":per_engine,"read_only":True,"e9_only_trade_authority":True,"pending_is_not_hard_conflict":True,"future_invalidation_catalog_is_not_active_veto":True}
 
 
-def enforce_final_authority(e9_output: dict[str, Any], audit: dict[str, Any]) -> tuple[str, bool, list[str]]:
-    """Authorize only an E9 EXECUTE decision with all three mandatory proofs.
-
-    E1-E5 pending/mixed evidence does not veto an otherwise valid E6/E7/E8
-    decision. Fatal audit vetoes always win.
-    """
+def _apply_authority(e9_output: dict[str, Any], audit: dict[str, Any]) -> tuple[str, bool, list[str]]:
+    """Pure authority calculation shared by dict and EngineResult callers."""
     reasons=list(audit.get("hard_vetoes") or [])
     requested=str(e9_output.get("decision") or "NO_TRADE").upper()
     if audit.get("hard_veto"):
@@ -142,3 +134,21 @@ def enforce_final_authority(e9_output: dict[str, Any], audit: dict[str, Any]) ->
         reasons.append("E9_ALL_MANDATORY_GATES_NOT_PASSED")
         return "NO_TRADE",False,list(dict.fromkeys(reasons))
     return requested,True,list(dict.fromkeys(reasons))
+
+
+def enforce_final_authority(e9_output: dict[str, Any] | EngineResult, audit: dict[str, Any]):
+    """Authorize E9 without crossing the EngineResult/dict contract boundary.
+
+    Dict callers retain the historical tuple contract. Pipeline callers pass an
+    EngineResult and receive an EngineResult, preserving the immutable engine
+    result shape for all downstream pipeline code.
+    """
+    if isinstance(e9_output, EngineResult):
+        decision, authorized, reasons = _apply_authority(e9_output.output, audit)
+        output = dict(e9_output.output)
+        output["decision"] = decision
+        output["decision_authorized"] = authorized
+        output["decision_authority"] = "E9"
+        output["governance_reasons"] = reasons
+        return EngineResult(e9_output.engine_id, e9_output.name, bool(e9_output.gate_passed) and authorized, e9_output.score, output, tuple(dict.fromkeys(list(e9_output.reason_codes) + reasons)))
+    return _apply_authority(e9_output, audit)
