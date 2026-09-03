@@ -39,13 +39,7 @@ def _dict_result(engine_id: str, output: dict[str, Any]) -> EngineResult:
 
 
 def finalize_e6_output(output: dict[str, Any]) -> dict[str, Any]:
-    """Final E6 semantic membrane after all generic enrichment layers.
-
-    Generic enrichment may decorate E6 but must never re-expose a legacy
-    NO_SETUP finding while structured opportunity-watch state is still alive.
-    This membrane changes presentation semantics only; it does not create a
-    thesis, alter direction, loosen gates, or authorize execution.
-    """
+    """Final E6 semantic membrane after all generic enrichment layers."""
     return _normalize_watch_semantics(dict(output or {}))
 
 
@@ -155,11 +149,21 @@ def _attach_profit_edge(results: dict[str, EngineResult], snapshot: dict[str, An
 
 
 def _attach_state_semantics(results: dict[str, EngineResult]) -> None:
-    e1 = results.get("E1").output if results.get("E1") else {}; e6 = results.get("E6").output if results.get("E6") else {}; e7 = results.get("E7").output if results.get("E7") else {}; e8 = results.get("E8").output if results.get("E8") else {}; e9 = results.get("E9")
+    e1 = results.get("E1").output if results.get("E1") else {}
+    e6 = results.get("E6").output if results.get("E6") else {}
+    e7 = results.get("E7").output if results.get("E7") else {}
+    e8 = results.get("E8").output if results.get("E8") else {}
+    e9 = results.get("E9")
     if not e9: return
     out = dict(e9.output)
-    out["state_semantics"] = {"market_state":str(e1.get("market_state") or e1.get("trend_state") or "UNKNOWN").upper(),"setup_state":str(e6.get("setup_state") or e6.get("opportunity_stage") or "UNKNOWN").upper(),"confirmation_state":str(e7.get("confirmation_state") or e7.get("confirmation") or "PENDING").upper(),"economic_state":str(e8.get("economic_state") or e8.get("risk_state") or (e8.get("profit_edge") or {}).get("state") or "UNKNOWN").upper(),"execution_state":str(out.get("execution") or "BLOCKED").upper()}
-    results["E9"] = EngineResult(e9.engine_id,e9.name,e9.gate_passed,out,e9.reason_codes) if False else EngineResult(e9.engine_id,e9.name,e9.gate_passed,e9.score,out,e9.reason_codes)
+    out["state_semantics"] = {
+        "market_state": str(e1.get("market_state") or e1.get("trend_state") or "UNKNOWN").upper(),
+        "setup_state": str(e6.get("setup_state") or e6.get("opportunity_stage") or "UNKNOWN").upper(),
+        "confirmation_state": str(e7.get("confirmation_state") or e7.get("confirmation") or "PENDING").upper(),
+        "economic_state": str(e8.get("economic_state") or e8.get("risk_state") or (e8.get("profit_edge") or {}).get("state") or "UNKNOWN").upper(),
+        "execution_state": str(out.get("execution") or "BLOCKED").upper(),
+    }
+    results["E9"] = EngineResult(e9.engine_id, e9.name, e9.gate_passed, e9.score, out, e9.reason_codes)
 
 
 class ProductionPipeline:
