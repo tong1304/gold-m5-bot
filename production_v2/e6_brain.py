@@ -5,8 +5,8 @@ from typing import Any
 from .contracts import EngineResult
 from .e6_brain_legacy import analyze_e6 as _legacy_analyze_e6
 
-ARCHITECTURE = "E6_OPPORTUNITY_THESIS_ENGINE_V53"
-VERSION = "53.0"
+ARCHITECTURE = "E6_OPPORTUNITY_THESIS_ENGINE_V54"
+VERSION = "54.0"
 
 
 def _text(value: Any) -> str:
@@ -41,7 +41,6 @@ def _e2_unresolved(e2: dict[str, Any]) -> bool:
         or maturity in {"UNPROVEN", "EMERGING", "DEVELOPING"}
         or "OPPORTUNITY IS DEVELOPING" in finding
         or "OPPORTUNITY IS EMERGING" in finding
-        or "OPPORTUNITY IS EMERGING" in finding.replace("NEUTRAL ", "")
     )
 
 
@@ -69,10 +68,8 @@ def _e4_direction(e4: dict[str, Any]) -> str:
     event = _text(e4.get("event", e4.get("finding")))
     taker = _direction(e4.get("liquidity_taker"))
     actor = _direction(e4.get("response_actor"))
-    if "HIGH_LIQUIDITY_INTERACTION" in event and taker != "NEUTRAL":
-        return taker
-    if "LOW_LIQUIDITY_INTERACTION" in event and taker != "NEUTRAL":
-        return taker
+    if "HIGH_LIQUIDITY_INTERACTION" in event and taker != "NEUTRAL": return taker
+    if "LOW_LIQUIDITY_INTERACTION" in event and taker != "NEUTRAL": return taker
     if "LOW_FAILED_BREAK_RECLAIM" in event or "HIGH_FAILED_BREAK_RECLAIM" in event:
         if actor != "NEUTRAL": return actor
         if "UP" in event: return "BUY"
@@ -106,6 +103,7 @@ def _causal_opportunity(upstream: dict[str, Any]) -> dict[str, Any] | None:
     e4_direction = _e4_direction(e4)
     event = _e4_event(e4)
     unresolved = _e2_unresolved(e2)
+    e2_is_neutral = e2_direction == "NEUTRAL" and not unresolved
     counter_evidence: list[str] = []
     hard_conflicts: list[str] = []
     missing_internal_proof: list[str] = []
@@ -146,14 +144,16 @@ def _causal_opportunity(upstream: dict[str, Any]) -> dict[str, Any] | None:
     if not favorable and space <= 0.0: return None
 
     family = "AUCTION_ACCEPTANCE_CONTINUATION" if "ACCEPTANCE" in event else "LIQUIDITY_RESPONSE" if any(token in event for token in ("REJECTION", "SWEEP", "FAILED_BREAK", "RECLAIM", "LIQUIDITY_INTERACTION")) else "STRUCTURAL_OPPORTUNITY"
-    missing = (["E2_OPPORTUNITY_CONFIRMATION"] if unresolved else []) + ["E6_CAUSAL_SETUP_PROOF", "E7_CONFIRMATION"]
-    if "PENDING" in _text(e4.get("auction_state", e4.get("state"))) or "CANDIDATE" in event or "LIQUIDITY_INTERACTION" in event: missing.insert(1 if unresolved else 0, "E4_AUCTION_FOLLOW_THROUGH")
+    missing = (["E2_OPPORTUNITY_CONFIRMATION"] if (unresolved or e2_is_neutral) else []) + ["E6_CAUSAL_SETUP_PROOF", "E7_CONFIRMATION"]
+    if "PENDING" in _text(e4.get("auction_state", e4.get("state"))) or "CANDIDATE" in event or "LIQUIDITY_INTERACTION" in event:
+        missing.insert(1 if (unresolved or e2_is_neutral) else 0, "E4_AUCTION_FOLLOW_THROUGH")
     if space < 0.75: missing.append("STRUCTURAL_SPACE_INSUFFICIENT")
     missing.extend(missing_internal_proof)
     support = ["E3_EXTERNAL_STRUCTURE_SUPPORT", "E4_DIRECTIONAL_AUCTION_EVIDENCE"]
     if e1_direction == core: support.insert(0, "E1_DIRECTIONAL_CORE")
     elif e1_direction != "NEUTRAL": counter_evidence.append("E1_COUNTER_EVIDENCE")
     if e2_direction == core: support.insert(0, "E2_DIRECTIONAL_ANCHOR")
+    if e2_is_neutral: support.append("E2_NEUTRAL_NOT_A_VETO")
     if internal_status == "ALIGNED": support.append("E3_INTERNAL_STRUCTURE_SUPPORT")
     if favorable: support.append("E5_LOCATION_VALUE_SUPPORT")
     return {"direction":core,"family":family,"space":round(space,4),"support":list(dict.fromkeys(support)),"missing":list(dict.fromkeys(missing)),"counter_evidence":list(dict.fromkeys(counter_evidence)),"hard_conflicts":list(dict.fromkeys(hard_conflicts)),"event":event,"event_id":str(e4.get("event_id") or e4.get("event_candle_id") or ""),"internal_status":internal_status}
@@ -161,8 +161,9 @@ def _causal_opportunity(upstream: dict[str, Any]) -> dict[str, Any] | None:
 
 def _watch_result(legacy: EngineResult, opportunity: dict[str, Any]) -> EngineResult:
     output=dict(legacy.output or {}); direction=opportunity["direction"]; missing=list(dict.fromkeys(opportunity["missing"])); counter_evidence=list(dict.fromkeys(opportunity.get("counter_evidence",[]))); hard_conflicts=list(dict.fromkeys(opportunity.get("hard_conflicts",[])))
-    contested="E1_COUNTER_EVIDENCE" in counter_evidence or "STRUCTURAL_SPACE_INSUFFICIENT" in missing; stage="CONTESTED" if contested else "FORMING"; state="THESIS_CONTESTED" if contested else "FORMING"; setup="OPPORTUNITY_THESIS" if contested else "OPPORTUNITY_WATCH"
-    output.update({"architecture":ARCHITECTURE,"version":VERSION,"state":state,"setup_state":state,"opportunity_stage":stage,"setup":setup,"setup_family":opportunity["family"],"candidate_type":"OPPORTUNITY_CANDIDATE","direction":direction,"direction_thesis":direction,"thesis_direction":direction,"trade_ready":False,"gate_passed":False,"thesis_status":stage,"finding":f"{direction} opportunity thesis is {stage.lower()}; internal structure is {opportunity['internal_status']} and trade setup is not yet proven.","thesis":f"{direction} opportunity remains trackable while external directional evidence persists; counterflow and constrained space are retained as counter-evidence rather than erasing the thesis.","supporting_evidence":opportunity["support"],"counter_evidence":counter_evidence,"hard_conflicts":hard_conflicts,"missing_proof":missing,"next_required_event":"E2_OPPORTUNITY_CONFIRMATION,E4_AUCTION_FOLLOW_THROUGH,E3_INTERNAL_STRUCTURE_ALIGNMENT,E6_CAUSAL_SETUP_PROOF,E7_CONFIRMATION","wait_for":"E2_OPPORTUNITY_CONFIRMATION,E4_AUCTION_FOLLOW_THROUGH,E3_INTERNAL_STRUCTURE_ALIGNMENT,E6_CAUSAL_SETUP_PROOF,E7_CONFIRMATION","candidate_identity":f"OPPORTUNITY_THESIS:{direction}:{opportunity['family']}" if contested else f"OPPORTUNITY_WATCH:{direction}:{opportunity['family']}","opportunity_id":f"{direction}|OPPORTUNITY_THESIS" if contested else f"{direction}|OPPORTUNITY_WATCH","event_id":opportunity["event_id"],"available_space_atr":opportunity["space"],"watch_only":True,"execution_authority":"E9","reason_codes":missing,"reasons":missing})
+    contested="E1_COUNTER_EVIDENCE" in counter_evidence or "STRUCTURAL_SPACE_INSUFFICIENT" in missing
+    stage="CONTESTED" if contested else "FORMING"; state="THESIS_CONTESTED" if contested else "FORMING"; setup="OPPORTUNITY_THESIS" if contested else "OPPORTUNITY_WATCH"
+    output.update({"architecture":ARCHITECTURE,"version":VERSION,"state":state,"setup_state":state,"opportunity_stage":stage,"setup":setup,"setup_family":opportunity["family"],"candidate_type":"OPPORTUNITY_CANDIDATE","direction":direction,"direction_thesis":direction,"thesis_direction":direction,"trade_ready":False,"gate_passed":False,"thesis_status":stage,"finding":f"{direction} opportunity thesis is {stage.lower()}; internal structure is {opportunity['internal_status']} and trade setup is not yet proven.","thesis":f"{direction} opportunity remains trackable while causal evidence develops; unresolved E2 classification is retained as missing proof rather than treated as a veto.","supporting_evidence":opportunity["support"],"counter_evidence":counter_evidence,"hard_conflicts":hard_conflicts,"missing_proof":missing,"next_required_event":"E2_OPPORTUNITY_CONFIRMATION,E4_AUCTION_FOLLOW_THROUGH,E3_INTERNAL_STRUCTURE_ALIGNMENT,E7_CONFIRMATION","wait_for":"E2_OPPORTUNITY_CONFIRMATION,E4_AUCTION_FOLLOW_THROUGH,E3_INTERNAL_STRUCTURE_ALIGNMENT,E7_CONFIRMATION","candidate_identity":f"OPPORTUNITY_THESIS:{direction}:{opportunity['family']}" if contested else f"OPPORTUNITY_WATCH:{direction}:{opportunity['family']}","opportunity_id":f"{direction}|OPPORTUNITY_THESIS" if contested else f"{direction}|OPPORTUNITY_WATCH","event_id":opportunity["event_id"],"available_space_atr":opportunity["space"],"watch_only":True,"execution_authority":"E9","reason_codes":missing,"reasons":missing})
     return EngineResult(legacy.engine_id,legacy.name,False,legacy.score,output,tuple(missing))
 
 
