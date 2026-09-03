@@ -6,18 +6,14 @@ def _engine(engine_id, output):
     return EngineResult(engine_id, engine_id, output.get("gate_passed"), 0.0, output, ())
 
 
-def test_e6_tracks_btc_causal_opportunity_before_trigger_proof():
-    upstream = {
+def _btc_upstream(e2):
+    return {
         "E1": _engine("E1", {
             "directional_pressure": "BALANCED",
             "market_state": "TRANSITION",
             "trend_state": "NONE",
         }),
-        "E2": _engine("E2", {
-            "finding": "UP opportunity is developing",
-            "opportunity_state": "DEVELOPING",
-            "counter_evidence": ["AUCTION_CONFIRMATION_PENDING", "LOCATION_NOT_ADVANTAGEOUS"],
-        }),
+        "E2": _engine("E2", e2),
         "E3": _engine("E3", {
             "external_state": "UP",
             "internal_state": "UP",
@@ -37,7 +33,13 @@ def test_e6_tracks_btc_causal_opportunity_before_trigger_proof():
         }),
     }
 
-    result = analyze_e6({"symbol": "BTC/USD", "timeframe": "M5"}, upstream)
+
+def test_e6_tracks_btc_causal_opportunity_before_trigger_proof():
+    result = analyze_e6({"symbol": "BTC/USD", "timeframe": "M5"}, _btc_upstream({
+        "finding": "UP opportunity is developing",
+        "opportunity_state": "DEVELOPING",
+        "counter_evidence": ["AUCTION_CONFIRMATION_PENDING", "LOCATION_NOT_ADVANTAGEOUS"],
+    }))
     out = result.output
 
     assert out["direction"] == "BUY"
@@ -49,3 +51,17 @@ def test_e6_tracks_btc_causal_opportunity_before_trigger_proof():
     assert "NO_CAUSAL_OPPORTUNITY" not in out["reason_codes"]
     assert "E4_AUCTION_FOLLOW_THROUGH" in out["missing_proof"]
     assert "E7_CONFIRMATION" in out["missing_proof"]
+
+
+def test_e6_does_not_erase_thesis_when_e2_becomes_confirmed():
+    result = analyze_e6({"symbol": "BTC/USD", "timeframe": "M5"}, _btc_upstream({
+        "finding": "UP opportunity is confirmed",
+        "opportunity_state": "CONFIRMED",
+        "opportunity_direction": "UP",
+    }))
+    out = result.output
+
+    assert out["direction"] == "BUY"
+    assert out["setup_family"] == "LIQUIDITY_RESPONSE"
+    assert out["state"] != "NO_SETUP"
+    assert "NO_CAUSAL_OPPORTUNITY" not in out["reason_codes"]
