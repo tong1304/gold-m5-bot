@@ -41,23 +41,9 @@ def _has_no_setup(result: EngineResult) -> bool:
 
 
 def _sync_professional_reasoning(output: dict[str, Any]) -> dict[str, Any]:
-    """Make the human-readable E6 trace derive from E6's authoritative state.
-
-    Enrichment layers may preserve a legacy ``professional_reasoning`` object
-    while E6 has already replaced the legacy setup fields. That creates a false
-    production trace (for example, E6 says NO_CAUSAL while E7 correctly sees a
-    concrete SETUP_CANDIDATE). E6's authoritative setup state is the source of
-    truth; reasoning is observability and must never contradict it.
-    """
     normalized = dict(output or {})
     setup = str(normalized.get("setup") or normalized.get("setup_family") or "").upper().strip()
-    direction = _direction(
-        normalized.get("direction"),
-        normalized.get("bias"),
-        normalized.get("market_direction"),
-        normalized.get("thesis_direction"),
-        normalized.get("direction_thesis"),
-    )
+    direction = _direction(normalized.get("direction"), normalized.get("bias"), normalized.get("market_direction"), normalized.get("thesis_direction"), normalized.get("direction_thesis"))
     state = str(normalized.get("setup_state") or normalized.get("state") or normalized.get("opportunity_stage") or "").upper().strip()
     thesis_status = str(normalized.get("thesis_status") or normalized.get("maturity") or "").upper().strip()
     candidate_type = str(normalized.get("candidate_type") or "").upper().strip()
@@ -88,20 +74,12 @@ def _sync_professional_reasoning(output: dict[str, Any]) -> dict[str, Any]:
         hypothesis = thesis
         role = "SETUP_ANALYST"
     reasoning = dict(normalized.get("professional_reasoning") or {})
-    reasoning.update({
-        "conclusion": conclusion,
-        "hypothesis": hypothesis,
-        "missing_evidence": missing,
-        "next_required_event": next_event,
-        "role": role,
-        "source_of_truth": "E6_AUTHORITATIVE_SETUP_STATE",
-    })
+    reasoning.update({"conclusion": conclusion, "hypothesis": hypothesis, "missing_evidence": missing, "next_required_event": next_event, "role": role, "source_of_truth": "E6_AUTHORITATIVE_SETUP_STATE"})
     normalized["professional_reasoning"] = reasoning
     return normalized
 
 
 def _normalize_watch_semantics(output: dict[str, Any]) -> dict[str, Any]:
-    """Normalize only genuine watch states; never downgrade a surviving setup thesis."""
     normalized = dict(output)
     if not _watch_marked(normalized) or not _falseish(normalized.get("trade_ready")):
         return normalized
@@ -127,7 +105,6 @@ def _normalize_watch_semantics(output: dict[str, Any]) -> dict[str, Any]:
 
 
 def _runtime_watch_or_original(result: EngineResult, upstream: dict[str, EngineResult], thesis_builder=None) -> EngineResult:
-    """Apply the final E6 membrane after every legacy and enrichment path."""
     out = _out(result)
     if _watch_marked(out) and _falseish(out.get("trade_ready")):
         normalized = _normalize_watch_semantics(out)
@@ -136,20 +113,19 @@ def _runtime_watch_or_original(result: EngineResult, upstream: dict[str, EngineR
     if not _has_no_setup(result):
         normalized = _sync_professional_reasoning(out)
         return EngineResult(result.engine_id, result.name, result.gate_passed, result.score, normalized, result.reason_codes)
-
     candidate = _fallback_opportunity(upstream)
     if candidate is None:
         normalized = _sync_professional_reasoning(out)
         print(f"[PRODUCTION V2] E6_RUNTIME_MEMBRANE version={RUNTIME_AUTHORITY_VERSION} action=NO_RESCUE candidate=NONE", flush=True)
         return EngineResult(result.engine_id, result.name, result.gate_passed, result.score, normalized, result.reason_codes)
-
-    # A causal E1-E5 candidate is an E6 setup thesis, not a generic watch.
-    # It remains non-trade-ready until E7 and E8 prove their own gates.
     if thesis_builder is not None:
         thesis = thesis_builder(result, candidate)
     else:
         thesis = _watch(result, candidate)
-    thesis_out = _normalize_watch_semantics(dict(thesis.output or {}))
+    # IMPORTANT: rescue output is authoritative E6 thesis formation. Do not pass
+    # it through the watch normalizer: that would erase a real setup thesis and
+    # collapse SETUP_THESIS back into OPPORTUNITY_WATCH.
+    thesis_out = dict(thesis.output or {})
     thesis_out["runtime_rescue_reason"] = "CAUSAL_E1_E5_EVIDENCE_SURVIVES_LEGACY_NO_SETUP"
     thesis_out["runtime_direction_source"] = _direction(candidate.get("direction"))
     thesis_out["runtime_candidate_family"] = candidate.get("family")
@@ -162,12 +138,10 @@ def install(e6_module) -> None:
     if getattr(e6_module, "_E6_RUNTIME_AUTHORITY_INSTALLED", False):
         return
     original = e6_module.analyze_e6
-
     def runtime_authority(market_data, upstream):
         result = original(market_data, upstream)
         if not isinstance(result, EngineResult):
             return result
         return _runtime_watch_or_original(result, upstream, getattr(e6_module, "_watch_result", None))
-
     e6_module.analyze_e6 = runtime_authority
     e6_module._E6_RUNTIME_AUTHORITY_INSTALLED = True
