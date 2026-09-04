@@ -53,7 +53,9 @@ class DecisionResult:
                 object.__setattr__(self, "timeframe", str(timeframe))
         if self.score == 0.0 and e9 is not None:
             object.__setattr__(self, "score", float(e9.score))
-        if not self.gate_passed and e9 is not None:
+        if e9 is not None and e9.gate_passed is not None:
+            # E9 is the sole final authority. Never let a stale caller value
+            # override the authoritative E9 gate at the public boundary.
             object.__setattr__(self, "gate_passed", bool(e9.gate_passed))
         if not self.risk and isinstance(e8_output, dict):
             object.__setattr__(self, "risk", dict(e8_output))
@@ -68,6 +70,10 @@ class DecisionResult:
             e9_decision = str(e9_output.get("decision") or "").upper().strip()
             normalized_decision = e9_decision if e9_decision in {"BUY", "SELL"} and self.gate_passed else "NO_TRADE"
             object.__setattr__(self, "decision", normalized_decision)
+        elif self.decision in {"BUY", "SELL"} and not self.gate_passed:
+            # Keep the public result execution-safe when a caller supplies a
+            # directional compatibility value but E9 has vetoed the trade.
+            object.__setattr__(self, "decision", "NO_TRADE")
 
         # The pipeline historically supplied the no-trade default state even
         # after E9 had authorized a directional decision. Normalize that stale
