@@ -16,6 +16,18 @@ from .statistics import store
 BANGKOK_TZ = ZoneInfo("Asia/Bangkok")
 
 
+def _pipeline_trace_fields(result) -> dict[str, object]:
+    """Return trace state from the public DecisionResult contract.
+
+    E8/risk output is specialist evidence, not the runtime lifecycle state.
+    """
+    return {
+        "state": getattr(result, "state", "ANALYSIS_COMPLETE_NO_TRADE"),
+        "blocked_by": getattr(result, "blocked_by", None),
+        "wait_bars": int(getattr(result, "wait_bars", 0) or 0),
+    }
+
+
 class LiveService:
     def __init__(self):
         self.pipeline = ProductionPipeline()
@@ -100,20 +112,6 @@ class LiveService:
             return max(0.0, (datetime.now(timezone.utc) - timestamp).total_seconds())
         except (TypeError, ValueError):
             return None
-
-
-def _pipeline_trace_fields(result) -> dict[str, object]:
-    """Return trace state from the public DecisionResult contract.
-
-    Do not read lifecycle state from E8/risk output: E8 is a specialist
-    evidence source, while DecisionResult.state is the runtime-facing state.
-    """
-    return {
-        "state": getattr(result, "state", "ANALYSIS_COMPLETE_NO_TRADE"),
-        "blocked_by": getattr(result, "blocked_by", None),
-        "wait_bars": int(getattr(result, "wait_bars", 0) or 0),
-    }
-
 
     @staticmethod
     def _reasoning(engine) -> dict:
