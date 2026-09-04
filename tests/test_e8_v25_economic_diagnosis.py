@@ -1,4 +1,4 @@
-from production_v2.e8_brain import _economic_diagnosis
+from production_v2.e8_brain import _diagnosis
 
 
 def test_e8_primary_veto_is_ranked_and_secondary_reasons_are_preserved():
@@ -9,7 +9,7 @@ def test_e8_primary_veto_is_ranked_and_secondary_reasons_are_preserved():
         "PROBABILITY_EDGE_NOT_TRUSTWORTHY",
     ]
 
-    diagnosis = _economic_diagnosis(reasons, confirmation="CONFIRMED")
+    diagnosis = _diagnosis(reasons, confirmation="CONFIRMED")
 
     assert diagnosis["primary_veto"] == "NO_USABLE_STRUCTURAL_TARGET"
     assert diagnosis["secondary_vetoes"] == [
@@ -21,7 +21,7 @@ def test_e8_primary_veto_is_ranked_and_secondary_reasons_are_preserved():
 
 
 def test_e8_next_required_event_is_actionable_for_confirmation_blocker():
-    diagnosis = _economic_diagnosis(
+    diagnosis = _diagnosis(
         ["ENTRY_CONFIRMATION", "PROBABILITY_EDGE_NOT_TRUSTWORTHY"],
         confirmation="NOT_CONFIRMED",
     )
@@ -31,7 +31,7 @@ def test_e8_next_required_event_is_actionable_for_confirmation_blocker():
 
 
 def test_e8_insufficient_history_is_data_blocker_not_profit_failure():
-    diagnosis = _economic_diagnosis(
+    diagnosis = _diagnosis(
         ["HISTORICAL_SAMPLE_INSUFFICIENT", "PROBABILITY_EDGE_NOT_TRUSTWORTHY"],
         confirmation="CONFIRMED",
     )
