@@ -22,6 +22,7 @@ from .e9_watch_boundary import install as _install_e9_watch_boundary
 from .mtf_runtime import install as _install_mtf_runtime
 from .final_runtime_binding import install as _install_final_runtime_binding
 from .evidence_collaboration_runtime import install as _install_evidence_collaboration
+from .e9_thesis_contract import install as _install_e9_thesis_contract
 
 # Bootstrap initializes before final authority guards.
 _install_bootstrap_surgery(_pipeline_module)
@@ -42,6 +43,7 @@ _pipeline_module.analyze_e8 = _e8_module.analyze_e8
 
 # E9 owns final governance and watch-state governance.
 _install_e9_watch_boundary(_e9_module)
+_install_e9_thesis_contract(_e9_module)
 _pipeline_module.analyze_e9 = _e9_module.analyze_e9
 
 # Collaboration membrane: E1-E5 evidence is made available to E6/E7/E8;
