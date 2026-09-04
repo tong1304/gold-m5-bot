@@ -23,6 +23,7 @@ from .mtf_runtime import install as _install_mtf_runtime
 from .final_runtime_binding import install as _install_final_runtime_binding
 from .evidence_collaboration_runtime import install as _install_evidence_collaboration
 from .e9_thesis_contract import install as _install_e9_thesis_contract
+from .runtime_trace_boundary import install as _install_runtime_trace_boundary
 
 # Bootstrap initializes before final authority guards.
 _install_bootstrap_surgery(_pipeline_module)
@@ -57,5 +58,10 @@ _install_e7_thesis_boundary(_pipeline_module)
 # Last: guarantee that app/startup code cannot leave stale analyzer references
 # in the live pipeline between initialization and the next closed candle.
 _install_final_runtime_binding(_pipeline_module, _e6_module, _e8_module, _e9_module)
+
+# Diagnostic-only: expose exact pipeline traceback without altering decisions.
+# Installed before app.py adds its outer lifecycle wrapper, so pipeline failures
+# are traced while the lifecycle contract remains authoritative.
+_install_runtime_trace_boundary(_pipeline_module)
 
 __all__ = ["ProductionPipeline"]
