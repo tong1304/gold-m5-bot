@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from typing import Any
 
-
 _PRE_THESIS_BRAINS = {"E1", "E2", "E3", "E4", "E5"}
 _FINAL_BRAINS = {"E1", "E2", "E3", "E4", "E5", "E6", "E7", "E8"}
 
@@ -51,19 +50,16 @@ def preserve_e6_thesis_contract(e6: dict[str, Any], e9: dict[str, Any]) -> dict[
     output = dict(e9 or {})
     if e6:
         output.setdefault("thesis_source", "E6")
-        output["e6_thesis"] = {key: e6.get(key) for key in ("setup", "setup_state", "opportunity_stage", "candidate_type", "direction", "thesis_status", "watch_only", "trade_ready") if key in e6}
+        output["e6_thesis"] = {
+            key: e6.get(key)
+            for key in ("setup", "setup_state", "opportunity_stage", "candidate_type", "direction", "thesis_status", "watch_only", "trade_ready")
+            if key in e6
+        }
     return output
 
 
 def install(e6_module: Any, e9_module: Any) -> None:
-    """Expose evidence context without changing specialist authority."""
-    def e6_wrapper(original):
-        def wrapped(market_data, upstream):
-            if isinstance(market_data, dict):
-                market_data["evidence_ledger"] = build_evidence_ledger(upstream)
-            return original(market_data, upstream)
-        return wrapped
-
+    """Attach evidence context without wrapping E6's authoritative callable."""
     def e9_wrapper(original):
         def wrapped(snapshot, upstream):
             if isinstance(snapshot, dict):
@@ -74,5 +70,6 @@ def install(e6_module: Any, e9_module: Any) -> None:
             return type(result)(result.engine_id, result.name, result.gate_passed, result.score, output, result.reason_codes)
         return wrapped
 
-    _install_once(e6_module, "_EVIDENCE_COLLABORATION_E6_INSTALLED", "analyze_e6", e6_wrapper)
+    # E6 is deliberately untouched: it is the sole owner of causal thesis state.
+    del e6_module
     _install_once(e9_module, "_EVIDENCE_COLLABORATION_E9_INSTALLED", "analyze_e9", e9_wrapper)
