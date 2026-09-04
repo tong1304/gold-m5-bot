@@ -31,7 +31,7 @@ def test_e9_gate_remains_final_authority_at_public_boundary():
     result = DecisionResult(decision="BUY", gate_passed=True, engines={"E9": e9})
 
     assert result.gate_passed is False
-    assert result.decision == "BUY"
+    assert result.decision == "NO_TRADE"
     assert result.state == "ANALYSIS_COMPLETE_NO_TRADE"
 
 
