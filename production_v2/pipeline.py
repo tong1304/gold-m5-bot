@@ -21,6 +21,7 @@ from .professional_brain_audit import audit_all
 from .shared_market_picture import attach_brain_view, audit_shared_market_picture_contract, build_shared_market_picture
 from .conflict_resolution import build_conflict_ledger
 from .profit_edge import evaluate_profit_edge
+from .opportunity_lifecycle import advance_opportunity
 
 ENGINE_ORDER = ("E1", "E2", "E3", "E4", "E5", "E6", "E7", "E8", "E9")
 EVIDENCE_INPUTS = {"E1": (), "E2": ("E1",), "E3": (), "E4": ("E1", "E3"), "E5": ("E1", "E3", "E4"), "E6": ("E1", "E2", "E3", "E4", "E5"), "E7": ("E4", "E6"), "E8": ("E5", "E6", "E7"), "E9": ("E1", "E2", "E3", "E4", "E5", "E6", "E7", "E8")}
@@ -156,22 +157,36 @@ def _attach_state_semantics(results: dict[str, EngineResult]) -> None:
     e9 = results.get("E9")
     if not e9: return
     out = dict(e9.output)
-    out["state_semantics"] = {
-        "market_state": str(e1.get("market_state") or e1.get("trend_state") or "UNKNOWN").upper(),
-        "setup_state": str(e6.get("setup_state") or e6.get("opportunity_stage") or "UNKNOWN").upper(),
-        "confirmation_state": str(e7.get("confirmation_state") or e7.get("confirmation") or "PENDING").upper(),
-        "economic_state": str(e8.get("economic_state") or e8.get("risk_state") or (e8.get("profit_edge") or {}).get("state") or "UNKNOWN").upper(),
-        "execution_state": str(out.get("execution") or "BLOCKED").upper(),
-    }
+    out["state_semantics"] = {"market_state": str(e1.get("market_state") or e1.get("trend_state") or "UNKNOWN").upper(), "setup_state": str(e6.get("setup_state") or e6.get("opportunity_stage") or "UNKNOWN").upper(), "confirmation_state": str(e7.get("confirmation_state") or e7.get("confirmation") or "PENDING").upper(), "economic_state": str(e8.get("economic_state") or e8.get("risk_state") or (e8.get("profit_edge") or {}).get("state") or "UNKNOWN").upper(), "execution_state": str(out.get("execution") or "BLOCKED").upper()}
     results["E9"] = EngineResult(e9.engine_id, e9.name, e9.gate_passed, e9.score, out, e9.reason_codes)
+
+
+def _lifecycle_current(results: dict[str, EngineResult], decision: str, gate_passed: bool, candle: Any) -> dict[str, Any]:
+    e4 = results.get("E4").output if results.get("E4") else {}
+    e6 = results.get("E6").output if results.get("E6") else {}
+    candidate_type = str(e6.get("candidate_type") or "").upper().strip()
+    setup = str(e6.get("setup") or e6.get("setup_family") or e6.get("setup_type") or "").upper().strip()
+    thesis = bool(e6.get("e6_thesis_proven") or e6.get("setup_exists") or e6.get("trade_ready"))
+    candidate = candidate_type in {"OPPORTUNITY_CANDIDATE", "SETUP_CANDIDATE"} or setup not in {"", "UNKNOWN", "NONE", "NO_SETUP"}
+    ready = bool(decision == "TRADE" and gate_passed)
+    invalidated = bool(e6.get("invalidated") or str(e6.get("lifecycle_state") or "").upper() == "INVALIDATED")
+    event_id = e4.get("event_id") or e4.get("auction_event_id")
+    if isinstance(event_id, (dict, list, tuple, set)): event_id = None
+    return {"direction": e6.get("direction") or e6.get("direction_thesis") or e6.get("thesis_direction") or e6.get("finding"), "setup": setup or "OPPORTUNITY_WATCH", "event_id": event_id, "candle": candle, "candidate": candidate, "ready": ready, "executed": False, "invalidated": invalidated, "thesis_proven": thesis, "wait_for": e6.get("next_required_event") or e6.get("missing_proof") or ["NEXT_CLOSED_M5_CANDLE"]}
 
 
 class ProductionPipeline:
     ENGINE_ORDER = ENGINE_ORDER
 
+    def __init__(self):
+        self._opportunity_lifecycle: dict[str, dict[str, Any]] = {}
+
     def run(self, market_data: dict[str, Any], *, wait_bars=0, resume_state=None, historical_calibration=None):
-        del resume_state
         snapshot = dict(market_data)
+        symbol = str(snapshot.get("symbol") or snapshot.get("asset") or "UNKNOWN").upper()
+        if resume_state is not None:
+            self._opportunity_lifecycle[symbol] = dict(resume_state)
+        previous_lifecycle = dict(self._opportunity_lifecycle.get(symbol) or {})
         calibration_records = _historical_records(historical_calibration)
         if calibration_records is not None: snapshot["historical_outcomes"] = calibration_records
         shared_picture = build_shared_market_picture(snapshot)
@@ -198,11 +213,7 @@ class ProductionPipeline:
         results["E9"] = e9; _attach_state_semantics(results)
         shared_picture_audit = audit_shared_market_picture_contract({engine_id: results[engine_id].output for engine_id in ENGINE_ORDER})
         if not shared_picture_audit["passed"]:
-            e9 = results["E9"]
-            blocked_output = dict(e9.output)
-            blocked_output["decision"] = "NO_TRADE"
-            blocked_output["decision_reason"] = ["SHARED_MARKET_PICTURE_CONTRACT_FAILED"]
-            blocked_output["shared_market_picture_audit"] = shared_picture_audit
+            e9 = results["E9"]; blocked_output = dict(e9.output); blocked_output["decision"] = "NO_TRADE"; blocked_output["decision_reason"] = ["SHARED_MARKET_PICTURE_CONTRACT_FAILED"]; blocked_output["shared_market_picture_audit"] = shared_picture_audit
             results["E9"] = EngineResult("E9", e9.name, False, e9.score, blocked_output, tuple(dict.fromkeys(list(e9.reason_codes) + ["SHARED_MARKET_PICTURE_CONTRACT_FAILED"])))
         audit = audit_engines(results); results["E9"] = enforce_final_authority(results["E9"], results); results["E9"] = EngineResult("E9", results["E9"].name, results["E9"].gate_passed, results["E9"].score, dict(results["E9"].output, architecture_audit=audit), results["E9"].reason_codes)
         audit_all(results)
@@ -213,4 +224,13 @@ class ProductionPipeline:
         if decision == "TRADE" and not gate_passed: decision = "NO_TRADE"
         if decision not in {"TRADE", "NO_TRADE"}: decision = "NO_TRADE"
         state = "SIGNAL_READY" if decision == "TRADE" and trade_ready and gate_passed else "ANALYSIS_COMPLETE_NO_TRADE"
-        return DecisionResult(decision=decision, state=state, engines=results, blocked_by=None, wait_bars=wait_bars)
+        provisional = DecisionResult(decision=decision, state=state, engines=results, blocked_by=None, wait_bars=wait_bars)
+        lifecycle = advance_opportunity(previous_lifecycle or None, _lifecycle_current(results, decision, gate_passed, snapshot.get("candle_close_timestamp") or snapshot.get("candle")))
+        lifecycle["previous_state"] = previous_lifecycle.get("state") if previous_lifecycle else None
+        lifecycle["e6_thesis_proven"] = bool(results.get("E6") and results["E6"].output.get("e6_thesis_proven"))
+        lifecycle["e7_confirmation_state"] = str(results.get("E7").output.get("confirmation_state") if results.get("E7") else "UNKNOWN")
+        lifecycle["e8_economic_state"] = str(results.get("E8").output.get("economic_state") if results.get("E8") else "UNKNOWN")
+        lifecycle["e9_final_decision"] = decision
+        results["E9"] = EngineResult("E9", results["E9"].name, results["E9"].gate_passed, results["E9"].score, dict(results["E9"].output, opportunity_lifecycle=lifecycle), results["E9"].reason_codes)
+        self._opportunity_lifecycle[symbol] = lifecycle
+        return DecisionResult(decision=decision, state=state, engines=results, blocked_by=None, wait_bars=int(lifecycle.get("bars_waited", wait_bars) or 0))
