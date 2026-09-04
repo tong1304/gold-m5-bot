@@ -15,8 +15,8 @@ def test_live_service_keeps_reasoning_contract_for_pipeline_traces():
                 "trend_state": "DOWN",
                 "transition": "ABSENT",
             },
-            "reason_codes": ["TREND_CONFIRMED"],
         },
+        reason_codes=("TREND_CONFIRMED",),
     )
 
     reasoning = LiveService._reasoning(engine)
