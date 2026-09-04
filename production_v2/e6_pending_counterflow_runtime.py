@@ -9,9 +9,9 @@ def _text(value: Any) -> str:
 
 def _direction(value: Any) -> str:
     text = _text(value)
-    if text in {"BUY", "BULLISH", "UP", "LONG", "BUYERS", "TREND_UP"}:
-        return "BUY"
-    if text in {"SELL", "BEARISH", "DOWN", "SHORT", "SELLERS", "TREND_DOWN"}:
+    if text in {"BUY", "BULLISH", "UP", "LONG", "BUYERS", "SELLERS", "TREND_UP"}:
+        return "BUY" if text != "SELLERS" else "SELL"
+    if text in {"SELL", "BEARISH", "DOWN", "SHORT", "TREND_DOWN"}:
         return "SELL"
     return "NEUTRAL"
 
@@ -21,20 +21,16 @@ def _out(result: Any) -> dict[str, Any]:
 
 
 def _infer_e4_direction(e4: dict[str, Any]) -> str:
-    """Infer pending auction response direction from explicit actor fields when direction is absent."""
     direction = _direction(e4.get("direction"))
     if direction != "NEUTRAL":
         return direction
-
     actor = _direction(e4.get("response_actor"))
     if actor != "NEUTRAL":
         return actor
-
     taker = _direction(e4.get("liquidity_taker"))
     event = _text(e4.get("event", e4.get("finding")))
     if taker != "NEUTRAL" and "LIQUIDITY_INTERACTION" in event:
         return taker
-
     if "LOW_SWEEP_REJECTION" in event or "LOW_REJECTION" in event:
         return "BUY"
     if "HIGH_SWEEP_REJECTION" in event or "HIGH_REJECTION" in event:
@@ -81,7 +77,7 @@ def install(e6_module) -> None:
         e4_output = dict(_out(e4))
         e4_output["direction"] = "NEUTRAL"
         adjusted["E4"] = EngineResult(
-            e4.engine_id, e4.name, e4.gate_passed, e4.score, e4_output, e4.reasons
+            e4.engine_id, e4.name, e4.gate_passed, e4.score, e4_output, tuple(e4.reason_codes or ())
         )
         opportunity = original_causal(adjusted)
         if opportunity is not None:
@@ -93,17 +89,9 @@ def install(e6_module) -> None:
         return opportunity
 
     def analyze_with_e6_contract(market_data, upstream):
-        """Keep E6 output semantically consistent when legacy output is stale.
-
-        A causal opportunity returned by E6 cannot simultaneously carry
-        NO_CAUSAL_OPPORTUNITY. If the legacy layer emits that stale marker while
-        the causal layer has a surviving opportunity, downgrade to an explicit
-        non-trade watch instead of preserving contradictory fields.
-        """
         result = original_analyze(market_data, upstream)
         if not isinstance(result, EngineResult):
             return result
-
         out = _out(result)
         stale_no_causal = "NO_CAUSAL_OPPORTUNITY" in {
             _text(code) for code in (
@@ -114,11 +102,9 @@ def install(e6_module) -> None:
         }
         if not stale_no_causal:
             return result
-
         opportunity = e6_module._causal_opportunity(upstream)
         if opportunity is None:
             return result
-
         return e6_module._watch_result(result, opportunity)
 
     e6_module._causal_opportunity = causal_with_pending_counterflow
