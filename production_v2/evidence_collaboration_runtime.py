@@ -3,6 +3,10 @@ from __future__ import annotations
 from typing import Any
 
 
+_PRE_THESIS_BRAINS = {"E1", "E2", "E3", "E4", "E5"}
+_FINAL_BRAINS = {"E1", "E2", "E3", "E4", "E5", "E6", "E7", "E8"}
+
+
 def _install_once(module: Any, marker: str, attr: str, wrapper_factory) -> None:
     if getattr(module, marker, False):
         return
@@ -11,12 +15,35 @@ def _install_once(module: Any, marker: str, attr: str, wrapper_factory) -> None:
     setattr(module, marker, True)
 
 
+def _brain_output(value: Any, engine_id: str) -> dict[str, Any]:
+    output = dict(getattr(value, "output", {}) or {})
+    if engine_id == "E4" and "proof_state" not in output:
+        finding = str(output.get("finding") or output.get("auction_state") or "").upper()
+        if "PENDING" in finding:
+            output["proof_state"] = "PENDING"
+        elif any(token in finding for token in ("CONFIRMED", "ACCEPTED", "PROVEN")):
+            output["proof_state"] = "PROVEN"
+        elif any(token in finding for token in ("FAILED", "INVALID", "REJECTED")):
+            output["proof_state"] = "FAILED"
+        else:
+            output["proof_state"] = "UNRESOLVED"
+    return output
+
+
 def build_evidence_ledger(upstream: dict[str, Any]) -> dict[str, Any]:
-    return {"schema": "EVIDENCE_LEDGER_V1", "phase": "PRE_THESIS_E1_E5", "brains": {key: dict(getattr(value, "output", {}) or {}) for key, value in upstream.items() if key in {"E1", "E2", "E3", "E4", "E5"}}}
+    return {
+        "schema": "EVIDENCE_LEDGER_V1",
+        "phase": "PRE_THESIS_E1_E5",
+        "brains": {key: _brain_output(value, key) for key, value in upstream.items() if key in _PRE_THESIS_BRAINS},
+    }
 
 
 def ledger_for_e9(upstream: dict[str, Any]) -> dict[str, Any]:
-    return {"schema": "EVIDENCE_LEDGER_V1", "phase": "FINAL_GOVERNANCE_E1_E8", "brains": {key: dict(getattr(value, "output", {}) or {}) for key, value in upstream.items() if key in {"E1", "E2", "E3", "E4", "E5", "E6", "E7", "E8"}}}
+    return {
+        "schema": "EVIDENCE_LEDGER_V1",
+        "phase": "FINAL_GOVERNANCE_E1_E8",
+        "brains": {key: _brain_output(value, key) for key, value in upstream.items() if key in _FINAL_BRAINS},
+    }
 
 
 def preserve_e6_thesis_contract(e6: dict[str, Any], e9: dict[str, Any]) -> dict[str, Any]:
