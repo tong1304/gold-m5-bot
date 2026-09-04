@@ -3,8 +3,8 @@ from typing import Any
 from .contracts import EngineResult
 from .e6_brain_legacy import analyze_e6 as _legacy_analyze_e6
 
-ARCHITECTURE="E6_OPPORTUNITY_THESIS_ENGINE_V55"
-VERSION="55.0"
+ARCHITECTURE="E6_OPPORTUNITY_THESIS_ENGINE_V55.1"
+VERSION="55.1"
 
 
 def _text(v:Any)->str:return str(v or "").upper().strip()
@@ -151,8 +151,49 @@ def _causal_opportunity(upstream:dict[str,Any])->dict[str,Any]|None:
     return {"direction":core,"family":family,"space":round(space,4),"support":list(dict.fromkeys(support)),"missing":list(dict.fromkeys(missing)),"counter_evidence":list(dict.fromkeys(counter)),"hard_conflicts":list(dict.fromkeys(hard)),"event":event,"event_id":str(e4.get("event_id") or e4.get("event_candle_id") or ""),"internal_status":internal_status}
 
 def _watch_result(legacy:EngineResult,o:dict[str,Any])->EngineResult:
-    out=dict(legacy.output or {});direction=o["direction"];missing=list(dict.fromkeys(o["missing"]));counter=list(dict.fromkeys(o.get("counter_evidence",[])));hard=list(dict.fromkeys(o.get("hard_conflicts",[])));contested="E1_COUNTER_EVIDENCE" in counter or "STRUCTURAL_SPACE_INSUFFICIENT" in missing;stage="CONTESTED" if contested else "FORMING";state="THESIS_CONTESTED" if contested else "FORMING";setup="OPPORTUNITY_THESIS" if contested else "OPPORTUNITY_WATCH"
-    out.update({"architecture":ARCHITECTURE,"version":VERSION,"state":state,"setup_state":state,"opportunity_stage":stage,"setup":setup,"setup_family":o["family"],"candidate_type":"OPPORTUNITY_CANDIDATE","direction":direction,"direction_thesis":direction,"thesis_direction":direction,"trade_ready":False,"gate_passed":False,"thesis_status":stage,"finding":f"{direction} opportunity thesis is {stage.lower()}; internal structure is {o['internal_status']} and trade setup is not yet proven.","thesis":f"{direction} causal opportunity is trackable; E2 classification is not treated as a veto, while E4/E7 proof remains pending.","supporting_evidence":o["support"],"counter_evidence":counter,"hard_conflicts":hard,"missing_proof":missing,"next_required_event":"E2_OPPORTUNITY_CONFIRMATION,E4_AUCTION_FOLLOW_THROUGH,E7_CONFIRMATION","wait_for":"E2_OPPORTUNITY_CONFIRMATION,E4_AUCTION_FOLLOW_THROUGH,E7_CONFIRMATION","candidate_identity":f"OPPORTUNITY_THESIS:{direction}:{o['family']}" if contested else f"OPPORTUNITY_WATCH:{direction}:{o['family']}","opportunity_id":f"{direction}|OPPORTUNITY_THESIS" if contested else f"{direction}|OPPORTUNITY_WATCH","event_id":o["event_id"],"available_space_atr":o["space"],"watch_only":True,"execution_authority":"E9","reason_codes":missing,"reasons":missing})
+    out=dict(legacy.output or {})
+    direction=o["direction"]
+    missing=list(dict.fromkeys(o["missing"]))
+    counter=list(dict.fromkeys(o.get("counter_evidence",[])))
+    hard=list(dict.fromkeys(o.get("hard_conflicts",[])))
+    contested="E1_COUNTER_EVIDENCE" in counter or "STRUCTURAL_SPACE_INSUFFICIENT" in missing
+    stage="CONTESTED" if contested else "FORMING"
+    state="THESIS_CONTESTED" if contested else "SETUP_THESIS"
+    setup=o["family"]
+    finding=f"{direction} setup thesis is {stage.lower()}; internal structure is {o['internal_status']} and confirmation/economics are not yet proven."
+    thesis=f"{direction} causal setup thesis is established from E1-E5; E2 classification is not a hard veto, and E7/E8 proof remains pending."
+    out.update({
+        "architecture":ARCHITECTURE,
+        "version":VERSION,
+        "state":state,
+        "setup_state":state,
+        "opportunity_stage":"SETUP_THESIS" if not contested else "THESIS_CONTESTED",
+        "setup":setup,
+        "setup_family":setup,
+        "candidate_type":"SETUP_CANDIDATE",
+        "direction":direction,
+        "direction_thesis":direction,
+        "thesis_direction":direction,
+        "trade_ready":False,
+        "gate_passed":False,
+        "thesis_status":stage,
+        "finding":finding,
+        "thesis":thesis,
+        "supporting_evidence":o["support"],
+        "counter_evidence":counter,
+        "hard_conflicts":hard,
+        "missing_proof":missing,
+        "next_required_event":"E7_CONFIRMATION,E8_SURVIVABLE_ECONOMICS",
+        "wait_for":"E7_CONFIRMATION,E8_SURVIVABLE_ECONOMICS",
+        "candidate_identity":f"SETUP_THESIS:{direction}:{setup}",
+        "opportunity_id":f"{direction}|SETUP_THESIS",
+        "event_id":o["event_id"],
+        "available_space_atr":o["space"],
+        "watch_only":False,
+        "execution_authority":"E9",
+        "reason_codes":missing,
+        "reasons":missing,
+    })
     return EngineResult(legacy.engine_id,legacy.name,False,legacy.score,out,tuple(missing))
 
 def _no_surviving_causal_thesis(legacy:EngineResult)->EngineResult:
