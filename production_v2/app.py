@@ -53,13 +53,15 @@ def _pending_upstream_thesis(engines: dict[str, dict]) -> tuple[str, str, list[s
     return direction, "OPPORTUNITY_WATCH", list(dict.fromkeys(evidence)), list(reconciliation.get("wait_for") or [])
 
 def _e6_pending_thesis(engines: dict[str, dict]) -> tuple[str, str, list[str], list[str]]:
+    """Project E6 watch state into lifecycle without inventing self-referential proof."""
     e6 = engines.get("E6") or {}; setup = _text(e6.get("setup") or e6.get("setup_type") or e6.get("setup_family")); direction = _direction_from_output(e6)
     if setup not in {"OPPORTUNITY_WATCH", "OPPORTUNITY_CANDIDATE", "OPPORTUNITY_THESIS"} or direction not in {"BUY", "SELL"}: return "NEUTRAL", "", [], []
     if e6.get("watch_only") is not True or e6.get("trade_ready") is True or e6.get("gate_passed") is True: return "NEUTRAL", "", [], []
-    missing = [_text(x) for x in (e6.get("missing_proof") or e6.get("reason_codes") or e6.get("reasons") or []) if _text(x)]; missing = list(dict.fromkeys(missing))
-    if "E6_CAUSAL_SETUP_PROOF" not in missing: missing.append("E6_CAUSAL_SETUP_PROOF")
-    evidence = [_text(x) for x in (e6.get("supporting_evidence") or []) if _text(x)]; evidence.append("E6_OPPORTUNITY_WATCH")
-    return direction, "OPPORTUNITY_WATCH", missing, list(dict.fromkeys([*evidence, "E6_CAUSAL_SETUP_PROOF"]))
+    missing = [_text(x) for x in (e6.get("missing_proof") or e6.get("reason_codes") or e6.get("reasons") or []) if _text(x)]
+    missing = [x for x in dict.fromkeys(missing) if x != "E6_CAUSAL_SETUP_PROOF"]
+    evidence = [_text(x) for x in (e6.get("supporting_evidence") or []) if _text(x)]
+    evidence.append("E6_OPPORTUNITY_WATCH")
+    return direction, "OPPORTUNITY_WATCH", missing, list(dict.fromkeys(evidence))
 
 def _current_opportunity_input(result, candle: str) -> dict:
     engines = {engine.engine_id: engine.output or {} for engine in result.engines}; e6 = engines.get("E6", {}); e7 = engines.get("E7", {}); e8 = engines.get("E8", {}); e9 = engines.get("E9", {}); reconciliation = reconcile_causal_evidence(engines)
@@ -73,11 +75,12 @@ def _current_opportunity_input(result, candle: str) -> dict:
         direction = e6_direction; setup = e6_setup; thesis_status = e6_state if e6_state in {"SETUP_THESIS", "THESIS_CONTESTED", "FORMING", "VALIDATING", "MATURE", "CONFIRMED", "TRADE_READY"} else "FORMING"; candidate = True; lifecycle_source = "E6_SETUP"; wait_for = list(dict.fromkeys(e6_missing));
         if not wait_for and e6_state not in {"MATURE", "TRADE_READY", "CONFIRMED"}: wait_for = ["E7_SETUP_SPECIFIC_CLOSED_CANDLE_CONFIRMATION"]
     elif pending_setup:
-        direction = pending_direction; setup = pending_setup; thesis_status = "CONFIRMED" if reconciliation.get("state") == "THESIS_CONFIRMED_SETUP_NOT_FORMED" else "FORMING"; candidate = True; lifecycle_source = "OPPORTUNITY_SCOUT"; wait_for = list(dict.fromkeys(reconciliation_wait_for or ["E6_CAUSAL_SETUP_PROOF"]));
-        if "E6_CAUSAL_SETUP_PROOF" not in wait_for: wait_for.append("E6_CAUSAL_SETUP_PROOF")
+        direction = pending_direction; setup = pending_setup; thesis_status = "CONFIRMED" if reconciliation.get("state") == "THESIS_CONFIRMED_SETUP_NOT_FORMED" else "FORMING"; candidate = True; lifecycle_source = "OPPORTUNITY_SCOUT"; wait_for = list(dict.fromkeys(reconciliation_wait_for or pending_missing or ["NEXT_CLOSED_M5_CANDLE"]));
+        wait_for = [x for x in wait_for if _text(x) != "E6_CAUSAL_SETUP_PROOF"]
+        if not wait_for: wait_for = ["NEXT_CLOSED_M5_CANDLE"]
     else:
         direction = _text(reconciliation.get("direction")) if reconciliation.get("state") == "NO_SETUP" else e6_direction; setup = e6_setup; thesis_status = "NONE"; candidate = False; lifecycle_source = "NONE"; wait_for = list(reconciliation.get("wait_for") or [])
-    confirmation = _text(e7.get("confirmation_state") or e7.get("confirmation") or ""); profit_edge = e8.get("profit_edge") if isinstance(e8.get("profit_edge"), dict) else {}; e9_decision = _text(e9.get("decision") or result.decision); ready = bool(real_setup and candidate and e6_state in {"MATURE", "TRADE_READY", "CONFIRMED"} and confirmation in {"PROVEN", "CONFIRMED"} and bool(profit_edge.get("trusted")) and not profit_edge.get("blockers")); executed = bool(e9_decision in {"BUY", "SELL"} and result.gate_passed); invalidated = e6_is_invalid or bool(any("INVALIDATED" in code or "HARD_VETO" in code for code in e6_reasons))
+    confirmation = _text(e7.get("confirmation_state") or e7.get("confirmation") or ""); profit_edge = e8.get("profit_edge") if isinstance(e8.get("profit_edge"), dict) else {}; e9_decision = _text(e9.get("decision") or result.decision); ready = bool(real_setup and candidate and e6_state in {"MATURE", "TRADE_READY", "CONFIRMED"} and confirmation in {"PROVEN", "CONFIRMED"} and bool(profit_edge.get("trusted")) and not profit_edge.get("blockers")); executed = bool(e9_decision in {"BUY","SELL"} and result.gate_passed); invalidated = e6_is_invalid or bool(any("INVALIDATED" in code or "HARD_VETO" in code for code in e6_reasons))
     return {"candidate":candidate,"direction":direction,"setup":setup,"ready":ready,"invalidated":invalidated,"executed":executed,"thesis_status":thesis_status,"candle":candle,"lifecycle_source":lifecycle_source,"upstream_evidence":pending_missing,"wait_for":wait_for}
 
 def _run_with_lifecycle(self, market_data, *, wait_bars=0, resume_state=None, historical_calibration=None):
