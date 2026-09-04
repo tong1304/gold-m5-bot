@@ -165,7 +165,7 @@ class LiveService:
                 if key in audit:
                     observations.append(f"{key}={audit[key]}")
             reasons = list(engine.reason_codes or []) + list(output.get("reasons") or [])
-            return {"question": reasoning.get("question") or output.get("question") or "Where is liquidity, who took it, and did price accept or reject the auction?", "conclusion": str(reasoning.get("conclusion") or output.get("analyst_conclusion") or output.get("finding") or "UNRESOLVED"), "observations": list(dict.fromkeys(observations))[:20], "reasons": sorted(set(str(x) for x in reasons if str(x).strip()))[:20], "role": "LIQUIDITY_AUCTION_ANALYST"}
+            return {"question": reasoning.get("question") or output.get("question") or "Where is liquidity, who took it, and did price accept or reject the auction?", "conclusion": str(reasoning.get("conclusion") or output.get("analyst_conclusion") or output.get("finding") or "UNRESOLVED"), "observations": list(dict.fromkeys(observations)[:20]), "reasons": sorted(set(str(x) for x in reasons if str(x).strip()))[:20], "role": "LIQUIDITY_AUCTION_ANALYST"}
         if engine.engine_id == "E5":
             observations = list(output.get("observations") or [])
             observations.extend(str(x) for x in (output.get("reasoning_trace") or []) if x)
@@ -174,6 +174,13 @@ class LiveService:
             observations.append(f"preferred_location={output.get('preferred_location', 'NONE')}")
             reasons = list(engine.reason_codes or []) + list(output.get("counter_evidence") or [])
             return {"question": reasoning.get("question") or output.get("question") or "Is current location advantageous?", "conclusion": str(output.get("location_state") or reasoning.get("thesis") or "E5_DATA_UNRESOLVED"), "observations": list(dict.fromkeys(str(x) for x in observations if str(x)))[:16], "reasons": sorted(set(str(x) for x in reasons if str(x).strip()))[:20], "role": "LOCATION_VALUE_ANALYST"}
+        if engine.engine_id == "E6":
+            observations = []
+            observations.extend(str(x) for x in (output.get("supporting_evidence") or []) if x)
+            observations.extend(f"counter_evidence={x}" for x in (output.get("counter_evidence") or []) if x)
+            observations.extend(f"missing_proof={x}" for x in (output.get("missing_proof") or []) if x)
+            observations.extend(str(x) for x in (output.get("reason_codes") or []) if x)
+            return {"question": reasoning.get("question") or output.get("question") or "Is there a causal setup thesis from E1-E5?", "conclusion": str(reasoning.get("conclusion") or output.get("finding") or "E6_DATA_UNRESOLVED"), "observations": list(dict.fromkeys(observations))[:20], "reasons": sorted(set(str(x) for x in (engine.reason_codes or []) if str(x).strip()))[:20], "role": "OPPORTUNITY_THESIS_ANALYST"}
         conclusion = reasoning.get("conclusion") or output.get("analyst_conclusion") or output.get("finding") or "UNRESOLVED"
         question = reasoning.get("question") or output.get("question") or output.get("specialist_question")
         observations = []
