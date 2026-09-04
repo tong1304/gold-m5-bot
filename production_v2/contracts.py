@@ -60,10 +60,19 @@ class DecisionResult:
         if self.reason_codes == () and e9 is not None:
             object.__setattr__(self, "reason_codes", tuple(e9.reason_codes))
 
+        # The pipeline's compatibility wrapper may return TRADE while E9
+        # already carries the authoritative directional decision. Expose that
+        # E9 decision at the public contract boundary so downstream services
+        # cannot silently drop an authorized BUY/SELL alert.
+        if self.decision == "TRADE":
+            e9_decision = str(e9_output.get("decision") or "").upper().strip()
+            normalized_decision = e9_decision if e9_decision in {"BUY", "SELL"} and self.gate_passed else "NO_TRADE"
+            object.__setattr__(self, "decision", normalized_decision)
+
         # The pipeline historically supplied the no-trade default state even
         # after E9 had authorized a directional decision. Normalize that stale
         # compatibility value at the public contract boundary.
-        if self.decision in {"BUY", "SELL", "TRADE"} and self.gate_passed and self.state in {
+        if self.decision in {"BUY", "SELL"} and self.gate_passed and self.state in {
             "ANALYSIS_COMPLETE_NO_TRADE", "", None
         }:
             object.__setattr__(self, "state", "SIGNAL_READY")
