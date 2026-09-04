@@ -50,6 +50,7 @@ def _e2_unresolved(e2: dict[str, Any]) -> bool:
         or maturity in {"UNPROVEN", "EMERGING", "DEVELOPING"}
         or "OPPORTUNITY IS DEVELOPING" in finding
         or "OPPORTUNITY IS EMERGING" in finding
+        or "OPPORTUNITY IS UNPROVEN" in finding
     )
 
 
@@ -122,18 +123,30 @@ def _causal_opportunity(upstream: dict[str, EngineResult]) -> dict[str, Any] | N
     if not any(token in event for token in ("ACCEPTANCE", "REJECTION", "SWEEP", "FAILED_BREAK", "BREAK", "RECLAIM", "LIQUIDITY_INTERACTION")):
         return None
 
+    # Direction is resolved hierarchically from the strongest causal evidence
+    # available: E1 directional core, then E3 external structure, then E2
+    # opportunity anchor, then E4's actual auction response. This allows a
+    # genuine E4 sweep/rejection to create a WATCH even when the broader regime
+    # is neutral, while E2/E4 disagreement remains a hard rejection once E2 is
+    # actually confirmed.
+    if e1d in {"BUY", "SELL"}:
+        direction = e1d
+    elif external in {"BUY", "SELL"}:
+        direction = external
+    elif e2d in {"BUY", "SELL"}:
+        direction = e2d
+    else:
+        direction = e4d
+    counter: list[str] = []
+
     # E1/E3 disagreement is allowed only as a developing counterflow when E2 is unresolved
     # and E4 independently supports the E3 direction. It never becomes a hidden override.
     if e1d in {"BUY", "SELL"} and external in {"BUY", "SELL"} and e1d != external:
         if not (unresolved and e4d == external):
             return None
         direction = external
-        counter = ["E1_COUNTER_EVIDENCE"]
-    else:
-        direction = e1d if e1d != "NEUTRAL" else external
-        counter = []
-        if direction == "NEUTRAL":
-            direction = e2d
+        counter.append("E1_COUNTER_EVIDENCE")
+
     if direction not in {"BUY", "SELL"}:
         return None
     if e2d not in {"NEUTRAL", direction}:
@@ -253,8 +266,6 @@ def _thesis(original: EngineResult, candidate: dict[str, Any]) -> EngineResult:
     out = dict(original.output or {})
     direction = candidate["direction"]
     missing = list(dict.fromkeys(candidate.get("missing", [])))
-    # This path is intentionally rare: E6 may own a thesis only after upstream opportunity
-    # evidence is closed-candle confirmed. E7 and E8 still retain authority over confirmation/economics.
     out.update({
         "architecture": ARCHITECTURE,
         "version": VERSION,
@@ -374,8 +385,6 @@ def _absent(original: EngineResult) -> EngineResult:
 
 def analyze_e6(market_data: dict[str, Any], upstream: dict[str, EngineResult]) -> EngineResult:
     del market_data
-    # E6 is now a single authoritative evaluator. The legacy E6 implementation is deliberately
-    # not called here: it was a source of semantic promotion and dict/list contract failures.
     base = EngineResult("E6", "Setup Brain", False, 0.0, {}, ())
     e3 = _payload(upstream, "E3")
     if _e3_invalidated(e3):
@@ -383,10 +392,6 @@ def analyze_e6(market_data: dict[str, Any], upstream: dict[str, EngineResult]) -
     candidate = _causal_opportunity(upstream)
     if candidate is None:
         return _absent(base)
-
-    # Strict promotion gate. Pending/developing evidence is always a WATCH. A thesis requires
-    # terminal E4 auction, confirmed E2 direction, aligned internal structure, sufficient space,
-    # and no counterflow evidence. E7/E8 remain downstream proof gates.
     thesis_ready = (
         candidate["terminal"]
         and candidate["e2_confirmed"]
