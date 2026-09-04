@@ -165,7 +165,7 @@ class LiveService:
                 if key in audit:
                     observations.append(f"{key}={audit[key]}")
             reasons = list(engine.reason_codes or []) + list(output.get("reasons") or [])
-            return {"question": reasoning.get("question") or output.get("question") or "Where is liquidity, who took it, and did price accept or reject the auction?", "conclusion": str(reasoning.get("conclusion") or output.get("analyst_conclusion") or output.get("finding") or "UNRESOLVED"), "observations": list(dict.fromkeys(observations)[:20]), "reasons": sorted(set(str(x) for x in reasons if str(x).strip()))[:20], "role": "LIQUIDITY_AUCTION_ANALYST"}
+            return {"question": reasoning.get("question") or output.get("question") or "Where is liquidity, who took it, and did price accept or reject the auction?", "conclusion": str(reasoning.get("conclusion") or output.get("analyst_conclusion") or output.get("finding") or "UNRESOLVED"), "observations": list(dict.fromkeys(observations))[:20], "reasons": sorted(set(str(x) for x in reasons if str(x).strip()))[:20], "role": "LIQUIDITY_AUCTION_ANALYST"}
         if engine.engine_id == "E5":
             observations = list(output.get("observations") or [])
             observations.extend(str(x) for x in (output.get("reasoning_trace") or []) if x)
