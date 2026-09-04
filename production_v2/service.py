@@ -101,6 +101,20 @@ class LiveService:
         except (TypeError, ValueError):
             return None
 
+
+def _pipeline_trace_fields(result) -> dict[str, object]:
+    """Return trace state from the public DecisionResult contract.
+
+    Do not read lifecycle state from E8/risk output: E8 is a specialist
+    evidence source, while DecisionResult.state is the runtime-facing state.
+    """
+    return {
+        "state": getattr(result, "state", "ANALYSIS_COMPLETE_NO_TRADE"),
+        "blocked_by": getattr(result, "blocked_by", None),
+        "wait_bars": int(getattr(result, "wait_bars", 0) or 0),
+    }
+
+
     @staticmethod
     def _reasoning(engine) -> dict:
         output = engine.output or {}
@@ -170,8 +184,8 @@ class LiveService:
         return {"question": question, "conclusion": str(conclusion), "observations": [str(x) for x in observations[:12]], "reasons": sorted(set(str(x) for x in reasons))[:16], "role": output.get("reasoning_role", "TRADE_ECONOMICS_RISK")}
 
     def _trace_result(self, alias: str, result) -> None:
-        state = result.risk.get("engine_state"); blocked_by = result.risk.get("blocked_by")
-        print(f"[PRODUCTION V2] {alias} PIPELINE decision={result.decision} state={state} blocked_by={blocked_by} wait_bars=0 gate={result.gate_passed} engines={len(result.engines)}", flush=True)
+        trace = _pipeline_trace_fields(result)
+        print(f"[PRODUCTION V2] {alias} PIPELINE decision={result.decision} state={trace['state']} blocked_by={trace['blocked_by']} wait_bars={trace['wait_bars']} gate={result.gate_passed} engines={len(result.engines)}", flush=True)
         for engine in result.engines:
             if engine.engine_id == "E9":
                 reasoning = engine.output.get("professional_reasoning") or {}
@@ -185,10 +199,6 @@ class LiveService:
             for alias in self.data.symbols():
                 try:
                     raw = self.data.candles(alias)
-                    # Normalize only tradable/open payloads. GOLD can legitimately
-                    # return an empty-bar MARKET_CLOSED payload during its daily
-                    # exchange break; normalizing that payload raises "bars are
-                    # required" and incorrectly reports a runtime failure.
                     if raw.get("market_state") == "MARKET_CLOSED" and not raw.get("bars"):
                         self._runtime_errors.pop(alias, None)
                         print(f"[PRODUCTION V2] {alias} MARKET_CLOSED action=SKIP_EVALUATION", flush=True)
