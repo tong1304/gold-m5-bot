@@ -1,9 +1,8 @@
 """Production-v2: isolated nine-engine trading runtime.
 
-Runtime installation order is intentional: bootstrap wrappers are installed
-first, M15/M5 snapshot routing is installed next, then final E6/E8/E9 guards
-are installed and rebound into the pipeline. A final runtime binding membrane
-reasserts those authority bindings immediately before each pipeline execution.
+E6 is a single authoritative specialist: ``production_v2.e6_brain.analyze_e6``
+is bound directly into the pipeline. Compatibility modules may expose helper
+functions, but no E6 wrapper is installed at package startup.
 """
 
 from .pipeline import ProductionPipeline
@@ -14,9 +13,6 @@ from . import e9_brain as _e9_module
 from . import market_data as _market_data_module
 from .bootstrap_surgery import install as _install_bootstrap_surgery
 from .e7_thesis_boundary import install as _install_e7_thesis_boundary
-from .e6_pending_counterflow_runtime import install as _install_e6_pending_counterflow_runtime
-from .e6_opportunity_guard import install as _install_e6_opportunity_guard
-from .e6_runtime_authority import install as _install_e6_runtime_authority
 from .e8_applicability_boundary import install as _install_e8_applicability_boundary
 from .e9_watch_boundary import install as _install_e9_watch_boundary
 from .mtf_runtime import install as _install_mtf_runtime
@@ -25,43 +21,26 @@ from .evidence_collaboration_runtime import install as _install_evidence_collabo
 from .e9_thesis_contract import install as _install_e9_thesis_contract
 from .runtime_trace_boundary import install as _install_runtime_trace_boundary
 
-# Bootstrap initializes before final authority guards.
 _install_bootstrap_surgery(_pipeline_module)
-
-# Freeze one M5 snapshot and route M15 context only to E1/E2.
 _install_mtf_runtime(_pipeline_module, _market_data_module)
 
-# E6 owns causal thesis formation; the final opportunity membrane runs after
-# all legacy/pending wrappers so a stale NO_SETUP result cannot cross E6's API.
-_install_e6_pending_counterflow_runtime(_e6_module)
-_install_e6_opportunity_guard(_e6_module)
-_install_e6_runtime_authority(_e6_module)
+# E6 single authority: no pending-counterflow, opportunity-guard, or runtime
+# authority monkey-patch is installed. Those modules remain compatibility
+# helpers only and cannot replace the authoritative E6 callable.
 _pipeline_module.analyze_e6 = _e6_module.analyze_e6
 
-# E8 owns trade economics and is not applicable without a surviving E6 thesis.
 _install_e8_applicability_boundary(_e8_module)
 _pipeline_module.analyze_e8 = _e8_module.analyze_e8
 
-# E9 owns final governance and watch-state governance.
 _install_e9_watch_boundary(_e9_module)
 _install_e9_thesis_contract(_e9_module)
 _pipeline_module.analyze_e9 = _e9_module.analyze_e9
 
-# Collaboration membrane: E1-E5 evidence is made available to E6/E7/E8;
-# the complete E1-E8 ledger is refreshed immediately before E9. The ledger is
-# non-authoritative: it cannot manufacture a thesis or final decision.
+# Evidence collaboration may enrich E9's ledger but never wraps E6.
 _install_evidence_collaboration(_e6_module, _e9_module)
 
-# E7 remains pipeline-owned because it consumes the E6 thesis boundary.
 _install_e7_thesis_boundary(_pipeline_module)
-
-# Last: guarantee that app/startup code cannot leave stale analyzer references
-# in the live pipeline between initialization and the next closed candle.
 _install_final_runtime_binding(_pipeline_module, _e6_module, _e8_module, _e9_module)
-
-# Diagnostic-only: expose exact pipeline traceback without altering decisions.
-# Installed before app.py adds its outer lifecycle wrapper, so pipeline failures
-# are traced while the lifecycle contract remains authoritative.
 _install_runtime_trace_boundary(_pipeline_module)
 
 __all__ = ["ProductionPipeline"]
