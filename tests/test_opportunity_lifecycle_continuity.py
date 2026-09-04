@@ -1,0 +1,80 @@
+from production_v2.opportunity_lifecycle import advance_opportunity
+
+
+def test_watch_persists_across_closed_candles_without_new_identity():
+    first = advance_opportunity(None, {
+        "direction": "SELL",
+        "setup": "OPPORTUNITY_WATCH",
+        "event_id": "AUCTION-1",
+        "candle": "2026-09-04T14:35:00Z",
+        "candidate": True,
+    })
+    second = advance_opportunity(first, {
+        "direction": "SELL",
+        "setup": "OPPORTUNITY_WATCH",
+        "event_id": "AUCTION-1",
+        "candle": "2026-09-04T14:40:00Z",
+        "candidate": True,
+        "wait_for": ["E4_FOLLOW_THROUGH"],
+    })
+    assert first["continuity"] == "NEW_OPPORTUNITY_WATCH"
+    assert second["continuity"] == "CONTINUING_UPSTREAM_WATCH"
+    assert second["opportunity_id"] == first["opportunity_id"]
+    assert second["bars_waited"] == 1
+    assert second["trade_authorized"] is False
+
+
+def test_watch_promotes_only_when_a_real_setup_appears():
+    watch = advance_opportunity(None, {
+        "direction": "SELL",
+        "setup": "OPPORTUNITY_WATCH",
+        "event_id": "AUCTION-1",
+        "candle": "2026-09-04T14:35:00Z",
+        "candidate": True,
+    })
+    thesis = advance_opportunity(watch, {
+        "direction": "SELL",
+        "setup": "LOW_ACCEPTANCE",
+        "event_id": "AUCTION-1",
+        "candle": "2026-09-04T14:40:00Z",
+        "candidate": True,
+        "ready": False,
+        "wait_for": ["E7_SETUP_SPECIFIC_CLOSED_CANDLE_CONFIRMATION"],
+    })
+    assert thesis["state"] == "WAITING"
+    assert thesis["continuity"] == "PROMOTED_PENDING_OPPORTUNITY"
+    assert thesis["opportunity_id"] != watch["opportunity_id"]
+    assert thesis["trade_authorized"] is False
+
+
+def test_direction_change_invalidates_pending_opportunity():
+    watch = advance_opportunity(None, {
+        "direction": "SELL",
+        "setup": "OPPORTUNITY_WATCH",
+        "event_id": "AUCTION-1",
+        "candle": "2026-09-04T14:35:00Z",
+        "candidate": True,
+    })
+    changed = advance_opportunity(watch, {
+        "direction": "BUY",
+        "setup": "OPPORTUNITY_WATCH",
+        "event_id": "AUCTION-2",
+        "candle": "2026-09-04T14:40:00Z",
+        "candidate": True,
+    })
+    assert changed["state"] == "INVALIDATED"
+    assert changed["invalidation_reason"] == "DIRECTION_CHANGED"
+    assert changed["trade_authorized"] is False
+
+
+def test_lifecycle_never_authorizes_execution_from_ready_without_explicit_execution():
+    ready = advance_opportunity(None, {
+        "direction": "SELL",
+        "setup": "LOW_ACCEPTANCE",
+        "event_id": "AUCTION-1",
+        "candle": "2026-09-04T14:40:00Z",
+        "candidate": True,
+        "ready": True,
+    })
+    assert ready["state"] == "READY"
+    assert ready["trade_authorized"] is False
