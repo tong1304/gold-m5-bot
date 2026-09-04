@@ -1,7 +1,7 @@
 from production_v2.opportunity_lifecycle import advance_opportunity
 
 
-def test_watch_persists_across_closed_candles_without_new_identity():
+def test_watch_persists_across_closed_candles_without_new_identity_or_event_churn():
     first = advance_opportunity(None, {
         "direction": "SELL",
         "setup": "OPPORTUNITY_WATCH",
@@ -12,7 +12,7 @@ def test_watch_persists_across_closed_candles_without_new_identity():
     second = advance_opportunity(first, {
         "direction": "SELL",
         "setup": "OPPORTUNITY_WATCH",
-        "event_id": "AUCTION-1",
+        "event_id": "AUCTION-2",
         "candle": "2026-09-04T14:40:00Z",
         "candidate": True,
         "wait_for": ["E4_FOLLOW_THROUGH"],
@@ -24,7 +24,7 @@ def test_watch_persists_across_closed_candles_without_new_identity():
     assert second["trade_authorized"] is False
 
 
-def test_watch_promotes_only_when_a_real_setup_appears():
+def test_watch_promotes_to_setup_without_changing_opportunity_identity():
     watch = advance_opportunity(None, {
         "direction": "SELL",
         "setup": "OPPORTUNITY_WATCH",
@@ -35,7 +35,7 @@ def test_watch_promotes_only_when_a_real_setup_appears():
     thesis = advance_opportunity(watch, {
         "direction": "SELL",
         "setup": "LOW_ACCEPTANCE",
-        "event_id": "AUCTION-1",
+        "event_id": "AUCTION-2",
         "candle": "2026-09-04T14:40:00Z",
         "candidate": True,
         "ready": False,
@@ -43,7 +43,8 @@ def test_watch_promotes_only_when_a_real_setup_appears():
     })
     assert thesis["state"] == "WAITING"
     assert thesis["continuity"] == "PROMOTED_PENDING_OPPORTUNITY"
-    assert thesis["opportunity_id"] != watch["opportunity_id"]
+    assert thesis["opportunity_id"] == watch["opportunity_id"]
+    assert thesis["bars_waited"] == 1
     assert thesis["trade_authorized"] is False
 
 
