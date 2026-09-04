@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from production_v2.e2_brain import analyze_e2
+from production_v2.e2_brain import analyze_e2, _opportunity_blockers
 
 
 def _bars(n: int = 100):
@@ -41,7 +41,6 @@ def test_e2_does_not_delegate_thesis_to_e1():
 
 def test_e2_counter_evidence_changes_thesis_quality_not_direction_by_command():
     bars = _bars()
-    # Create a strong opposing auction at the latest candle without supplying a trade command.
     bars[-1]["open"] = bars[-1]["close"] + 1.0
     bars[-1]["high"] = bars[-1]["open"] + 0.05
     bars[-1]["low"] = bars[-1]["close"] - 0.05
@@ -67,3 +66,26 @@ def test_e2_insufficient_data_is_an_explicit_no_thesis_state():
     assert result["opportunity"] == "NONE"
     assert result["decision"] is None
     assert result["gate"] is None
+
+
+def test_e2_developing_opportunity_uses_tradeable_path_language_not_no_opportunity_language():
+    blockers = _opportunity_blockers(
+        direction="BUY",
+        maturity="DEVELOPING",
+        eligible=False,
+        base_blockers=["AUCTION_CONFIRMATION_PENDING"],
+    )
+    assert "NO_ELIGIBLE_OPPORTUNITY_PATH" not in blockers
+    assert "NO_TRADEABLE_OPPORTUNITY_PATH_YET" in blockers
+    assert "AUCTION_CONFIRMATION_PENDING" in blockers
+
+
+def test_e2_unresolved_direction_keeps_no_eligible_path_suppressed():
+    blockers = _opportunity_blockers(
+        direction="NEUTRAL",
+        maturity="UNPROVEN",
+        eligible=False,
+        base_blockers=["DIRECTIONAL_EDGE_NOT_ESTABLISHED"],
+    )
+    assert "NO_ELIGIBLE_OPPORTUNITY_PATH" not in blockers
+    assert "NO_TRADEABLE_OPPORTUNITY_PATH_YET" not in blockers
