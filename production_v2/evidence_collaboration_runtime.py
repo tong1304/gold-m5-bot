@@ -12,11 +12,11 @@ def _install_once(module: Any, marker: str, attr: str, wrapper_factory) -> None:
 
 
 def build_evidence_ledger(upstream: dict[str, Any]) -> dict[str, Any]:
-    return {"phase": "PRE_THESIS_E1_E5", "brains": {key: dict(getattr(value, "output", {}) or {}) for key, value in upstream.items() if key in {"E1", "E2", "E3", "E4", "E5"}}}
+    return {"schema": "EVIDENCE_LEDGER_V1", "phase": "PRE_THESIS_E1_E5", "brains": {key: dict(getattr(value, "output", {}) or {}) for key, value in upstream.items() if key in {"E1", "E2", "E3", "E4", "E5"}}}
 
 
 def ledger_for_e9(upstream: dict[str, Any]) -> dict[str, Any]:
-    return {"phase": "FINAL_GOVERNANCE_E1_E8", "brains": {key: dict(getattr(value, "output", {}) or {}) for key, value in upstream.items() if key in {"E1", "E2", "E3", "E4", "E5", "E6", "E7", "E8"}}}
+    return {"schema": "EVIDENCE_LEDGER_V1", "phase": "FINAL_GOVERNANCE_E1_E8", "brains": {key: dict(getattr(value, "output", {}) or {}) for key, value in upstream.items() if key in {"E1", "E2", "E3", "E4", "E5", "E6", "E7", "E8"}}}
 
 
 def preserve_e6_thesis_contract(e6: dict[str, Any], e9: dict[str, Any]) -> dict[str, Any]:
@@ -36,7 +36,6 @@ def install(e6_module: Any, e9_module: Any) -> None:
             # caller shape cannot carry an injected ledger.
             if isinstance(market_data, dict):
                 market_data["evidence_ledger"] = build_evidence_ledger(upstream)
-                market_data["evidence_ledger"]["phase"] = "PRE_THESIS_E1_E5"
             return original(market_data, upstream)
         return wrapped
 
@@ -44,7 +43,6 @@ def install(e6_module: Any, e9_module: Any) -> None:
         def wrapped(snapshot, upstream):
             if isinstance(snapshot, dict):
                 snapshot["evidence_ledger"] = ledger_for_e9(upstream)
-                snapshot["evidence_ledger"]["phase"] = "FINAL_GOVERNANCE_E1_E8"
             result = original(snapshot, upstream)
             e6 = dict(getattr(upstream.get("E6"), "output", {}) or {})
             output = preserve_e6_thesis_contract(e6, dict(getattr(result, "output", {}) or {}))
