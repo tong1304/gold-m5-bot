@@ -22,12 +22,10 @@ def test_current_opportunity_input_preserves_setup_thesis(monkeypatch):
     ]
     result = SimpleNamespace(engines=engines, decision="NO_TRADE", gate_passed=False)
     monkeypatch.setattr(app, "reconcile_causal_evidence", lambda _engines: {"state": "NO_SETUP", "direction": "NEUTRAL", "wait_for": []})
-
     current = app._current_opportunity_input(result, "2026-09-04T11:00:00Z")
-
     assert current["candidate"] is True
     assert current["direction"] == "BUY"
     assert current["setup"] == "LIQUIDITY_RESPONSE"
-    assert current["thesis_status"] == "FORMING"
+    assert current["thesis_status"] == "SETUP_THESIS"
     assert current["lifecycle_source"] == "E6_SETUP"
     assert "E7_CONFIRMATION" in current["wait_for"]
