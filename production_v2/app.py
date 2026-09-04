@@ -75,12 +75,7 @@ def _pending_upstream_thesis(engines: dict[str, dict]) -> tuple[str, str, list[s
 
 
 def _e6_pending_thesis(engines: dict[str, dict]) -> tuple[str, str, list[str], list[str]]:
-    """Preserve an explicit E6 watch when reconciliation cannot represent it.
-
-    E6 owns the setup thesis boundary. Reconciliation may legitimately remain
-    unresolved while E6 has already identified a causal, non-trade-ready watch.
-    In that case the lifecycle must not collapse the watch to IDLE.
-    """
+    """Preserve an explicit E6 watch when reconciliation cannot represent it."""
     e6 = engines.get("E6") or {}
     setup = _text(e6.get("setup") or e6.get("setup_type") or e6.get("setup_family"))
     direction = _direction_from_output(e6)
@@ -106,7 +101,6 @@ def _current_opportunity_input(result, candle: str) -> dict:
     e8 = engines.get("E8", {})
     e9 = engines.get("E9", {})
     reconciliation = reconcile_causal_evidence(engines)
-
     e6_direction = _direction_from_output(e6)
     e6_setup = _text(e6.get("setup") or e6.get("setup_family") or e6.get("setup_type"))
     e6_state = _text(e6.get("setup_state") or e6.get("opportunity_stage") or e6.get("state") or e6.get("finding"))
@@ -120,25 +114,15 @@ def _current_opportunity_input(result, candle: str) -> dict:
         and e6_setup not in {"", "UNKNOWN", "NONE", "NO_SETUP"}
         and not e6_setup.startswith(("OPPORTUNITY_WATCH", "AUCTION_WATCH", "REGIME_WATCH"))
         and not e6_is_invalid
-        and (
-            e6_setup_exists
-            or e6_causal_gate == "PASSED"
-            or e6_state in {"SETUP_THESIS", "THESIS_CONTESTED", "FORMING", "VALIDATING", "MATURE", "CONFIRMED", "TRADE_READY", "VALIDATED"}
-        )
+        and (e6_setup_exists or e6_causal_gate == "PASSED" or e6_state in {"SETUP_THESIS", "THESIS_CONTESTED", "FORMING", "VALIDATING", "MATURE", "CONFIRMED", "TRADE_READY", "VALIDATED"})
     )
     real_setup = bool(
         e6_surviving_setup
-        and (
-            reconciliation.get("state") == "CAUSAL_SETUP"
-            or e6_setup_exists
-            or e6_causal_gate == "PASSED"
-            or e6_state in {"SETUP_THESIS", "THESIS_CONTESTED"}
-        )
+        and (reconciliation.get("state") == "CAUSAL_SETUP" or e6_setup_exists or e6_causal_gate == "PASSED" or e6_state in {"SETUP_THESIS", "THESIS_CONTESTED"})
     )
     pending_direction, pending_setup, pending_evidence, reconciliation_wait_for = _pending_upstream_thesis(engines)
     if not pending_setup:
         pending_direction, pending_setup, pending_evidence, reconciliation_wait_for = _e6_pending_thesis(engines)
-
     if real_setup:
         direction = e6_direction
         setup = e6_setup
@@ -164,7 +148,6 @@ def _current_opportunity_input(result, candle: str) -> dict:
         candidate = False
         lifecycle_source = "NONE"
         wait_for = list(reconciliation.get("wait_for") or [])
-
     confirmation = _text(e7.get("confirmation_state") or e7.get("confirmation") or "")
     profit_edge = e8.get("profit_edge") if isinstance(e8.get("profit_edge"), dict) else {}
     e9_decision = _text(e9.get("decision") or result.decision)
@@ -172,3 +155,96 @@ def _current_opportunity_input(result, candle: str) -> dict:
     executed = bool(e9_decision in {"BUY", "SELL"} and result.gate_passed)
     invalidated = e6_is_invalid or bool(any("INVALIDATED" in code or "HARD_VETO" in code for code in e6_reasons))
     return {"candidate": candidate, "direction": direction, "setup": setup, "ready": ready, "invalidated": invalidated, "executed": executed, "thesis_status": thesis_status, "candle": candle, "lifecycle_source": lifecycle_source, "upstream_evidence": pending_evidence, "wait_for": wait_for}
+
+
+def _run_with_lifecycle(self, market_data, *, wait_bars=0, resume_state=None, historical_calibration=None):
+    symbol = str(market_data.get("symbol") or "UNKNOWN").upper()
+    previous = dict(_last_opportunity_lifecycle.get(symbol) or {})
+    if previous.get("state") in {"WATCHING", "WAITING", "READY"}:
+        market_data = dict(market_data)
+        market_data["opportunity_resume_state"] = dict(previous)
+        resume_state = dict(previous)
+    result = _ORIGINAL_PIPELINE_RUN(self, market_data, wait_bars=wait_bars, resume_state=resume_state, historical_calibration=historical_calibration)
+    candle = str(market_data.get("candle_close_timestamp") or "")
+    current = _current_opportunity_input(result, candle)
+    lifecycle = advance_opportunity(previous, current)
+    lifecycle["wait_for"] = list(current.get("wait_for") or [])
+    _last_opportunity_lifecycle[symbol] = lifecycle
+    risk = dict(result.risk)
+    risk["opportunity_lifecycle"] = lifecycle
+    risk["next_required_event"] = "NEXT_CLOSED_M5_CANDLE" if lifecycle.get("state") in {"WATCHING", "WAITING", "READY"} else None
+    risk["wait_bars"] = int(lifecycle.get("bars_waited", 0) or 0)
+    risk["lifecycle_source"] = current.get("lifecycle_source")
+    risk["upstream_evidence"] = current.get("upstream_evidence", [])
+    risk["wait_for"] = current.get("wait_for", [])
+    print(f"[PRODUCTION V2] {symbol} OPPORTUNITY_LIFECYCLE state={lifecycle.get('state')} continuity={lifecycle.get('continuity')} bars_waited={lifecycle.get('bars_waited', 0)} opportunity_id={lifecycle.get('opportunity_id')} source={current.get('lifecycle_source')} candle={candle} next={risk['next_required_event']} wait_for={','.join(risk['wait_for'])}", flush=True)
+    return result.__class__(result.symbol, result.timeframe, result.decision, result.gate_passed, result.score, result.engines, risk, result.reason_codes)
+
+
+_ORIGINAL_PIPELINE_RUN = ProductionPipeline.run
+ProductionPipeline.run = _run_with_lifecycle
+
+
+def _connect_brains(result):
+    result = attach_result_chain(result)
+    symbol = str(result.symbol or "UNKNOWN").upper()
+    lifecycle = dict(result.risk.get("opportunity_lifecycle") or _last_opportunity_lifecycle.get(symbol) or {})
+    _last_opportunity_lifecycle[symbol] = lifecycle
+    risk = dict(result.risk)
+    risk["opportunity_lifecycle"] = lifecycle
+    risk["next_required_event"] = "NEXT_CLOSED_M5_CANDLE" if lifecycle.get("state") in {"WATCHING", "WAITING", "READY"} else None
+    risk["wait_bars"] = int(lifecycle.get("bars_waited", 0) or 0)
+    return result.__class__(result.symbol, result.timeframe, result.decision, result.gate_passed, result.score, result.engines, risk, result.reason_codes)
+
+
+def start_production_runtime():
+    global _runtime_started
+    if _runtime_started:
+        return
+    if os.getenv("PRODUCTION_V2_DISABLE_LIVE", "").strip() == "1":
+        print("[PRODUCTION V2] Live runtime disabled by test environment", flush=True)
+        _runtime_started = True
+        return
+    key = os.getenv("LSE_API_KEY", "").strip()
+    if not key:
+        raise RuntimeError("LSE_API_KEY is required for production-v2 live runtime")
+    from .service import start_live_service
+    start_live_service()
+    _runtime_started = True
+    print(f"[PRODUCTION V2] Live M5 runtime started; architecture={ARCHITECTURE}", flush=True)
+
+
+start_production_runtime()
+
+
+@app.get("/")
+def index():
+    return jsonify({"system": "9-ENGINE", "version": "production-v2", "architecture": ARCHITECTURE, "sub_engines": False, "parallel_peer_analysis": False, "decision_authority": "E9", "legacy_runtime": False, "live_runtime": "RUNNING" if _runtime_started else "NOT_RUNNING", "environment": os.getenv("RENDER_ENV", "production")})
+
+@app.get("/health")
+def health():
+    return jsonify({"status": "ok" if _runtime_started else "degraded", "system": "9-ENGINE", "version": "production-v2", "architecture": ARCHITECTURE, "sub_engines": False, "parallel_peer_analysis": False, "decision_authority": "E9", "legacy_runtime": False, "timeframe": "M5"}), (200 if _runtime_started else 503)
+
+@app.get("/api/statistics")
+@app.get("/statistics")
+def statistics():
+    return jsonify(build_statistics())
+
+@app.post("/signal")
+def signal():
+    try:
+        market_data = normalize_market_data(request.get_json(silent=True) or {})
+        result = pipeline.run(market_data, historical_calibration=_load_historical_calibration())
+        result = _connect_brains(result)
+        result = enrich_decision(result)
+        price = market_data["bars"][-1]["close"] if market_data["bars"] else None
+        store.record(result, price)
+        return jsonify(result.as_dict())
+    except ValueError as exc:
+        return jsonify({"error": str(exc), "system": "9-ENGINE", "legacy_runtime": False}), 400
+    except Exception as exc:
+        logger.exception("production-v2 pipeline failure")
+        return jsonify({"error": "PIPELINE_ERROR", "detail": str(exc)}), 500
+
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=int(os.getenv("PORT", "10000")))
