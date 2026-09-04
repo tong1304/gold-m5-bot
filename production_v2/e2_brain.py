@@ -5,7 +5,7 @@ from typing import Any
 
 QUESTION = "What opportunity is the market offering right now?"
 MIN_BARS = 80
-ARCHITECTURE = "E2_PROFESSIONAL_OPPORTUNITY_CORE_V7"
+ARCHITECTURE = "E2_PROFESSIONAL_OPPORTUNITY_CORE_V8"
 MATURITY_ORDER = {"UNPROVEN": 0, "EMERGING": 1, "DEVELOPING": 2, "CONFIRMED": 3, "ACTIONABLE": 4}
 
 
@@ -80,7 +80,7 @@ def _unavailable() -> dict[str, Any]:
 
 def _classify_opportunity(*, up: int, down: int, auction: str, balanced: bool, acceptance: bool, rejection: bool,
                           space_atr: float, location_ok: bool) -> dict[str, Any]:
-    """Classify opportunity maturity without turning evidence into trade authorization."""
+    """Classify opportunity maturity without turning auction evidence into a trade thesis."""
     if up >= 5 and up - down >= 2:
         direction = "BUY"
     elif down >= 5 and down - up >= 2:
@@ -88,10 +88,12 @@ def _classify_opportunity(*, up: int, down: int, auction: str, balanced: bool, a
     else:
         direction = "NEUTRAL"
 
+    # E2 may confirm the auction event, but it must not call the opportunity
+    # itself CONFIRMED. Surviving causal thesis ownership belongs to E6.
     if acceptance and direction != "NEUTRAL":
-        maturity, finding = "CONFIRMED", "CONDITIONAL_OPPORTUNITY_CONFIRMED"
+        maturity, finding = "DEVELOPING", "AUCTION_ACCEPTANCE_CONFIRMED_OPPORTUNITY_DEVELOPING"
     elif rejection and direction != "NEUTRAL":
-        maturity, finding = "DEVELOPING", "CONDITIONAL_REVERSAL_OPPORTUNITY"
+        maturity, finding = "DEVELOPING", "AUCTION_REJECTION_CONFIRMED_OPPORTUNITY_DEVELOPING"
     elif direction != "NEUTRAL":
         maturity, finding = "DEVELOPING", "CONDITIONAL_DIRECTIONAL_OPPORTUNITY"
     elif balanced:
