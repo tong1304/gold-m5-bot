@@ -42,6 +42,7 @@ def ledger_for_e9(upstream: dict[str, Any]) -> dict[str, Any]:
     return {
         "schema": "EVIDENCE_LEDGER_V1",
         "phase": "FINAL_GOVERNANCE_E1_E8",
+        "decision": None,
         "brains": {key: _brain_output(value, key) for key, value in upstream.items() if key in _FINAL_BRAINS},
     }
 
@@ -58,9 +59,6 @@ def install(e6_module: Any, e9_module: Any) -> None:
     """Expose evidence context without changing specialist authority."""
     def e6_wrapper(original):
         def wrapped(market_data, upstream):
-            # Some legacy/direct tests pass a list as market_data. Evidence
-            # collaboration is observability only; never fail E6 because that
-            # caller shape cannot carry an injected ledger.
             if isinstance(market_data, dict):
                 market_data["evidence_ledger"] = build_evidence_ledger(upstream)
             return original(market_data, upstream)
