@@ -132,6 +132,17 @@ def _candidate(name: str, direction: str, structure: bool, acceptance: bool, rej
             "location_ok":location_ok,"auction_intent":auction,"eligible":not vetoes,"vetoes":vetoes,"efficiency":round(efficiency,3)}
 
 
+def _opportunity_blockers(*, direction: str, maturity: str, eligible: bool, base_blockers: list[str]) -> list[str]:
+    """Separate a visible developing opportunity from absence of an opportunity path."""
+    blockers = list(base_blockers)
+    if direction in {"BUY", "SELL"} and not eligible:
+        if maturity in {"DEVELOPING", "EMERGING", "CONFIRMED"}:
+            blockers.append("NO_TRADEABLE_OPPORTUNITY_PATH_YET")
+        else:
+            blockers.append("NO_ELIGIBLE_OPPORTUNITY_PATH")
+    return _dedupe(blockers)
+
+
 def analyze_e2(snapshot: dict[str, Any]) -> dict[str, Any]:
     bars = _bars(snapshot)
     if len(bars) < MIN_BARS: return _unavailable()
@@ -169,8 +180,8 @@ def analyze_e2(snapshot: dict[str, Any]) -> dict[str, Any]:
     if pull_up: candidates.append(_candidate("TREND_PULLBACK_CONTINUATION","BUY",bullish,False,False,True,displacement_up,long_loc,long_space,auction,efficiency))
     if pull_down: candidates.append(_candidate("TREND_PULLBACK_CONTINUATION","SELL",bearish,False,False,True,displacement_down,short_loc,short_space,auction,efficiency))
     if not candidates and direction in {"BUY","SELL"}: candidates.append(_candidate("DIRECTIONAL_CONTINUATION_WATCH",direction,bullish if direction=="BUY" else bearish,acceptance_up if direction=="BUY" else acceptance_down,False,False,displacement_up if direction=="BUY" else displacement_down,long_loc if direction=="BUY" else short_loc,long_space if direction=="BUY" else short_space,auction,efficiency))
-    eligible=[c for c in candidates if c["eligible"]]; blockers=list(base["blockers"])
-    if direction!="NEUTRAL" and not eligible: blockers.append("NO_ELIGIBLE_OPPORTUNITY_PATH")
+    eligible=[c for c in candidates if c["eligible"]]
+    blockers=_opportunity_blockers(direction=direction,maturity=base["opportunity_maturity"],eligible=bool(eligible),base_blockers=base["blockers"])
     if direction!="NEUTRAL" and (long_space if direction=="BUY" else short_space)<1.0: blockers.append("OPPOSING_SPACE_CONSTRAINED")
     blockers=_dedupe(blockers); missing=list(base["missing_evidence"])
     if direction in {"BUY","SELL"} and "adequate opposing space" not in missing and (long_space if direction=="BUY" else short_space)<1.0: missing.append("adequate opposing space")
