@@ -1,5 +1,5 @@
 from production_v2.contracts import DecisionResult, EngineResult
-from production_v2.service import is_actionable_signal
+from production_v2.signal_boundary import is_actionable_signal
 
 
 def _result(decision="BUY", gate_passed=True, e9_decision=None):
