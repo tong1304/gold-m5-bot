@@ -8,21 +8,26 @@ def _module_name(value: Any) -> str:
 
 
 def install(pipeline_module, e6_module, e8_module, e9_module) -> None:
-    """Make final authority bindings deterministic at every live pipeline run.
+    """Make final authority bindings deterministic without clobbering later E6 surgery.
 
-    Package startup installs several wrappers in sequence. This final membrane
-    deliberately rebinds E6/E8/E9 immediately before execution so a startup
-    wrapper cannot leave the pipeline holding an earlier function reference.
-    Installation is tracked on the pipeline module, allowing isolated test
-    pipelines to exercise the membrane independently.
+    E6 is authoritative, but production startup may install a policy-preserving
+    E6 membrane after package initialization. The final runtime binder must use
+    that explicitly registered pipeline binding instead of blindly restoring the
+    raw e6_brain callable on every candle.
     """
     if getattr(pipeline_module, "_FINAL_RUNTIME_BINDING_INSTALLED", False):
         return
 
     original_run = pipeline_module.ProductionPipeline.run
+    pipeline_module._E6_FINAL_AUTHORITY = getattr(pipeline_module, "analyze_e6", e6_module.analyze_e6)
 
     def run_with_final_bindings(self, market_data, *, wait_bars=0, resume_state=None, historical_calibration=None):
-        pipeline_module.analyze_e6 = e6_module.analyze_e6
+        e6_binding = getattr(
+            pipeline_module,
+            "_E6_RUNTIME_OVERRIDE",
+            getattr(pipeline_module, "_E6_FINAL_AUTHORITY", e6_module.analyze_e6),
+        )
+        pipeline_module.analyze_e6 = e6_binding
         pipeline_module.analyze_e8 = e8_module.analyze_e8
         pipeline_module.analyze_e9 = e9_module.analyze_e9
         print(
