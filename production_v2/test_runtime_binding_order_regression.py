@@ -16,6 +16,7 @@ def test_live_app_e6_surgery_survives_final_runtime_binding():
     from production_v2 import app as app_module
     from production_v2 import e6_pending_event_surgery
 
-    assert pipeline_module.analyze_e6 is e6_pending_event_surgery.patched_analyze_e6 if hasattr(e6_pending_event_surgery, "patched_analyze_e6") else pipeline_module.analyze_e6.__module__ == e6_pending_event_surgery.__name__
+    assert pipeline_module.analyze_e6.__module__ == e6_pending_event_surgery.__name__
+    assert pipeline_module.analyze_e6.__name__ == "patched_analyze_e6"
     assert getattr(pipeline_module, "_E6_RUNTIME_OVERRIDE").__module__ == e6_pending_event_surgery.__name__
     assert app_module.pipeline.__class__.__name__ == "ProductionPipeline"
