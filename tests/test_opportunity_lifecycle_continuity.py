@@ -103,3 +103,25 @@ def test_watch_invalidates_when_upstream_causal_evidence_is_explicitly_lost():
     assert lost["invalidation_reason"] == "UPSTREAM_CAUSAL_EVIDENCE_LOST"
     assert lost["opportunity_id"] == watch["opportunity_id"]
     assert lost["trade_authorized"] is False
+
+
+def test_same_watch_is_not_promoted_without_a_new_setup_family():
+    watch = advance_opportunity(None, {
+        "direction": "SELL",
+        "setup": "OPPORTUNITY_WATCH",
+        "event_id": "AUCTION-1",
+        "candle": "2026-09-04T14:35:00Z",
+        "candidate": True,
+    })
+    continued = advance_opportunity(watch, {
+        "direction": "SELL",
+        "setup": "OPPORTUNITY_WATCH",
+        "event_id": "AUCTION-2",
+        "candle": "2026-09-04T14:40:00Z",
+        "candidate": True,
+        "wait_for": ["E4_FOLLOW_THROUGH"],
+    })
+    assert continued["continuity"] == "CONTINUING_UPSTREAM_WATCH"
+    assert continued["state"] in {"WATCHING", "WAITING"}
+    assert continued["setup"] == "OPPORTUNITY_WATCH"
+    assert continued["trade_authorized"] is False
