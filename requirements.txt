@@ -7,3 +7,4 @@ python-dotenv
 scipy
 lse-data>=0.14.0
 pytest
+psycopg[binary]>=3.2,<4
