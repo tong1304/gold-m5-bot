@@ -5,7 +5,7 @@ from typing import Any
 
 from .contracts import EngineResult
 
-VERSION = "E4_EVENT_LIFECYCLE_SURGERY_V4"
+VERSION = "E4_EVENT_LIFECYCLE_SURGERY_V5"
 CONFIRM_BARS = 2
 FOLLOW_WINDOW = 5
 INTERACTION_ATR = 0.05
@@ -115,9 +115,7 @@ def _repair(output: dict[str, Any], bars: list[dict[str, Any]], current_candle: 
         return output
 
     event_ts = _timestamp(_event_id(output))
-    current_ts = _timestamp(current_candle)
-    if current_ts is None:
-        current_ts = _bar_timestamp(bars[-1])
+    current_ts = _timestamp(current_candle) or _bar_timestamp(bars[-1])
     age_by_index = max(0, len(bars) - 1 - idx)
     age_by_time = 0
     if event_ts is not None and current_ts is not None and current_ts >= event_ts:
@@ -129,16 +127,10 @@ def _repair(output: dict[str, Any], bars: list[dict[str, Any]], current_candle: 
     atr = _atr(output)
     if direction == "NEUTRAL" or level is None or atr <= 0:
         repaired = dict(output)
-        repaired["event_age_bars"] = age
-        repaired["event_index"] = idx
-        repaired["auction_lifecycle_repaired"] = True
-        repaired["auction_lifecycle_repair_version"] = VERSION
-        repaired["auction_lifecycle_repair_reason"] = "AGE_ONLY_NO_DIRECTIONAL_PROOF"
+        repaired.update(event_age_bars=age, event_index=idx, auction_lifecycle_repaired=True, auction_lifecycle_repair_version=VERSION, auction_lifecycle_repair_reason="AGE_ONLY_NO_DIRECTIONAL_PROOF")
         reasons = [str(x) for x in list(repaired.get("reason_codes") or repaired.get("reasons") or []) if str(x)]
-        if "E4_EVENT_AGE_REPAIRED" not in reasons:
-            reasons.append("E4_EVENT_AGE_REPAIRED")
-        repaired["reason_codes"] = reasons
-        repaired["reasons"] = reasons
+        if "E4_EVENT_AGE_REPAIRED" not in reasons: reasons.append("E4_EVENT_AGE_REPAIRED")
+        repaired["reason_codes"] = reasons; repaired["reasons"] = reasons
         return repaired
 
     post = bars[idx + 1:]
@@ -148,60 +140,33 @@ def _repair(output: dict[str, Any], bars: list[dict[str, Any]], current_candle: 
     terminal_reason = "FOLLOW_THROUGH_ABSENT"
     for bar in post:
         close = _num(bar.get("close"))
-        if close is None:
-            continue
+        if close is None: continue
         if direction == "UP":
-            hold = close > level + atr * INTERACTION_ATR
-            opposite = close < level - atr * INTERACTION_ATR
-            displacement = (close - level) / atr
+            hold = close > level + atr * INTERACTION_ATR; opposite = close < level - atr * INTERACTION_ATR; displacement = (close - level) / atr
         else:
-            hold = close < level - atr * INTERACTION_ATR
-            opposite = close > level + atr * INTERACTION_ATR
-            displacement = (level - close) / atr
+            hold = close < level - atr * INTERACTION_ATR; opposite = close > level + atr * INTERACTION_ATR; displacement = (level - close) / atr
         meaningful = bool(hold and displacement >= MIN_DISPLACEMENT_ATR)
         if opposite:
-            lifecycle = "INVALIDATED"
-            terminal_reason = "POST_EVENT_RECLAMATION"
-            consecutive = 0
+            lifecycle = "INVALIDATED"; terminal_reason = "POST_EVENT_RECLAMATION"; consecutive = 0
         elif meaningful:
             consecutive += 1
-            if consecutive >= CONFIRM_BARS:
-                lifecycle = "CONFIRMED"
-                terminal_reason = "FOLLOW_THROUGH_CONFIRMED"
+            if consecutive >= CONFIRM_BARS: lifecycle = "CONFIRMED"; terminal_reason = "FOLLOW_THROUGH_CONFIRMED"
         else:
             consecutive = 0
         checks.append({"candle_id": str(bar.get("timestamp") or bar.get("time") or ""), "close": close, "hold": hold, "displacement_atr": round(displacement, 6), "meaningful": meaningful, "consecutive": consecutive})
-        if lifecycle in TERMINAL:
-            break
+        if lifecycle in TERMINAL: break
 
     if lifecycle == "PENDING" and age >= FOLLOW_WINDOW:
-        lifecycle = "EXPIRED"
-        terminal_reason = "EVENT_EXPIRED"
+        lifecycle = "EXPIRED"; terminal_reason = "EVENT_EXPIRED"
 
     repaired = dict(output)
-    repaired["auction_state"] = lifecycle
-    repaired["auction_phase"] = lifecycle
-    repaired["event_age_bars"] = age
-    repaired["event_index"] = idx
-    repaired["follow_through_bars"] = consecutive
-    repaired["required_confirmation_bars"] = CONFIRM_BARS
-    repaired["confirmation_horizon"] = FOLLOW_WINDOW
-    repaired["follow_through_checks"] = checks
-    repaired["auction_lifecycle_repaired"] = True
-    repaired["auction_lifecycle_repair_version"] = VERSION
-    repaired["auction_lifecycle_repair_reason"] = terminal_reason
+    repaired.update(auction_state=lifecycle, auction_phase=lifecycle, event_age_bars=age, event_index=idx, follow_through_bars=consecutive, required_confirmation_bars=CONFIRM_BARS, confirmation_horizon=FOLLOW_WINDOW, follow_through_checks=checks, auction_lifecycle_repaired=True, auction_lifecycle_repair_version=VERSION, auction_lifecycle_repair_reason=terminal_reason)
     reasons = [str(x) for x in list(repaired.get("reason_codes") or repaired.get("reasons") or []) if str(x)]
     code = "E4_EVENT_AGE_REPAIRED" if lifecycle == "PENDING" else f"E4_AUCTION_{lifecycle}"
-    if code not in reasons:
-        reasons.append(code)
-    repaired["reason_codes"] = reasons
-    repaired["reasons"] = reasons
-    if lifecycle == "CONFIRMED":
-        repaired["directional_implication"] = direction
-        repaired["auction_confirmation"] = "FOLLOW_THROUGH_CONFIRMED"
-    elif lifecycle == "INVALIDATED":
-        repaired["directional_implication"] = "NEUTRAL"
-        repaired["auction_confirmation"] = "POST_EVENT_RECLAMATION"
+    if code not in reasons: reasons.append(code)
+    repaired["reason_codes"] = reasons; repaired["reasons"] = reasons
+    if lifecycle == "CONFIRMED": repaired["directional_implication"] = direction; repaired["auction_confirmation"] = "FOLLOW_THROUGH_CONFIRMED"
+    elif lifecycle == "INVALIDATED": repaired["directional_implication"] = "NEUTRAL"; repaired["auction_confirmation"] = "POST_EVENT_RECLAMATION"
     return repaired
 
 
@@ -210,9 +175,7 @@ def _repair_result(result: EngineResult, snapshot: dict[str, Any]) -> EngineResu
     current = None
     if isinstance(snapshot, dict):
         for key in ("evaluation_candle_timestamp", "current_candle_timestamp", "candle_timestamp", "current_candle", "candle_close_timestamp", "data_cutoff_timestamp"):
-            if snapshot.get(key):
-                current = snapshot.get(key)
-                break
+            if snapshot.get(key): current = snapshot.get(key); break
     before = _out(result)
     after = _repair(before, bars, current)
     if after == before:
@@ -223,34 +186,17 @@ def _repair_result(result: EngineResult, snapshot: dict[str, Any]) -> EngineResu
 
 
 def install(pipeline_module: Any) -> None:
-    if getattr(pipeline_module, "_E4_EVENT_LIFECYCLE_SURGERY_INSTALLED", False):
-        return
+    if getattr(pipeline_module, "_E4_EVENT_LIFECYCLE_SURGERY_INSTALLED", False): return
     original_analyze = pipeline_module.analyze_e4
-    original_run = pipeline_module.ProductionPipeline.run
 
     def patched_analyze_e4(snapshot: dict[str, Any], upstream: dict[str, EngineResult]) -> EngineResult:
         return _repair_result(original_analyze(snapshot, upstream), snapshot)
 
-    def patched_run(self, market_data, *args, **kwargs):
-        result = original_run(self, market_data, *args, **kwargs)
-        try:
-            engines = dict(result.engines or {})
-            e4 = engines.get("E4")
-            if isinstance(e4, EngineResult):
-                repaired = _repair_result(e4, dict(market_data or {}))
-                if repaired is not e4:
-                    engines["E4"] = repaired
-                    return result.__class__(result.symbol, result.timeframe, result.decision, result.gate_passed, result.score, engines, result.risk, result.reason_codes)
-        except Exception as exc:
-            print(f"[PRODUCTION V2] E4_EVENT_LIFECYCLE_SURGERY version={VERSION} action=RUNTIME_ERROR error={exc}", flush=True)
-        return result
-
     pipeline_module.analyze_e4 = patched_analyze_e4
-    pipeline_module.ProductionPipeline.run = patched_run
     pipeline_module._E4_EVENT_LIFECYCLE_SURGERY_INSTALLED = True
 
-    # The application already installs this surgery during startup. Chain the
-    # directional E5->E6 membrane here so it executes after bootstrap E6.
+    print(f"[PRODUCTION V2] E4_BINDING version={VERSION} module={pipeline_module.__name__} analyze={pipeline_module.analyze_e4.__module__}.{pipeline_module.analyze_e4.__name__}", flush=True)
+
     try:
         from .e5_e6_directional_evidence_surgery import install as install_e5_e6
         install_e5_e6(pipeline_module)
