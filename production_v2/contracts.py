@@ -21,6 +21,9 @@ class DecisionResult:
         if self.reason_codes==() and e9 is not None:object.__setattr__(self,"reason_codes",tuple(e9.reason_codes))
         if self.decision=="TRADE":
             d=str(e9o.get("decision") or "").upper().strip(); object.__setattr__(self,"decision",d if d in {"BUY","SELL"} and self.gate_passed else "NO_TRADE")
+        elif self.decision=="NO_TRADE" and self.gate_passed:
+            d=str(e9o.get("decision") or "").upper().strip()
+            if d in {"BUY","SELL"}:object.__setattr__(self,"decision",d)
         elif self.decision in {"BUY","SELL"} and not self.gate_passed:object.__setattr__(self,"decision","NO_TRADE")
         if self.decision in {"BUY","SELL"} and self.gate_passed and self.state in {"ANALYSIS_COMPLETE_NO_TRADE","",None}:object.__setattr__(self,"state","SIGNAL_READY")
         execution=dict(self.execution_state or {}); valid={"NOT_REQUESTED","ORDER_INTENT","ORDER_SUBMITTED","ACCEPTED","REJECTED","POSITION_OPEN","POSITION_CLOSED"}
