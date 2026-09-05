@@ -12,6 +12,7 @@ from .market_data import normalize_market_data
 from .notifications.no_trade import send_no_trade
 from .notifications.telegram import format_startup, format_status, send, send_decision
 from .pipeline import ProductionPipeline
+from .signal_boundary import is_actionable_signal
 from .statistics import store
 
 BANGKOK_TZ = ZoneInfo("Asia/Bangkok")
@@ -89,7 +90,7 @@ class LiveService:
         if not active_results:
             self._last_no_trade_slot = slot
             return
-        if any(getattr(result, "decision", None) in {"BUY", "SELL"} and bool(getattr(result, "gate_passed", False)) for result in active_results.values()):
+        if any(is_actionable_signal(result) for result in active_results.values()):
             self._last_no_trade_slot = slot
             return
         try:
@@ -238,7 +239,7 @@ class LiveService:
                     self._latest_results[alias] = result
                     store.record(result, self._last_prices.get(alias))
                     self._trace_result(alias, result)
-                    if result.decision in {"BUY", "SELL"} and result.gate_passed:
+                    if is_actionable_signal(result):
                         send_decision(result)
                 except Exception as exc:
                     self._runtime_errors[alias] = f"{type(exc).__name__}: {exc}"
