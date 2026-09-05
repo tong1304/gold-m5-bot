@@ -6,6 +6,7 @@ from .market_data import normalize_market_data
 from . import pipeline as pipeline_module
 from .pipeline import ProductionPipeline
 from .bootstrap_surgery import install as install_bootstrap_surgery
+from .e4_event_lifecycle_surgery import install as install_e4_event_lifecycle_surgery
 from .e6_pending_event_surgery import install as install_e6_pending_event_surgery
 from .brain_handoff import attach_result_chain
 from .professional_opportunity_surgery import enrich_decision
@@ -17,6 +18,7 @@ from .statistics import build_statistics, store
 logger = logging.getLogger(__name__)
 app = Flask(__name__)
 install_bootstrap_surgery(pipeline_module)
+install_e4_event_lifecycle_surgery(pipeline_module)
 install_e6_pending_event_surgery(pipeline_module)
 pipeline = ProductionPipeline()
 app.config["PRODUCTION_V2_LIVE_REQUIRED"] = True
