@@ -5,6 +5,7 @@ ACTIVE_STATES={"WATCHING","WAITING","READY"}
 TERMINAL={"INVALIDATED","EXPIRED","REPLACED"}
 WATCH_SETUPS={"OPPORTUNITY_WATCH","AUCTION_WATCH","REGIME_WATCH"}
 VALID_DIRECTIONS={"BUY","SELL"}
+MAX_WATCH_BARS=5
 
 
 def _text(v:Any)->str:return str(v or "").upper().strip()
@@ -29,7 +30,13 @@ def _active_previous(p:dict[str,Any])->bool:
 
 
 def advance_opportunity(previous:dict[str,Any]|None,current:dict[str,Any])->dict[str,Any]:
-    """Advance E6 opportunity state across closed candles; lifecycle never grants execution authority."""
+    """Advance an opportunity across closed candles.
+
+    Absence of a fresh E6 candidate is not itself invalidation. A pending
+    opportunity remains alive until explicit causal evidence loss, direction
+    reversal, or the bounded watch-age expiry is proven. Lifecycle never grants
+    execution authority.
+    """
     p=dict(previous or {}); c=dict(current or {})
     d=_text(c.get("direction")); setup=_text(c.get("setup") or c.get("setup_family")); candle=_text(c.get("candle")); event=_text(c.get("event_id"))
     oid=_stable_identity(p,d,setup,event); pid=_text(p.get("opportunity_id")); ps=_text(p.get("state")); pd=_text(p.get("direction")); previous_setup=_text(p.get("setup"))
@@ -42,7 +49,7 @@ def advance_opportunity(previous:dict[str,Any]|None,current:dict[str,Any])->dict
     if invalidated:
         if not active_prev:
             return {"state":"IDLE","continuity":"NO_ACTIVE_PENDING_OPPORTUNITY","opportunity_id":None,"direction":"NEUTRAL","setup":"UNKNOWN","bars_waited":0,"origin_candle":candle,"last_evaluated_candle":candle,"trade_authorized":False,"invalidation_reason":None}
-        return {**base,"state":"INVALIDATED","continuity":"OPPORTUNITY_INVALIDATED","opportunity_id":pid,"bars_waited":age,"invalidation_reason":"CURRENT_CANDLE_INVALIDATED"}
+        return {**base,"state":"INVALIDATED","continuity":"OPPORTUNITY_INVALIDATED","opportunity_id":pid,"bars_waited":age,"invalidation_reason":c.get("invalidation_reason") or "CURRENT_CANDLE_INVALIDATED"}
     if active_prev and pd in VALID_DIRECTIONS and d in VALID_DIRECTIONS and d!=pd:
         return {**c,"state":"INVALIDATED","continuity":"DIRECTION_CHANGED","previous_opportunity_id":pid,"opportunity_id":pid,"direction":pd,"setup":previous_setup or setup,"bars_waited":age,"origin_candle":p.get("origin_candle") or candle,"last_evaluated_candle":candle,"trade_authorized":False,"invalidation_reason":"DIRECTION_CHANGED"}
     pending_watch=active_prev and (previous_setup in WATCH_SETUPS or ps in {"WATCHING","WAITING"})
@@ -56,18 +63,18 @@ def advance_opportunity(previous:dict[str,Any]|None,current:dict[str,Any])->dict
     if active_prev and ready and candidate and oid:
         return {**base,"state":"READY","continuity":"ADVANCING_EXISTING_OPPORTUNITY","opportunity_id":pid or oid,"direction":d or pd,"setup":setup or previous_setup,"bars_waited":age,"origin_candle":p.get("origin_candle") or candle,"invalidation_reason":None}
     if candidate and oid:
-        if active_prev and age>5:
+        if active_prev and age>MAX_WATCH_BARS:
             return {**base,"state":"EXPIRED","continuity":"OPPORTUNITY_EXPIRED","opportunity_id":pid,"direction":pd or d,"setup":previous_setup or setup,"bars_waited":age,"wait_for":"NEW_CAUSAL_OPPORTUNITY","invalidation_reason":"WATCH_MAX_AGE_REACHED"}
         continuity="CONTINUING_UPSTREAM_WATCH" if pending_watch else ("CONTINUING_EXISTING_OPPORTUNITY" if active_prev else "NEW_OPPORTUNITY_WATCH")
         return {**base,"state":"WATCHING","continuity":continuity,"opportunity_id":oid,"direction":d,"setup":setup,"bars_waited":age if active_prev else 0,"origin_candle":p.get("origin_candle") if active_prev else candle,"wait_for":c.get("wait_for") or ["NEXT_CLOSED_M5_CANDLE"],"invalidation_reason":None}
     if active_prev:
-        if age>5:
+        if age>MAX_WATCH_BARS:
             return {**base,"state":"EXPIRED","continuity":"OPPORTUNITY_EXPIRED","opportunity_id":pid,"direction":pd,"setup":previous_setup,"bars_waited":age,"wait_for":"NEW_CAUSAL_OPPORTUNITY","invalidation_reason":"WATCH_MAX_AGE_REACHED"}
         return {**base,"state":ps if ps in ACTIVE_STATES else "WAITING","continuity":"PRESERVING_PENDING_OPPORTUNITY","opportunity_id":pid,"direction":pd,"setup":previous_setup,"bars_waited":age,"wait_for":"CAUSAL_FOLLOW_THROUGH_OR_INVALIDATION","invalidation_reason":None}
     return {"state":"IDLE","continuity":"NO_ACTIVE_PENDING_OPPORTUNITY","opportunity_id":None,"direction":"NEUTRAL","setup":"UNKNOWN","bars_waited":0,"origin_candle":candle,"last_evaluated_candle":candle,"trade_authorized":False,"invalidation_reason":None}
 
 
-def advance_lifecycle(previous:dict[str,Any]|None,current:dict[str,Any],*,bar_id:str,max_watch_bars:int=5)->dict[str,Any]:
+def advance_lifecycle(previous:dict[str,Any]|None,current:dict[str,Any],*,bar_id:str,max_watch_bars:int=MAX_WATCH_BARS)->dict[str,Any]:
     p=dict(previous or {}); c=dict(current or {}); d=_text(c.get("direction")); setup=_text(c.get("setup_family") or c.get("setup")); pid=_text(p.get("opportunity_id")); oid=_text(c.get("opportunity_id")) or _stable_identity(p,d,setup,c.get("event_id")); age=int(p.get("age_bars",0) or 0)+(1 if p else 0)
     if c.get("invalidated"):return {**c,"opportunity_id":oid or pid,"lifecycle_state":"INVALIDATED","age_bars":age if p else 0,"wait_for":"NEW_CAUSAL_OPPORTUNITY"}
     if p and _text(p.get("direction")) in VALID_DIRECTIONS and d in VALID_DIRECTIONS and _text(p.get("direction"))!=d:return {**c,"lifecycle_state":"INVALIDATED","previous_opportunity_id":pid,"opportunity_id":pid or oid,"age_bars":age,"wait_for":"NEW_CAUSAL_OPPORTUNITY","invalidation_reason":"DIRECTION_CHANGED"}
