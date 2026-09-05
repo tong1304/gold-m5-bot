@@ -1,14 +1,16 @@
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from typing import Any
 
 from .contracts import EngineResult
 
-VERSION = "E4_EVENT_LIFECYCLE_SURGERY_V1"
+VERSION = "E4_EVENT_LIFECYCLE_SURGERY_V2"
 CONFIRM_BARS = 2
 FOLLOW_WINDOW = 5
 INTERACTION_ATR = 0.05
 MIN_DISPLACEMENT_ATR = 0.20
+PENDING_STATES = {"PENDING", "DEVELOPING", "FORMING", "AWAITING_CONFIRMATION", "CONFIRMATION_PENDING"}
 TERMINAL = {"CONFIRMED", "INVALIDATED", "EXPIRED"}
 
 
@@ -37,45 +39,106 @@ def _bar_id(bar: dict[str, Any]) -> str | None:
     return None
 
 
+def _timestamp(value: Any) -> datetime | None:
+    if value in (None, ""):
+        return None
+    if isinstance(value, datetime):
+        return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
+    text = str(value).strip()
+    if text.endswith("Z"):
+        text = text[:-1] + "+00:00"
+    try:
+        parsed = datetime.fromisoformat(text)
+        return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+    except ValueError:
+        return None
+
+
+def _event_candle_id(output: dict[str, Any], event: dict[str, Any]) -> str:
+    direct = output.get("event_candle_id") or event.get("event_candle_id")
+    if direct not in (None, ""):
+        return str(direct)
+    event_id = str(output.get("event_id") or event.get("event_id") or "")
+    if event_id:
+        return event_id.split("|", 1)[0]
+    return ""
+
+
 def _event_index(output: dict[str, Any], bars: list[dict[str, Any]]) -> int:
     event = output.get("event") if isinstance(output.get("event"), dict) else {}
-    candle_id = str(output.get("event_candle_id") or event.get("event_candle_id") or "")
+    candle_id = _event_candle_id(output, event)
     if candle_id:
+        target_ts = _timestamp(candle_id)
         for i, bar in enumerate(bars):
-            if _bar_id(bar) == candle_id:
+            bar_id = _bar_id(bar)
+            if bar_id == candle_id:
                 return i
-    try:
-        idx = int(event.get("index", output.get("event_index", -1)))
-        if 0 <= idx < len(bars):
-            return idx
-    except (TypeError, ValueError):
-        pass
+            if target_ts is not None:
+                bar_ts = _timestamp(bar_id)
+                if bar_ts is not None and bar_ts == target_ts:
+                    return i
+    for key in ("index", "event_index", "bar_index"):
+        value = event.get(key) if key == "index" else output.get(key)
+        try:
+            idx = int(value)
+            if 0 <= idx < len(bars):
+                return idx
+        except (TypeError, ValueError):
+            pass
     return -1
 
 
 def _direction(output: dict[str, Any], event: dict[str, Any]) -> str:
-    value = _text(event.get("directional_implication") or output.get("directional_implication") or output.get("direction"))
-    if value in {"UP", "BUY", "BULLISH"}: return "UP"
-    if value in {"DOWN", "SELL", "BEARISH"}: return "DOWN"
+    candidates = [
+        event.get("directional_implication"),
+        output.get("directional_implication"),
+        output.get("direction"),
+        event.get("direction"),
+    ]
+    event_id = str(output.get("event_id") or event.get("event_id") or "")
+    if event_id:
+        candidates.append(event_id.rsplit("|", 1)[-1])
+    for value in candidates:
+        text = _text(value)
+        if text in {"UP", "BUY", "BULLISH"} or text.startswith(("BUY_", "BUY:", "UP_", "UP:")):
+            return "UP"
+        if text in {"DOWN", "SELL", "BEARISH"} or text.startswith(("SELL_", "SELL:", "DOWN_", "DOWN:")):
+            return "DOWN"
     return "NEUTRAL"
 
 
 def _level(output: dict[str, Any], event: dict[str, Any]) -> float | None:
-    return _num(output.get("event_level")) if _num(output.get("event_level")) is not None else _num(event.get("event_level"))
+    direct = _num(output.get("event_level"))
+    return direct if direct is not None else _num(event.get("event_level"))
 
 
 def _event_atr(output: dict[str, Any], event: dict[str, Any]) -> float:
-    return _num(event.get("event_atr") or output.get("event_atr") or output.get("atr14_current")) or 0.0
+    return _num(event.get("event_atr") or output.get("event_atr") or output.get("event_atr_frozen") or output.get("atr14_current")) or 0.0
 
 
-def _repair(output: dict[str, Any], bars: list[dict[str, Any]]) -> dict[str, Any]:
+def _repair(output: dict[str, Any], bars: list[dict[str, Any]], current_candle: Any = None) -> dict[str, Any]:
     event = output.get("event") if isinstance(output.get("event"), dict) else {}
     state = _text(output.get("auction_state") or output.get("auction_phase") or output.get("state"))
-    if state not in {"PENDING", "DEVELOPING", "FORMING", "AWAITING_CONFIRMATION", "CONFIRMATION_PENDING"}:
+    if state not in PENDING_STATES:
         return output
     idx = _event_index(output, bars)
-    if idx < 0 or idx >= len(bars) - 1:
+    if idx < 0:
         return output
+
+    # The original E4 output is recalculated on every candle and can keep age=0.
+    # Age must therefore be derived from the immutable event candle versus the
+    # current closed candle, with the bar sequence as the authoritative fallback.
+    current_idx = len(bars) - 1
+    event_ts = _timestamp(_event_candle_id(output, event))
+    current_ts = _timestamp(current_candle) or _timestamp(_bar_id(bars[-1])) if bars else None
+    age = max(0, current_idx - idx)
+    if event_ts is not None and current_ts is not None:
+        delta_seconds = (current_ts - event_ts).total_seconds()
+        if delta_seconds >= 0:
+            timestamp_age = int(delta_seconds // 300)
+            if timestamp_age >= 0:
+                age = max(age, timestamp_age)
+
     direction = _direction(output, event)
     level = _level(output, event)
     event_atr = _event_atr(output, event)
@@ -83,7 +146,9 @@ def _repair(output: dict[str, Any], bars: list[dict[str, Any]]) -> dict[str, Any
         return output
 
     post = bars[idx + 1:]
-    age = len(post)
+    if not post and age <= 0:
+        return output
+
     checks: list[dict[str, Any]] = []
     consecutive = 0
     lifecycle = "PENDING"
@@ -120,9 +185,6 @@ def _repair(output: dict[str, Any], bars: list[dict[str, Any]]) -> dict[str, Any
         lifecycle = "EXPIRED"
         terminal_reason = "EVENT_EXPIRED"
 
-    if lifecycle == "PENDING" and age == 0:
-        return output
-
     out = dict(output)
     out["auction_state"] = lifecycle
     out["auction_phase"] = lifecycle
@@ -143,10 +205,10 @@ def _repair(output: dict[str, Any], bars: list[dict[str, Any]]) -> dict[str, Any
         out["auction_confirmation"] = "POST_EVENT_RECLAMATION"
     else:
         out["directional_implication"] = "NEUTRAL"
-    reasons = list(out.get("reason_codes") or out.get("reasons") or [])
-    reasons = [str(x) for x in reasons if str(x)]
-    for code in (["E4_EVENT_AGE_REPAIRED"] if lifecycle == "PENDING" else [f"E4_AUCTION_{lifecycle}"]):
-        if code not in reasons: reasons.append(code)
+    reasons = [str(x) for x in list(out.get("reason_codes") or out.get("reasons") or []) if str(x)]
+    code = "E4_EVENT_AGE_REPAIRED" if lifecycle == "PENDING" else f"E4_AUCTION_{lifecycle}"
+    if code not in reasons:
+        reasons.append(code)
     out["reason_codes"] = reasons
     out["reasons"] = reasons
     return out
@@ -163,13 +225,21 @@ def install(pipeline_module: Any) -> None:
             return result
         bars = snapshot.get("bars") if isinstance(snapshot, dict) else None
         bars = [bar for bar in (bars or []) if isinstance(bar, dict)]
-        repaired = _repair(_out(result), bars)
-        if repaired == result.output:
+        current_candle = snapshot.get("candle_close_timestamp") or snapshot.get("candle") if isinstance(snapshot, dict) else None
+        original_output = _out(result)
+        repaired = _repair(original_output, bars, current_candle)
+        if repaired == original_output:
+            print(
+                f"[PRODUCTION V2] E4_EVENT_LIFECYCLE_SURGERY version={VERSION} action=SKIP "
+                f"state={original_output.get('auction_state')} event_candle={_event_candle_id(original_output, original_output.get('event') or {})} "
+                f"bars={len(bars)}",
+                flush=True,
+            )
             return result
         print(
-            f"[PRODUCTION V2] E4_EVENT_LIFECYCLE_SURGERY version={VERSION} "
+            f"[PRODUCTION V2] E4_EVENT_LIFECYCLE_SURGERY version={VERSION} action=REPAIR "
             f"state={repaired.get('auction_state')} age={repaired.get('event_age_bars')} "
-            f"reason={repaired.get('auction_lifecycle_repair_reason')}",
+            f"event_candle={repaired.get('event_candle_id')} reason={repaired.get('auction_lifecycle_repair_reason')}",
             flush=True,
         )
         return EngineResult(result.engine_id, result.name, result.gate_passed, result.score, repaired, result.reason_codes)
