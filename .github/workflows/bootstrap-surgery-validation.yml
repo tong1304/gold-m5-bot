@@ -16,5 +16,5 @@ jobs:
         run: python -m pip install --upgrade pip && python -m pip install -r requirements.txt
       - name: Compile bootstrap surgery
         run: python -m py_compile production_v2/bootstrap_surgery.py production_v2/e4_event_lifecycle_surgery.py
-      - name: Run bootstrap surgery tests
-        run: python -m pytest -q production_v2/test_bootstrap_surgery.py production_v2/test_opportunity_chain_surgery.py
+      - name: Run bootstrap and lifecycle tests
+        run: python -m pytest -q production_v2/test_bootstrap_surgery.py production_v2/test_opportunity_chain_surgery.py production_v2/test_e4_event_lifecycle_surgery.py
