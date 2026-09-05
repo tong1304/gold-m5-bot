@@ -13,8 +13,8 @@ jobs:
         with:
           python-version: '3.11'
       - name: Install test dependencies
-        run: python -m pip install --upgrade pip pytest
+        run: python -m pip install --upgrade pip && python -m pip install -r requirements.txt
       - name: Compile bootstrap surgery
-        run: python -m py_compile production_v2/bootstrap_surgery.py
+        run: python -m py_compile production_v2/bootstrap_surgery.py production_v2/e4_event_lifecycle_surgery.py
       - name: Run bootstrap surgery tests
         run: python -m pytest -q production_v2/test_bootstrap_surgery.py production_v2/test_opportunity_chain_surgery.py
