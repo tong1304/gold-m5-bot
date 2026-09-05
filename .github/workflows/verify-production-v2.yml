@@ -4,6 +4,7 @@ on:
   push:
     paths:
       - 'production_v2/**'
+      - 'requirements.txt'
       - '.github/workflows/verify-production-v2.yml'
   workflow_dispatch:
 
@@ -15,8 +16,8 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - name: Install test dependencies
-        run: python -m pip install --upgrade pip pytest
+      - name: Install production-v2 dependencies
+        run: python -m pip install --upgrade pip && pip install -r requirements.txt
       - name: Run professional opportunity tests
         run: python -m pytest -q production_v2/test_professional_opportunity.py
       - name: Compile production-v2 Python modules
