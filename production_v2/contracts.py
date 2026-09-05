@@ -17,7 +17,11 @@ class DecisionResult:
         if self.timeframe=="M5" and e9o.get("timeframe"):object.__setattr__(self,"timeframe",str(e9o["timeframe"]))
         if self.score==0.0 and e9 is not None:object.__setattr__(self,"score",float(e9.score))
         if e9 is not None and e9.gate_passed is not None:object.__setattr__(self,"gate_passed",bool(e9.gate_passed))
-        if not self.risk and isinstance(e8o,dict):object.__setattr__(self,"risk",dict(e8o))
+        if not self.risk:
+            if isinstance(e8o,dict) and e8o:
+                object.__setattr__(self,"risk",dict(e8o))
+            elif isinstance(e9o,dict) and e9o:
+                object.__setattr__(self,"risk",dict(e9o))
         if self.reason_codes==() and e9 is not None:object.__setattr__(self,"reason_codes",tuple(e9.reason_codes))
         if self.decision=="TRADE":
             d=str(e9o.get("decision") or "").upper().strip(); object.__setattr__(self,"decision",d if d in {"BUY","SELL"} and self.gate_passed else "NO_TRADE")
