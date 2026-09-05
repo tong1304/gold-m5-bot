@@ -79,3 +79,27 @@ def test_lifecycle_never_authorizes_execution_from_ready_without_explicit_execut
     })
     assert ready["state"] == "READY"
     assert ready["trade_authorized"] is False
+
+
+def test_watch_invalidates_when_upstream_causal_evidence_is_explicitly_lost():
+    watch = advance_opportunity(None, {
+        "direction": "SELL",
+        "setup": "OPPORTUNITY_WATCH",
+        "event_id": "AUCTION-1",
+        "candle": "2026-09-04T14:35:00Z",
+        "candidate": True,
+        "upstream_evidence": [{"source": "E4", "event": "HIGH_SWEEP_REJECTION"}],
+    })
+    lost = advance_opportunity(watch, {
+        "direction": "SELL",
+        "setup": "OPPORTUNITY_WATCH",
+        "event_id": "AUCTION-2",
+        "candle": "2026-09-04T14:40:00Z",
+        "candidate": True,
+        "upstream_evidence": [],
+    })
+    assert lost["state"] == "INVALIDATED"
+    assert lost["continuity"] == "OPPORTUNITY_INVALIDATED"
+    assert lost["invalidation_reason"] == "UPSTREAM_CAUSAL_EVIDENCE_LOST"
+    assert lost["opportunity_id"] == watch["opportunity_id"]
+    assert lost["trade_authorized"] is False
