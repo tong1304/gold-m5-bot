@@ -42,10 +42,6 @@ def _pending_event(e4: dict[str, Any]) -> bool:
     event = _text(e4.get("event") or e4.get("finding")); state = _text(e4.get("auction_state") or e4.get("auction_phase") or e4.get("state"))
     return state in PENDING_AUCTION_STATES and any(token in event for token in MEANINGFUL_EVENTS)
 
-def _failed_break_pending(e4: dict[str, Any]) -> bool:
-    event = _text(e4.get("event") or e4.get("finding")); state = _text(e4.get("auction_state") or e4.get("auction_phase") or e4.get("state"))
-    return "FAILED_BREAK_RECLAIM" in event and state in PENDING_AUCTION_STATES
-
 def _space(e5: dict[str, Any], direction: str) -> float:
     key = "available_space_atr_long" if direction == "BUY" else "available_space_atr_short"
     try:
@@ -54,8 +50,6 @@ def _space(e5: dict[str, Any], direction: str) -> float:
 
 def _event_direction(e4: dict[str, Any]) -> str:
     event = _text(e4.get("event") or e4.get("finding"))
-    # Event semantics outrank E4's generic direction field because for sweep
-    # events that field may describe the sweep leg rather than the response.
     if "HIGH_SWEEP_REJECTION" in event or "HIGH_REJECTION" in event: return "SELL"
     if "LOW_SWEEP_REJECTION" in event or "LOW_REJECTION" in event: return "BUY"
     if "HIGH_ACCEPTANCE" in event or "HIGH_BREAK" in event: return "BUY"
@@ -129,5 +123,6 @@ def install(pipeline_module: Any) -> None:
         print(f"[PRODUCTION V2] E6_PENDING_EVENT_SURGERY version={VERSION} action=WATCH direction={candidate['direction']} event_id={candidate['event_id']} source={candidate.get('direction_source')}", flush=True)
         return _watch(result, candidate)
     pipeline_module.analyze_e6 = patched_analyze_e6
+    pipeline_module._E6_RUNTIME_OVERRIDE = patched_analyze_e6
     pipeline_module._E6_PENDING_EVENT_SURGERY_INSTALLED = True
     print(f"[PRODUCTION V2] E6_PENDING_EVENT_SURGERY_BINDING version={VERSION} module={pipeline_module.__name__} analyze={pipeline_module.analyze_e6.__module__}.{pipeline_module.analyze_e6.__name__}", flush=True)
