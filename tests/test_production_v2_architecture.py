@@ -1,6 +1,5 @@
 from pathlib import Path
 
-
 ROOT = Path(__file__).resolve().parents[1]
 PRODUCTION_V2 = ROOT / "production_v2"
 
@@ -28,3 +27,9 @@ def test_execution_state_is_explicit_and_separate_from_e9_authorization():
 def test_opportunity_namespace_has_explicit_lifecycle_and_memory_modules():
     assert (PRODUCTION_V2 / "opportunity" / "lifecycle.py").is_file()
     assert (PRODUCTION_V2 / "opportunity" / "memory.py").is_file()
+
+
+def test_e9_has_one_canonical_authority_boundary():
+    authority = (PRODUCTION_V2 / "governance" / "final_authority.py").read_text(encoding="utf-8")
+    assert "enforce_final_authority" in authority
+    assert "decision_authority" not in authority or "E9" in authority
