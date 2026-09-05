@@ -1,18 +1,34 @@
-from production_v2.pipeline import normalize_final_decision
+from production_v2.contracts import DecisionResult, EngineResult
 
 
-def test_e9_buy_survives_pipeline_decision_normalization():
-    assert normalize_final_decision("BUY", True, True) == "BUY"
+def _e9(decision, gate=True):
+    return EngineResult(
+        "E9",
+        "Master Decision Brain",
+        gate,
+        90.0,
+        {"decision": decision},
+        (),
+    )
 
 
-def test_e9_sell_survives_pipeline_decision_normalization():
-    assert normalize_final_decision("SELL", True, True) == "SELL"
+def test_e9_buy_survives_pipeline_decision_boundary():
+    result = DecisionResult(decision="NO_TRADE", gate_passed=False, engines=(_e9("BUY"),))
+    assert result.decision == "BUY"
+    assert result.state == "SIGNAL_READY"
 
 
-def test_non_actionable_decision_is_no_trade():
-    assert normalize_final_decision("NO_TRADE", False, False) == "NO_TRADE"
+def test_e9_sell_survives_pipeline_decision_boundary():
+    result = DecisionResult(decision="NO_TRADE", gate_passed=False, engines=(_e9("SELL"),))
+    assert result.decision == "SELL"
+    assert result.state == "SIGNAL_READY"
+
+
+def test_e9_no_trade_remains_no_trade():
+    result = DecisionResult(decision="NO_TRADE", gate_passed=False, engines=(_e9("NO_TRADE", False),))
+    assert result.decision == "NO_TRADE"
 
 
 def test_gate_failure_blocks_buy_sell():
-    assert normalize_final_decision("BUY", False, True) == "NO_TRADE"
-    assert normalize_final_decision("SELL", True, False) == "NO_TRADE"
+    result = DecisionResult(decision="NO_TRADE", gate_passed=False, engines=(_e9("BUY", False),))
+    assert result.decision == "NO_TRADE"
