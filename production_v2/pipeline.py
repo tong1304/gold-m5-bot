@@ -15,7 +15,8 @@ from .e9_brain import analyze_e9
 from .e6_runtime_authority import _normalize_watch_semantics
 from .nine_brain_surgery import harden_engine
 from .opportunity_layer import enrich_opportunity, recover_e9
-from .professional_governance import audit_engines, enforce_final_authority
+from .professional_governance import audit_engines
+from .governance.final_authority import enforce_final_authority
 from .professional_opportunity import consolidate, enrich_engine
 from .professional_brain_audit import audit_all
 from .shared_market_picture import attach_brain_view, audit_shared_market_picture_contract, build_shared_market_picture
@@ -191,46 +192,31 @@ class ProductionPipeline:
         if calibration_records is not None: snapshot["historical_outcomes"] = calibration_records
         shared_picture = build_shared_market_picture(snapshot)
         snapshot["shared_market_picture"] = shared_picture
-        bars = list(snapshot.get("bars") or [])
+        audit_shared_market_picture_contract(shared_picture)
         results: dict[str, EngineResult] = {}
-        results["E1"] = _enrich("E1", _dict_result("E1", analyze_e1(bars)), snapshot)
-        e2_snapshot = dict(snapshot); e2_snapshot["E1_result"] = results["E1"].output
-        results["E2"] = _enrich("E2", _dict_result("E2", analyze_e2(e2_snapshot)), snapshot)
-        results["E3"] = _enrich("E3", _dict_result("E3", analyze_e3(bars)), snapshot)
-        results["E4"] = _enrich("E4", _dict_result("E4", analyze_e4(snapshot, results)), snapshot)
-        results["E5"] = _enrich("E5", _dict_result("E5", analyze_e5(snapshot, results)), snapshot)
-        results["E6"] = _enrich("E6", analyze_e6(snapshot, results), snapshot)
-        results["E7"] = _enrich("E7", analyze_e7(snapshot, results), snapshot)
-        results["E8"] = _enrich("E8", analyze_e8(snapshot, results), snapshot)
+        prior_context: dict[str, Any] = {}
+        for engine_id in ENGINE_ORDER:
+            evidence = {key: results[key].output for key in EVIDENCE_INPUTS[engine_id] if key in results}
+            raw = {"market_data": snapshot, "evidence": evidence, "prior_context": prior_context, "symbol": symbol, "timeframe": snapshot.get("timeframe", "M5"), "wait_bars": wait_bars}
+            analyzer = {"E1": analyze_e1, "E2": analyze_e2, "E3": analyze_e3, "E4": analyze_e4, "E5": analyze_e5, "E6": analyze_e6, "E7": analyze_e7, "E8": analyze_e8, "E9": analyze_e9}[engine_id]
+            result = _dict_result(engine_id, analyzer(raw))
+            result = _enrich(engine_id, result, snapshot)
+            results[engine_id] = result
+            prior_context[engine_id] = result.output
         _attach_profit_edge(results, snapshot)
-        conflict_ledger = _ensure_cross_brain_conflict_visibility(results, build_conflict_ledger(results)); snapshot["cross_brain_conflicts"] = conflict_ledger; _attach_conflict_ledger(results, conflict_ledger); _prepare_e9_boundary(results)
-        try:
-            e9 = _enrich("E9", analyze_e9(snapshot, results), snapshot)
-        except Exception as exc:
-            recovery = recover_e9(results); recovery["e9_exception_type"] = type(exc).__name__; recovery["e9_exception"] = str(exc)
-            recovered = _dict_result("E9", enrich_opportunity("E9", recovery, snapshot)); recovered_output = harden_engine("E9", enrich_engine("E9", recovered.output)); recovered_output = attach_brain_view("E9", recovered_output, shared_picture)
-            e9 = EngineResult(recovered.engine_id,recovered.name,recovered.gate_passed,recovered.score,recovered_output,recovered.reason_codes)
-        results["E9"] = e9; _attach_state_semantics(results)
-        shared_picture_audit = audit_shared_market_picture_contract({engine_id: results[engine_id].output for engine_id in ENGINE_ORDER})
-        if not shared_picture_audit["passed"]:
-            e9 = results["E9"]; blocked_output = dict(e9.output); blocked_output["decision"] = "NO_TRADE"; blocked_output["decision_reason"] = ["SHARED_MARKET_PICTURE_CONTRACT_FAILED"]; blocked_output["shared_market_picture_audit"] = shared_picture_audit
-            results["E9"] = EngineResult("E9", e9.name, False, e9.score, blocked_output, tuple(dict.fromkeys(list(e9.reason_codes) + ["SHARED_MARKET_PICTURE_CONTRACT_FAILED"])))
-        audit = audit_engines(results); results["E9"] = enforce_final_authority(results["E9"], results); results["E9"] = EngineResult("E9", results["E9"].name, results["E9"].gate_passed, results["E9"].score, dict(results["E9"].output, architecture_audit=audit), results["E9"].reason_codes)
-        audit_all(results)
-        decision = results["E9"].output.get("decision", "NO_TRADE")
-        trade_ready = bool(results["E9"].output.get("trade_ready", False))
-        gate_passed = bool(results["E9"].gate_passed)
-        if decision == "TRADE" and not trade_ready: decision = "NO_TRADE"
-        if decision == "TRADE" and not gate_passed: decision = "NO_TRADE"
-        if decision not in {"TRADE", "NO_TRADE"}: decision = "NO_TRADE"
-        state = "SIGNAL_READY" if decision == "TRADE" and trade_ready and gate_passed else "ANALYSIS_COMPLETE_NO_TRADE"
-        provisional = DecisionResult(decision=decision, state=state, engines=results, blocked_by=None, wait_bars=wait_bars)
-        lifecycle = advance_opportunity(previous_lifecycle or None, _lifecycle_current(results, decision, gate_passed, snapshot.get("candle_close_timestamp") or snapshot.get("candle")))
-        lifecycle["previous_state"] = previous_lifecycle.get("state") if previous_lifecycle else None
-        lifecycle["e6_thesis_proven"] = bool(results.get("E6") and results["E6"].output.get("e6_thesis_proven"))
-        lifecycle["e7_confirmation_state"] = str(results.get("E7").output.get("confirmation_state") if results.get("E7") else "UNKNOWN")
-        lifecycle["e8_economic_state"] = str(results.get("E8").output.get("economic_state") if results.get("E8") else "UNKNOWN")
-        lifecycle["e9_final_decision"] = decision
-        results["E9"] = EngineResult("E9", results["E9"].name, results["E9"].gate_passed, results["E9"].score, dict(results["E9"].output, opportunity_lifecycle=lifecycle), results["E9"].reason_codes)
+        _prepare_e9_boundary(results)
+        governance = audit_engines(results)
+        _attach_conflict_ledger(results, governance)
+        ledger = build_conflict_ledger(results)
+        ledger = _ensure_cross_brain_conflict_visibility(results, ledger)
+        _attach_conflict_ledger(results, ledger)
+        final_e9 = enforce_final_authority(results["E9"], governance)
+        results["E9"] = final_e9
+        _attach_state_semantics(results)
+        e9 = results["E9"]
+        decision = str(e9.output.get("decision") or "NO_TRADE").upper()
+        gate_passed = bool(e9.gate_passed and e9.output.get("decision_authorized"))
+        provisional = DecisionResult(symbol=symbol, timeframe=str(snapshot.get("timeframe") or "M5"), decision=decision if decision in {"BUY","SELL"} else "NO_TRADE", gate_passed=gate_passed, score=e9.score, engines=results, risk=results.get("E8").output if results.get("E8") else {}, reason_codes=e9.reason_codes, state="SIGNAL_READY" if gate_passed else "ANALYSIS_COMPLETE_NO_TRADE", wait_bars=wait_bars)
+        lifecycle = advance_opportunity(previous_lifecycle or None, _lifecycle_current(results, decision, gate_passed, snapshot.get("candle_time") or snapshot.get("timestamp")))
         self._opportunity_lifecycle[symbol] = lifecycle
-        return DecisionResult(decision=decision, state=state, engines=results, blocked_by=None, wait_bars=int(lifecycle.get("bars_waited", wait_bars) or 0))
+        return provisional
