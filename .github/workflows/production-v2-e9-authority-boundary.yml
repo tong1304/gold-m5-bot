@@ -1,0 +1,19 @@
+name: Production V2 E9 Authority Boundary
+
+on:
+  push:
+    branches: [clean-architecture-2026-09-05]
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m pip install --upgrade pip
+      - run: pip install -r requirements.txt
+      - run: PYTHONPATH=. pytest -q tests/test_e9_authority_boundary.py
