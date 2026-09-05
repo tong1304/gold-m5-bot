@@ -11,54 +11,63 @@ def _text(v:Any)->str:return str(v or "").upper().strip()
 
 
 def _identity(direction:Any,setup:Any,event_id:Any=None)->str:
-    """Build a lifecycle identity from opportunity direction/family, never a per-candle event id."""
     d,s=_text(direction),_text(setup)
     if d not in VALID_DIRECTIONS or s in {"","UNKNOWN","NONE","NO_SETUP"}: return ""
     return f"{d}|{s}"
 
 
 def _stable_identity(previous:dict[str,Any],direction:str,setup:str,event_id:Any=None)->str:
-    """Preserve one opportunity identity while a causal opportunity evolves from watch to thesis."""
-    pid=_text(previous.get("opportunity_id")); pd=_text(previous.get("direction")); ps=_text(previous.get("setup"))
-    if pid and pd==direction and direction in VALID_DIRECTIONS:
-        if ps in WATCH_SETUPS or _text(previous.get("state")) in {"WATCHING","WAITING","READY","OPPORTUNITY_WATCH"}:
-            return pid
+    pid=_text(previous.get("opportunity_id")); pd=_text(previous.get("direction")); ps=_text(previous.get("setup")); state=_text(previous.get("state"))
+    if pid and pd==direction and direction in VALID_DIRECTIONS and (ps in WATCH_SETUPS or state in {"WATCHING","WAITING","READY"}):
+        return pid
     return _identity(direction,setup,event_id)
 
 
+def _active_previous(p:dict[str,Any])->bool:
+    oid=_text(p.get("opportunity_id")); state=_text(p.get("state")); direction=_text(p.get("direction"))
+    return bool(oid and direction in VALID_DIRECTIONS and state in ACTIVE_STATES)
+
+
 def advance_opportunity(previous:dict[str,Any]|None,current:dict[str,Any])->dict[str,Any]:
-    """Advance E6 opportunity state across closed candles; never authorize execution."""
+    """Advance E6 opportunity state across closed candles; lifecycle never grants execution authority."""
     p=dict(previous or {}); c=dict(current or {})
     d=_text(c.get("direction")); setup=_text(c.get("setup") or c.get("setup_family")); candle=_text(c.get("candle")); event=_text(c.get("event_id"))
     oid=_stable_identity(p,d,setup,event); pid=_text(p.get("opportunity_id")); ps=_text(p.get("state")); pd=_text(p.get("direction")); previous_setup=_text(p.get("setup"))
-    age=int(p.get("bars_waited",0) or 0)+(1 if p else 0)
-    invalidated=bool(c.get("invalidated")); candidate=bool(c.get("candidate")); ready=bool(c.get("ready")); executed=bool(c.get("executed"))
+    active_prev=_active_previous(p)
+    age=int(p.get("bars_waited",0) or 0)+(1 if active_prev else 0)
+    invalidated=bool(c.get("invalidated")); candidate=bool(c.get("candidate")); ready=bool(c.get("ready"))
+    if bool(c.get("executed")):
+        return {**p,"state":"EXECUTE","continuity":"E9_AUTHORIZED_EXECUTION","trade_authorized":False,"execution_handoff":True,"last_evaluated_candle":candle,"invalidation_reason":None}
     base={**p,"last_evaluated_candle":candle,"trade_authorized":False}
-    if executed:return {**base,"state":"EXECUTE","continuity":"E9_AUTHORIZED_EXECUTION","trade_authorized":True,"invalidation_reason":None}
-    if invalidated:return {**base,"state":"INVALIDATED","continuity":"OPPORTUNITY_INVALIDATED","opportunity_id":pid or oid,"bars_waited":age if p else 0,"invalidation_reason":"CURRENT_CANDLE_INVALIDATED"}
-    if p and ps in TERMINAL:return {**c,"state":"REPLACED","continuity":"NEW_OPPORTUNITY_AFTER_TERMINAL","previous_opportunity_id":pid,"opportunity_id":_identity(d,setup,event),"direction":d,"setup":setup,"bars_waited":0,"origin_candle":candle,"last_evaluated_candle":candle,"trade_authorized":False,"invalidation_reason":None}
-    if p and pd in VALID_DIRECTIONS and d in VALID_DIRECTIONS and d!=pd:return {**c,"state":"INVALIDATED","continuity":"DIRECTION_CHANGED","previous_opportunity_id":pid,"opportunity_id":pid,"direction":pd,"setup":previous_setup or setup,"bars_waited":age,"origin_candle":p.get("origin_candle") or candle,"last_evaluated_candle":candle,"trade_authorized":False,"invalidation_reason":"DIRECTION_CHANGED"}
-    pending_watch=previous_setup in WATCH_SETUPS or ps in {"WATCHING","OPPORTUNITY_WATCH"}
-    upstream_evidence=c.get("upstream_evidence")
-    has_wait_for=bool(c.get("wait_for"))
-    if p and pending_watch and candidate and d==pd and not upstream_evidence and not has_wait_for:
-        return {**base,"state":"INVALIDATED","continuity":"OPPORTUNITY_INVALIDATED","opportunity_id":pid or oid,"direction":pd or d,"setup":previous_setup or setup,"bars_waited":age,"wait_for":"NEW_CAUSAL_OPPORTUNITY","invalidation_reason":"UPSTREAM_CAUSAL_EVIDENCE_LOST"}
-    if p and pending_watch and candidate and d==pd and oid and setup not in WATCH_SETUPS and setup not in {"","UNKNOWN","NONE","NO_SETUP"}:
+    if invalidated:
+        if not active_prev:
+            return {"state":"IDLE","continuity":"NO_ACTIVE_PENDING_OPPORTUNITY","opportunity_id":None,"direction":"NEUTRAL","setup":"UNKNOWN","bars_waited":0,"origin_candle":candle,"last_evaluated_candle":candle,"trade_authorized":False,"invalidation_reason":None}
+        return {**base,"state":"INVALIDATED","continuity":"OPPORTUNITY_INVALIDATED","opportunity_id":pid,"bars_waited":age,"invalidation_reason":"CURRENT_CANDLE_INVALIDATED"}
+    if active_prev and pd in VALID_DIRECTIONS and d in VALID_DIRECTIONS and d!=pd:
+        return {**c,"state":"INVALIDATED","continuity":"DIRECTION_CHANGED","previous_opportunity_id":pid,"opportunity_id":pid,"direction":pd,"setup":previous_setup or setup,"bars_waited":age,"origin_candle":p.get("origin_candle") or candle,"last_evaluated_candle":candle,"trade_authorized":False,"invalidation_reason":"DIRECTION_CHANGED"}
+    pending_watch=active_prev and (previous_setup in WATCH_SETUPS or ps in {"WATCHING","WAITING"})
+    explicit_evidence_loss=bool(c.get("upstream_evidence_lost") or c.get("causal_evidence_lost"))
+    if pending_watch and explicit_evidence_loss:
+        return {**base,"state":"INVALIDATED","continuity":"OPPORTUNITY_INVALIDATED","opportunity_id":pid,"direction":pd,"setup":previous_setup,"bars_waited":age,"wait_for":"NEW_CAUSAL_OPPORTUNITY","invalidation_reason":"UPSTREAM_CAUSAL_EVIDENCE_LOST"}
+    if pending_watch and candidate and d==pd and oid and setup not in WATCH_SETUPS and setup not in {"","UNKNOWN","NONE","NO_SETUP"}:
         return {**base,"state":"READY" if ready else "WAITING","continuity":"PROMOTED_PENDING_OPPORTUNITY_TO_SETUP" if ready else "PROMOTED_PENDING_OPPORTUNITY","opportunity_id":oid,"direction":d,"setup":setup,"bars_waited":age,"origin_candle":p.get("origin_candle") or candle,"wait_for":c.get("wait_for") or ["E7_SETUP_SPECIFIC_CLOSED_CANDLE_CONFIRMATION"],"invalidation_reason":None}
-    if p and pid and oid and pid!=oid:return {**c,"state":"REPLACED","continuity":"OPPORTUNITY_ID_CHANGED","previous_opportunity_id":pid,"opportunity_id":oid,"bars_waited":0,"origin_candle":candle,"last_evaluated_candle":candle,"trade_authorized":False,"invalidation_reason":"OPPORTUNITY_ID_CHANGED"}
-    if ready and candidate and oid:return {**base,"state":"READY","continuity":"ADVANCING_EXISTING_OPPORTUNITY","opportunity_id":oid,"direction":d,"setup":setup,"bars_waited":age if p else 0,"origin_candle":p.get("origin_candle") or candle,"invalidation_reason":None}
+    if active_prev and pid and oid and pid!=oid:
+        return {**c,"state":"REPLACED","continuity":"OPPORTUNITY_ID_CHANGED","previous_opportunity_id":pid,"opportunity_id":oid,"bars_waited":0,"origin_candle":candle,"last_evaluated_candle":candle,"trade_authorized":False,"invalidation_reason":"OPPORTUNITY_ID_CHANGED"}
+    if active_prev and ready and candidate and oid:
+        return {**base,"state":"READY","continuity":"ADVANCING_EXISTING_OPPORTUNITY","opportunity_id":pid or oid,"direction":d or pd,"setup":setup or previous_setup,"bars_waited":age,"origin_candle":p.get("origin_candle") or candle,"invalidation_reason":None}
     if candidate and oid:
-        if p and age>5:return {**base,"state":"EXPIRED","continuity":"OPPORTUNITY_EXPIRED","opportunity_id":pid or oid,"direction":d,"setup":setup,"bars_waited":age,"wait_for":"NEW_CAUSAL_OPPORTUNITY","invalidation_reason":"WATCH_MAX_AGE_REACHED"}
-        continuity="CONTINUING_UPSTREAM_WATCH" if pending_watch else ("CONTINUING_EXISTING_OPPORTUNITY" if p else "NEW_OPPORTUNITY_WATCH")
-        return {**base,"state":"WATCHING" if ps=="WATCHING" else "WAITING","continuity":continuity,"opportunity_id":oid,"direction":d,"setup":setup,"bars_waited":age if p else 0,"origin_candle":p.get("origin_candle") or candle,"wait_for":c.get("wait_for") or ["NEXT_CLOSED_M5_CANDLE"],"invalidation_reason":None}
-    if p:
-        if age>5:return {**base,"state":"EXPIRED","continuity":"OPPORTUNITY_EXPIRED","opportunity_id":pid,"bars_waited":age,"wait_for":"NEW_CAUSAL_OPPORTUNITY","invalidation_reason":"WATCH_MAX_AGE_REACHED"}
-        return {**base,"state":"WATCHING" if ps=="WATCHING" else "WAITING","continuity":"PRESERVING_PENDING_OPPORTUNITY","opportunity_id":pid,"direction":pd,"setup":previous_setup,"bars_waited":age,"wait_for":"CAUSAL_FOLLOW_THROUGH_OR_INVALIDATION","invalidation_reason":None}
+        if active_prev and age>5:
+            return {**base,"state":"EXPIRED","continuity":"OPPORTUNITY_EXPIRED","opportunity_id":pid,"direction":pd or d,"setup":previous_setup or setup,"bars_waited":age,"wait_for":"NEW_CAUSAL_OPPORTUNITY","invalidation_reason":"WATCH_MAX_AGE_REACHED"}
+        continuity="CONTINUING_UPSTREAM_WATCH" if pending_watch else ("CONTINUING_EXISTING_OPPORTUNITY" if active_prev else "NEW_OPPORTUNITY_WATCH")
+        return {**base,"state":"WATCHING","continuity":continuity,"opportunity_id":oid,"direction":d,"setup":setup,"bars_waited":age if active_prev else 0,"origin_candle":p.get("origin_candle") if active_prev else candle,"wait_for":c.get("wait_for") or ["NEXT_CLOSED_M5_CANDLE"],"invalidation_reason":None}
+    if active_prev:
+        if age>5:
+            return {**base,"state":"EXPIRED","continuity":"OPPORTUNITY_EXPIRED","opportunity_id":pid,"direction":pd,"setup":previous_setup,"bars_waited":age,"wait_for":"NEW_CAUSAL_OPPORTUNITY","invalidation_reason":"WATCH_MAX_AGE_REACHED"}
+        return {**base,"state":ps if ps in ACTIVE_STATES else "WAITING","continuity":"PRESERVING_PENDING_OPPORTUNITY","opportunity_id":pid,"direction":pd,"setup":previous_setup,"bars_waited":age,"wait_for":"CAUSAL_FOLLOW_THROUGH_OR_INVALIDATION","invalidation_reason":None}
     return {"state":"IDLE","continuity":"NO_ACTIVE_PENDING_OPPORTUNITY","opportunity_id":None,"direction":"NEUTRAL","setup":"UNKNOWN","bars_waited":0,"origin_candle":candle,"last_evaluated_candle":candle,"trade_authorized":False,"invalidation_reason":None}
 
 
 def advance_lifecycle(previous:dict[str,Any]|None,current:dict[str,Any],*,bar_id:str,max_watch_bars:int=5)->dict[str,Any]:
-    """Explicit E6 lifecycle API used by tests and future callers."""
     p=dict(previous or {}); c=dict(current or {}); d=_text(c.get("direction")); setup=_text(c.get("setup_family") or c.get("setup")); pid=_text(p.get("opportunity_id")); oid=_text(c.get("opportunity_id")) or _stable_identity(p,d,setup,c.get("event_id")); age=int(p.get("age_bars",0) or 0)+(1 if p else 0)
     if c.get("invalidated"):return {**c,"opportunity_id":oid or pid,"lifecycle_state":"INVALIDATED","age_bars":age if p else 0,"wait_for":"NEW_CAUSAL_OPPORTUNITY"}
     if p and _text(p.get("direction")) in VALID_DIRECTIONS and d in VALID_DIRECTIONS and _text(p.get("direction"))!=d:return {**c,"lifecycle_state":"INVALIDATED","previous_opportunity_id":pid,"opportunity_id":pid or oid,"age_bars":age,"wait_for":"NEW_CAUSAL_OPPORTUNITY","invalidation_reason":"DIRECTION_CHANGED"}
