@@ -20,9 +20,7 @@ def test_watch_promotes_to_setup_with_new_setup_identity():
         "wait_for": ["E7_CONFIRMATION"],
         "upstream_evidence": ["E4_DIRECTIONAL_AUCTION_EVIDENCE"],
     }
-
     result = advance_opportunity(previous, current)
-
     assert result["state"] == "WAITING"
     assert result["continuity"] == "PROMOTED_PENDING_OPPORTUNITY"
     assert result["setup"] == "LIQUIDITY_RESPONSE"
@@ -49,9 +47,7 @@ def test_watch_can_promote_to_ready_without_execution_authority():
         "wait_for": ["E7_SETUP_SPECIFIC_CLOSED_CANDLE_CONFIRMATION"],
         "upstream_evidence": ["E4_AUCTION_CONFIRMED"],
     }
-
     result = advance_opportunity(previous, current)
-
     assert result["state"] == "READY"
     assert result["continuity"] == "PROMOTED_PENDING_OPPORTUNITY_TO_SETUP"
     assert result["opportunity_id"] == "BUY|AUCTION_ACCEPTANCE_CONTINUATION"
@@ -76,9 +72,33 @@ def test_watch_continuity_is_preserved_when_setup_is_still_a_watch():
         "wait_for": ["E2_OPPORTUNITY_CONFIRMATION"],
         "upstream_evidence": ["E4_AUCTION_PENDING"],
     }
-
     result = advance_opportunity(previous, current)
-
     assert result["state"] == "WATCHING"
     assert result["opportunity_id"] == "SELL|OPPORTUNITY_WATCH"
     assert result["continuity"] == "CONTINUING_UPSTREAM_WATCH"
+
+
+def test_expired_watch_cannot_promote_on_a_late_setup_event():
+    previous = {
+        "state": "WATCHING",
+        "opportunity_id": "SELL|OPPORTUNITY_WATCH",
+        "direction": "SELL",
+        "setup": "OPPORTUNITY_WATCH",
+        "bars_waited": 5,
+        "origin_candle": "2026-09-05T15:30:00Z",
+    }
+    current = {
+        "candidate": True,
+        "ready": True,
+        "direction": "SELL",
+        "setup": "LIQUIDITY_RESPONSE",
+        "candle": "2026-09-05T16:00:00Z",
+        "event_id": "late-event",
+        "wait_for": ["E7_CONFIRMATION"],
+        "upstream_evidence": ["E4_DIRECTIONAL_AUCTION_EVIDENCE"],
+    }
+    result = advance_opportunity(previous, current)
+    assert result["state"] == "EXPIRED"
+    assert result["continuity"] == "OPPORTUNITY_EXPIRED"
+    assert result["opportunity_id"] == "SELL|OPPORTUNITY_WATCH"
+    assert result["trade_authorized"] is False
