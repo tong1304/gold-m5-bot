@@ -3,11 +3,11 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
-from threading import Lock
+from threading import RLock
 from typing import Any
 
 
-_LOCK = Lock()
+_LOCK = RLock()
 _DEFAULT_PATH = "/tmp/production_v2_opportunity_lifecycle.json"
 
 
