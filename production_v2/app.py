@@ -9,7 +9,7 @@ from .bootstrap_surgery import install as install_bootstrap_surgery
 from .brain_handoff import attach_result_chain
 from .professional_opportunity_surgery import enrich_decision
 from .opportunity_lifecycle import advance_opportunity
-from .opportunity_memory import load_all as load_opportunity_memory, save as save_opportunity_memory
+from .opportunity_memory import load_all as load_opportunity_memory, save as save_opportunity_memory, backend as opportunity_memory_backend, last_error as opportunity_memory_last_error
 from .causal_reconciliation import reconcile_causal_evidence
 from .statistics import build_statistics, store
 
@@ -67,8 +67,6 @@ def _e6_pending_thesis(engines: dict[str, dict]) -> tuple[str, str, list[str], l
 def _current_opportunity_input(result, candle: str) -> dict:
     engines = {engine.engine_id: engine.output or {} for engine in result.engines}; e6 = engines.get("E6", {}); e7 = engines.get("E7", {}); e8 = engines.get("E8", {}); e9 = engines.get("E9", {}); reconciliation = reconcile_causal_evidence(engines)
     e6_direction = _direction_from_output(e6); e6_setup = _text(e6.get("setup") or e6.get("setup_family") or e6.get("setup_type")); e6_state = _text(e6.get("setup_state") or e6.get("opportunity_stage") or e6.get("state") or e6.get("finding")); e6_reasons = [_text(x) for x in (e6.get("reason_codes") or e6.get("reasons") or [])]; e6_missing = [_text(x) for x in (e6.get("missing_proof") or e6.get("missing_evidence") or []) if _text(x)]
-    # NO_SETUP means no proven setup on this candle; it is not invalidation.
-    # Termination requires an explicit E6 invalidation lifecycle or hard veto.
     e6_explicit_invalidation = e6.get("invalidated") is True or _text(e6.get("lifecycle_state")) == "INVALIDATED"
     e6_hard_veto = any("HARD_VETO" in code for code in e6_reasons)
     e6_is_invalid = e6_explicit_invalidation or e6_hard_veto
@@ -112,13 +110,13 @@ def start_production_runtime():
     key = os.getenv("LSE_API_KEY", "").strip()
     if not key: raise RuntimeError("LSE_API_KEY is required for production-v2 live runtime")
     from .service import start_live_service
-    start_live_service(); _runtime_started=True; print(f"[PRODUCTION V2] Live M5 runtime started; architecture={ARCHITECTURE}", flush=True)
+    start_live_service(); _runtime_started=True; print(f"[PRODUCTION V2] Live M5 runtime started; architecture={ARCHITECTURE}; opportunity_memory_backend={opportunity_memory_backend()}; records={len(_last_opportunity_lifecycle)}", flush=True)
 start_production_runtime()
 
 @app.get("/")
-def index(): return jsonify({"system":"9-ENGINE","version":"production-v2","architecture":ARCHITECTURE,"sub_engines":False,"parallel_peer_analysis":False,"decision_authority":"E9","legacy_runtime":False,"live_runtime":"RUNNING" if _runtime_started else "NOT_RUNNING","environment":os.getenv("RENDER_ENV","production")})
+def index(): return jsonify({"system":"9-ENGINE","version":"production-v2","architecture":ARCHITECTURE,"sub_engines":False,"parallel_peer_analysis":False,"decision_authority":"E9","legacy_runtime":False,"live_runtime":"RUNNING" if _runtime_started else "NOT_RUNNING","environment":os.getenv("RENDER_ENV","production"),"opportunity_memory_backend":opportunity_memory_backend(),"opportunity_memory_records":len(_last_opportunity_lifecycle),"opportunity_memory_error":opportunity_memory_last_error()})
 @app.get("/health")
-def health(): return jsonify({"status":"ok" if _runtime_started else "degraded","system":"9-ENGINE","version":"production-v2","architecture":ARCHITECTURE,"sub_engines":False,"parallel_peer_analysis":False,"decision_authority":"E9","legacy_runtime":False,"timeframe":"M5"}), (200 if _runtime_started else 503)
+def health(): return jsonify({"status":"ok" if _runtime_started else "degraded","system":"9-ENGINE","version":"production-v2","architecture":ARCHITECTURE,"sub_engines":False,"parallel_peer_analysis":False,"decision_authority":"E9","legacy_runtime":False,"timeframe":"M5","opportunity_memory_backend":opportunity_memory_backend(),"opportunity_memory_records":len(_last_opportunity_lifecycle),"opportunity_memory_error":opportunity_memory_last_error()}), (200 if _runtime_started else 503)
 @app.get("/api/statistics")
 @app.get("/statistics")
 def statistics(): return jsonify(build_statistics())
