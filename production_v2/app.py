@@ -9,6 +9,7 @@ from .bootstrap_surgery import install as install_bootstrap_surgery
 from .brain_handoff import attach_result_chain
 from .professional_opportunity_surgery import enrich_decision
 from .opportunity_lifecycle import advance_opportunity
+from .opportunity_memory import load_all as load_opportunity_memory, save as save_opportunity_memory
 from .causal_reconciliation import reconcile_causal_evidence
 from .statistics import build_statistics, store
 
@@ -18,7 +19,7 @@ install_bootstrap_surgery(pipeline_module)
 pipeline = ProductionPipeline()
 app.config["PRODUCTION_V2_LIVE_REQUIRED"] = True
 _runtime_started = False
-_last_opportunity_lifecycle: dict[str, dict] = {}
+_last_opportunity_lifecycle: dict[str, dict] = load_opportunity_memory()
 ARCHITECTURE = "SINGLE_AXIS:E1 -> E2 -> E3 -> E4 -> E5 -> E6 -> E7 -> E8 -> E9 -> OPPORTUNITY_SYNTHESIS"
 
 def _load_historical_calibration():
@@ -92,6 +93,10 @@ def _run_with_lifecycle(self, market_data, *, wait_bars=0, resume_state=None, hi
     symbol = str(market_data.get("symbol") or "UNKNOWN").upper(); previous = dict(_last_opportunity_lifecycle.get(symbol) or {})
     if previous.get("state") in {"WATCHING", "WAITING", "READY"}: market_data = dict(market_data); market_data["opportunity_resume_state"] = dict(previous); resume_state = dict(previous)
     result = _ORIGINAL_PIPELINE_RUN(self, market_data, wait_bars=wait_bars, resume_state=resume_state, historical_calibration=historical_calibration); candle = str(market_data.get("candle_close_timestamp") or ""); current = _current_opportunity_input(result, candle); lifecycle = advance_opportunity(previous, current); lifecycle["wait_for"] = list(current.get("wait_for") or []); _last_opportunity_lifecycle[symbol] = lifecycle
+    try:
+        save_opportunity_memory(symbol, lifecycle)
+    except Exception:
+        logger.exception("[PRODUCTION V2] opportunity lifecycle persistence failed symbol=%s", symbol)
     risk = dict(result.risk); risk.update({"opportunity_lifecycle":lifecycle,"next_required_event":"NEXT_CLOSED_M5_CANDLE" if lifecycle.get("state") in {"WATCHING","WAITING","READY"} else None,"wait_bars":int(lifecycle.get("bars_waited",0) or 0),"lifecycle_source":current.get("lifecycle_source"),"upstream_evidence":current.get("upstream_evidence",[]),"wait_for":current.get("wait_for",[])}); print(f"[PRODUCTION V2] {symbol} OPPORTUNITY_LIFECYCLE state={lifecycle.get('state')} continuity={lifecycle.get('continuity')} bars_waited={lifecycle.get('bars_waited',0)} opportunity_id={lifecycle.get('opportunity_id')} source={current.get('lifecycle_source')} candle={candle} next={risk['next_required_event']} wait_for={','.join(risk['wait_for'])}", flush=True)
     return result.__class__(result.symbol,result.timeframe,result.decision,result.gate_passed,result.score,result.engines,risk,result.reason_codes)
 _ORIGINAL_PIPELINE_RUN = ProductionPipeline.run
