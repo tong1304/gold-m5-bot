@@ -127,11 +127,6 @@ def _repair(output: dict[str, Any], bars: list[dict[str, Any]], current_candle: 
     direction = _direction(output)
     level = _level(output)
     atr = _atr(output)
-
-    # Lifecycle age is independent of directional proof. A NEUTRAL/low-
-    # information auction must still age correctly; it simply cannot be
-    # promoted to CONFIRMED/INVALIDATED by this surgery without direction,
-    # level, and frozen ATR.
     if direction == "NEUTRAL" or level is None or atr <= 0:
         repaired = dict(output)
         repaired["event_age_bars"] = age
@@ -151,7 +146,6 @@ def _repair(output: dict[str, Any], bars: list[dict[str, Any]], current_candle: 
     consecutive = 0
     lifecycle = "PENDING"
     terminal_reason = "FOLLOW_THROUGH_ABSENT"
-
     for bar in post:
         close = _num(bar.get("close"))
         if close is None:
@@ -254,3 +248,11 @@ def install(pipeline_module: Any) -> None:
     pipeline_module.analyze_e4 = patched_analyze_e4
     pipeline_module.ProductionPipeline.run = patched_run
     pipeline_module._E4_EVENT_LIFECYCLE_SURGERY_INSTALLED = True
+
+    # The application already installs this surgery during startup. Chain the
+    # directional E5->E6 membrane here so it executes after bootstrap E6.
+    try:
+        from .e5_e6_directional_evidence_surgery import install as install_e5_e6
+        install_e5_e6(pipeline_module)
+    except Exception as exc:
+        print(f"[PRODUCTION V2] E5_E6_DIRECTIONAL_EVIDENCE_SURGERY install_error={exc}", flush=True)
