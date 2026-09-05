@@ -6,6 +6,7 @@ import os
 from flask import Flask, jsonify, request
 
 from .market_data import normalize_market_data
+from . import pipeline as pipeline_module
 from .pipeline import ProductionPipeline
 from .bootstrap_surgery import install as install_bootstrap_surgery
 from .brain_handoff import attach_result_chain
@@ -15,8 +16,8 @@ from .statistics import build_statistics, store
 
 logger = logging.getLogger(__name__)
 app = Flask(__name__)
+install_bootstrap_surgery(pipeline_module)
 pipeline = ProductionPipeline()
-install_bootstrap_surgery(__import__("production_v2.pipeline", fromlist=["pipeline"]))
 app.config["PRODUCTION_V2_LIVE_REQUIRED"] = True
 _runtime_started = False
 ARCHITECTURE = "SINGLE_AXIS:E1 -> E2 -> E3 -> E4 -> E5 -> E6 -> E7 -> E8 -> E9 -> OPPORTUNITY_SYNTHESIS"
@@ -38,7 +39,7 @@ def _load_historical_calibration():
 
 
 def _connect_brains(result):
-    """HTTP presentation layer only: attach the brain result chain."""
+    """HTTP presentation layer only: attach the brain result chain and decision metadata."""
     result = attach_result_chain(result)
     return enrich_decision(result)
 
@@ -65,11 +66,7 @@ def start_production_runtime():
     from .service import start_live_service
     start_live_service()
     _runtime_started = True
-    print(
-        f"[PRODUCTION V2] Live M5 runtime started; architecture={ARCHITECTURE}; "
-        f"opportunity_memory_backend={opportunity_memory_backend()}; records={_memory_records()}",
-        flush=True,
-    )
+    print(f"[PRODUCTION V2] Live M5 runtime started; architecture={ARCHITECTURE}; opportunity_memory_backend={opportunity_memory_backend()}; records={_memory_records()}", flush=True)
 
 
 start_production_runtime()
@@ -77,38 +74,12 @@ start_production_runtime()
 
 @app.get("/")
 def index():
-    return jsonify({
-        "system": "9-ENGINE",
-        "version": "production-v2",
-        "architecture": ARCHITECTURE,
-        "sub_engines": False,
-        "parallel_peer_analysis": False,
-        "decision_authority": "E9",
-        "legacy_runtime": False,
-        "live_runtime": "RUNNING" if _runtime_started else "NOT_RUNNING",
-        "environment": os.getenv("RENDER_ENV", "production"),
-        "opportunity_memory_backend": opportunity_memory_backend(),
-        "opportunity_memory_records": _memory_records(),
-        "opportunity_memory_error": opportunity_memory_last_error(),
-    })
+    return jsonify({"system":"9-ENGINE","version":"production-v2","architecture":ARCHITECTURE,"sub_engines":False,"parallel_peer_analysis":False,"decision_authority":"E9","legacy_runtime":False,"live_runtime":"RUNNING" if _runtime_started else "NOT_RUNNING","environment":os.getenv("RENDER_ENV","production"),"opportunity_memory_backend":opportunity_memory_backend(),"opportunity_memory_records":_memory_records(),"opportunity_memory_error":opportunity_memory_last_error()})
 
 
 @app.get("/health")
 def health():
-    return jsonify({
-        "status": "ok" if _runtime_started else "degraded",
-        "system": "9-ENGINE",
-        "version": "production-v2",
-        "architecture": ARCHITECTURE,
-        "sub_engines": False,
-        "parallel_peer_analysis": False,
-        "decision_authority": "E9",
-        "legacy_runtime": False,
-        "timeframe": "M5",
-        "opportunity_memory_backend": opportunity_memory_backend(),
-        "opportunity_memory_records": _memory_records(),
-        "opportunity_memory_error": opportunity_memory_last_error(),
-    }), (200 if _runtime_started else 503)
+    return jsonify({"status":"ok" if _runtime_started else "degraded","system":"9-ENGINE","version":"production-v2","architecture":ARCHITECTURE,"sub_engines":False,"parallel_peer_analysis":False,"decision_authority":"E9","legacy_runtime":False,"timeframe":"M5","opportunity_memory_backend":opportunity_memory_backend(),"opportunity_memory_records":_memory_records(),"opportunity_memory_error":opportunity_memory_last_error()}), (200 if _runtime_started else 503)
 
 
 @app.get("/api/statistics")
@@ -127,11 +98,11 @@ def signal():
         store.record(result, price)
         return jsonify(result.as_dict())
     except ValueError as exc:
-        return jsonify({"error": str(exc), "system": "9-ENGINE", "legacy_runtime": False}), 400
+        return jsonify({"error":str(exc),"system":"9-ENGINE","legacy_runtime":False}),400
     except Exception as exc:
         logger.exception("production-v2 pipeline failure")
-        return jsonify({"error": "PIPELINE_ERROR", "detail": str(exc)}), 500
+        return jsonify({"error":"PIPELINE_ERROR","detail":str(exc)}),500
 
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=int(os.getenv("PORT", "10000")))
+    app.run(host="0.0.0.0",port=int(os.getenv("PORT","10000")))
