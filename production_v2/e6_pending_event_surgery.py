@@ -90,10 +90,6 @@ def _candidate(upstream: dict[str, EngineResult]) -> dict[str, Any] | None:
     pressure = _direction(e1.get("directional_pressure") or e1.get("pressure"))
     external = _direction(e3.get("external_state") or e3.get("structure_direction") or e3.get("direction"))
     e2_direction = _direction(e2.get("direction") or e2.get("opportunity_direction"))
-
-    # A pending failed-break reclaim is an unresolved auction event, not a
-    # directional verdict. Use the independent market/structure anchor for the
-    # watch direction and preserve E4's opposing response as counter-evidence.
     direction = pressure if pressure in DIRECTIONS else external if external in DIRECTIONS else e2_direction
     if direction not in DIRECTIONS:
         return None
@@ -189,6 +185,35 @@ def _watch(original: EngineResult, candidate: dict[str, Any]) -> EngineResult:
     return EngineResult("E6", "Setup Brain", False, 0.0, out, tuple(missing))
 
 
+def _align_existing_watch(result: EngineResult, upstream: dict[str, EngineResult]) -> EngineResult:
+    out = _out(result)
+    if not _is_existing_watch(out):
+        return result
+    direction = _direction(out.get("direction") or out.get("direction_thesis") or out.get("thesis_direction"))
+    if direction not in DIRECTIONS:
+        return result
+    e5 = _payload(upstream, "E5")
+    preferred = _text(e5.get("preferred_location"))
+    preferred_direction = "BUY" if preferred == "LONG" else "SELL" if preferred == "SHORT" else "NEUTRAL"
+    if preferred_direction not in DIRECTIONS or preferred_direction == direction:
+        return result
+    support = [x for x in (out.get("supporting_evidence") or []) if _text(x) != "E5_LOCATION_VALUE_SUPPORT"]
+    counter = list(out.get("counter_evidence") or [])
+    missing = list(out.get("missing_proof") or out.get("reason_codes") or [])
+    if "E5_OPPOSITE_DIRECTIONAL_LOCATION" not in counter:
+        counter.append("E5_OPPOSITE_DIRECTIONAL_LOCATION")
+    if "E5_DIRECTIONAL_LOCATION_CONFLICT" not in missing:
+        missing.append("E5_DIRECTIONAL_LOCATION_CONFLICT")
+    out["supporting_evidence"] = support
+    out["counter_evidence"] = list(dict.fromkeys(counter))
+    out["missing_proof"] = list(dict.fromkeys(missing))
+    out["missing_evidence"] = list(dict.fromkeys(missing))
+    out["reason_codes"] = list(dict.fromkeys(missing))
+    out["reasons"] = list(dict.fromkeys(missing))
+    out["e5_directional_location"] = preferred_direction
+    return EngineResult(result.engine_id, result.name, result.gate_passed, result.score, out, tuple(out["reason_codes"]))
+
+
 def install(pipeline_module: Any) -> None:
     if getattr(pipeline_module, "_E6_PENDING_EVENT_SURGERY_INSTALLED", False):
         return
@@ -198,6 +223,7 @@ def install(pipeline_module: Any) -> None:
         result = original(market_data, upstream)
         if not isinstance(result, EngineResult):
             return result
+        result = _align_existing_watch(result, upstream)
         current = _out(result)
         if _is_existing_watch(current) or not _is_no_setup(current):
             return result
