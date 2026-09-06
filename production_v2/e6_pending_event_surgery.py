@@ -2,11 +2,12 @@ from __future__ import annotations
 
 from typing import Any
 from .contracts import EngineResult
-VERSION = "E6_PENDING_EVENT_SURGERY_V3"
+VERSION = "E6_PENDING_EVENT_SURGERY_V4"
 PENDING_AUCTION_STATES = {"PENDING", "DEVELOPING", "FORMING", "AWAITING_CONFIRMATION", "CONFIRMATION_PENDING"}
 WATCH_SETUPS = {"OPPORTUNITY_WATCH", "OPPORTUNITY_CANDIDATE", "OPPORTUNITY_THESIS"}
 DIRECTIONS = {"BUY", "SELL"}
 MEANINGFUL_EVENTS = ("FAILED_BREAK_RECLAIM", "HIGH_SWEEP_REJECTION", "LOW_SWEEP_REJECTION", "HIGH_REJECTION", "LOW_REJECTION", "HIGH_ACCEPTANCE", "LOW_ACCEPTANCE", "BREAK", "RECLAIM", "LIQUIDITY_INTERACTION", "ACCEPTANCE", "REJECTION", "SWEEP")
+MIN_SPACE_ATR = 0.75
 
 def _text(value: Any) -> str: return str(value or "").upper().strip()
 def _direction(value: Any) -> str:
@@ -65,7 +66,7 @@ def _generic_candidate(upstream: dict[str, EngineResult]) -> dict[str, Any] | No
     if internal == "MIXED" or (internal in DIRECTIONS and internal != direction): missing.append("E3_INTERNAL_STRUCTURE_ALIGNMENT")
     if preferred_direction in DIRECTIONS and preferred_direction != direction: counter.append("E5_OPPOSITE_DIRECTIONAL_LOCATION"); missing.append("E5_DIRECTIONAL_LOCATION_CONFLICT")
     if continuation_risk: counter.append("E5_CONTINUATION_RISK_AGAINST_REVERSAL")
-    if space < 0.75: missing.append("STRUCTURAL_SPACE_INSUFFICIENT")
+    if space < MIN_SPACE_ATR: missing.append("STRUCTURAL_SPACE_INSUFFICIENT")
     return {"direction": direction, "family": "LIQUIDITY_RESPONSE", "event_id": str(e4.get("event_id") or e4.get("event_candle_id") or ""), "space": round(space, 4), "support": list(dict.fromkeys(support)), "counter": list(dict.fromkeys(counter)), "missing": list(dict.fromkeys(missing)), "direction_source": "E4_EVENT" if event_direction in DIRECTIONS else "UPSTREAM_FALLBACK"}
 def _candidate(upstream: dict[str, EngineResult]) -> dict[str, Any] | None: return _generic_candidate(upstream)
 def _watch(original: EngineResult, candidate: dict[str, Any]) -> EngineResult:
@@ -84,6 +85,23 @@ def _align_existing_watch(result: EngineResult, upstream: dict[str, EngineResult
     if "E5_DIRECTIONAL_LOCATION_CONFLICT" not in missing: missing.append("E5_DIRECTIONAL_LOCATION_CONFLICT")
     out["supporting_evidence"] = support; out["counter_evidence"] = list(dict.fromkeys(counter)); out["missing_proof"] = list(dict.fromkeys(missing)); out["missing_evidence"] = list(dict.fromkeys(missing)); out["reason_codes"] = list(dict.fromkeys(missing)); out["reasons"] = list(dict.fromkeys(missing)); out["e5_directional_location"] = preferred_direction
     return EngineResult(result.engine_id, result.name, result.gate_passed, result.score, out, tuple(out["reason_codes"]))
+def _normalize_space_consistency(result: EngineResult, upstream: dict[str, EngineResult]) -> EngineResult:
+    out = _out(result); setup = _text(out.get("setup") or out.get("setup_family")); direction = _direction(out.get("direction") or out.get("direction_thesis") or out.get("thesis_direction"))
+    if setup not in WATCH_SETUPS or direction not in DIRECTIONS: return result
+    e5 = _payload(upstream, "E5"); space = _space(e5, direction)
+    missing = list(dict.fromkeys(_text(x) for x in (out.get("missing_proof") or out.get("missing_evidence") or []) if _text(x)))
+    reasons = list(dict.fromkeys(_text(x) for x in (out.get("reason_codes") or out.get("reasons") or []) if _text(x)))
+    if space >= MIN_SPACE_ATR:
+        missing = [x for x in missing if x != "STRUCTURAL_SPACE_INSUFFICIENT"]
+        reasons = [x for x in reasons if x != "STRUCTURAL_SPACE_INSUFFICIENT"]
+    else:
+        if "STRUCTURAL_SPACE_INSUFFICIENT" not in missing: missing.append("STRUCTURAL_SPACE_INSUFFICIENT")
+        if "STRUCTURAL_SPACE_INSUFFICIENT" not in reasons: reasons.append("STRUCTURAL_SPACE_INSUFFICIENT")
+    wait = list(dict.fromkeys(_text(x) for x in str(out.get("wait_for") or "").split(",") if _text(x)))
+    if space >= MIN_SPACE_ATR: wait = [x for x in wait if x != "STRUCTURAL_SPACE_INSUFFICIENT"]
+    elif "STRUCTURAL_SPACE_INSUFFICIENT" not in wait: wait.append("STRUCTURAL_SPACE_INSUFFICIENT")
+    out.update({"available_space_atr": round(space, 4), "missing_proof": missing, "missing_evidence": missing, "reason_codes": reasons, "reasons": reasons, "wait_for": ",".join(wait), "space_consistency_authority": "E5", "space_consistency_version": VERSION})
+    return EngineResult(result.engine_id, result.name, result.gate_passed, result.score, out, tuple(reasons))
 def install(pipeline_module: Any) -> None:
     if getattr(pipeline_module, "_E6_PENDING_EVENT_SURGERY_INSTALLED", False): return
     original = pipeline_module.analyze_e6
@@ -91,11 +109,11 @@ def install(pipeline_module: Any) -> None:
         result = original(market_data, upstream)
         if not isinstance(result, EngineResult): return result
         result = _align_existing_watch(result, upstream); current = _out(result)
-        if _is_existing_watch(current) or not _is_no_setup(current): return result
+        if _is_existing_watch(current) or not _is_no_setup(current): return _normalize_space_consistency(result, upstream)
         candidate = _candidate(upstream)
-        if candidate is None: return result
+        if candidate is None: return _normalize_space_consistency(result, upstream)
         print(f"[PRODUCTION V2] E6_PENDING_EVENT_SURGERY version={VERSION} action=WATCH direction={candidate['direction']} event_id={candidate['event_id']} source={candidate.get('direction_source')}", flush=True)
-        return _watch(result, candidate)
+        return _normalize_space_consistency(_watch(result, candidate), upstream)
     pipeline_module.analyze_e6 = patched_analyze_e6
     pipeline_module._E6_RUNTIME_OVERRIDE = patched_analyze_e6
     pipeline_module._E6_PENDING_EVENT_SURGERY_INSTALLED = True
