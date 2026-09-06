@@ -45,7 +45,7 @@ def _stable_identity(previous: dict[str, Any], direction: str, setup: str, event
                 return pid
             if ps not in WATCH_SETUPS and ps == current_setup and state in ACTIVE_STATES:
                 return pid
-            if ps in WATCH_SETUPS and current_setup not in WATCH_SETUPS and current_setup not in {"", "UNKNOWN", "NONE", "NO_SETUP"}:
+            if ps in WATCH_SETUPS and current_setup not in {"", "UNKNOWN", "NONE", "NO_SETUP"}:
                 return pid
     return _identity(direction, setup, event_id)
 
@@ -61,10 +61,10 @@ def _phase(state: str, setup: str, thesis_proven: bool, ready: bool, invalidated
         return "EXPIRED"
     if ready:
         return "EXECUTABLE"
-    if not thesis_proven:
-        return "FORMING"
     if setup in WATCH_SETUPS:
-        return "DEVELOPING"
+        return "DEVELOPING" if thesis_proven else "FORMING"
+    if not thesis_proven:
+        return "TRIGGER_PENDING"
     return "TRIGGER_PENDING"
 
 
@@ -98,16 +98,28 @@ def advance_opportunity(previous: dict[str, Any] | None, current: dict[str, Any]
         state = "READY" if ready else "WAITING"
         phase = "EXECUTABLE" if ready else "TRIGGER_PENDING"
         return {**base,"state":state,"lifecycle_state":phase,"opportunity_phase":phase,"continuity":"PROMOTED_PENDING_OPPORTUNITY_TO_SETUP" if ready else "PROMOTED_PENDING_OPPORTUNITY","opportunity_id":oid,"direction":d,"setup":setup,"bars_waited":age,"origin_candle":p.get("origin_candle") or candle,"wait_for":c.get("wait_for") or ["E7_SETUP_SPECIFIC_CLOSED_CANDLE_CONFIRMATION"],"invalidation_reason":None}
+
     if active and pid and oid and pid != oid:
         return {**c,"state":"REPLACED","lifecycle_state":"REPLACED","opportunity_phase":"REPLACED","continuity":"OPPORTUNITY_ID_CHANGED","previous_opportunity_id":pid,"opportunity_id":oid,"event_id":event_id,"origin_event_id":event_id,"bars_waited":0,"origin_candle":candle,"last_evaluated_candle":candle,"trade_authorized":False,"invalidation_reason":"OPPORTUNITY_ID_CHANGED"}
     if active and ready and candidate and oid:
         phase = "EXECUTABLE"
         return {**base,"state":"READY","lifecycle_state":phase,"opportunity_phase":phase,"continuity":"ADVANCING_EXISTING_OPPORTUNITY","opportunity_id":pid or oid,"direction":d or pd,"setup":setup or previous_setup,"bars_waited":age,"origin_candle":p.get("origin_candle") or candle,"invalidation_reason":None}
+
     if candidate and oid:
-        state = "WATCHING" if not thesis_proven else ("WATCHING" if setup in WATCH_SETUPS else "WAITING")
+        # A setup-specific candidate is WAITING until its thesis is proven.
+        # Only upstream watch families use WATCHING before thesis proof.
+        if setup in WATCH_SETUPS:
+            state = "WATCHING"
+            lifecycle_state = "OPPORTUNITY_WATCH"
+        elif pending_watch and not thesis_proven:
+            state = "WATCHING"
+            lifecycle_state = "OPPORTUNITY_WATCH"
+        else:
+            state = "WAITING" if not ready else "READY"
+            lifecycle_state = "EXECUTABLE" if ready else "TRIGGER_PENDING"
         phase = _phase(state, setup, thesis_proven, ready, False)
         continuity = "CONTINUING_UPSTREAM_WATCH" if pending_watch else ("CONTINUING_EXISTING_OPPORTUNITY" if active else "NEW_OPPORTUNITY_WATCH")
-        return {**base,"state":state,"lifecycle_state":phase,"opportunity_phase":phase,"continuity":continuity,"opportunity_id":oid,"direction":d,"setup":setup,"bars_waited":age if active else 0,"origin_candle":p.get("origin_candle") if active else candle,"wait_for":c.get("wait_for") or ["NEXT_CLOSED_M5_CANDLE"],"invalidation_reason":None}
+        return {**base,"state":state,"lifecycle_state":lifecycle_state,"opportunity_phase":phase,"continuity":continuity,"opportunity_id":oid,"direction":d,"setup":setup,"bars_waited":age if active else 0,"origin_candle":p.get("origin_candle") if active else candle,"wait_for":c.get("wait_for") or ["NEXT_CLOSED_M5_CANDLE"],"invalidation_reason":None}
     if active:
         if age >= MAX_WATCH_BARS:
             return {**base,"state":"EXPIRED","lifecycle_state":"EXPIRED","opportunity_phase":"EXPIRED","continuity":"OPPORTUNITY_EXPIRED","opportunity_id":pid,"direction":pd,"setup":previous_setup,"bars_waited":age,"wait_for":"NEW_CAUSAL_OPPORTUNITY","invalidation_reason":"WATCH_MAX_AGE_REACHED"}
