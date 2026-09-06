@@ -46,14 +46,33 @@ def _has_hard_invalidation(upstream: dict[str, EngineResult]) -> bool:
     return False
 
 
-def _watch_result(direction: str, setup: str) -> EngineResult:
-    reasons = ["E9_FINAL_GOVERNANCE", "E6_OPPORTUNITY_WATCH", "WAITING_FOR_E7_TRIGGER", "E7_VALID_CLOSED_CANDLE_TRIGGER_REQUIRED"]
+def _watch_wait_events(e6: dict[str, Any]) -> list[str]:
+    """Return events that can advance an opportunity watch into a real thesis.
+
+    E7 is deliberately excluded here: confirmation belongs downstream of E6.
+    The watch may continue across closed candles while upstream proof develops.
+    """
+    missing = e6.get("missing_proof") or e6.get("missing_evidence") or ()
+    if isinstance(missing, str):
+        missing = [missing]
+    events = [str(value).strip().upper() for value in missing if str(value).strip()]
+    events = [value for value in events if value not in {
+        "E7_CONFIRMATION", "E7_VALID_CLOSED_CANDLE_TRIGGER_REQUIRED",
+    }]
+    events.extend(["E6_SETUP_THESIS_REQUIRED", "E7_TRIGGER_BLOCKED_UNTIL_E6_THESIS"])
+    return list(dict.fromkeys(events))
+
+
+def _watch_result(direction: str, setup: str, e6: dict[str, Any]) -> EngineResult:
+    wait_events = _watch_wait_events(e6)
+    reasons = ["E9_FINAL_GOVERNANCE", "E6_OPPORTUNITY_WATCH", "E6_SETUP_THESIS_REQUIRED", "E7_TRIGGER_BLOCKED_UNTIL_E6_THESIS"]
     output = {
         "decision": "NO_TRADE", "final_governance": "WATCH", "governance_decision": "WATCH",
-        "governance_reason": "WAITING_FOR_E7_TRIGGER", "governance_blockers": ["WAITING_FOR_E7_TRIGGER"],
-        "next_required_events": ["E7_VALID_CLOSED_CANDLE_TRIGGER_REQUIRED"], "execution_state": "BLOCKED",
+        "governance_reason": "WAITING_FOR_E6_SETUP_THESIS",
+        "governance_blockers": ["E6_SETUP_THESIS_REQUIRED"],
+        "next_required_events": wait_events, "execution_state": "BLOCKED",
         "all_gates_pass": False, "direction": direction, "thesis_direction": direction, "setup": setup,
-        "thesis": f"{direction} opportunity watch is active; E6 thesis proof and E7 closed-candle confirmation are not complete.",
+        "thesis": f"{direction} opportunity watch is active; E6 thesis proof is not complete. E7 confirmation is blocked until E6 establishes a surviving setup thesis.",
         "thesis_state": "HYPOTHESIS", "thesis_lifecycle_source": "E6", "setup_state": "FORMING",
         "confirmation_state": "NOT_APPLICABLE", "economic_state": "NOT_APPLICABLE", "economic_blockers": [],
         "economic_pending": [], "hard_conflicts": [],
@@ -63,7 +82,7 @@ def _watch_result(direction: str, setup: str) -> EngineResult:
         "reason_codes": reasons, "reasons": reasons, "reason_scope": "E6_WATCH_BOUNDARY_ONLY",
         "authority_contract": {"market_evidence_owner": "E1-E5", "trade_thesis_owner": "E6", "trigger_owner": "E7", "trade_economics_owner": "E8", "final_decision_owner": "E9", "e9_may_rewrite_e6_thesis": False, "e9_may_bypass_e7": False, "e9_may_bypass_e8": False},
         "architecture": "E9_FINAL_GOVERNANCE_THESIS_TRIGGER_ECONOMICS",
-        "watch_boundary": "E6_WATCH_REQUIRES_E7_BEFORE_E8_ECONOMICS",
+        "watch_boundary": "E6_WATCH_REQUIRES_E6_THESIS_BEFORE_E7_AND_E8",
         "governance_layers": {"market_control": "MARKET_CONTROL", "thesis_control": "E6_OWNER", "proof_control": "E7_CONFIRMATION_AND_E8_ECONOMICS", "final_governance": "E9_FINAL_AUTHORITY"},
     }
     return EngineResult("E9", "Master Decision Brain", False, 0.0, output, tuple(reasons))
@@ -90,7 +109,7 @@ def install(e9_module) -> None:
     def guarded(snapshot: dict[str, Any], upstream: dict[str, EngineResult]):
         e6 = _out(upstream.get("E6")); watch = _watch_state(e6); e8 = _out(upstream.get("E8"))
         if watch and e8.get("applicability") == "NOT_APPLICABLE_WITHOUT_SURVIVING_E6_THESIS" and not _has_hard_invalidation(upstream):
-            return _watch_result(*watch)
+            return _watch_result(watch[0], watch[1], e6)
         return _restore_governance_layers(original(snapshot, upstream))
 
     e9_module.analyze_e9 = guarded
