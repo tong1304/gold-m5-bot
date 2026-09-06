@@ -126,6 +126,24 @@ def advance_opportunity(previous: dict[str, Any] | None, current: dict[str, Any]
     return {"state":"IDLE","lifecycle_state":"IDLE","opportunity_phase":"IDLE","continuity":"NO_ACTIVE_PENDING_OPPORTUNITY","opportunity_id":None,"direction":"NEUTRAL","setup":"UNKNOWN","bars_waited":0,"origin_candle":candle,"last_evaluated_candle":candle,"trade_authorized":False,"invalidation_reason":None,"event_id":event_id,"origin_event_id":event_id}
 
 
+def advance_opportunity_directions(previous: dict[str, Any] | None, current_by_direction: dict[str, dict[str, Any]], *, leader: str = "NEUTRAL", competition: str = "UNCONTESTED") -> dict[str, Any]:
+    """Advance BUY and SELL independently; leadership never terminates the counter-direction watch."""
+    previous = dict(previous or {})
+    previous_map = previous.get("opportunities") if isinstance(previous.get("opportunities"), dict) else {}
+    output: dict[str, Any] = {}
+    for direction in ("BUY", "SELL"):
+        current = dict(current_by_direction.get(direction) or {})
+        if not current:
+            current = {"candidate": False, "direction": direction, "setup": "OPPORTUNITY_WATCH", "ready": False, "thesis_proven": False, "invalidated": False, "candle": previous.get("last_evaluated_candle")}
+        current["direction"] = direction
+        prior = previous_map.get(direction) if isinstance(previous_map.get(direction), dict) else None
+        output[direction] = advance_opportunity(prior, current)
+    active = [item for item in output.values() if _text(item.get("state")) in ACTIVE_STATES]
+    if leader not in VALID_DIRECTIONS or not any(_text(item.get("direction")) == leader for item in active):
+        leader = "NEUTRAL" if not active else _text(active[0].get("direction"))
+    return {"opportunities": output, "leader": leader, "competition": _text(competition) if _text(competition) else "UNCONTESTED", "active_directions": [direction for direction in ("BUY", "SELL") if _text(output[direction].get("state")) in ACTIVE_STATES], "trade_authorized": False, "state": output.get(leader, {}).get("state", "IDLE") if leader in output else "IDLE", "opportunity_id": output.get(leader, {}).get("opportunity_id") if leader in output else None, "direction": leader, "bars_waited": output.get(leader, {}).get("bars_waited", 0) if leader in output else 0, "last_evaluated_candle": max((_text(item.get("last_evaluated_candle")) for item in output.values()), default="")}
+
+
 def advance_lifecycle(previous: dict[str, Any] | None, current: dict[str, Any] | None, bar_id: Any = None) -> dict[str, Any]:
     c = dict(current or {})
     if bar_id is not None:
