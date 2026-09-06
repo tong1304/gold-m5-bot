@@ -26,6 +26,22 @@ def _bool(value: Any) -> bool:
     return bool(value)
 
 
+def lifecycle_telemetry(symbol: str, lifecycle: dict[str, Any]) -> str:
+    """Return one stable, grep-friendly line proving lifecycle state at a candle boundary."""
+    terminal = _text(lifecycle.get("terminal_stage")) or "NONE"
+    return (
+        "[PRODUCTION V2] OPPORTUNITY_LIFECYCLE "
+        f"symbol={_text(symbol) or 'UNKNOWN'} "
+        f"opportunity_id={lifecycle.get('opportunity_id') or 'NONE'} "
+        f"event_id={lifecycle.get('event_id') or 'NONE'} "
+        f"stage={_text(lifecycle.get('lifecycle_stage')) or 'IDLE'} "
+        f"state={_text(lifecycle.get('state')) or 'UNKNOWN'} "
+        f"wait_for={_text(lifecycle.get('wait_for_stage')) or 'NONE'} "
+        f"terminal={terminal} "
+        f"trade_authorized={1 if _bool(lifecycle.get('trade_authorized')) else 0}"
+    )
+
+
 def _current_stage_input(result: DecisionResult, lifecycle: dict[str, Any], market_data: dict[str, Any]) -> dict[str, Any]:
     e3 = _out(result, "E3"); e4 = _out(result, "E4"); e6 = _out(result, "E6"); e7 = _out(result, "E7"); e8 = _out(result, "E8"); e9 = _out(result, "E9")
     geometry = e9.get("execution_geometry") if isinstance(e9.get("execution_geometry"), dict) else {}
@@ -37,9 +53,10 @@ def _current_stage_input(result: DecisionResult, lifecycle: dict[str, Any], mark
     invalidation_reason = _text(e6.get("invalidation_reason")) or e3_invalidation(e4, e6, e3)
     candle = market_data.get("candle_close_timestamp") or market_data.get("current_candle_timestamp") or market_data.get("candle")
     event_id = e4.get("event_id") or e4.get("auction_event_id") or e4.get("event_candle_id") or lifecycle.get("event_id") or lifecycle.get("origin_event_id")
+    direction = _text(e6.get("direction") or e6.get("direction_thesis") or e6.get("thesis_direction") or lifecycle.get("direction") or e4.get("direction") or e3.get("direction"))
     return {
-        "direction": _text(e6.get("direction") or e6.get("direction_thesis") or e6.get("thesis_direction") or lifecycle.get("direction")),
-        "candidate": bool(lifecycle.get("opportunity_id")) or _bool(e6.get("watch_only")) or _text(e6.get("candidate_type")) in {"OPPORTUNITY_CANDIDATE", "SETUP_CANDIDATE"},
+        "direction": direction,
+        "candidate": bool(lifecycle.get("opportunity_id")) or _bool(e6.get("watch_only")) or _text(e6.get("candidate_type")) in {"OPPORTUNITY_CANDIDATE", "SETUP_CANDIDATE"} or bool(event_id),
         "confirmed": e4_state in {"CONFIRMED", "TERMINALLY_CONFIRMED", "ACCEPTED", "RECLAIMED"},
         "e4_state": e4_state,
         "thesis_proven": _bool(e6.get("e6_thesis_proven")) or _text(e6.get("thesis_state") or e6.get("maturity") or e6.get("setup_state")) in {"MATURE", "CONFIRMED", "VALIDATED", "TRADE_READY", "ESTABLISHED"},
@@ -108,6 +125,7 @@ def enrich(result: DecisionResult, market_data: dict[str, Any]) -> DecisionResul
     if progressed.get("lifecycle_stage") in {"TOO_LATE", "EXPIRED", "INVALIDATED", "REPLACED"}: decision, gate = "NO_TRADE", False
     updated = DecisionResult(result.symbol, result.timeframe, decision, gate, result.score, tuple(engines), risk, tuple(dict.fromkeys(list(result.reason_codes) + ([f"LIFECYCLE_{progressed.get('lifecycle_stage')}"] if progressed.get("lifecycle_stage") else []))), result.state, result.blocked_by, result.wait_bars, result.execution_state)
     opportunity_memory.save(result.symbol, lifecycle)
+    print(lifecycle_telemetry(result.symbol, progressed), flush=True)
     return updated
 
 
