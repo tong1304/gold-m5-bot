@@ -33,14 +33,15 @@ def install(pipeline_module, e2_module) -> None:
         if not isinstance(output, dict):
             return output
         candle = snapshot.get("candle_close_timestamp") or snapshot.get("candle") or {}
+        previous_book = snapshot.get("previous_opportunity_book")
         return enrich_directional_opportunity_book(
             output,
             candle=candle,
             buy_score=_score(output, "up"),
             sell_score=_score(output, "down"),
+            previous_book=previous_book if isinstance(previous_book, dict) else None,
         )
 
     pipeline_module.analyze_e2 = wrapped
-    # Keep the authoritative callable visible on e2_brain for diagnostics/tests.
     e2_module.analyze_e2 = wrapped
     pipeline_module._E2_OPPORTUNITY_BOOK_BOUND = True
