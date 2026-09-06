@@ -54,11 +54,11 @@ def _phase(state: str, setup: str, thesis_proven: bool, ready: bool, invalidated
         return "EXPIRED"
     if ready:
         return "EXECUTABLE"
+    if not thesis_proven:
+        return "FORMING"
     if setup in WATCH_SETUPS:
-        return "FORMING" if not thesis_proven else "DEVELOPING"
-    if thesis_proven:
-        return "TRIGGER_PENDING"
-    return "WATCHING"
+        return "DEVELOPING"
+    return "TRIGGER_PENDING"
 
 
 def advance_opportunity(previous: dict[str, Any] | None, current: dict[str, Any]) -> dict[str, Any]:
@@ -87,8 +87,6 @@ def advance_opportunity(previous: dict[str, Any] | None, current: dict[str, Any]
     if pending_watch and bool(c.get("upstream_evidence_lost") or c.get("causal_evidence_lost")):
         return {**base,"state":"INVALIDATED","lifecycle_state":"INVALIDATED","opportunity_phase":"INVALIDATED","continuity":"UPSTREAM_CAUSAL_EVIDENCE_LOST","opportunity_id":pid,"direction":pd,"setup":previous_setup,"bars_waited":age,"wait_for":"NEW_CAUSAL_OPPORTUNITY","invalidation_reason":"UPSTREAM_CAUSAL_EVIDENCE_LOST"}
 
-    # Promotion from an upstream watch is authorized only by E6's explicit
-    # thesis proof. A setup-family/candidate flag alone is not sufficient.
     if pending_watch and thesis_proven and d == pd and oid and setup not in WATCH_SETUPS and setup not in {"", "UNKNOWN", "NONE", "NO_SETUP"}:
         state = "READY" if ready else "WAITING"
         phase = "EXECUTABLE" if ready else "TRIGGER_PENDING"
@@ -99,15 +97,15 @@ def advance_opportunity(previous: dict[str, Any] | None, current: dict[str, Any]
         phase = "EXECUTABLE"
         return {**base,"state":"READY","lifecycle_state":phase,"opportunity_phase":phase,"continuity":"ADVANCING_EXISTING_OPPORTUNITY","opportunity_id":pid or oid,"direction":d or pd,"setup":setup or previous_setup,"bars_waited":age,"origin_candle":p.get("origin_candle") or candle,"invalidation_reason":None}
     if candidate and oid:
-        state = "WATCHING" if setup in WATCH_SETUPS else "WAITING"
+        # Any candidate without explicit thesis proof remains an opportunity watch.
+        # Setup-family labels are descriptive until E6 proves a causal thesis.
+        state = "WATCHING" if not thesis_proven else ("WATCHING" if setup in WATCH_SETUPS else "WAITING")
         phase = _phase(state, setup, thesis_proven, ready, False)
         continuity = "CONTINUING_UPSTREAM_WATCH" if pending_watch else ("CONTINUING_EXISTING_OPPORTUNITY" if active else "NEW_OPPORTUNITY_WATCH")
         return {**base,"state":state,"lifecycle_state":phase,"opportunity_phase":phase,"continuity":continuity,"opportunity_id":oid,"direction":d,"setup":setup,"bars_waited":age if active else 0,"origin_candle":p.get("origin_candle") if active else candle,"wait_for":c.get("wait_for") or ["NEXT_CLOSED_M5_CANDLE"],"invalidation_reason":None}
     if active:
         if age >= MAX_WATCH_BARS:
             return {**base,"state":"EXPIRED","lifecycle_state":"EXPIRED","opportunity_phase":"EXPIRED","continuity":"OPPORTUNITY_EXPIRED","opportunity_id":pid,"direction":pd,"setup":previous_setup,"bars_waited":age,"wait_for":"NEW_CAUSAL_OPPORTUNITY","invalidation_reason":"WATCH_MAX_AGE_REACHED"}
-        # An active opportunity that has not proved its causal thesis remains a watch,
-        # even when E6 reports the event setup family but no candidate.
         phase = "TRIGGER_PENDING" if thesis_proven else "OPPORTUNITY_WATCH"
         return {**base,"state":ps if ps in ACTIVE_STATES else "WATCHING","lifecycle_state":phase,"opportunity_phase":phase,"continuity":"THESIS_PROVEN_TRIGGER_PENDING" if thesis_proven else "PRESERVING_PENDING_OPPORTUNITY","opportunity_id":pid,"direction":pd,"setup":previous_setup,"bars_waited":age,"wait_for":"CAUSAL_FOLLOW_THROUGH_OR_INVALIDATION" if not thesis_proven else (c.get("wait_for") or "E7_SETUP_SPECIFIC_CLOSED_CANDLE_CONFIRMATION"),"invalidation_reason":None}
     return {"state":"IDLE","lifecycle_state":"IDLE","opportunity_phase":"IDLE","continuity":"NO_ACTIVE_PENDING_OPPORTUNITY","opportunity_id":None,"direction":"NEUTRAL","setup":"UNKNOWN","bars_waited":0,"origin_candle":candle,"last_evaluated_candle":candle,"trade_authorized":False,"invalidation_reason":None,"event_id":event_id,"origin_event_id":event_id}
