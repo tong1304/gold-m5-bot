@@ -1,6 +1,6 @@
 from production_v2.contracts import EngineResult
 from production_v2.e6_evidence_authority import normalize_e6_evidence
-from production_v2.e6_pending_event_surgery import _reconcile_existing_watch_evidence
+from production_v2.e6_pending_event_surgery import _reconcile_existing_watch_evidence, _canonicalize_watch_evidence
 
 
 def _result(output):
@@ -63,3 +63,30 @@ def test_v8_reconciliation_accepts_multiple_direction_fields_without_type_error(
     assert "E3_MIXED_CONTEXT" in out["supporting_evidence"]
     assert "E4_DIRECTIONAL_EVENT_OBSERVATION" in out["supporting_evidence"]
     assert "E4_CONFIRMED_RESPONSE" not in out["supporting_evidence"]
+
+
+def test_v9_final_canonicalization_cannot_leak_stale_e3_e4_claims():
+    result = _result({
+        "setup": "OPPORTUNITY_WATCH", "watch_only": True, "trade_ready": False, "direction": "BUY",
+        "supporting_evidence": [
+            "E1_DIRECTIONAL_CORE", "E2_DIRECTIONAL_ANCHOR",
+            "E3_EXTERNAL_STRUCTURE_SUPPORT", "E3_INTERNAL_STRUCTURE_SUPPORT",
+            "E3_INTERNAL_STRUCTURE_ALIGNMENT", "E4_DIRECTIONAL_AUCTION_EVIDENCE",
+            "E4_CONFIRMED_RESPONSE", "E4_DIRECTIONAL_EVENT_OBSERVATION", "E5_SPACE_EVIDENCE",
+        ],
+    })
+    upstream = _upstream(
+        {"external_state": "MIXED", "internal_state": "UP", "protected_completeness": "NO_DIRECTIONAL_REGIME", "protected_active_regime": "MIXED"},
+        {"event": "HIGH_FAILED_BREAK_RECLAIM", "response_actor": "SELLERS", "auction_state": "PENDING"},
+    )
+    out = _canonicalize_watch_evidence(result, upstream).output
+    evidence = set(out["supporting_evidence"])
+    assert "E3_EXTERNAL_STRUCTURE_SUPPORT" not in evidence
+    assert "E3_INTERNAL_STRUCTURE_SUPPORT" not in evidence
+    assert "E4_DIRECTIONAL_AUCTION_EVIDENCE" not in evidence
+    assert "E4_CONFIRMED_RESPONSE" not in evidence
+    assert "E4_DIRECTIONAL_EVENT_OBSERVATION" not in evidence
+    assert "E3_MIXED_CONTEXT" in evidence
+    assert "E3_INTERNAL_STRUCTURE_ALIGNMENT" in evidence
+    assert "E4_DIRECTIONAL_EVENT_OBSERVATION" not in evidence
+    assert out["evidence_attribution_authority"] == "E3_E4_FACTS_FINAL"
