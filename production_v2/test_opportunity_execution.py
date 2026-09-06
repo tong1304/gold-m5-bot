@@ -44,3 +44,17 @@ def test_legacy_lifecycle_helper_accepts_new_causal_anchor_call():
 
     install(Module)
     assert Module._directional_lifecycle_current(1, 2, 3, 4, {"event_id": "x"}) == (1, 2, 3, 4)
+
+
+def test_nested_varargs_wrapper_still_falls_back_to_legacy_four_args():
+    def legacy(results, decision, gate_passed, candle):
+        return results, decision, gate_passed, candle
+
+    def varargs_wrapper(*args, **kwargs):
+        return legacy(*args, **kwargs)
+
+    class Module:
+        _directional_lifecycle_current = staticmethod(varargs_wrapper)
+
+    install(Module)
+    assert Module._directional_lifecycle_current(1, 2, 3, 4, {"event_id": "x"}) == (1, 2, 3, 4)
