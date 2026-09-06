@@ -26,7 +26,7 @@ def test_waiting_opportunity_is_replaced_when_direction_changes():
     current = {"candidate":True,"direction":"BUY","setup":"LIQUIDITY_REVERSAL","ready":False,"invalidated":False,"candle":"2026-09-02T09:50:00Z"}
     lifecycle = advance_opportunity(previous, current)
     assert lifecycle["state"] == "REPLACED"
-    assert lifecycle["continuity"] == "DIRECTION_CHANGED"
+    assert lifecycle["continuity"] == "DIRECTION_CHANGED_REPLACED_OPPORTUNITY"
     assert lifecycle["invalidation_reason"] == "DIRECTION_CHANGED"
     assert lifecycle["previous_opportunity_id"] == previous["opportunity_id"]
 
@@ -57,7 +57,7 @@ def test_watching_opportunity_promotes_to_waiting_only_when_real_setup_appears()
     assert lifecycle["state"] == "WAITING"
     assert lifecycle["continuity"] == "PROMOTED_PENDING_OPPORTUNITY"
     assert lifecycle["bars_waited"] == 2
-    assert lifecycle["opportunity_id"] == "BUY|TREND_PULLBACK"
+    assert lifecycle["opportunity_id"] == previous["opportunity_id"]
     assert lifecycle["trade_authorized"] is False
 
 
