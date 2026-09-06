@@ -2,12 +2,13 @@ from __future__ import annotations
 
 from typing import Any
 from .contracts import EngineResult
-VERSION = "E6_PENDING_EVENT_SURGERY_V5"
+VERSION = "E6_PENDING_EVENT_SURGERY_V6"
 PENDING_AUCTION_STATES = {"PENDING", "DEVELOPING", "FORMING", "AWAITING_CONFIRMATION", "CONFIRMATION_PENDING"}
 WATCH_SETUPS = {"OPPORTUNITY_WATCH", "OPPORTUNITY_CANDIDATE", "OPPORTUNITY_THESIS"}
 DIRECTIONS = {"BUY", "SELL"}
 MEANINGFUL_EVENTS = ("FAILED_BREAK_RECLAIM", "HIGH_SWEEP_REJECTION", "LOW_SWEEP_REJECTION", "HIGH_REJECTION", "LOW_REJECTION", "HIGH_ACCEPTANCE", "LOW_ACCEPTANCE", "BREAK", "RECLAIM", "LIQUIDITY_INTERACTION", "ACCEPTANCE", "REJECTION", "SWEEP")
 MIN_SPACE_ATR = 0.75
+
 
 def _text(value: Any) -> str: return str(value or "").upper().strip()
 def _direction(value: Any) -> str:
@@ -64,6 +65,7 @@ def _structure_evidence(e3: dict[str, Any], direction: str) -> tuple[list[str], 
     elif internal in DIRECTIONS and internal != direction:
         counter.append("E3_INTERNAL_COUNTERFLOW")
     return support, counter
+
 def _generic_candidate(upstream: dict[str, EngineResult]) -> dict[str, Any] | None:
     e1, e2, e3, e4, e5 = (_payload(upstream, key) for key in ("E1", "E2", "E3", "E4", "E5"))
     if _is_invalidated(e3) or not _pending_event(e4): return None
@@ -81,7 +83,7 @@ def _generic_candidate(upstream: dict[str, EngineResult]) -> dict[str, Any] | No
     if e2_direction == direction: support.append("E2_DIRECTIONAL_ANCHOR")
     if space > 0: support.append("E5_SPACE_EVIDENCE")
     counter.extend(structure_counter)
-    if _text(e4.get("auction_state")) in {"PENDING", "DEVELOPING", "FORMING", "AWAITING_CONFIRMATION", "CONFIRMATION_PENDING"}:
+    if _text(e4.get("auction_state")) in PENDING_AUCTION_STATES:
         counter.append("E4_AUCTION_UNCONFIRMED")
     else:
         support.append("E4_CONFIRMED_RESPONSE")
@@ -110,6 +112,31 @@ def _align_existing_watch(result: EngineResult, upstream: dict[str, EngineResult
     if "E5_DIRECTIONAL_LOCATION_CONFLICT" not in missing: missing.append("E5_DIRECTIONAL_LOCATION_CONFLICT")
     out["supporting_evidence"] = support; out["counter_evidence"] = list(dict.fromkeys(counter)); out["missing_proof"] = list(dict.fromkeys(missing)); out["missing_evidence"] = list(dict.fromkeys(missing)); out["reason_codes"] = list(dict.fromkeys(missing)); out["reasons"] = list(dict.fromkeys(missing)); out["e5_directional_location"] = preferred_direction
     return EngineResult(result.engine_id, result.name, result.gate_passed, result.score, out, tuple(out["reason_codes"]))
+
+def _reconcile_existing_watch_evidence(result: EngineResult, upstream: dict[str, EngineResult]) -> EngineResult:
+    """Rebuild derived E3/E4 evidence labels from authoritative upstream facts."""
+    out = _out(result)
+    if not _is_existing_watch(out): return result
+    direction = _direction(out.get("direction"), out.get("direction_thesis"), out.get("thesis_direction"))
+    if direction not in DIRECTIONS: return result
+    e3 = _payload(upstream, "E3"); e4 = _payload(upstream, "E4")
+    legacy = {"E4_DIRECTIONAL_AUCTION_EVIDENCE", "E4_DIRECTIONAL_EVENT_EVIDENCE", "E4_DIRECTIONAL_AUCTION_SUPPORT", "E3_EXTERNAL_STRUCTURE_SUPPORT", "E3_INTERNAL_STRUCTURE_ALIGNMENT", "E3_INTERNAL_MIXED_CONTEXT", "E3_MIXED_CONTEXT", "E3_EXTERNAL_COUNTERFLOW", "E3_INTERNAL_COUNTERFLOW", "E4_CONFIRMED_RESPONSE", "E4_DIRECTIONAL_EVENT_OBSERVATION"}
+    support = [x for x in (out.get("supporting_evidence") or []) if _text(x) not in legacy]
+    event = _text(e4.get("event") or e4.get("finding")); event_direction = _event_direction(e4); auction = _text(e4.get("auction_state") or e4.get("auction_phase") or e4.get("state"))
+    if event and event_direction == direction:
+        support.append("E4_DIRECTIONAL_EVENT_OBSERVATION")
+        if auction not in PENDING_AUCTION_STATES:
+            support.append("E4_CONFIRMED_RESPONSE")
+    structure_support, structure_counter = _structure_evidence(e3, direction)
+    support.extend(x for x in structure_support if x not in structure_counter)
+    counter = list(out.get("counter_evidence") or [])
+    for code in structure_counter:
+        if code not in counter: counter.append(code)
+    out["supporting_evidence"] = list(dict.fromkeys(support))
+    out["counter_evidence"] = list(dict.fromkeys(counter))
+    out["evidence_attribution_authority"] = "E3_E4_FACTS"
+    out["evidence_attribution_version"] = VERSION
+    return EngineResult(result.engine_id, result.name, result.gate_passed, result.score, out, result.reason_codes)
 def _normalize_space_consistency(result: EngineResult, upstream: dict[str, EngineResult]) -> EngineResult:
     out = _out(result); setup = _text(out.get("setup") or out.get("setup_family")); direction = _direction(out.get("direction") or out.get("direction_thesis") or out.get("thesis_direction"))
     if setup not in WATCH_SETUPS or direction not in DIRECTIONS: return result
@@ -117,8 +144,7 @@ def _normalize_space_consistency(result: EngineResult, upstream: dict[str, Engin
     missing = list(dict.fromkeys(_text(x) for x in (out.get("missing_proof") or out.get("missing_evidence") or []) if _text(x)))
     reasons = list(dict.fromkeys(_text(x) for x in (out.get("reason_codes") or out.get("reasons") or []) if _text(x)))
     if space >= MIN_SPACE_ATR:
-        missing = [x for x in missing if x != "STRUCTURAL_SPACE_INSUFFICIENT"]
-        reasons = [x for x in reasons if x != "STRUCTURAL_SPACE_INSUFFICIENT"]
+        missing = [x for x in missing if x != "STRUCTURAL_SPACE_INSUFFICIENT"]; reasons = [x for x in reasons if x != "STRUCTURAL_SPACE_INSUFFICIENT"]
     else:
         if "STRUCTURAL_SPACE_INSUFFICIENT" not in missing: missing.append("STRUCTURAL_SPACE_INSUFFICIENT")
         if "STRUCTURAL_SPACE_INSUFFICIENT" not in reasons: reasons.append("STRUCTURAL_SPACE_INSUFFICIENT")
@@ -133,7 +159,7 @@ def install(pipeline_module: Any) -> None:
     def patched_analyze_e6(market_data: dict[str, Any], upstream: dict[str, EngineResult]) -> EngineResult:
         result = original(market_data, upstream)
         if not isinstance(result, EngineResult): return result
-        result = _align_existing_watch(result, upstream); current = _out(result)
+        result = _align_existing_watch(result, upstream); result = _reconcile_existing_watch_evidence(result, upstream); current = _out(result)
         if _is_existing_watch(current) or not _is_no_setup(current): return _normalize_space_consistency(result, upstream)
         candidate = _candidate(upstream)
         if candidate is None: return _normalize_space_consistency(result, upstream)
