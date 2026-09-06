@@ -1,0 +1,39 @@
+name: E2 V9 Tests
+
+on:
+  push:
+    branches: [production-v2]
+  workflow_dispatch:
+
+jobs:
+  e2-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Compile E2
+        run: python -m py_compile production_v2/e2_brain.py
+      - name: Verify classifier boundaries
+        run: |
+          python - <<'PY'
+          from production_v2.e2_brain import _classify_opportunity
+
+          weak = _classify_opportunity(up=5, down=3, auction='UNCOMMITTED_AUCTION', balanced=False, acceptance_up=False, acceptance_down=False, rejection_high=False, rejection_low=False, space_atr=2.0, location_ok=True)
+          assert weak['direction'] == 'NEUTRAL', weak
+          assert 'DIRECTIONAL_EDGE_NOT_ESTABLISHED' in weak['blockers'], weak
+
+          strong = _classify_opportunity(up=6, down=2, auction='BUY_SIDE_ACCEPTANCE', balanced=False, acceptance_up=True, acceptance_down=False, rejection_high=False, rejection_low=False, space_atr=2.0, location_ok=True)
+          assert strong['direction'] == 'BUY', strong
+          assert strong['opportunity_maturity'] == 'DEVELOPING', strong
+
+          conflict = _classify_opportunity(up=6, down=2, auction='SELL_SIDE_ACCEPTANCE', balanced=False, acceptance_up=False, acceptance_down=True, rejection_high=False, rejection_low=False, space_atr=2.0, location_ok=True)
+          assert conflict['direction'] == 'NEUTRAL', conflict
+          assert 'DIRECTIONAL_AUCTION_CONFLICT' in conflict['finding'], conflict
+
+          blocked = _classify_opportunity(up=6, down=2, auction='BUYER_INITIATIVE_PENDING_ACCEPTANCE', balanced=False, acceptance_up=False, acceptance_down=False, rejection_high=False, rejection_low=False, space_atr=0.5, location_ok=False)
+          assert blocked['direction'] == 'BUY', blocked
+          assert 'LOCATION_NOT_ADVANTAGEOUS' in blocked['blockers'], blocked
+          assert 'INSUFFICIENT_OPPOSING_SPACE' in blocked['blockers'], blocked
+          PY
