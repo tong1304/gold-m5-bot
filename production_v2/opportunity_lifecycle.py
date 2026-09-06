@@ -44,3 +44,12 @@ def advance_opportunity(previous:dict[str,Any]|None,current:dict[str,Any])->dict
         if age>MAX_WATCH_BARS:return {**base,"state":"EXPIRED","continuity":"OPPORTUNITY_EXPIRED","opportunity_id":pid,"direction":pd,"setup":previous_setup,"bars_waited":age,"wait_for":"NEW_CAUSAL_OPPORTUNITY","invalidation_reason":"WATCH_MAX_AGE_REACHED"}
         return {**base,"state":ps if ps in ACTIVE_STATES else "WAITING","continuity":"PRESERVING_PENDING_OPPORTUNITY","opportunity_id":pid,"direction":pd,"setup":previous_setup,"bars_waited":age,"wait_for":"CAUSAL_FOLLOW_THROUGH_OR_INVALIDATION","invalidation_reason":None}
     return {"state":"IDLE","continuity":"NO_ACTIVE_PENDING_OPPORTUNITY","opportunity_id":None,"direction":"NEUTRAL","setup":"UNKNOWN","bars_waited":0,"origin_candle":candle,"last_evaluated_candle":candle,"trade_authorized":False,"invalidation_reason":None}
+
+def advance_lifecycle(previous:dict[str,Any]|None,current:dict[str,Any]|None,bar_id:Any=None)->dict[str,Any]:
+    """Compatibility projection for legacy lifecycle callers; execution authority stays with advance_opportunity/E9."""
+    c=dict(current or {})
+    if bar_id is not None:c.setdefault("candle",bar_id)
+    result=advance_opportunity(previous,c)
+    state=_text(result.get("state")); setup=_text(result.get("setup"))
+    lifecycle_state="OPPORTUNITY_WATCH" if state in {"WATCHING","WAITING"} and setup in WATCH_SETUPS else state
+    return {**result,"lifecycle_state":lifecycle_state,"age_bars":int(result.get("bars_waited",0) or 0),"wait_for":result.get("wait_for") or "CAUSAL_FOLLOW_THROUGH_OR_INVALIDATION"}
