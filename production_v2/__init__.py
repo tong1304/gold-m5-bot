@@ -12,6 +12,7 @@ from . import e6_brain as _e6_module
 from . import e8_brain as _e8_module
 from . import e9_brain as _e9_module
 from . import market_data as _market_data_module
+from . import professional_opportunity as _professional_opportunity_module
 from .bootstrap_surgery import install as _install_bootstrap_surgery
 from .e2_runtime_binding import install as _install_e2_opportunity_book
 from .e7_thesis_boundary import install as _install_e7_thesis_boundary
@@ -23,17 +24,18 @@ from .evidence_collaboration_runtime import install as _install_evidence_collabo
 from .e9_thesis_contract import install as _install_e9_thesis_contract
 from .runtime_trace_boundary import install as _install_runtime_trace_boundary
 from .opportunity_lifecycle_runtime import install as _install_opportunity_lifecycle_runtime
+from .professional_opportunity_surgery import install as _install_professional_opportunity
 
 _install_bootstrap_surgery(_pipeline_module)
 _install_mtf_runtime(_pipeline_module, _market_data_module)
 
 # E2 opportunity intelligence: preserve conditional BUY/SELL watches without
-# authorizing entry, trigger, decision, or execution.
+authorizing entry, trigger, decision, or execution.
 _install_e2_opportunity_book(_pipeline_module, _e2_module)
 
 # E6 single authority: no pending-counterflow, opportunity-guard, or runtime
-# authority monkey-patch is installed. Those modules remain compatibility
-# helpers only and cannot replace the authoritative E6 callable.
+authority monkey-patch is installed. Those modules remain compatibility
+helpers only and cannot replace the authoritative E6 callable.
 _pipeline_module.analyze_e6 = _e6_module.analyze_e6
 
 _install_e8_applicability_boundary(_e8_module)
@@ -50,5 +52,9 @@ _install_e7_thesis_boundary(_pipeline_module)
 _install_final_runtime_binding(_pipeline_module, _e6_module, _e8_module, _e9_module)
 _install_runtime_trace_boundary(_pipeline_module)
 _install_opportunity_lifecycle_runtime(_pipeline_module)
+
+# Professional opportunity is observational only. It exposes the canonical
+# E2 directional BUY/SELL radar while preserving E9 as execution authority.
+_install_professional_opportunity(_professional_opportunity_module)
 
 __all__ = ["ProductionPipeline"]
