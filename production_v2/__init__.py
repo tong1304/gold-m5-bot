@@ -7,11 +7,13 @@ functions, but no E6 wrapper is installed at package startup.
 
 from .pipeline import ProductionPipeline
 from . import pipeline as _pipeline_module
+from . import e2_brain as _e2_module
 from . import e6_brain as _e6_module
 from . import e8_brain as _e8_module
 from . import e9_brain as _e9_module
 from . import market_data as _market_data_module
 from .bootstrap_surgery import install as _install_bootstrap_surgery
+from .e2_runtime_binding import install as _install_e2_opportunity_book
 from .e7_thesis_boundary import install as _install_e7_thesis_boundary
 from .e8_applicability_boundary import install as _install_e8_applicability_boundary
 from .e9_watch_boundary import install as _install_e9_watch_boundary
@@ -23,6 +25,10 @@ from .runtime_trace_boundary import install as _install_runtime_trace_boundary
 
 _install_bootstrap_surgery(_pipeline_module)
 _install_mtf_runtime(_pipeline_module, _market_data_module)
+
+# E2 opportunity intelligence: preserve conditional BUY/SELL watches without
+# authorizing entry, trigger, decision, or execution.
+_install_e2_opportunity_book(_pipeline_module, _e2_module)
 
 # E6 single authority: no pending-counterflow, opportunity-guard, or runtime
 # authority monkey-patch is installed. Those modules remain compatibility
