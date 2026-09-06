@@ -4,7 +4,7 @@ from typing import Any
 
 from .contracts import EngineResult
 
-VERSION = "E6_EVIDENCE_AUTHORITY_V1"
+VERSION = "E6_EVIDENCE_AUTHORITY_V2"
 WATCH_SETUPS = {"OPPORTUNITY_WATCH", "OPPORTUNITY_CANDIDATE", "OPPORTUNITY_THESIS"}
 PENDING_AUCTION_STATES = {"PENDING", "DEVELOPING", "FORMING", "AWAITING_CONFIRMATION", "CONFIRMATION_PENDING"}
 DIRECTIONS = {"BUY", "SELL"}
@@ -22,6 +22,19 @@ def _direction(*values: Any) -> str:
         if text in {"SELL", "BEARISH", "DOWN", "SHORT", "SELLERS", "SELLER", "TREND_DOWN"} or text.startswith(("SELL ", "SELL_", "SELL:")):
             return "SELL"
     return "NEUTRAL"
+
+
+def _event_direction(e4: dict[str, Any]) -> str:
+    event = _text(e4.get("event") or e4.get("finding"))
+    if "HIGH_SWEEP_REJECTION" in event or "HIGH_REJECTION" in event:
+        return "SELL"
+    if "LOW_SWEEP_REJECTION" in event or "LOW_REJECTION" in event:
+        return "BUY"
+    if "HIGH_ACCEPTANCE" in event or "HIGH_BREAK" in event:
+        return "BUY"
+    if "LOW_ACCEPTANCE" in event or "LOW_BREAK" in event:
+        return "SELL"
+    return _direction(e4.get("directional_implication"), e4.get("direction"), e4.get("response_actor"))
 
 
 def _out(result: Any) -> dict[str, Any]:
@@ -60,46 +73,25 @@ def _structure_evidence(e3: dict[str, Any], direction: str) -> list[str]:
 
 
 def normalize_e6_evidence(result: EngineResult, upstream: dict[str, EngineResult]) -> EngineResult:
-    """Reconcile E6 evidence labels from authoritative E3/E4 state without changing trade gates."""
     out = _out(result)
     if not _is_watch(out):
         return result
     direction = _direction(out.get("direction"), out.get("direction_thesis"), out.get("thesis_direction"))
     if direction not in DIRECTIONS:
         return result
-
     e3 = _payload(upstream, "E3")
     e4 = _payload(upstream, "E4")
     existing = [str(x).strip().upper() for x in (out.get("supporting_evidence") or []) if str(x).strip()]
-    # These legacy labels are derived claims. Rebuild them from E3/E4 facts.
-    legacy = {
-        "E4_DIRECTIONAL_AUCTION_EVIDENCE",
-        "E4_DIRECTIONAL_EVENT_EVIDENCE",
-        "E4_DIRECTIONAL_AUCTION_SUPPORT",
-        "E3_EXTERNAL_STRUCTURE_SUPPORT",
-        "E3_INTERNAL_STRUCTURE_ALIGNMENT",
-        "E3_INTERNAL_MIXED_CONTEXT",
-        "E3_MIXED_CONTEXT",
-        "E3_EXTERNAL_COUNTERFLOW",
-        "E3_INTERNAL_COUNTERFLOW",
-        "E4_CONFIRMED_RESPONSE",
-        "E4_AUCTION_UNCONFIRMED",
-        "E4_DIRECTIONAL_EVENT_OBSERVATION",
-    }
+    legacy = {"E4_DIRECTIONAL_AUCTION_EVIDENCE", "E4_DIRECTIONAL_EVENT_EVIDENCE", "E4_DIRECTIONAL_AUCTION_SUPPORT", "E3_EXTERNAL_STRUCTURE_SUPPORT", "E3_INTERNAL_STRUCTURE_ALIGNMENT", "E3_INTERNAL_MIXED_CONTEXT", "E3_MIXED_CONTEXT", "E3_EXTERNAL_COUNTERFLOW", "E3_INTERNAL_COUNTERFLOW", "E4_CONFIRMED_RESPONSE", "E4_AUCTION_UNCONFIRMED", "E4_DIRECTIONAL_EVENT_OBSERVATION"}
     preserved = [x for x in existing if x not in legacy]
-
     event = _text(e4.get("event") or e4.get("finding"))
     auction_state = _text(e4.get("auction_state") or e4.get("auction_phase") or e4.get("state"))
-    event_direction = _direction(e4.get("directional_implication"), e4.get("direction"), e4.get("response_actor"))
+    event_direction = _event_direction(e4)
     event_is_directional = event_direction == direction
     if event and event_is_directional:
         preserved.append("E4_DIRECTIONAL_EVENT_OBSERVATION")
-    if auction_state in PENDING_AUCTION_STATES:
-        # Pending is observation only; it must never become confirmation evidence.
-        pass
-    elif event_is_directional:
+    if auction_state not in PENDING_AUCTION_STATES and event_is_directional:
         preserved.append("E4_CONFIRMED_RESPONSE")
-
     preserved.extend(_structure_evidence(e3, direction))
     out["supporting_evidence"] = list(dict.fromkeys(preserved))
     out["evidence_attribution_authority"] = "E3_E4_FACTS"
