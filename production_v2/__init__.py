@@ -25,6 +25,7 @@ from .e9_thesis_contract import install as _install_e9_thesis_contract
 from .runtime_trace_boundary import install as _install_runtime_trace_boundary
 from .opportunity_lifecycle_runtime import install as _install_opportunity_lifecycle_runtime
 from .professional_opportunity_surgery import install as _install_professional_opportunity
+from .terminal_opportunity_runtime import install as _install_terminal_opportunity_runtime
 
 _install_bootstrap_surgery(_pipeline_module)
 _install_mtf_runtime(_pipeline_module, _market_data_module)
@@ -52,6 +53,7 @@ _install_e7_thesis_boundary(_pipeline_module)
 _install_final_runtime_binding(_pipeline_module, _e6_module, _e8_module, _e9_module)
 _install_runtime_trace_boundary(_pipeline_module)
 _install_opportunity_lifecycle_runtime(_pipeline_module)
+_install_terminal_opportunity_runtime(_pipeline_module)
 
 # Professional opportunity is observational only. It exposes the canonical
 # E2 directional BUY/SELL radar while preserving E9 as execution authority.
