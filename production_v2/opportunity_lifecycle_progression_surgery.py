@@ -27,12 +27,7 @@ def _bool(value: Any) -> bool:
 
 
 def _current_stage_input(result: DecisionResult, lifecycle: dict[str, Any], market_data: dict[str, Any]) -> dict[str, Any]:
-    e3 = _out(result, "E3")
-    e4 = _out(result, "E4")
-    e6 = _out(result, "E6")
-    e7 = _out(result, "E7")
-    e8 = _out(result, "E8")
-    e9 = _out(result, "E9")
+    e3 = _out(result, "E3"); e4 = _out(result, "E4"); e6 = _out(result, "E6"); e7 = _out(result, "E7"); e8 = _out(result, "E8"); e9 = _out(result, "E9")
     geometry = e9.get("execution_geometry") if isinstance(e9.get("execution_geometry"), dict) else {}
     e4_state = _text(e4.get("auction_state") or e4.get("auction_phase") or e4.get("state"))
     e7_state = _text(e7.get("confirmation_state") or e7.get("confirmation") or e7.get("proof_state") or e7.get("trigger_state"))
@@ -75,9 +70,7 @@ def e3_invalidation(e4: dict[str, Any], e6: dict[str, Any], e3: dict[str, Any]) 
 def _direction_item(lifecycle: dict[str, Any], direction: str) -> dict[str, Any]:
     opportunities = lifecycle.get("opportunities") if isinstance(lifecycle.get("opportunities"), dict) else {}
     item = opportunities.get(direction)
-    if isinstance(item, dict):
-        return dict(item)
-    return dict(lifecycle)
+    return dict(item) if isinstance(item, dict) else dict(lifecycle)
 
 
 def _write_direction_item(lifecycle: dict[str, Any], direction: str, item: dict[str, Any]) -> dict[str, Any]:
@@ -102,79 +95,32 @@ def enrich(result: DecisionResult, market_data: dict[str, Any]) -> DecisionResul
     progressed["event_id"] = progressed.get("event_id") or previous_item.get("event_id") or lifecycle.get("event_id") or current.get("event_id")
     progressed["origin_event_id"] = progressed.get("origin_event_id") or previous_item.get("origin_event_id") or lifecycle.get("origin_event_id") or current.get("origin_event_id")
     progressed["direction"] = progressed.get("direction") or previous_item.get("direction") or lifecycle.get("direction") or direction
-    progressed["e6_thesis_proven"] = bool(current.get("thesis_proven"))
-    progressed["e7_confirmation_state"] = current.get("e7_confirmation_state") or "UNKNOWN"
-    progressed["e8_economic_state"] = current.get("e8_economic_state") or "UNKNOWN"
-    progressed["e9_final_decision"] = result.decision
-    progressed["execution_geometry_state"] = current.get("execution_state") or "UNKNOWN"
-
-    if direction in {"BUY", "SELL"}:
-        lifecycle = _write_direction_item(lifecycle, direction, progressed)
-    else:
-        lifecycle = progressed
-    lifecycle["lifecycle_stage"] = progressed.get("lifecycle_stage")
-    lifecycle["lifecycle_stage_history"] = progressed.get("stage_history") or []
-    lifecycle["lifecycle_wait_for_stage"] = progressed.get("wait_for_stage")
-    lifecycle["lifecycle_terminal_state"] = progressed.get("terminal_stage")
-    lifecycle["lifecycle_terminal_reason"] = progressed.get("terminal_reason")
+    progressed["e6_thesis_proven"] = bool(current.get("thesis_proven")); progressed["e7_confirmation_state"] = current.get("e7_confirmation_state") or "UNKNOWN"; progressed["e8_economic_state"] = current.get("e8_economic_state") or "UNKNOWN"; progressed["e9_final_decision"] = result.decision; progressed["execution_geometry_state"] = current.get("execution_state") or "UNKNOWN"
+    lifecycle = _write_direction_item(lifecycle, direction, progressed) if direction in {"BUY", "SELL"} else progressed
+    lifecycle["lifecycle_stage"] = progressed.get("lifecycle_stage"); lifecycle["lifecycle_stage_history"] = progressed.get("stage_history") or []; lifecycle["lifecycle_wait_for_stage"] = progressed.get("wait_for_stage"); lifecycle["lifecycle_terminal_state"] = progressed.get("terminal_stage"); lifecycle["lifecycle_terminal_reason"] = progressed.get("terminal_reason")
     lifecycle["execution_candidate"] = {"direction": direction, "opportunity_id": progressed.get("opportunity_id"), "state": progressed.get("state"), "lifecycle_stage": progressed.get("lifecycle_stage"), "selected_by": "E9" if progressed.get("lifecycle_stage") == "TRADE" else "OPPORTUNITY_LIFECYCLE"}
-
-    e9["opportunity_lifecycle"] = lifecycle
-    e9["lifecycle_stage"] = progressed.get("lifecycle_stage")
-    e9["lifecycle_stage_history"] = progressed.get("stage_history") or []
-    e9["lifecycle_wait_for_stage"] = progressed.get("wait_for_stage")
-    e9["lifecycle_terminal_state"] = progressed.get("terminal_stage")
-    e9["lifecycle_terminal_reason"] = progressed.get("terminal_reason")
-    if progressed.get("lifecycle_stage") == "TRADE":
-        e9["execution_intent"] = "ORDER_INTENT"
-
-    engines = []
-    for engine in result.engines:
-        if engine.engine_id == "E9":
-            engines.append(EngineResult(engine.engine_id, engine.name, engine.gate_passed, engine.score, e9, engine.reason_codes))
-        else:
-            engines.append(engine)
-
-    risk = dict(result.risk or {})
-    risk["opportunity_lifecycle"] = lifecycle
-    risk["lifecycle_stage"] = progressed.get("lifecycle_stage")
-    risk["lifecycle_stage_history"] = progressed.get("stage_history") or []
-    risk["lifecycle_wait_for_stage"] = progressed.get("wait_for_stage")
-    if progressed.get("lifecycle_stage") == "TRADE":
-        risk["execution_intent"] = "ORDER_INTENT"
-
-    decision = result.decision
-    gate = result.gate_passed
-    if progressed.get("lifecycle_stage") in {"TOO_LATE", "EXPIRED", "INVALIDATED", "REPLACED"}:
-        decision, gate = "NO_TRADE", False
-
-    updated = DecisionResult(
-        result.symbol,
-        result.timeframe,
-        decision,
-        gate,
-        result.score,
-        tuple(engines),
-        risk,
-        tuple(dict.fromkeys(list(result.reason_codes) + ([f"LIFECYCLE_{progressed.get('lifecycle_stage')}"] if progressed.get("lifecycle_stage") else []))),
-        result.state,
-        result.blocked_by,
-        result.wait_bars,
-        result.execution_state,
-    )
+    e9["opportunity_lifecycle"] = lifecycle; e9["lifecycle_stage"] = progressed.get("lifecycle_stage"); e9["lifecycle_stage_history"] = progressed.get("stage_history") or []; e9["lifecycle_wait_for_stage"] = progressed.get("wait_for_stage"); e9["lifecycle_terminal_state"] = progressed.get("terminal_stage"); e9["lifecycle_terminal_reason"] = progressed.get("terminal_reason")
+    if progressed.get("lifecycle_stage") == "TRADE": e9["execution_intent"] = "ORDER_INTENT"
+    engines = [EngineResult(e.engine_id, e.name, e.gate_passed, e.score, e9 if e.engine_id == "E9" else e.output, e.reason_codes) for e in result.engines]
+    risk = dict(result.risk or {}); risk["opportunity_lifecycle"] = lifecycle; risk["lifecycle_stage"] = progressed.get("lifecycle_stage"); risk["lifecycle_stage_history"] = progressed.get("stage_history") or []; risk["lifecycle_wait_for_stage"] = progressed.get("wait_for_stage")
+    if progressed.get("lifecycle_stage") == "TRADE": risk["execution_intent"] = "ORDER_INTENT"
+    decision = result.decision; gate = result.gate_passed
+    if progressed.get("lifecycle_stage") in {"TOO_LATE", "EXPIRED", "INVALIDATED", "REPLACED"}: decision, gate = "NO_TRADE", False
+    updated = DecisionResult(result.symbol, result.timeframe, decision, gate, result.score, tuple(engines), risk, tuple(dict.fromkeys(list(result.reason_codes) + ([f"LIFECYCLE_{progressed.get('lifecycle_stage')}"] if progressed.get("lifecycle_stage") else []))), result.state, result.blocked_by, result.wait_bars, result.execution_state)
     opportunity_memory.save(result.symbol, lifecycle)
     return updated
 
 
 def install(pipeline_module: Any) -> None:
-    if getattr(pipeline_module, "_OPPORTUNITY_LIFECYCLE_PROGRESSION_INSTALLED", False):
-        return
+    if getattr(pipeline_module, "_OPPORTUNITY_LIFECYCLE_PROGRESSION_INSTALLED", False): return
     original = pipeline_module.ProductionPipeline.run
-
     def wrapped(self, market_data, *, wait_bars=0, resume_state=None, historical_calibration=None):
         result = original(self, market_data, wait_bars=wait_bars, resume_state=resume_state, historical_calibration=historical_calibration)
-        return enrich(result, market_data)
-
+        updated = enrich(result, market_data)
+        lifecycle = dict(updated.risk.get("opportunity_lifecycle") or {})
+        symbol = str(market_data.get("symbol") or market_data.get("asset") or updated.symbol or "UNKNOWN").upper()
+        if lifecycle: self._opportunity_lifecycle[symbol] = lifecycle
+        return updated
     pipeline_module.ProductionPipeline.run = wrapped
     pipeline_module._OPPORTUNITY_LIFECYCLE_PROGRESSION_INSTALLED = True
     print("[PRODUCTION V2] OPPORTUNITY_LIFECYCLE_PROGRESSION_BINDING stages=WATCH>CONFIRMED>E6_THESIS>E7_CONFIRMED>E8_READY>TRADE terminals=TOO_LATE|EXPIRED|INVALIDATED", flush=True)
