@@ -5,7 +5,7 @@ from typing import Any
 
 from .contracts import EngineResult
 
-VERSION = "E4_EVENT_LIFECYCLE_SURGERY_V7"
+VERSION = "E4_EVENT_LIFECYCLE_SURGERY_V8"
 CONFIRM_BARS = 2
 FOLLOW_WINDOW = 5
 INTERACTION_ATR = 0.05
@@ -107,7 +107,7 @@ def _atr(output: dict[str, Any]) -> float:
 
 
 def _sync_event_age_views(output: dict[str, Any], age: int, idx: int) -> dict[str, Any]:
-    """Make the repaired event age authoritative in every E4 evidence view."""
+    """Make repaired E4 event age authoritative across all nested evidence views."""
     repaired = dict(output)
     repaired["event_age_bars"] = age
     repaired["event_index"] = idx
@@ -119,6 +119,20 @@ def _sync_event_age_views(output: dict[str, Any], age: int, idx: int) -> dict[st
             if key == "audit":
                 nested["event_index"] = idx
             repaired[key] = nested
+    evidence_audit = repaired.get("evidence_audit")
+    if isinstance(evidence_audit, dict):
+        evidence = dict(evidence_audit)
+        for key, value in tuple(evidence.items()):
+            if isinstance(value, dict):
+                nested = dict(value)
+                if "event_age_bars" in nested:
+                    nested["event_age_bars"] = age
+                if key in {"interpretation", "decision"}:
+                    nested["event_age_bars"] = age
+                evidence[key] = nested
+        evidence["event_age_bars"] = age
+        evidence_audit = evidence
+        repaired["evidence_audit"] = evidence_audit
     return repaired
 
 
@@ -261,5 +275,4 @@ def install(pipeline_module: Any) -> None:
     pipeline_module.analyze_e4 = patched_analyze_e4
     pipeline_module._E4_EVENT_LIFECYCLE_SURGERY_INSTALLED = True
     install_enrichment_hook(pipeline_module)
-
     print(f"[PRODUCTION V2] E4_BINDING version={VERSION} module={pipeline_module.__name__} analyze={pipeline_module.analyze_e4.__module__}.{pipeline_module.analyze_e4.__name__}", flush=True)
