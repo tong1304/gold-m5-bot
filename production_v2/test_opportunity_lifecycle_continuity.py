@@ -30,7 +30,28 @@ def test_watch_preserves_concrete_missing_proof_across_closed_candles():
     assert second["state"] == "WATCHING"
     assert second["bars_waited"] == 1
     assert second["opportunity_id"] == first["opportunity_id"]
+    assert second["event_id"] == "evt-1"
     assert second["wait_for"] == ["E4_AUCTION_FOLLOW_THROUGH", "E3_INTERNAL_STRUCTURE_ALIGNMENT"]
+
+
+def test_new_causal_event_gets_new_opportunity_identity():
+    first = advance_opportunity(None, {
+        "direction": "SELL", "setup": "OPPORTUNITY_WATCH", "event_id": "evt-1",
+        "candle": "2026-09-06T07:10:00Z", "candidate": True, "ready": False,
+        "invalidated": False, "thesis_proven": False,
+        "wait_for": ["E4_AUCTION_FOLLOW_THROUGH"],
+    })
+    second = advance_opportunity(first, {
+        "direction": "SELL", "setup": "OPPORTUNITY_WATCH", "event_id": "evt-2",
+        "candle": "2026-09-06T07:15:00Z", "candidate": True, "ready": False,
+        "invalidated": False, "thesis_proven": False,
+        "wait_for": ["E2_OPPORTUNITY_CONFIRMATION"],
+    })
+    assert first["opportunity_id"] != second["opportunity_id"]
+    assert second["event_id"] == "evt-2"
+    assert second["state"] == "REPLACED"
+    assert second["previous_opportunity_id"] == first["opportunity_id"]
+    assert second["bars_waited"] == 0
 
 
 def test_watch_promotes_only_when_real_setup_exists():
@@ -50,6 +71,8 @@ def test_watch_promotes_only_when_real_setup_exists():
     assert promoted["continuity"] == "PROMOTED_PENDING_OPPORTUNITY"
     assert promoted["setup"] == "LIQUIDITY_REVERSAL"
     assert promoted["bars_waited"] == 1
+    assert promoted["event_id"] == "evt-1"
+    assert promoted["opportunity_id"] == first["opportunity_id"]
 
 
 def test_watch_expires_after_maximum_age():
