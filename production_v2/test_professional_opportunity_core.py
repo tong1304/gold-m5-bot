@@ -12,14 +12,39 @@ def test_opportunity_intelligence_separates_quality_from_execution_and_tracks_st
             "finding": "BUY opportunity is setup validating",
         },
     )
-
     op = out["professional_opportunity"]
     assert 0 <= op["opportunity_strength"] <= 100
-    assert op["opportunity_state"] == "OPPORTUNITY_WAITING"
+    assert op["state"] == "OPPORTUNITY_WAITING"
     assert op["execution_quality"] == "NOT_READY"
     assert op["trade_authorized"] is False
     assert op["conditional_thesis"]
     assert op["wait_for"]
+
+
+def test_e2_keeps_both_directional_opportunities_visible_when_market_bias_is_neutral():
+    out = enrich_engine(
+        "E2",
+        {
+            "direction": "NEUTRAL",
+            "opportunity_direction": "NEUTRAL",
+            "opportunity_book": {
+                "leader": "BUY",
+                "competition": "CONTESTED",
+                "candidates": [
+                    {"direction": "BUY", "quality": 0.72, "state": "DEVELOPING", "wait_for": ["BUY_CONFIRMATION"]},
+                    {"direction": "SELL", "quality": 0.61, "state": "DEVELOPING", "wait_for": ["SELL_CONFIRMATION"]},
+                ],
+            },
+            "confidence": 0.65,
+            "reasons": ["AUCTION_ACCEPTANCE_NOT_PROVEN"],
+        },
+    )
+    op = out["professional_opportunity"]
+    assert op["direction"] == "BUY"
+    assert op["competition"] == "CONTESTED"
+    assert set(op["directional_opportunities"]) == {"BUY", "SELL"}
+    assert op["directional_opportunities"]["SELL"]["state"] == "DEVELOPING"
+    assert op["trade_authorized"] is False
 
 
 def test_e5_exposes_directional_price_geometry_without_authorizing_trade():
@@ -38,7 +63,6 @@ def test_e5_exposes_directional_price_geometry_without_authorizing_trade():
             "price": 79545.0,
         },
     )
-
     geometry = out["professional_opportunity"]["price_geometry"]
     assert geometry["BUY"]["available_space_atr"] == 2.4
     assert geometry["SELL"]["available_space_atr"] == 1.1
@@ -48,21 +72,15 @@ def test_e5_exposes_directional_price_geometry_without_authorizing_trade():
 
 
 def test_strength_decay_marks_deteriorating_opportunity_without_killing_it():
-    previous = {
-        "direction": "BUY",
-        "confidence": 0.80,
-        "opportunity_score": 78,
-        "counter_evidence": [],
-    }
+    previous = {"opportunity_strength": 78}
     current = {
         "direction": "BUY",
         "confidence": 0.58,
         "opportunity_score": 55,
         "counter_evidence": ["STRUCTURE_CONFLICT", "FOLLOW_THROUGH_PENDING"],
     }
-
-    prev = enrich_engine("E6", previous)["professional_opportunity"]
-    cur = enrich_engine("E6", current)["professional_opportunity"]
+    prev = enrich_engine("E6", {"direction": "BUY", "confidence": 0.80})["professional_opportunity"]
+    cur = enrich_engine("E6", current, {"previous_opportunity": previous})["professional_opportunity"]
     assert cur["opportunity_strength"] < prev["opportunity_strength"]
     assert cur["strength_trend"] == "DECAYING"
     assert cur["state_preservation"] == "OPPORTUNITY_ALIVE_UNLESS_EXPLICITLY_INVALIDATED"
