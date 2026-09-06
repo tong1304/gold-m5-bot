@@ -44,7 +44,6 @@ def _dict_result(engine_id: str, output: dict[str, Any]) -> EngineResult:
 
 
 def finalize_e6_output(output: dict[str, Any]) -> dict[str, Any]:
-    """Final E6 semantic membrane after all generic enrichment layers."""
     return _normalize_watch_semantics(dict(output or {}))
 
 
@@ -124,8 +123,7 @@ def _attach_profit_edge(results: dict[str, EngineResult], snapshot: dict[str, An
     e8 = results.get("E8")
     if not e8: return
     out = dict(e8.output)
-    if str(out.get("applicability") or "").upper().strip() == "NOT_APPLICABLE_WITHOUT_SURVIVING_E6_THESIS" or str(out.get("finding") or "").upper().strip() == "NOT_APPLICABLE":
-        return
+    if str(out.get("applicability") or "").upper().strip() == "NOT_APPLICABLE_WITHOUT_SURVIVING_E6_THESIS" or str(out.get("finding") or "").upper().strip() == "NOT_APPLICABLE": return
     direction = _direction(e6.get("direction") or e6.get("direction_thesis") or e6.get("thesis_direction") or e6.get("finding"))
     setup = str(e6.get("setup") or e6.get("setup_family") or e6.get("setup_type") or "UNKNOWN").upper().strip()
     if setup == "UNKNOWN":
@@ -148,8 +146,7 @@ def _attach_profit_edge(results: dict[str, EngineResult], snapshot: dict[str, An
     out["profit_edge"] = edge
     out["economic_evidence"] = {"entry":plan.get("entry"),"stop":plan.get("stop_loss"),"target":plan.get("take_profit_2",plan.get("take_profit",plan.get("tp2"))),"rr":plan.get("rr_tp2",plan.get("rr")),"profit_edge_state":edge["state"],"expected_value_r":edge["expected_value_r"],"stress_expected_value_r":edge["stress_expected_value_r"],"sample":edge["sample"],"win_probability":edge["win_probability"],"probability_quality":edge["probability_quality"],"blockers":edge["blockers"]}
     reasons = list(e8.reason_codes)
-    if edge.get("blockers"):
-        reasons.extend(edge["blockers"]); reasons.append("PROBABILITY_EDGE_NOT_TRUSTWORTHY")
+    if edge.get("blockers"): reasons.extend(edge["blockers"]); reasons.append("PROBABILITY_EDGE_NOT_TRUSTWORTHY")
     results["E8"] = EngineResult("E8", e8.name, False if edge.get("blockers") else e8.gate_passed, e8.score, out, tuple(dict.fromkeys(reasons)))
 
 
@@ -161,7 +158,7 @@ def _attach_state_semantics(results: dict[str, EngineResult]) -> None:
     e9 = results.get("E9")
     if not e9: return
     out = dict(e9.output)
-    out["state_semantics"] = {"market_state": str(e1.get("market_state") or e1.get("trend_state") or "UNKNOWN").upper(), "setup_state": str(e6.get("setup_state") or e6.get("opportunity_stage") or "UNKNOWN").upper(), "confirmation_state": str(e7.get("confirmation_state") or e7.get("confirmation") or "PENDING").upper(), "economic_state": str(e8.get("economic_state") or e8.get("risk_state") or (e8.get("profit_edge") or {}).get("state") or "UNKNOWN").upper(), "execution_state": str(out.get("execution") or "BLOCKED").upper()}
+    out["state_semantics"] = {"market_state": str(e1.get("market_state") or e1.get("trend_state") or "UNKNOWN").upper(), "setup_state": str(e6.get("setup_state") or e6.get("opportunity_stage") or "UNKNOWN").upper(), "confirmation_state": str(e7.get("confirmation_state") or e7.get("confirmation") or "PENDING").upper(), "economic_state": str(e8.get("economic_state") or e8.get("risk_state") or (e8.get("profit_edge") or {}).get("state") or "UNKNOWN").upper(), "execution_state": str(out.get("execution") or out.get("execution_state") or "BLOCKED").upper()}
     results["E9"] = EngineResult(e9.engine_id, e9.name, e9.gate_passed, e9.score, out, e9.reason_codes)
 
 
@@ -176,34 +173,35 @@ def _lifecycle_current(results: dict[str, EngineResult], decision: str, gate_pas
     invalidated = bool(e6.get("invalidated") or str(e6.get("lifecycle_state") or "").upper() == "INVALIDATED")
     event_id = e4.get("event_id") or e4.get("auction_event_id")
     if isinstance(event_id, (dict, list, tuple, set)): event_id = None
-    return {"direction": e6.get("direction") or e6.get("direction_thesis") or e6.get("thesis_direction") or e6.get("finding"), "setup": setup or "OPPORTUNITY_WATCH", "event_id": event_id, "candle": candle, "candidate": candidate, "ready": ready, "executed": False, "invalidated": invalidated, "thesis_proven": thesis, "wait_for": e6.get("next_required_event") or e6.get("missing_proof") or ["NEXT_CLOSED_M5_CANDLE"]}
+    # A watch must persist the concrete upstream proof still missing. Do not collapse
+    # it to the generic "NEXT_CLOSED_M5_CANDLE", otherwise the next runtime loses
+    # which E2/E3/E4/E5 conditions are required to promote the watch.
+    missing = e6.get("missing_proof") or e6.get("missing_evidence") or e6.get("reason_codes") or []
+    if isinstance(missing, str): missing = [missing]
+    wait_for = list(dict.fromkeys(str(x).strip().upper() for x in missing if str(x).strip()))
+    if not wait_for: wait_for = ["NEXT_CLOSED_M5_CANDLE"]
+    return {"direction": e6.get("direction") or e6.get("direction_thesis") or e6.get("thesis_direction") or e6.get("finding"), "setup": setup or "OPPORTUNITY_WATCH", "event_id": event_id, "candle": candle, "candidate": candidate, "ready": ready, "executed": False, "invalidated": invalidated, "thesis_proven": thesis, "wait_for": wait_for}
 
 
 class ProductionPipeline:
     ENGINE_ORDER = ENGINE_ORDER
 
-    def __init__(self):
-        self._opportunity_lifecycle: dict[str, dict[str, Any]] = {}
+    def __init__(self): self._opportunity_lifecycle: dict[str, dict[str, Any]] = {}
 
     def run(self, market_data: dict[str, Any], *, wait_bars=0, resume_state=None, historical_calibration=None):
         snapshot = dict(market_data)
         symbol = str(snapshot.get("symbol") or snapshot.get("asset") or "UNKNOWN").upper()
-        if resume_state is not None:
-            self._opportunity_lifecycle[symbol] = dict(resume_state)
+        if resume_state is not None: self._opportunity_lifecycle[symbol] = dict(resume_state)
         elif symbol not in self._opportunity_lifecycle:
             persisted = opportunity_memory.load(symbol)
             if persisted:
-                self._opportunity_lifecycle[symbol] = dict(persisted)
-                logger.info("[PRODUCTION V2] OPPORTUNITY_MEMORY_RESTORE symbol=%s state=%s opportunity_id=%s bars_waited=%s", symbol, persisted.get("state"), persisted.get("opportunity_id"), persisted.get("bars_waited", 0))
-            else:
-                logger.info("[PRODUCTION V2] OPPORTUNITY_MEMORY_RESTORE symbol=%s state=NONE", symbol)
+                self._opportunity_lifecycle[symbol] = dict(persisted); logger.info("[PRODUCTION V2] OPPORTUNITY_MEMORY_RESTORE symbol=%s state=%s opportunity_id=%s bars_waited=%s", symbol, persisted.get("state"), persisted.get("opportunity_id"), persisted.get("bars_waited", 0))
+            else: logger.info("[PRODUCTION V2] OPPORTUNITY_MEMORY_RESTORE symbol=%s state=NONE", symbol)
         previous_lifecycle = dict(self._opportunity_lifecycle.get(symbol) or {})
         calibration_records = _historical_records(historical_calibration)
         if calibration_records is not None: snapshot["historical_outcomes"] = calibration_records
-        shared_picture = build_shared_market_picture(snapshot)
-        snapshot["shared_market_picture"] = shared_picture
-        bars = list(snapshot.get("bars") or [])
-        results: dict[str, EngineResult] = {}
+        shared_picture = build_shared_market_picture(snapshot); snapshot["shared_market_picture"] = shared_picture
+        bars = list(snapshot.get("bars") or []); results: dict[str, EngineResult] = {}
         results["E1"] = _enrich("E1", _dict_result("E1", analyze_e1(bars)), snapshot)
         e2_snapshot = dict(snapshot); e2_snapshot["E1_result"] = results["E1"].output
         results["E2"] = _enrich("E2", _dict_result("E2", analyze_e2(e2_snapshot)), snapshot)
@@ -215,35 +213,20 @@ class ProductionPipeline:
         results["E8"] = _enrich("E8", analyze_e8(snapshot, results), snapshot)
         _attach_profit_edge(results, snapshot)
         conflict_ledger = _ensure_cross_brain_conflict_visibility(results, build_conflict_ledger(results)); snapshot["cross_brain_conflicts"] = conflict_ledger; _attach_conflict_ledger(results, conflict_ledger); _prepare_e9_boundary(results)
-        try:
-            e9 = _enrich("E9", analyze_e9(snapshot, results), snapshot)
+        try: e9 = _enrich("E9", analyze_e9(snapshot, results), snapshot)
         except Exception as exc:
-            recovery = recover_e9(results); recovery["e9_exception_type"] = type(exc).__name__; recovery["e9_exception"] = str(exc)
-            recovered = _dict_result("E9", enrich_opportunity("E9", recovery, snapshot)); recovered_output = harden_engine("E9", enrich_engine("E9", recovered.output)); recovered_output = attach_brain_view("E9", recovered_output, shared_picture)
-            e9 = EngineResult(recovered.engine_id,recovered.name,recovered.gate_passed,recovered.score,recovered_output,recovered.reason_codes)
+            recovery = recover_e9(results); recovery["e9_exception_type"] = type(exc).__name__; recovery["e9_exception"] = str(exc); recovered = _dict_result("E9", enrich_opportunity("E9", recovery, snapshot)); recovered_output = harden_engine("E9", enrich_engine("E9", recovered.output)); recovered_output = attach_brain_view("E9", recovered_output, shared_picture); e9 = EngineResult(recovered.engine_id,recovered.name,recovered.gate_passed,recovered.score,recovered_output,recovered.reason_codes)
         results["E9"] = e9; _attach_state_semantics(results)
         shared_picture_audit = audit_shared_market_picture_contract({engine_id: results[engine_id].output for engine_id in ENGINE_ORDER})
         if not shared_picture_audit["passed"]:
-            e9 = results["E9"]; blocked_output = dict(e9.output); blocked_output["decision"] = "NO_TRADE"; blocked_output["decision_reason"] = ["SHARED_MARKET_PICTURE_CONTRACT_FAILED"]; blocked_output["shared_market_picture_audit"] = shared_picture_audit
-            results["E9"] = EngineResult("E9", e9.name, False, e9.score, blocked_output, tuple(dict.fromkeys(list(e9.reason_codes) + ["SHARED_MARKET_PICTURE_CONTRACT_FAILED"])))
-        audit = audit_engines(results); results["E9"] = enforce_final_authority(results["E9"], results); results["E9"] = EngineResult("E9", results["E9"].name, results["E9"].gate_passed, results["E9"].score, dict(results["E9"].output, architecture_audit=audit), results["E9"].reason_codes)
-        audit_all(results)
-        decision = results["E9"].output.get("decision", "NO_TRADE")
-        trade_ready = bool(results["E9"].output.get("trade_ready", False))
-        gate_passed = bool(results["E9"].gate_passed)
-        if decision == "TRADE" and not trade_ready: decision = "NO_TRADE"
-        if decision == "TRADE" and not gate_passed: decision = "NO_TRADE"
+            e9 = results["E9"]; blocked_output = dict(e9.output); blocked_output["decision"] = "NO_TRADE"; blocked_output["decision_reason"] = ["SHARED_MARKET_PICTURE_CONTRACT_FAILED"]; blocked_output["shared_market_picture_audit"] = shared_picture_audit; results["E9"] = EngineResult("E9", e9.name, False, e9.score, blocked_output, tuple(dict.fromkeys(list(e9.reason_codes) + ["SHARED_MARKET_PICTURE_CONTRACT_FAILED"])))
+        audit = audit_engines(results); results["E9"] = enforce_final_authority(results["E9"], results); results["E9"] = EngineResult("E9", results["E9"].name, results["E9"].gate_passed, results["E9"].score, dict(results["E9"].output, architecture_audit=audit), results["E9"].reason_codes); audit_all(results)
+        decision = results["E9"].output.get("decision", "NO_TRADE"); trade_ready = bool(results["E9"].output.get("trade_ready", False)); gate_passed = bool(results["E9"].gate_passed)
+        if decision == "TRADE" and (not trade_ready or not gate_passed): decision = "NO_TRADE"
         if decision not in {"TRADE", "NO_TRADE"}: decision = "NO_TRADE"
         state = "SIGNAL_READY" if decision == "TRADE" and trade_ready and gate_passed else "ANALYSIS_COMPLETE_NO_TRADE"
-        provisional = DecisionResult(decision=decision, state=state, engines=results, blocked_by=None, wait_bars=wait_bars)
         lifecycle = advance_opportunity(previous_lifecycle or None, _lifecycle_current(results, decision, gate_passed, snapshot.get("candle_close_timestamp") or snapshot.get("candle")))
-        lifecycle["previous_state"] = previous_lifecycle.get("state") if previous_lifecycle else None
-        lifecycle["e6_thesis_proven"] = bool(results.get("E6") and results["E6"].output.get("e6_thesis_proven"))
-        lifecycle["e7_confirmation_state"] = str(results.get("E7").output.get("confirmation_state") if results.get("E7") else "UNKNOWN")
-        lifecycle["e8_economic_state"] = str(results.get("E8").output.get("economic_state") if results.get("E8") else "UNKNOWN")
-        lifecycle["e9_final_decision"] = decision
-        results["E9"] = EngineResult("E9", results["E9"].name, results["E9"].gate_passed, results["E9"].score, dict(results["E9"].output, opportunity_lifecycle=lifecycle), results["E9"].reason_codes)
-        self._opportunity_lifecycle[symbol] = lifecycle
-        opportunity_memory.save(symbol, lifecycle)
-        logger.info("[PRODUCTION V2] OPPORTUNITY_MEMORY_PERSIST symbol=%s backend=%s state=%s opportunity_id=%s bars_waited=%s", symbol, opportunity_memory.backend(), lifecycle.get("state"), lifecycle.get("opportunity_id"), lifecycle.get("bars_waited", 0))
+        lifecycle["previous_state"] = previous_lifecycle.get("state") if previous_lifecycle else None; lifecycle["e6_thesis_proven"] = bool(results.get("E6") and results["E6"].output.get("e6_thesis_proven")); lifecycle["e7_confirmation_state"] = str(results.get("E7").output.get("confirmation_state") if results.get("E7") else "UNKNOWN"); lifecycle["e8_economic_state"] = str(results.get("E8").output.get("economic_state") if results.get("E8") else "UNKNOWN"); lifecycle["e9_final_decision"] = decision
+        results["E9"] = EngineResult("E9", results["E9"].name, results["E9"].gate_passed, results["E9"].score, dict(results["E9"].output, opportunity_lifecycle=lifecycle), results["E9"].reason_codes); self._opportunity_lifecycle[symbol] = lifecycle; opportunity_memory.save(symbol, lifecycle)
+        logger.info("[PRODUCTION V2] OPPORTUNITY_MEMORY_PERSIST symbol=%s backend=%s state=%s opportunity_id=%s bars_waited=%s wait_for=%s", symbol, opportunity_memory.backend(), lifecycle.get("state"), lifecycle.get("opportunity_id"), lifecycle.get("bars_waited", 0), lifecycle.get("wait_for"))
         return DecisionResult(decision=decision, state=state, engines=results, blocked_by=None, wait_bars=int(lifecycle.get("bars_waited", wait_bars) or 0))
