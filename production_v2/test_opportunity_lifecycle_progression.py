@@ -1,10 +1,9 @@
-from .opportunity_lifecycle import advance_opportunity
+from .opportunity_lifecycle_progression import advance_lifecycle_stage
 
 
 def _advance(previous, **current):
     payload = {
         "direction": "BUY",
-        "setup": "OPPORTUNITY_WATCH",
         "candidate": True,
         "ready": False,
         "thesis_proven": False,
@@ -13,7 +12,7 @@ def _advance(previous, **current):
         "event_id": current.pop("event_id", "E1"),
         **current,
     }
-    return advance_opportunity(previous, payload)
+    return advance_lifecycle_stage(previous, payload)
 
 
 def test_opportunity_walks_watch_to_confirmed_to_e6_to_e7_to_e8_to_trade_across_closed_bars():
@@ -51,6 +50,22 @@ def test_waiting_between_stages_does_not_reset_the_same_opportunity():
     assert state["lifecycle_stage"] == "CONFIRMED"
     assert state["opportunity_id"] == opportunity_id
     assert state["wait_for_stage"] == "E6_THESIS"
+
+
+def test_one_closed_candle_cannot_jump_multiple_proof_stages():
+    state = _advance(None, candle="2026-09-07T10:00:00Z")
+    state = _advance(
+        state,
+        candle="2026-09-07T10:05:00Z",
+        confirmed=True,
+        thesis_proven=True,
+        e7_confirmed=True,
+        e8_ready=True,
+        e9_trade=True,
+        ready=True,
+    )
+    assert state["lifecycle_stage"] == "CONFIRMED"
+    assert state["trade_authorized"] is False
 
 
 def test_too_late_is_terminal_and_preserves_opportunity_identity():
