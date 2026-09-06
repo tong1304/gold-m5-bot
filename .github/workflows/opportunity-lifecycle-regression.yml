@@ -18,4 +18,4 @@ jobs:
       - name: Compile production_v2
         run: python -m compileall -q production_v2
       - name: Run opportunity lifecycle regression
-        run: python -m pytest -q production_v2/tests/test_opportunity_lifecycle_event_identity.py production_v2/tests/test_opportunity_lifecycle_evidence_gap.py
+        run: python -m pytest -q production_v2/tests/test_opportunity_lifecycle_event_identity.py production_v2/tests/test_opportunity_lifecycle_evidence_gap.py production_v2/tests/test_e4_opportunity_anchor.py
