@@ -58,15 +58,24 @@ def _e3_invalidated(e3: dict[str, Any]) -> bool:
 
 
 def _e4_direction(e4: dict[str, Any]) -> str:
-    d=_direction_value(e4.get("direction"))
-    if d!="NEUTRAL": return d
-    event=_text(e4.get("event",e4.get("finding"))); actor=_direction_value(e4.get("response_actor"))
-    if "FAILED_BREAK_RECLAIM" in event and actor!="NEUTRAL": return actor
+    """Return only proven directional response, never liquidity-taker identity.
+
+    A raw liquidity interaction (for example HIGH_LIQUIDITY_INTERACTION with
+    response_actor=UNCLEAR) is intentionally neutral. The side that consumed
+    liquidity is not the same thing as the side that won the auction.
+    """
+    event=_text(e4.get("event",e4.get("finding")))
+    direct=_direction_value(e4.get("direction"))
+    if direct!="NEUTRAL": return direct
+    if "FAILED_BREAK_RECLAIM" in event:
+        actor=_direction_value(e4.get("response_actor"))
+        if actor!="NEUTRAL": return actor
     if "HIGH_SWEEP_REJECTION" in event or "HIGH_REJECTION" in event: return "SELL"
     if "LOW_SWEEP_REJECTION" in event or "LOW_REJECTION" in event: return "BUY"
     if "HIGH_ACCEPTANCE" in event or "HIGH_BREAK" in event: return "BUY"
     if "LOW_ACCEPTANCE" in event or "LOW_BREAK" in event: return "SELL"
-    if "LIQUIDITY_INTERACTION" in event: return _direction_value(e4.get("liquidity_taker"))
+    # LIQUIDITY_INTERACTION and other unresolved interactions remain neutral
+    # until response/auction direction is explicitly established.
     return "NEUTRAL"
 
 
@@ -116,14 +125,14 @@ def _causal_opportunity(upstream: dict[str, EngineResult]) -> dict[str, Any] | N
 
 
 def _watch(original: EngineResult, candidate: dict[str, Any]) -> EngineResult:
-    direction=candidate["direction"]; missing=list(dict.fromkeys(candidate.get("missing",[]))); contested=bool(candidate.get("counter")) or "STRUCTURAL_SPACE_INSUFFICIENT" in missing or candidate.get("internal_status") in {"COUNTERFLOW","UNRESOLVED_COUNTERFLOW"}; stage="CONTESTED" if contested else "FORMING"; out=dict(original.output or {})
-    out.update({"architecture":ARCHITECTURE,"version":VERSION,"state":"CONTESTED_WATCH" if contested else "FORMING","setup_state":"CONTESTED_WATCH" if contested else "FORMING","opportunity_stage":"CONTESTED_WATCH" if contested else "OPPORTUNITY_WATCH","setup":"OPPORTUNITY_WATCH","setup_family":candidate["family"],"candidate_type":"OPPORTUNITY_CANDIDATE","direction":direction,"direction_thesis":direction,"thesis_direction":direction,"thesis_status":stage,"setup_exists":False,"watch_only":True,"trade_ready":False,"trade_permission":False,"gate_passed":False,"finding":f"{direction} opportunity is {stage.lower()}; causal setup is not yet proven.","thesis":f"{direction} causal opportunity is watchable; E4/E7 proof remains pending.","supporting_evidence":candidate["support"],"counter_evidence":candidate["counter"],"hard_conflicts":[],"missing_proof":missing,"next_required_event":"NEXT_CLOSED_M5_CANDLE","wait_for":",".join(missing) if missing else "NEXT_CLOSED_M5_CANDLE","candidate_identity":f"OPPORTUNITY_WATCH:{direction}:{candidate['family']}","opportunity_id":f"{direction}|OPPORTUNITY_WATCH","event_id":candidate["event_id"],"available_space_atr":candidate["space"],"execution_authority":"E9","reason_codes":missing,"reasons":missing,"e6_causal_gate":"WATCH_ONLY","e6_thesis_proven":False,"invalidated":False,"upstream_evidence_lost":False,"causal_evidence_lost":False,"lifecycle_state":"OPPORTUNITY_WATCH"})
+    direction=candidate["direction"]; missing=list(dict.fromkeys(candidate.get("missing",[]))); contested=bool(candidate.get("counter")) or "STRUCTURAL_SPACE_INSUFFICIENT" in missing or candidate.get("internal_status") in {"COUNTERFLOW","UNRESOLVED_COUNTERFLOW"}; stage="CONTESTED" if contested else "FORMING"; out=dict(original.output or {}); event_id=candidate.get("event_id") or ""
+    out.update({"architecture":ARCHITECTURE,"version":VERSION,"state":"CONTESTED_WATCH" if contested else "FORMING","setup_state":"CONTESTED_WATCH" if contested else "FORMING","opportunity_stage":"CONTESTED_WATCH" if contested else "OPPORTUNITY_WATCH","setup":"OPPORTUNITY_WATCH","setup_family":candidate["family"],"candidate_type":"OPPORTUNITY_CANDIDATE","direction":direction,"direction_thesis":direction,"thesis_direction":direction,"thesis_status":stage,"setup_exists":False,"watch_only":True,"trade_ready":False,"trade_permission":False,"gate_passed":False,"finding":f"{direction} opportunity is {stage.lower()}; causal setup is not yet proven.","thesis":f"{direction} causal opportunity is watchable; E4/E7 proof remains pending.","supporting_evidence":candidate["support"],"counter_evidence":candidate["counter"],"hard_conflicts":[],"missing_proof":missing,"next_required_event":"NEXT_CLOSED_M5_CANDLE","wait_for":",".join(missing) if missing else "NEXT_CLOSED_M5_CANDLE","candidate_identity":f"OPPORTUNITY_WATCH:{direction}:{candidate['family']}:{event_id}","opportunity_id":f"{direction}|OPPORTUNITY_WATCH|{event_id}" if event_id else f"{direction}|OPPORTUNITY_WATCH","event_id":event_id,"available_space_atr":candidate["space"],"execution_authority":"E9","reason_codes":missing,"reasons":missing,"e6_causal_gate":"WATCH_ONLY","e6_thesis_proven":False,"invalidated":False,"upstream_evidence_lost":False,"causal_evidence_lost":False,"lifecycle_state":"OPPORTUNITY_WATCH"})
     return EngineResult("E6","Setup Brain",False,0.0,out,tuple(missing))
 
 
 def _thesis(original: EngineResult,candidate: dict[str,Any])->EngineResult:
-    out=dict(original.output or {}); direction=candidate["direction"]; missing=list(dict.fromkeys(candidate.get("missing",[])))
-    out.update({"architecture":ARCHITECTURE,"version":VERSION,"state":"SETUP_THESIS","setup_state":"SETUP_THESIS","opportunity_stage":"SETUP_THESIS","setup":candidate["family"],"setup_family":candidate["family"],"candidate_type":"SETUP_CANDIDATE","direction":direction,"direction_thesis":direction,"thesis_direction":direction,"thesis_status":"FORMING","setup_exists":True,"watch_only":False,"trade_ready":False,"trade_permission":False,"gate_passed":False,"finding":f"{direction} causal setup thesis is established from closed-candle E1-E5 evidence; E7 confirmation and E8 economics remain pending.","thesis":f"{direction} setup thesis: {candidate['family']} supported by closed-candle upstream evidence.","supporting_evidence":candidate["support"],"counter_evidence":candidate["counter"],"hard_conflicts":[],"missing_proof":[x for x in missing if x not in {"E2_OPPORTUNITY_CONFIRMATION","E4_AUCTION_FOLLOW_THROUGH"}],"next_required_event":"E7_CONFIRMATION","wait_for":"E7_CONFIRMATION","candidate_identity":f"SETUP_THESIS:{direction}:{candidate['family']}","opportunity_id":f"{direction}|SETUP_THESIS","event_id":candidate["event_id"],"available_space_atr":candidate["space"],"execution_authority":"E9","reason_codes":["E7_CONFIRMATION"],"reasons":["E7_CONFIRMATION"],"e6_causal_gate":"PASSED","e6_thesis_proven":True,"invalidated":False,"upstream_evidence_lost":False,"causal_evidence_lost":False,"lifecycle_state":"SETUP_THESIS"})
+    out=dict(original.output or {}); direction=candidate["direction"]; missing=list(dict.fromkeys(candidate.get("missing",[]))); event_id=candidate.get("event_id") or ""
+    out.update({"architecture":ARCHITECTURE,"version":VERSION,"state":"SETUP_THESIS","setup_state":"SETUP_THESIS","opportunity_stage":"SETUP_THESIS","setup":candidate["family"],"setup_family":candidate["family"],"candidate_type":"SETUP_CANDIDATE","direction":direction,"direction_thesis":direction,"thesis_direction":direction,"thesis_status":"FORMING","setup_exists":True,"watch_only":False,"trade_ready":False,"trade_permission":False,"gate_passed":False,"finding":f"{direction} causal setup thesis is established from closed-candle E1-E5 evidence; E7 confirmation and E8 economics remain pending.","thesis":f"{direction} setup thesis: {candidate['family']} supported by closed-candle upstream evidence.","supporting_evidence":candidate["support"],"counter_evidence":candidate["counter"],"hard_conflicts":[],"missing_proof":[x for x in missing if x not in {"E2_OPPORTUNITY_CONFIRMATION","E4_AUCTION_FOLLOW_THROUGH"}],"next_required_event":"E7_CONFIRMATION","wait_for":"E7_CONFIRMATION","candidate_identity":f"SETUP_THESIS:{direction}:{candidate['family']}:{event_id}","opportunity_id":f"{direction}|SETUP_THESIS|{event_id}" if event_id else f"{direction}|SETUP_THESIS","event_id":event_id,"available_space_atr":candidate["space"],"execution_authority":"E9","reason_codes":["E7_CONFIRMATION"],"reasons":["E7_CONFIRMATION"],"e6_causal_gate":"PASSED","e6_thesis_proven":True,"invalidated":False,"upstream_evidence_lost":False,"causal_evidence_lost":False,"lifecycle_state":"SETUP_THESIS"})
     return EngineResult("E6","Setup Brain",False,0.0,out,("E7_CONFIRMATION",))
 
 
