@@ -20,17 +20,10 @@ def _quality(value: Any) -> float:
     return max(0.0, min(1.0, number))
 
 
-def build_candidate(
-    direction: Any,
-    family: Any,
-    origin_candle: Any,
-    quality: Any = 0.0,
-    **evidence: Any,
-) -> dict[str, Any]:
+def build_candidate(direction: Any, family: Any, origin_candle: Any, quality: Any = 0.0, **evidence: Any) -> dict[str, Any]:
     direction = _direction(direction)
     if direction not in VALID_DIRECTIONS:
         raise ValueError("direction must be BUY or SELL")
-
     return {
         "direction": direction,
         "family": str(family or "").upper().strip(),
@@ -43,90 +36,42 @@ def build_candidate(
     }
 
 
-def build_directional_watches(
-    origin_candle: Any,
-    *,
-    buy_score: Any,
-    sell_score: Any,
-    buy_wait_for: list[Any] | None = None,
-    sell_wait_for: list[Any] | None = None,
-    minimum_score: float = 0.35,
-) -> list[dict[str, Any]]:
-    """Create independent BUY/SELL opportunity watches without declaring a trade.
-
-    The weaker side is deliberately retained while it remains above the minimum
-    evidence floor. Invalidation belongs to downstream lifecycle evidence, not
-    merely to the fact that the opposite side currently scores higher.
-    """
+def build_directional_watches(origin_candle: Any, *, buy_score: Any, sell_score: Any, buy_wait_for: list[Any] | None = None, sell_wait_for: list[Any] | None = None, minimum_score: float = 0.35) -> list[dict[str, Any]]:
+    """Create independent BUY/SELL opportunity watches without declaring a trade."""
     floor = _quality(minimum_score)
-    rows = [
-        ("BUY", _quality(buy_score), buy_wait_for or ["BUY_CONFIRMATION"]),
-        ("SELL", _quality(sell_score), sell_wait_for or ["SELL_CONFIRMATION"]),
-    ]
+    rows = [("BUY", _quality(buy_score), buy_wait_for or ["BUY_CONFIRMATION"]), ("SELL", _quality(sell_score), sell_wait_for or ["SELL_CONFIRMATION"])]
     rows = [row for row in rows if row[1] >= floor]
     rows.sort(key=lambda row: row[1], reverse=True)
-    return [
-        build_candidate(
-            direction,
-            "DIRECTIONAL_WATCH",
-            origin_candle,
-            quality=score,
-            state="DEVELOPING",
-            wait_for=wait_for,
-            causal_evidence={"source": "E2_DIRECTIONAL_EVIDENCE", "score": score},
-            invalidation_conditions=["explicit closed-candle thesis invalidation"],
-        )
-        for direction, score, wait_for in rows
-    ]
+    return [build_candidate(direction, "DIRECTIONAL_WATCH", origin_candle, quality=score, state="DEVELOPING", wait_for=wait_for, causal_evidence={"source":"E2_DIRECTIONAL_EVIDENCE","score":score}, invalidation_conditions=["explicit closed-candle thesis invalidation"]) for direction, score, wait_for in rows]
 
 
 def compare_candidates(candidates: list[dict[str, Any]]) -> dict[str, Any]:
     active = [c for c in candidates if str(c.get("state") or "").upper() not in TERMINAL]
     ranked = sorted(active, key=lambda c: _quality(c.get("quality")), reverse=True)
-    directions = {str(c.get("direction") or "").upper().strip() for c in active}
-    directions.discard("")
-
-    if not ranked:
-        leader = "NEUTRAL"
-    else:
-        leader = str(ranked[0].get("direction") or "NEUTRAL").upper().strip()
-
-    return {
-        "leader": leader,
-        "competition": "CONTESTED" if directions == {"BUY", "SELL"} else "UNCONTESTED",
-        "ranked": ranked,
-    }
+    directions = {str(c.get("direction") or "").upper().strip() for c in active}; directions.discard("")
+    leader = "NEUTRAL" if not ranked else str(ranked[0].get("direction") or "NEUTRAL").upper().strip()
+    return {"leader":leader,"competition":"CONTESTED" if directions == {"BUY","SELL"} else "UNCONTESTED","ranked":ranked}
 
 
-def update_book(
-    previous: dict[str, Any] | None,
-    candidates: list[dict[str, Any]],
-) -> dict[str, Any]:
+def update_book(previous: dict[str, Any] | None, candidates: list[dict[str, Any]]) -> dict[str, Any]:
     previous = dict(previous or {})
     merged = [dict(candidate) for candidate in (previous.get("candidates") or [])]
-
     for candidate in candidates:
         candidate = dict(candidate)
-        direction = _direction(candidate.get("direction"))
-        family = str(candidate.get("family") or "").upper().strip()
-        origin = candidate.get("origin_candle")
+        direction = _direction(candidate.get("direction")); family = str(candidate.get("family") or "").upper().strip()
         replaced = False
         for index, existing in enumerate(merged):
-            if (
-                _direction(existing.get("direction")) == direction
-                and str(existing.get("family") or "").upper().strip() == family
-                and existing.get("origin_candle") == origin
-            ):
+            if _direction(existing.get("direction")) == direction and str(existing.get("family") or "").upper().strip() == family:
+                # A directional watch is one continuous hypothesis. New candles
+                # refresh evidence/quality but do not reset its origin identity.
+                candidate["origin_candle"] = existing.get("origin_candle") or candidate.get("origin_candle")
+                candidate["origin_event_id"] = existing.get("origin_event_id") or candidate.get("origin_event_id")
+                candidate["previous_event_id"] = existing.get("event_id")
+                candidate["event_id"] = candidate.get("event_id") or existing.get("event_id")
                 merged[index] = candidate
                 replaced = True
                 break
         if not replaced:
             merged.append(candidate)
-
     comparison = compare_candidates(merged)
-    return {
-        "candidates": merged,
-        "leader": comparison["leader"],
-        "competition": comparison["competition"],
-        "ranked": comparison["ranked"],
-    }
+    return {"candidates":merged,"leader":comparison["leader"],"competition":comparison["competition"],"ranked":comparison["ranked"]}
