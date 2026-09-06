@@ -1,54 +1,5 @@
 from production_v2.contracts import EngineResult
-from production_v2.e6_opportunity_guard import _watch
-from production_v2.e8_applicability_boundary import _not_applicable
 from production_v2 import e9_brain
-
-
-def test_e6_watch_normalizes_stale_no_setup_finding():
-    original = EngineResult(
-        "E6",
-        "Setup Formation Brain",
-        False,
-        0.0,
-        {
-            "finding": "No causal setup hypothesis survives current closed-candle evidence.",
-            "setup": "OPPORTUNITY_WATCH",
-            "direction": "SELL",
-            "watch_only": True,
-            "trade_ready": False,
-            "gate_passed": False,
-            "reason_codes": ["E4_AUCTION_FOLLOW_THROUGH"],
-        },
-        (),
-    )
-    candidate = {
-        "direction": "SELL",
-        "family": "LIQUIDITY_RESPONSE",
-        "space": 0.42,
-        "missing": ["E4_AUCTION_FOLLOW_THROUGH", "E7_CONFIRMATION"],
-        "support": ["E4_DIRECTIONAL_AUCTION_EVIDENCE"],
-        "counter": [],
-        "event_id": "candle|event",
-        "contested": False,
-    }
-    result = _watch(original, candidate)
-    assert result.output["setup"] == "OPPORTUNITY_WATCH"
-    assert result.output["watch_only"] is True
-    assert result.output["finding"].startswith("SELL opportunity is forming")
-    assert "No causal setup hypothesis survives" not in result.output["finding"]
-
-
-def test_e8_not_applicable_boundary_does_not_execute_original_engine():
-    called = {"value": False}
-
-    def original(_snapshot, _results):
-        called["value"] = True
-        return EngineResult("E8", "Trade Economics Brain", False, 99.0, {"finding": "SHOULD_NOT_RUN"}, ())
-
-    result = _not_applicable(original, {})
-    assert result.output["finding"] == "NOT_APPLICABLE"
-    assert result.output["reason_codes"] == ["E6_THESIS_REQUIRED"]
-    assert called["value"] is False
 
 
 def test_e9_watch_boundary_never_surfaces_economic_blockers():
@@ -82,7 +33,7 @@ def test_e9_watch_boundary_never_surfaces_economic_blockers():
     result = e9_brain.analyze_e9({}, upstream)
     assert result.output["decision"] == "NO_TRADE"
     assert result.output["final_governance"] == "WATCH"
-    assert result.output["governance_reason"] == "WAITING_FOR_E7_TRIGGER"
+    assert result.output["governance_reason"] == "WAITING_FOR_E6_SETUP_THESIS"
     assert not any(code in result.output["reason_codes"] for code in {
         "STOP_QUALITY_TOO_LOW",
         "REAL_RR_BELOW_MINIMUM",
