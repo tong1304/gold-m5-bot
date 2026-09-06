@@ -72,22 +72,14 @@ def _terminal_result(previous: dict[str, Any], stage: str, current: dict[str, An
 def _record_stage(result: dict[str, Any], stage: str, candle: Any) -> dict[str, Any]:
     history = list(result.get("stage_history") or [])
     if not history or history[-1].get("stage") != stage:
-        history.append({
-            "stage": stage,
-            "candle": str(candle or ""),
-        })
+        history.append({"stage": stage, "candle": str(candle or "")})
     result["stage_history"] = history
     result["stage_candle"] = str(candle or result.get("stage_candle") or "")
     return result
 
 
 def advance_lifecycle_stage(previous: dict[str, Any] | None, current: dict[str, Any] | None) -> dict[str, Any]:
-    """Advance one opportunity through explicit proof stages without creating a new identity.
-
-    The function is deliberately stateful-by-data: callers persist its returned dictionary
-    after every closed M5 candle. Positive evidence advances the stage; absent evidence waits
-    at the last proven stage; explicit terminal evidence wins over positive evidence.
-    """
+    """Advance one opportunity through explicit proof stages, one stage per closed candle."""
     previous = dict(previous or {})
     current = dict(current or {})
     requested = _requested_stage(current)
@@ -97,7 +89,6 @@ def advance_lifecycle_stage(previous: dict[str, Any] | None, current: dict[str, 
         return _terminal_result(previous, requested, current)
 
     if previous_stage in TERMINAL_STAGES:
-        # Terminal opportunities are immutable until the causal event changes.
         previous_event = _text(previous.get("event_id") or previous.get("origin_event_id"))
         current_event = _text(current.get("event_id") or current.get("origin_event_id"))
         if current_event and previous_event and current_event != previous_event:
@@ -107,33 +98,31 @@ def advance_lifecycle_stage(previous: dict[str, Any] | None, current: dict[str, 
             return dict(previous)
 
     if requested == "IDLE":
-        result = {
-            **previous,
-            "lifecycle_stage": previous_stage if previous_stage in STAGES else "IDLE",
-            "trade_authorized": False,
-            "last_evaluated_candle": current.get("candle") or previous.get("last_evaluated_candle"),
-        }
+        result = {**previous, "lifecycle_stage": previous_stage if previous_stage in STAGES else "IDLE", "trade_authorized": False, "last_evaluated_candle": current.get("candle") or previous.get("last_evaluated_candle")}
         if previous_stage in STAGES:
-            result["wait_for_stage"] = STAGES[STAGE_RANK[previous_stage] + 1] if STAGE_RANK[previous_stage] < len(STAGES) - 1 else "TRADE"
+            next_index = min(STAGE_RANK[previous_stage] + 1, len(STAGES) - 1)
+            result["wait_for_stage"] = STAGES[next_index]
             return _record_stage(result, previous_stage, current.get("candle"))
         result["wait_for_stage"] = "WATCH"
         return result
 
-    if requested == "TRADE":
-        # E9 can authorize TRADE only after E8 economics are ready. If callers provide
-        # an explicit E9 trade without the preceding proof, keep the last proven stage.
-        if not (_truth(current.get("e8_ready")) and (_truth(current.get("e9_trade")) or _text(current.get("execution_state")) == "POSITION_OPEN")):
-            requested = "E8_READY"
+    if requested == "TRADE" and not (_truth(current.get("e8_ready")) and (_truth(current.get("e9_trade")) or _text(current.get("execution_state")) == "POSITION_OPEN")):
+        requested = "E8_READY"
 
     current_rank = STAGE_RANK.get(requested, -1)
     previous_rank = STAGE_RANK.get(previous_stage, -1)
-
     if current_rank < 0:
         return dict(previous)
 
-    # Evidence can only move an active opportunity forward. A missing proof on a later
-    # candle does not silently reset the identity or manufacture a new opportunity.
-    stage = requested if current_rank >= previous_rank else previous_stage
+    # A single closed candle may prove only the next stage. This prevents a strong
+    # candle from fabricating WATCH -> THESIS -> E9 TRADE in one evaluation.
+    if previous_rank < 0:
+        stage = requested
+    elif current_rank <= previous_rank:
+        stage = previous_stage
+    else:
+        stage = STAGES[previous_rank + 1]
+
     result = {
         **previous,
         "lifecycle_stage": stage,
@@ -141,7 +130,6 @@ def advance_lifecycle_stage(previous: dict[str, Any] | None, current: dict[str, 
         "trade_authorized": stage == "TRADE",
         "terminal_stage": None,
         "terminal_reason": None,
-        "invalidation_reason": None if stage != "INVALIDATED" else previous.get("invalidation_reason"),
     }
 
     if stage == "WATCH":
