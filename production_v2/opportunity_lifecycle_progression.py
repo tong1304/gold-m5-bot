@@ -1,0 +1,160 @@
+from __future__ import annotations
+
+from typing import Any
+
+
+STAGES = (
+    "WATCH",
+    "CONFIRMED",
+    "E6_THESIS",
+    "E7_CONFIRMED",
+    "E8_READY",
+    "TRADE",
+)
+STAGE_RANK = {stage: index for index, stage in enumerate(STAGES)}
+TERMINAL_STAGES = {"TOO_LATE", "EXPIRED", "INVALIDATED", "REPLACED"}
+
+
+def _text(value: Any) -> str:
+    return str(value or "").upper().strip()
+
+
+def _truth(value: Any) -> bool:
+    if isinstance(value, str):
+        return _text(value) in {"1", "TRUE", "YES", "Y", "PASS", "PASSED", "CONFIRMED", "READY", "TRADE"}
+    return bool(value)
+
+
+def _requested_stage(current: dict[str, Any]) -> str:
+    execution_state = _text(current.get("execution_state"))
+    if execution_state in TERMINAL_STAGES:
+        return execution_state
+    if _truth(current.get("invalidated")):
+        return "INVALIDATED"
+    if execution_state == "POSITION_OPEN" or _truth(current.get("e9_trade")):
+        return "TRADE"
+    if _truth(current.get("e8_ready")):
+        return "E8_READY"
+    confirmation = _text(current.get("e7_confirmation_state") or current.get("confirmation_state"))
+    if _truth(current.get("e7_confirmed")) or confirmation in {"PASS", "PASSED", "CONFIRMED", "TRIGGER_CONFIRMED"}:
+        return "E7_CONFIRMED"
+    if _truth(current.get("thesis_proven")):
+        return "E6_THESIS"
+    auction = _text(current.get("e4_state") or current.get("auction_state") or current.get("confirmation"))
+    if _truth(current.get("confirmed")) or auction in {"CONFIRMED", "TERMINALLY_CONFIRMED", "ACCEPTED", "RECLAIMED"}:
+        return "CONFIRMED"
+    if _truth(current.get("candidate")):
+        return "WATCH"
+    return "IDLE"
+
+
+def _terminal_result(previous: dict[str, Any], stage: str, current: dict[str, Any]) -> dict[str, Any]:
+    reason = _text(current.get("invalidation_reason")) or stage
+    state = "INVALIDATED" if stage == "INVALIDATED" else "EXPIRED"
+    if stage == "REPLACED":
+        state = "REPLACED"
+    result = {
+        **previous,
+        "lifecycle_stage": stage,
+        "state": state,
+        "lifecycle_state": stage,
+        "opportunity_phase": stage,
+        "trade_authorized": False,
+        "wait_for_stage": "NEW_CAUSAL_OPPORTUNITY",
+        "terminal_stage": stage,
+        "terminal_reason": reason,
+        "invalidation_reason": current.get("invalidation_reason") or previous.get("invalidation_reason") or reason,
+        "last_evaluated_candle": current.get("candle") or previous.get("last_evaluated_candle"),
+    }
+    return _record_stage(result, stage, current.get("candle"))
+
+
+def _record_stage(result: dict[str, Any], stage: str, candle: Any) -> dict[str, Any]:
+    history = list(result.get("stage_history") or [])
+    if not history or history[-1].get("stage") != stage:
+        history.append({
+            "stage": stage,
+            "candle": str(candle or ""),
+        })
+    result["stage_history"] = history
+    result["stage_candle"] = str(candle or result.get("stage_candle") or "")
+    return result
+
+
+def advance_lifecycle_stage(previous: dict[str, Any] | None, current: dict[str, Any] | None) -> dict[str, Any]:
+    """Advance one opportunity through explicit proof stages without creating a new identity.
+
+    The function is deliberately stateful-by-data: callers persist its returned dictionary
+    after every closed M5 candle. Positive evidence advances the stage; absent evidence waits
+    at the last proven stage; explicit terminal evidence wins over positive evidence.
+    """
+    previous = dict(previous or {})
+    current = dict(current or {})
+    requested = _requested_stage(current)
+    previous_stage = _text(previous.get("lifecycle_stage")) or "IDLE"
+
+    if requested in TERMINAL_STAGES:
+        return _terminal_result(previous, requested, current)
+
+    if previous_stage in TERMINAL_STAGES:
+        # Terminal opportunities are immutable until the causal event changes.
+        previous_event = _text(previous.get("event_id") or previous.get("origin_event_id"))
+        current_event = _text(current.get("event_id") or current.get("origin_event_id"))
+        if current_event and previous_event and current_event != previous_event:
+            previous = {"stage_history": []}
+            previous_stage = "IDLE"
+        else:
+            return dict(previous)
+
+    if requested == "IDLE":
+        result = {
+            **previous,
+            "lifecycle_stage": previous_stage if previous_stage in STAGES else "IDLE",
+            "trade_authorized": False,
+            "last_evaluated_candle": current.get("candle") or previous.get("last_evaluated_candle"),
+        }
+        if previous_stage in STAGES:
+            result["wait_for_stage"] = STAGES[STAGE_RANK[previous_stage] + 1] if STAGE_RANK[previous_stage] < len(STAGES) - 1 else "TRADE"
+            return _record_stage(result, previous_stage, current.get("candle"))
+        result["wait_for_stage"] = "WATCH"
+        return result
+
+    if requested == "TRADE":
+        # E9 can authorize TRADE only after E8 economics are ready. If callers provide
+        # an explicit E9 trade without the preceding proof, keep the last proven stage.
+        if not (_truth(current.get("e8_ready")) and (_truth(current.get("e9_trade")) or _text(current.get("execution_state")) == "POSITION_OPEN")):
+            requested = "E8_READY"
+
+    current_rank = STAGE_RANK.get(requested, -1)
+    previous_rank = STAGE_RANK.get(previous_stage, -1)
+
+    if current_rank < 0:
+        return dict(previous)
+
+    # Evidence can only move an active opportunity forward. A missing proof on a later
+    # candle does not silently reset the identity or manufacture a new opportunity.
+    stage = requested if current_rank >= previous_rank else previous_stage
+    result = {
+        **previous,
+        "lifecycle_stage": stage,
+        "last_evaluated_candle": current.get("candle") or previous.get("last_evaluated_candle"),
+        "trade_authorized": stage == "TRADE",
+        "terminal_stage": None,
+        "terminal_reason": None,
+        "invalidation_reason": None if stage != "INVALIDATED" else previous.get("invalidation_reason"),
+    }
+
+    if stage == "WATCH":
+        result.update({"wait_for_stage": "CONFIRMED", "state": "WATCHING", "opportunity_phase": "OPPORTUNITY_WATCH"})
+    elif stage == "CONFIRMED":
+        result.update({"wait_for_stage": "E6_THESIS", "state": "WAITING", "opportunity_phase": "CONFIRMED"})
+    elif stage == "E6_THESIS":
+        result.update({"wait_for_stage": "E7_CONFIRMED", "state": "WAITING", "opportunity_phase": "E6_THESIS"})
+    elif stage == "E7_CONFIRMED":
+        result.update({"wait_for_stage": "E8_READY", "state": "WAITING", "opportunity_phase": "E7_CONFIRMED"})
+    elif stage == "E8_READY":
+        result.update({"wait_for_stage": "TRADE", "state": "READY", "opportunity_phase": "E8_READY"})
+    elif stage == "TRADE":
+        result.update({"wait_for_stage": "POSITION_OPEN", "state": "EXECUTED", "opportunity_phase": "TRADE", "execution_state": "ORDER_INTENT"})
+
+    return _record_stage(result, stage, current.get("candle"))
