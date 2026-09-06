@@ -38,3 +38,16 @@ def test_terminal_candidates_are_not_leaders():
     comparison = compare_candidates([buy, sell])
     assert comparison["leader"] == "BUY"
     assert comparison["competition"] == "UNCONTESTED"
+
+
+def test_directional_watches_preserve_both_sides_until_explicit_invalidation():
+    book = update_book({}, [
+        build_candidate("BUY", "DIRECTIONAL_WATCH", "C2", quality=0.72,
+                        state="DEVELOPING", wait_for=["BUY_CONFIRMATION"]),
+        build_candidate("SELL", "DIRECTIONAL_WATCH", "C2", quality=0.48,
+                        state="DEVELOPING", wait_for=["SELL_CONFIRMATION"]),
+    ])
+    assert len(book["candidates"]) == 2
+    assert {c["direction"] for c in book["ranked"]} == {"BUY", "SELL"}
+    assert book["leader"] == "BUY"
+    assert book["competition"] == "CONTESTED"
