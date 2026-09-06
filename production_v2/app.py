@@ -113,8 +113,7 @@ def start_production_runtime():
     if os.getenv("PRODUCTION_V2_DISABLE_LIVE", "").strip() == "1": print("[PRODUCTION V2] Live runtime disabled by test environment", flush=True); _runtime_started=True; return
     key = os.getenv("LSE_API_KEY", "").strip()
     if not key: raise RuntimeError("LSE_API_KEY is required for production-v2 live runtime")
-    if str(os.getenv("PRODUCTION_V2_REQUIRE_PERSISTENT_MEMORY", "")).strip().lower() in {"1", "true", "yes", "on"}:
-        require_persistent_backend()
+    require_persistent_backend()
     from .service import start_live_service
     start_live_service(); _runtime_started=True; print(f"[PRODUCTION V2] Live M5 runtime started; architecture={ARCHITECTURE}; opportunity_memory_backend={opportunity_memory_backend()}; records={len(_last_opportunity_lifecycle)}", flush=True)
 start_production_runtime()
