@@ -4,7 +4,7 @@ from typing import Any
 
 from .contracts import EngineResult
 
-VERSION = "E6_PENDING_EVENT_SURGERY_V7"
+VERSION = "E6_PENDING_EVENT_SURGERY_V8"
 PENDING_AUCTION_STATES = {"PENDING", "DEVELOPING", "FORMING", "AWAITING_CONFIRMATION", "CONFIRMATION_PENDING"}
 WATCH_SETUPS = {"OPPORTUNITY_WATCH", "OPPORTUNITY_CANDIDATE", "OPPORTUNITY_THESIS"}
 DIRECTIONS = {"BUY", "SELL"}
@@ -96,14 +96,21 @@ def _event_direction(e4: dict[str, Any]) -> str:
 
 
 def _structure_evidence(e3: dict[str, Any], direction: str) -> tuple[list[str], list[str]]:
-    external = _direction(e3.get("external_state") or e3.get("structure_direction") or e3.get("direction"))
+    external_state = _text(e3.get("external_state"))
+    protected = _text(e3.get("protected_completeness"))
+    protected_regime = _text(e3.get("protected_active_regime"))
+    if external_state == "MIXED" or protected_regime == "MIXED" or protected in {"NO_DIRECTIONAL_REGIME", "INCOMPLETE", "MIXED"}:
+        external = "NEUTRAL"
+    else:
+        external = _direction(e3.get("external_state"))
+        if external == "NEUTRAL":
+            external = _direction(e3.get("structure_direction"), e3.get("direction"))
     internal = _direction(e3.get("internal_state"))
     support: list[str] = []
     counter: list[str] = []
-    protected = _text(e3.get("protected_completeness"))
     if external == direction and protected not in {"NO_DIRECTIONAL_REGIME", "INCOMPLETE", "MIXED"}:
         support.append("E3_EXTERNAL_STRUCTURE_SUPPORT")
-    elif _text(e3.get("external_state")) == "MIXED" or _text(e3.get("protected_active_regime")) == "MIXED":
+    elif external_state == "MIXED" or protected_regime == "MIXED" or protected in {"NO_DIRECTIONAL_REGIME", "INCOMPLETE", "MIXED"}:
         support.append("E3_MIXED_CONTEXT")
     elif external in DIRECTIONS and external != direction:
         counter.append("E3_EXTERNAL_COUNTERFLOW")
@@ -219,7 +226,7 @@ def _reconcile_existing_watch_evidence(result: EngineResult, upstream: dict[str,
         return result
     e3 = _payload(upstream, "E3")
     e4 = _payload(upstream, "E4")
-    legacy = {"E4_DIRECTIONAL_AUCTION_EVIDENCE", "E4_DIRECTIONAL_EVENT_EVIDENCE", "E4_DIRECTIONAL_AUCTION_SUPPORT", "E3_EXTERNAL_STRUCTURE_SUPPORT", "E3_INTERNAL_STRUCTURE_ALIGNMENT", "E3_INTERNAL_MIXED_CONTEXT", "E3_MIXED_CONTEXT", "E3_EXTERNAL_COUNTERFLOW", "E3_INTERNAL_COUNTERFLOW", "E4_CONFIRMED_RESPONSE", "E4_DIRECTIONAL_EVENT_OBSERVATION"}
+    legacy = {"E4_DIRECTIONAL_AUCTION_EVIDENCE", "E4_DIRECTIONAL_EVENT_EVIDENCE", "E4_DIRECTIONAL_AUCTION_SUPPORT", "E3_EXTERNAL_STRUCTURE_SUPPORT", "E3_INTERNAL_STRUCTURE_SUPPORT", "E3_INTERNAL_STRUCTURE_ALIGNMENT", "E3_INTERNAL_MIXED_CONTEXT", "E3_MIXED_CONTEXT", "E3_EXTERNAL_COUNTERFLOW", "E3_INTERNAL_COUNTERFLOW", "E4_CONFIRMED_RESPONSE", "E4_DIRECTIONAL_EVENT_OBSERVATION"}
     support = [x for x in (out.get("supporting_evidence") or []) if _text(x) not in legacy]
     event = _text(e4.get("event") or e4.get("finding"))
     event_direction = _event_direction(e4)
