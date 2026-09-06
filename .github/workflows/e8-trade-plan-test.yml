@@ -19,3 +19,5 @@ jobs:
         run: python -m pytest -q tests/test_e8_trade_plan.py
       - name: Run E8-to-E9 boundary regression test
         run: python -m pytest -q tests/test_e8_engine_boundary.py
+      - name: Run production-v2 lifecycle regression tests
+        run: python -m pytest -q production_v2/test_opportunity_lifecycle_continuity.py production_v2/test_e6_space_consistency.py
