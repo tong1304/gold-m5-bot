@@ -22,5 +22,7 @@ jobs:
         run: python -m pytest -q production_v2/test_professional_opportunity.py
       - name: Run opportunity lifecycle tests
         run: python -m pytest -q production_v2/test_opportunity_lifecycle.py
+      - name: Run E4 lifecycle surgery tests
+        run: python -m pytest -q production_v2/test_e4_event_lifecycle_surgery.py
       - name: Compile production-v2 Python modules
         run: python -m compileall -q production_v2
