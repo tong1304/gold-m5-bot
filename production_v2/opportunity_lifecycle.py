@@ -33,13 +33,20 @@ def _same_event(previous_event: Any, current_event: Any) -> bool:
 def _stable_identity(previous: dict[str, Any], direction: str, setup: str, event_id: Any = None) -> str:
     pid = _event_key(previous.get("opportunity_id")); pd = _text(previous.get("direction")); ps = _text(previous.get("setup")); state = _text(previous.get("state"))
     previous_event = previous.get("event_id") or previous.get("origin_event_id")
-    if pid and pd == direction and direction in VALID_DIRECTIONS and _same_event(previous_event, event_id):
-        if ps in WATCH_SETUPS and _text(setup) in WATCH_SETUPS:
+    if pid and pd == direction and direction in VALID_DIRECTIONS:
+        current_setup = _text(setup)
+        # A new event from the same directional watch is supporting evidence,
+        # not a replacement. Keep the canonical opportunity identity and let
+        # explicit invalidation/expiry/true directional change terminate it.
+        if ps in WATCH_SETUPS and current_setup in WATCH_SETUPS:
             return pid
-        if ps not in WATCH_SETUPS and ps == _text(setup) and state in ACTIVE_STATES:
-            return pid
-        if ps in WATCH_SETUPS and _text(setup) not in WATCH_SETUPS and _text(setup) not in {"", "UNKNOWN", "NONE", "NO_SETUP"}:
-            return pid
+        if _same_event(previous_event, event_id):
+            if ps in WATCH_SETUPS and current_setup in WATCH_SETUPS:
+                return pid
+            if ps not in WATCH_SETUPS and ps == current_setup and state in ACTIVE_STATES:
+                return pid
+            if ps in WATCH_SETUPS and current_setup not in WATCH_SETUPS and current_setup not in {"", "UNKNOWN", "NONE", "NO_SETUP"}:
+                return pid
     return _identity(direction, setup, event_id)
 
 
@@ -66,7 +73,7 @@ def advance_opportunity(previous: dict[str, Any] | None, current: dict[str, Any]
     d = _text(c.get("direction")); setup = _text(c.get("setup") or c.get("setup_family")); candle = _text(c.get("candle")); event_id = c.get("event_id") or c.get("origin_event_id")
     oid = _stable_identity(p, d, setup, event_id); pid = _event_key(p.get("opportunity_id")); ps = _text(p.get("state")); pd = _text(p.get("direction")); previous_setup = _text(p.get("setup")); active = _active_previous(p)
     previous_event = p.get("event_id") or p.get("origin_event_id"); same_event = _same_event(previous_event, event_id); previous_candle = _text(p.get("last_evaluated_candle")); same_candle = bool(active and candle and previous_candle and candle == previous_candle)
-    age = int(p.get("bars_waited", 0) or 0) + (1 if active and not same_candle and same_event else 0)
+    age = int(p.get("bars_waited", 0) or 0) + (1 if active and not same_candle and (same_event or (pd == d and previous_setup in WATCH_SETUPS and setup in WATCH_SETUPS)) else 0)
     invalidated = bool(c.get("invalidated")); candidate = bool(c.get("candidate")); ready = bool(c.get("ready")); thesis_proven = bool(c.get("thesis_proven"))
     base = {**p, "last_evaluated_candle": candle, "trade_authorized": False, "event_id": event_id or p.get("event_id"), "origin_event_id": p.get("origin_event_id") or event_id}
 
@@ -97,8 +104,6 @@ def advance_opportunity(previous: dict[str, Any] | None, current: dict[str, Any]
         phase = "EXECUTABLE"
         return {**base,"state":"READY","lifecycle_state":phase,"opportunity_phase":phase,"continuity":"ADVANCING_EXISTING_OPPORTUNITY","opportunity_id":pid or oid,"direction":d or pd,"setup":setup or previous_setup,"bars_waited":age,"origin_candle":p.get("origin_candle") or candle,"invalidation_reason":None}
     if candidate and oid:
-        # Any candidate without explicit thesis proof remains an opportunity watch.
-        # Setup-family labels are descriptive until E6 proves a causal thesis.
         state = "WATCHING" if not thesis_proven else ("WATCHING" if setup in WATCH_SETUPS else "WAITING")
         phase = _phase(state, setup, thesis_proven, ready, False)
         continuity = "CONTINUING_UPSTREAM_WATCH" if pending_watch else ("CONTINUING_EXISTING_OPPORTUNITY" if active else "NEW_OPPORTUNITY_WATCH")
