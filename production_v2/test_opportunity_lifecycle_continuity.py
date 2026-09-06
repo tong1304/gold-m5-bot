@@ -1,4 +1,29 @@
+from production_v2.contracts import EngineResult
 from production_v2.opportunity_lifecycle import advance_opportunity
+from production_v2.pipeline import _lifecycle_current
+
+
+def test_lifecycle_input_preserves_full_e6_missing_proof():
+    e6 = EngineResult("E6", "Setup Brain", False, 0.0, {
+        "setup": "OPPORTUNITY_WATCH",
+        "candidate_type": "OPPORTUNITY_CANDIDATE",
+        "direction": "SELL",
+        "missing_proof": [
+            "E2_OPPORTUNITY_CONFIRMATION",
+            "E4_AUCTION_FOLLOW_THROUGH",
+            "STRUCTURAL_SPACE_INSUFFICIENT",
+            "E7_CONFIRMATION",
+        ],
+        "event_id": "evt-1",
+    }, ())
+    current = _lifecycle_current({"E6": e6}, "NO_TRADE", False, "2026-09-06T07:25:00Z")
+    assert current["wait_for"] == [
+        "E2_OPPORTUNITY_CONFIRMATION",
+        "E4_AUCTION_FOLLOW_THROUGH",
+        "STRUCTURAL_SPACE_INSUFFICIENT",
+        "E7_CONFIRMATION",
+    ]
+    assert current["event_id"] == "evt-1"
 
 
 def test_watch_preserves_concrete_missing_proof_across_closed_candles():
