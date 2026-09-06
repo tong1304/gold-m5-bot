@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 from .contracts import EngineResult
-VERSION = "E6_PENDING_EVENT_SURGERY_V4"
+VERSION = "E6_PENDING_EVENT_SURGERY_V5"
 PENDING_AUCTION_STATES = {"PENDING", "DEVELOPING", "FORMING", "AWAITING_CONFIRMATION", "CONFIRMATION_PENDING"}
 WATCH_SETUPS = {"OPPORTUNITY_WATCH", "OPPORTUNITY_CANDIDATE", "OPPORTUNITY_THESIS"}
 DIRECTIONS = {"BUY", "SELL"}
@@ -45,6 +45,25 @@ def _event_direction(e4: dict[str, Any]) -> str:
     direct = _direction(e4.get("directional_implication"))
     if direct != "NEUTRAL": return direct
     return _direction(e4.get("direction"))
+def _structure_evidence(e3: dict[str, Any], direction: str) -> tuple[list[str], list[str]]:
+    external = _direction(e3.get("external_state") or e3.get("structure_direction") or e3.get("direction"))
+    internal = _direction(e3.get("internal_state"))
+    support: list[str] = []
+    counter: list[str] = []
+    if external == direction and _text(e3.get("protected_completeness")) not in {"NO_DIRECTIONAL_REGIME", "INCOMPLETE", "MIXED"}:
+        support.append("E3_EXTERNAL_STRUCTURE_SUPPORT")
+    else:
+        if _text(e3.get("external_state")) == "MIXED" or _text(e3.get("protected_active_regime")) == "MIXED":
+            support.append("E3_MIXED_CONTEXT")
+        elif external in DIRECTIONS and external != direction:
+            counter.append("E3_EXTERNAL_COUNTERFLOW")
+    if internal == direction:
+        support.append("E3_INTERNAL_STRUCTURE_ALIGNMENT")
+    elif _text(e3.get("internal_state")) == "MIXED":
+        support.append("E3_INTERNAL_MIXED_CONTEXT")
+    elif internal in DIRECTIONS and internal != direction:
+        counter.append("E3_INTERNAL_COUNTERFLOW")
+    return support, counter
 def _generic_candidate(upstream: dict[str, EngineResult]) -> dict[str, Any] | None:
     e1, e2, e3, e4, e5 = (_payload(upstream, key) for key in ("E1", "E2", "E3", "E4", "E5"))
     if _is_invalidated(e3) or not _pending_event(e4): return None
@@ -55,11 +74,17 @@ def _generic_candidate(upstream: dict[str, EngineResult]) -> dict[str, Any] | No
     for label, value in (("E1", pressure), ("E2", e2_direction), ("E3_EXTERNAL", external), ("E3_INTERNAL", internal)):
         if value in DIRECTIONS and value != direction: counter.append(f"{label}_COUNTERFLOW")
     finding5 = _text(e5.get("finding")); preferred = _text(e5.get("preferred_location")); preferred_direction = "BUY" if preferred == "LONG" else "SELL" if preferred == "SHORT" else "NEUTRAL"; space = _space(e5, direction); continuation_risk = "CONTINUATION_RISK" in finding5 or ("ACCEPTED" in finding5 and "REVERSAL" in finding5)
-    support = ["E4_DIRECTIONAL_EVENT_EVIDENCE"]
+    structure_support, structure_counter = _structure_evidence(e3, direction)
+    support = ["E4_DIRECTIONAL_EVENT_OBSERVATION"]
+    support.extend(structure_support)
     if pressure == direction: support.append("E1_DIRECTIONAL_CORE")
-    if external == direction: support.append("E3_EXTERNAL_STRUCTURE_SUPPORT")
     if e2_direction == direction: support.append("E2_DIRECTIONAL_ANCHOR")
     if space > 0: support.append("E5_SPACE_EVIDENCE")
+    counter.extend(structure_counter)
+    if _text(e4.get("auction_state")) in {"PENDING", "DEVELOPING", "FORMING", "AWAITING_CONFIRMATION", "CONFIRMATION_PENDING"}:
+        counter.append("E4_AUCTION_UNCONFIRMED")
+    else:
+        support.append("E4_CONFIRMED_RESPONSE")
     missing = ["E4_AUCTION_FOLLOW_THROUGH", "E7_CONFIRMATION"]
     maturity = _text(e2.get("opportunity_maturity") or e2.get("state") or e2.get("opportunity_state"))
     if maturity in {"DEVELOPING", "EMERGING", "PENDING", "UNRESOLVED", "AMBIGUOUS", "UNPROVEN"}: missing.insert(0, "E2_OPPORTUNITY_CONFIRMATION")
