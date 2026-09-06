@@ -4,36 +4,44 @@ import inspect
 from typing import Any
 
 EXPECTED_MIN_POSITIONAL = 4
+LEGACY_SIGNATURE_ERROR = "takes 4 positional arguments but 5 were given"
 
 
 def install(pipeline_module: Any) -> None:
-    """Prevent a stale 4-argument lifecycle helper from killing the live loop.
+    """Normalize the lifecycle call boundary across mixed runtime wrappers.
 
-    Current code supports causal_anchor. Older deployed workers may still expose
-    the 4-argument helper; normalize the boundary here so the caller remains
-    forward-compatible while preserving causal anchors when supported.
+    A previous compatibility wrapper (or another decorator) may expose *args,
+    making signature inspection report false support for causal_anchor even when
+    the wrapped legacy helper still accepts only four positional arguments.
+    Therefore the boundary first attempts the modern five-argument call and, for
+    the exact legacy arity error, retries with the original four-argument API.
     """
     if getattr(pipeline_module, "_RUNTIME_COMPATIBILITY_INSTALLED", False):
         return
     original = getattr(pipeline_module, "_directional_lifecycle_current", None)
-    if original is None:
+    if not callable(original):
         return
+
     try:
         signature = inspect.signature(original)
-        positional = [p for p in signature.parameters.values()
-                      if p.kind in (p.POSITIONAL_ONLY, p.POSITIONAL_OR_KEYWORD)]
-        supports_anchor = len(positional) >= 5 or any(
-            p.kind == p.VAR_POSITIONAL for p in signature.parameters.values()
-        )
+        positional = [
+            p for p in signature.parameters.values()
+            if p.kind in (p.POSITIONAL_ONLY, p.POSITIONAL_OR_KEYWORD)
+        ]
+        supports_anchor = len(positional) >= 5
     except (TypeError, ValueError):
-        supports_anchor = True
+        supports_anchor = False
 
     def compatible(*args, **kwargs):
-        if supports_anchor:
+        try:
             return original(*args, **kwargs)
-        # Legacy helper: results, decision, gate_passed, candle.
-        return original(*args[:EXPECTED_MIN_POSITIONAL])
+        except TypeError as exc:
+            if len(args) >= 5 and LEGACY_SIGNATURE_ERROR in str(exc):
+                return original(*args[:EXPECTED_MIN_POSITIONAL])
+            raise
 
+    compatible.__name__ = getattr(original, "__name__", "_directional_lifecycle_current")
+    compatible.__module__ = getattr(original, "__module__", __name__)
     pipeline_module._directional_lifecycle_current = compatible
     pipeline_module._RUNTIME_LIFECYCLE_SUPPORTS_CAUSAL_ANCHOR = supports_anchor
     pipeline_module._RUNTIME_COMPATIBILITY_INSTALLED = True
