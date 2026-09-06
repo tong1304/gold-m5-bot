@@ -44,7 +44,6 @@ def _stable_identity(previous: dict[str, Any], direction: str, setup: str, event
     if not pid or pd != direction or direction not in VALID_DIRECTIONS:
         return _identity(direction, setup, event_id)
 
-    # Explicit causal event continuity is authoritative.
     if previous_event_key and current_event:
         if _same_event(previous_event_key, current_event):
             if ps in WATCH_SETUPS and current_setup in WATCH_SETUPS:
@@ -53,11 +52,10 @@ def _stable_identity(previous: dict[str, Any], direction: str, setup: str, event
                 return pid
             if ps == current_setup and state in ACTIVE_STATES:
                 return pid
-        # Different explicit event = new causal opportunity. Do not reuse pid.
         return _identity(direction, setup, event_id)
 
-    # If upstream temporarily omits event_id, preserve an active watch rather than
-    # destroying continuity. Once a new explicit event arrives the rule above wins.
+    # A missing event from one upstream brain is treated as an observation gap,
+    # not as a new causal event. The persisted event remains the continuity anchor.
     if previous_event_key and not current_event and ps in WATCH_SETUPS and state in ACTIVE_STATES:
         return pid
 
@@ -88,7 +86,8 @@ def advance_opportunity(previous: dict[str, Any] | None, current: dict[str, Any]
     d = _text(c.get("direction")); setup = _text(c.get("setup") or c.get("setup_family")); candle = _text(c.get("candle")); event_id = c.get("event_id") or c.get("origin_event_id")
     oid = _stable_identity(p, d, setup, event_id); pid = _event_key(p.get("opportunity_id")); ps = _text(p.get("state")); pd = _text(p.get("direction")); previous_setup = _text(p.get("setup")); active = _active_previous(p)
     previous_event = p.get("event_id") or p.get("origin_event_id"); same_event = _same_event(previous_event, event_id); previous_candle = _text(p.get("last_evaluated_candle")); same_candle = bool(active and candle and previous_candle and candle == previous_candle)
-    age = int(p.get("bars_waited", 0) or 0) + (1 if active and not same_candle and (same_event or (not previous_event and not event_id and pd == d and previous_setup in WATCH_SETUPS and setup in WATCH_SETUPS)) else 0)
+    event_continuity = same_event or (active and previous_event and not event_id and pd == d and previous_setup in WATCH_SETUPS) or (active and not previous_event and not event_id and pd == d and previous_setup in WATCH_SETUPS and setup in WATCH_SETUPS)
+    age = int(p.get("bars_waited", 0) or 0) + (1 if active and not same_candle and event_continuity else 0)
     invalidated = bool(c.get("invalidated")); candidate = bool(c.get("candidate")); ready = bool(c.get("ready")); thesis_proven = bool(c.get("thesis_proven"))
     base = {**p, "last_evaluated_candle": candle, "trade_authorized": False, "event_id": event_id or p.get("event_id"), "origin_event_id": p.get("origin_event_id") or event_id}
 
@@ -150,7 +149,7 @@ def advance_opportunity_directions(previous: dict[str, Any] | None, current_by_d
     """Advance BUY and SELL independently; leadership never terminates the counter-direction watch."""
     previous = dict(previous or {})
     previous_map = previous.get("opportunities") if isinstance(previous.get("opportunities"), dict) else {}
-    output: dict[str, Any] = {}
+    output: dict[str, dict[str, Any]] = {}
     for direction in ("BUY", "SELL"):
         current = dict(current_by_direction.get(direction) or {})
         if not current:
