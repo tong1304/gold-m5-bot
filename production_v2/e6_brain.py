@@ -58,12 +58,7 @@ def _e3_invalidated(e3: dict[str, Any]) -> bool:
 
 
 def _e4_direction(e4: dict[str, Any]) -> str:
-    """Return only proven directional response, never liquidity-taker identity.
-
-    A raw liquidity interaction (for example HIGH_LIQUIDITY_INTERACTION with
-    response_actor=UNCLEAR) is intentionally neutral. The side that consumed
-    liquidity is not the same thing as the side that won the auction.
-    """
+    """Return only proven directional response, never liquidity-taker identity."""
     event=_text(e4.get("event",e4.get("finding")))
     direct=_direction_value(e4.get("direction"))
     if direct!="NEUTRAL": return direct
@@ -74,8 +69,6 @@ def _e4_direction(e4: dict[str, Any]) -> str:
     if "LOW_SWEEP_REJECTION" in event or "LOW_REJECTION" in event: return "BUY"
     if "HIGH_ACCEPTANCE" in event or "HIGH_BREAK" in event: return "BUY"
     if "LOW_ACCEPTANCE" in event or "LOW_BREAK" in event: return "SELL"
-    # LIQUIDITY_INTERACTION and other unresolved interactions remain neutral
-    # until response/auction direction is explicitly established.
     return "NEUTRAL"
 
 
@@ -107,7 +100,6 @@ def _causal_opportunity(upstream: dict[str, EngineResult]) -> dict[str, Any] | N
     elif internal in {"BUY","SELL"} and internal!=direction: internal_status="COUNTERFLOW"; counter.append("E3_INTERNAL_COUNTER_EVIDENCE"); missing_internal.append("E3_INTERNAL_STRUCTURE_ALIGNMENT")
     elif internal=="NEUTRAL": missing_internal.append("E3_INTERNAL_STRUCTURE_ALIGNMENT")
     space=_e5_space(e5,direction); value=_text(e5.get("value_state")); location=_text(e5.get("structural_location")); finding5=_text(e5.get("finding")); favorable="FAVORABLE_LOCATION" in finding5 or location in {"AT_SUPPORT","AT_RESISTANCE"} or value in {"DISCOUNT","PREMIUM","EQUILIBRIUM"}
-    if not favorable and space<=0.0: return None
     terminal=auction_state in TERMINAL_AUCTION_STATES or "TERMINAL" in auction_state; missing=[]
     if unresolved: missing.append("E2_OPPORTUNITY_CONFIRMATION")
     if not terminal: missing.append("E4_AUCTION_FOLLOW_THROUGH")
