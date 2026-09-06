@@ -1,6 +1,11 @@
 from __future__ import annotations
 
-"""Cross-engine professional opportunity radar."""
+"""Cross-engine professional opportunity radar.
+
+This module describes opportunity quality separately from execution. It may
+rank and preserve conditional opportunities, but E9 remains the only trade
+authority.
+"""
 
 from typing import Any
 
@@ -27,7 +32,6 @@ def _text(value: Any) -> str:
 
 
 def _direction(output: dict[str, Any]) -> str:
-    """Infer direction for opportunity reporting; E9 decision is never authorization."""
     values = (
         output.get("direction"), output.get("opportunity_direction"), output.get("structure_direction"),
         output.get("market_direction"), output.get("pressure"), output.get("bos_direction"),
@@ -137,8 +141,59 @@ def _failure_conditions(engine: str, direction: str, output: dict[str, Any], cod
     return list(dict.fromkeys(conditions))
 
 
+def _price_geometry(output: dict[str, Any]) -> dict[str, Any]:
+    price = _num(output, "price", "current_price", "last_price")
+    support = _num(output, "next_support", "support", "protected_low")
+    resistance = _num(output, "next_resistance", "resistance", "protected_high")
+    long_space = _num(output, "available_space_atr_long", "long_space_atr")
+    short_space = _num(output, "available_space_atr_short", "short_space_atr")
+    return {
+        "price": price,
+        "BUY": {"entry_reference": price, "invalidation_reference": support, "target_reference": resistance, "available_space_atr": long_space},
+        "SELL": {"entry_reference": price, "invalidation_reference": resistance, "target_reference": support, "available_space_atr": short_space},
+        "source": "E5_EXPLICIT_GEOMETRY" if any(x is not None for x in (support, resistance, long_space, short_space)) else "NOT_EXPLICITLY_AVAILABLE",
+    }
+
+
+def _conditional_thesis(engine: str, direction: str, output: dict[str, Any], stage: str) -> dict[str, Any]:
+    paths = _conditional_paths(engine, direction, output, stage)
+    invalidators = _failure_conditions(engine, direction, output, _codes(output))
+    return {
+        "direction": direction,
+        "status": "UNPROVEN" if stage not in {"MATURE", "CONFIRMED", "EXECUTABLE"} else "PROVEN",
+        "why_this_can_work": paths[0] if paths else "NO_CONDITIONAL_PATH",
+        "proof_required": [NEXT_EVENT.get(engine, "NEXT_CLOSED_CANDLE_UPDATE")],
+        "invalidators": invalidators,
+    }
+
+
+def _strength(engine: str, direction: str, confidence: float, space_quality: float | None, counter: list[str], stage: str, output: dict[str, Any]) -> float:
+    evidence = confidence * 100.0
+    space = 50.0 if space_quality is None else space_quality
+    maturity_bonus = {"REGIME_CONFIRMED": 8.0, "STRUCTURE_ESTABLISHED": 8.0, "AUCTION_CONFIRMED": 10.0, "LOCATION_ACTIONABLE": 8.0, "SETUP_MATURE": 12.0, "CONFIRMED": 12.0, "ECONOMICALLY_VALIDATED": 8.0, "EXECUTABLE": 15.0}.get(stage, 0.0)
+    penalty = min(35.0, len(counter) * 6.0)
+    if direction == "NEUTRAL": return round(max(0.0, min(100.0, evidence * 0.55 + space * 0.15 - penalty)), 2)
+    return round(max(0.0, min(100.0, evidence * 0.55 + space * 0.20 + maturity_bonus - penalty)), 2)
+
+
+def _execution_quality(engine: str, stage: str, hard_block: bool, output: dict[str, Any]) -> str:
+    if engine != "E9": return "NOT_READY"
+    if hard_block: return "BLOCKED"
+    if stage == "EXECUTABLE" and _text(output.get("decision")) in DIRECTIONS and bool(output.get("gate_passed")): return "READY"
+    return "NOT_READY"
+
+
+def _strength_trend(previous: dict[str, Any] | None, current: float) -> str:
+    if not isinstance(previous, dict): return "UNAVAILABLE"
+    old = previous.get("opportunity_strength")
+    try: old = float(old)
+    except (TypeError, ValueError): return "UNAVAILABLE"
+    if current > old + 3.0: return "STRENGTHENING"
+    if current < old - 3.0: return "DECAYING"
+    return "STABLE"
+
+
 def enrich_engine(engine: str, output: dict[str, Any], upstream: dict[str, dict[str, Any]] | None = None) -> dict[str, Any]:
-    del upstream
     out = dict(output or {}); direction = _direction(out); codes = _codes(out); stage = _stage(engine, direction, out, codes); confidence = _confidence(out); space = _space(out, direction); space_quality = _space_quality(space); hard_block = _hard_blocked(codes, out)
     counter = [c for c in codes if any(x in c for x in ("CONFLICT", "MISSING", "PENDING", "BLOCK", "RISK", "CONSTRAINED", "UNRESOLVED"))]
     state = "NO_OPPORTUNITY" if direction == "NEUTRAL" else "OPPORTUNITY_INVALIDATED" if stage == "INVALIDATED" else "OPPORTUNITY_EXECUTABLE" if stage == "EXECUTABLE" else "OPPORTUNITY_WAITING"
@@ -146,8 +201,32 @@ def enrich_engine(engine: str, output: dict[str, Any], upstream: dict[str, dict[
     if space_quality is not None: score = 0.65 * score + 0.35 * space_quality
     score = round(max(0.0, min(100.0, score - min(30.0, len(counter) * 5.0))), 2)
     authorized = engine == "E9" and stage == "EXECUTABLE" and _text(out.get("decision")) in DIRECTIONS and bool(out.get("gate_passed"))
-    out["professional_opportunity"] = {"engine": engine, "scope": ENGINE_SCOPES.get(engine, engine), "authority": engine, "direction": direction, "state": state, "stage": stage, "score": score, "evidence_quality": round(confidence * 100.0, 2), "space_atr": space, "space_quality": space_quality, "observed_evidence": codes, "counter_evidence": counter, "conditional_paths": _conditional_paths(engine, direction, out, stage), "next_required_event": NEXT_EVENT.get(engine, "NEXT_CLOSED_CANDLE_UPDATE"), "failure_conditions": _failure_conditions(engine, direction, out, codes), "trade_authorized": authorized, "execution_authority": "E9_ONLY", "authority_boundary": f"{engine}_OWN_SCOPE_ONLY", "execution_separation": True, "hard_blocked": hard_block}
+    strength = _strength(engine, direction, confidence, space_quality, counter, stage, out)
+    previous = (upstream or {}).get("previous_opportunity") if isinstance(upstream, dict) else None
+    thesis = _conditional_thesis(engine, direction, out, stage)
+    execution_quality = _execution_quality(engine, stage, hard_block, out)
+    op = {
+        "engine": engine, "scope": ENGINE_SCOPES.get(engine, engine), "authority": engine,
+        "direction": direction, "state": state, "stage": stage, "score": score,
+        "opportunity_strength": strength, "strength_trend": _strength_trend(previous, strength),
+        "evidence_quality": round(confidence * 100.0, 2), "space_atr": space, "space_quality": space_quality,
+        "observed_evidence": codes, "counter_evidence": counter,
+        "conditional_paths": _conditional_paths(engine, direction, out, stage),
+        "conditional_thesis": thesis,
+        "next_required_event": NEXT_EVENT.get(engine, "NEXT_CLOSED_CANDLE_UPDATE"),
+        "wait_for": [NEXT_EVENT.get(engine, "NEXT_CLOSED_CANDLE_UPDATE")],
+        "failure_conditions": _failure_conditions(engine, direction, out, codes),
+        "price_geometry": _price_geometry(out) if engine == "E5" else None,
+        "trade_authorized": authorized, "execution_authority": "E9_ONLY",
+        "execution_quality": execution_quality,
+        "authority_boundary": f"{engine}_OWN_SCOPE_ONLY", "execution_separation": True,
+        "state_preservation": "OPPORTUNITY_ALIVE_UNLESS_EXPLICITLY_INVALIDATED",
+        "hard_blocked": hard_block,
+    }
+    out["professional_opportunity"] = op
     out["opportunity_state"] = state; out["opportunity_stage"] = stage; out["opportunity_direction"] = direction; out["opportunity_next_event"] = NEXT_EVENT.get(engine, "NEXT_CLOSED_CANDLE_UPDATE"); out["opportunity_score"] = score; out["opportunity_authority"] = engine
+    out["opportunity_strength"] = strength
+    out["opportunity_execution_quality"] = execution_quality
     return out
 
 
@@ -159,5 +238,5 @@ def consolidate(results: dict[str, Any]) -> dict[str, Any]:
         output = result.output if hasattr(result, "output") else result
         op = output.get("professional_opportunity") or {}
         if op.get("state") in {"OPPORTUNITY_WAITING", "OPPORTUNITY_EXECUTABLE"}: radar.append(op)
-    radar.sort(key=lambda x: float(x.get("score", 0.0)), reverse=True)
+    radar.sort(key=lambda x: float(x.get("opportunity_strength", x.get("score", 0.0))), reverse=True)
     return {"count": len(radar), "best": radar[0] if radar else None, "radar": radar}
