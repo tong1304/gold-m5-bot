@@ -5,7 +5,7 @@ from typing import Any
 
 from .contracts import EngineResult
 
-VERSION = "E4_EVENT_LIFECYCLE_SURGERY_V8"
+VERSION = "E4_EVENT_LIFECYCLE_SURGERY_V9"
 CONFIRM_BARS = 2
 FOLLOW_WINDOW = 5
 INTERACTION_ATR = 0.05
@@ -106,11 +106,20 @@ def _atr(output: dict[str, Any]) -> float:
     return _num(event.get("event_atr") or output.get("event_atr") or output.get("event_atr_frozen") or output.get("atr14_current")) or 0.0
 
 
+def _sync_observations(observations: Any, age: int, event_id: str) -> list[Any]:
+    items = list(observations) if isinstance(observations, (list, tuple)) else []
+    filtered = [item for item in items if "event_age_bars=" not in str(item).lower()]
+    if event_id and not any("event_candle_id=" in str(item) for item in filtered):
+        filtered.append(f"event_candle_id={event_id}")
+    filtered.append(f"event_age_bars={age}")
+    return filtered
+
+
 def _sync_event_age_views(output: dict[str, Any], age: int, idx: int) -> dict[str, Any]:
-    """Make repaired E4 event age authoritative across all nested evidence views."""
     repaired = dict(output)
     repaired["event_age_bars"] = age
     repaired["event_index"] = idx
+    repaired["observations"] = _sync_observations(repaired.get("observations"), age, _event_id(repaired))
     for key in ("auction", "audit", "professional_reasoning"):
         value = repaired.get(key)
         if isinstance(value, dict):
@@ -131,8 +140,7 @@ def _sync_event_age_views(output: dict[str, Any], age: int, idx: int) -> dict[st
                     nested["event_age_bars"] = age
                 evidence[key] = nested
         evidence["event_age_bars"] = age
-        evidence_audit = evidence
-        repaired["evidence_audit"] = evidence_audit
+        repaired["evidence_audit"] = evidence
     return repaired
 
 
@@ -143,7 +151,6 @@ def _repair(output: dict[str, Any], bars: list[dict[str, Any]], current_candle: 
     idx = _event_index(output, bars)
     if idx < 0:
         return output
-
     event_ts = _timestamp(_event_id(output))
     current_ts = _timestamp(current_candle) or _bar_timestamp(bars[-1])
     age_by_index = max(0, len(bars) - 1 - idx)
@@ -151,7 +158,6 @@ def _repair(output: dict[str, Any], bars: list[dict[str, Any]], current_candle: 
     if event_ts is not None and current_ts is not None and current_ts >= event_ts:
         age_by_time = int((current_ts - event_ts).total_seconds() // 300)
     age = max(age_by_index, age_by_time)
-
     direction = _direction(output)
     level = _level(output)
     atr = _atr(output)
@@ -164,7 +170,6 @@ def _repair(output: dict[str, Any], bars: list[dict[str, Any]], current_candle: 
         repaired["reason_codes"] = reasons
         repaired["reasons"] = reasons
         return repaired
-
     post = bars[idx + 1:]
     checks: list[dict[str, Any]] = []
     consecutive = 0
@@ -197,11 +202,9 @@ def _repair(output: dict[str, Any], bars: list[dict[str, Any]], current_candle: 
         checks.append({"candle_id": str(bar.get("timestamp") or bar.get("time") or ""), "close": close, "hold": hold, "displacement_atr": round(displacement, 6), "meaningful": meaningful, "consecutive": consecutive})
         if lifecycle in TERMINAL:
             break
-
     if lifecycle == "PENDING" and age >= FOLLOW_WINDOW:
         lifecycle = "EXPIRED"
         terminal_reason = "EVENT_EXPIRED"
-
     repaired = _sync_event_age_views(output, age, idx)
     repaired.update(auction_state=lifecycle, auction_phase=lifecycle, follow_through_bars=consecutive, required_confirmation_bars=CONFIRM_BARS, confirmation_horizon=FOLLOW_WINDOW, follow_through_checks=checks, auction_lifecycle_repaired=True, auction_lifecycle_repair_version=VERSION, auction_lifecycle_repair_reason=terminal_reason)
     for key in ("auction", "audit", "professional_reasoning"):
@@ -246,19 +249,16 @@ def _repair_result(result: EngineResult, snapshot: dict[str, Any]) -> EngineResu
 
 
 def install_enrichment_hook(pipeline_module: Any) -> None:
-    """Repair E4 after pipeline enrichment, where auction_state/event metadata are finalized."""
     if getattr(pipeline_module, "_E4_EVENT_LIFECYCLE_ENRICHMENT_HOOK_INSTALLED", False):
         return
     original_enrich = getattr(pipeline_module, "_enrich", None)
     if not callable(original_enrich):
         raise AttributeError("pipeline module has no callable _enrich")
-
     def patched_enrich(engine_id: str, result: EngineResult, snapshot: dict[str, Any]) -> EngineResult:
         enriched = original_enrich(engine_id, result, snapshot)
         if engine_id != "E4":
             return enriched
         return _repair_result(enriched, snapshot)
-
     pipeline_module._enrich = patched_enrich
     pipeline_module._E4_EVENT_LIFECYCLE_ENRICHMENT_HOOK_INSTALLED = True
     print(f"[PRODUCTION V2] E4_ENRICHMENT_HOOK version={VERSION} module={pipeline_module.__name__} enrich={pipeline_module._enrich.__module__}.{pipeline_module._enrich.__name__}", flush=True)
@@ -268,10 +268,8 @@ def install(pipeline_module: Any) -> None:
     if getattr(pipeline_module, "_E4_EVENT_LIFECYCLE_SURGERY_INSTALLED", False):
         return
     original_analyze = pipeline_module.analyze_e4
-
     def patched_analyze_e4(snapshot: dict[str, Any], upstream: dict[str, EngineResult]) -> EngineResult:
         return _repair_result(original_analyze(snapshot, upstream), snapshot)
-
     pipeline_module.analyze_e4 = patched_analyze_e4
     pipeline_module._E4_EVENT_LIFECYCLE_SURGERY_INSTALLED = True
     install_enrichment_hook(pipeline_module)
