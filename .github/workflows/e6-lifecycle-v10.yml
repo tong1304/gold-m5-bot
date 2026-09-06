@@ -16,4 +16,6 @@ jobs:
       - name: Install test dependencies
         run: python -m pip install -q pytest
       - name: Run E6 and lifecycle regressions
-        run: pytest -q tests/test_e6_opportunity_lifecycle_regression.py tests/test_opportunity_lifecycle_v10.py
+        env:
+          PYTHONPATH: .
+        run: pytest -q production_v2/test_opportunity_lifecycle.py tests/test_e6_opportunity_lifecycle_regression.py tests/test_opportunity_lifecycle_v10.py
