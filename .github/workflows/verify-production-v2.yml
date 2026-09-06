@@ -20,5 +20,7 @@ jobs:
         run: python -m pip install --upgrade pip && pip install -r requirements.txt
       - name: Run professional opportunity tests
         run: python -m pytest -q production_v2/test_professional_opportunity.py
+      - name: Run opportunity lifecycle tests
+        run: python -m pytest -q production_v2/test_opportunity_lifecycle.py
       - name: Compile production-v2 Python modules
         run: python -m compileall -q production_v2
