@@ -2,19 +2,13 @@ from __future__ import annotations
 
 from typing import Any
 
-
 STAGES = ("WATCH", "CONFIRMED", "E6_THESIS", "E7_CONFIRMED", "E8_READY", "TRADE")
 STAGE_RANK = {stage: index for index, stage in enumerate(STAGES)}
 TERMINAL_STAGES = {"TOO_LATE", "EXPIRED", "INVALIDATED", "REPLACED"}
 
 
-def _text(value: Any) -> str:
-    return str(value or "").upper().strip()
-
-
-def _truth(value: Any) -> bool:
-    if isinstance(value, str): return _text(value) in {"1", "TRUE", "YES", "PASS", "PASSED", "CONFIRMED", "READY", "TRADE"}
-    return bool(value)
+def _text(value: Any) -> str: return str(value or "").upper().strip()
+def _truth(value: Any) -> bool: return _text(value) in {"1", "TRUE", "YES", "PASS", "PASSED", "CONFIRMED", "READY", "TRADE"} if isinstance(value, str) else bool(value)
 
 
 def _requested_stage(current: dict[str, Any]) -> str:
@@ -53,7 +47,6 @@ def _record_stage(result: dict[str, Any], stage: str, candle: Any) -> dict[str, 
 
 
 def advance_lifecycle_stage(previous: dict[str, Any] | None, current: dict[str, Any] | None) -> dict[str, Any]:
-    """Advance one opportunity through explicit proof stages, one stage per closed candle."""
     previous = dict(previous or {}); current = dict(current or {}); requested = _requested_stage(current); previous_stage = _text(previous.get("lifecycle_stage")) or "IDLE"
     if requested in TERMINAL_STAGES: return _terminal_result(previous, requested, current)
     if previous_stage in TERMINAL_STAGES:
@@ -67,7 +60,9 @@ def advance_lifecycle_stage(previous: dict[str, Any] | None, current: dict[str, 
     if requested == "TRADE" and not (_truth(current.get("e8_ready")) and (_truth(current.get("e9_trade")) or _text(current.get("execution_state")) == "POSITION_OPEN")): requested = "E8_READY"
     current_rank = STAGE_RANK.get(requested, -1); previous_rank = STAGE_RANK.get(previous_stage, -1)
     if current_rank < 0: return dict(previous)
-    stage = requested if previous_rank < 0 else previous_stage if current_rank <= previous_rank else STAGES[previous_rank + 1]
+    if previous_rank < 0: stage = "WATCH" if current_rank > 0 else requested
+    elif current_rank <= previous_rank: stage = previous_stage
+    else: stage = STAGES[previous_rank + 1]
     result = {**previous, "opportunity_id": _identity(previous, current), "lifecycle_stage": stage, "last_evaluated_candle": current.get("candle") or previous.get("last_evaluated_candle"), "trade_authorized": stage == "TRADE", "terminal_stage": None, "terminal_reason": None}
     if stage == "WATCH": result.update(wait_for_stage="CONFIRMED", state="WATCHING", opportunity_phase="OPPORTUNITY_WATCH")
     elif stage == "CONFIRMED": result.update(wait_for_stage="E6_THESIS", state="WAITING", opportunity_phase="CONFIRMED")
