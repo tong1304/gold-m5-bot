@@ -86,7 +86,10 @@ def advance_opportunity(previous: dict[str, Any] | None, current: dict[str, Any]
         return {**base,"state":"EXPIRED","lifecycle_state":"EXPIRED","opportunity_phase":"EXPIRED","continuity":"OPPORTUNITY_EXPIRED","opportunity_id":pid,"direction":pd,"setup":previous_setup,"bars_waited":age,"wait_for":"NEW_CAUSAL_OPPORTUNITY","invalidation_reason":"WATCH_MAX_AGE_REACHED"}
     if pending_watch and bool(c.get("upstream_evidence_lost") or c.get("causal_evidence_lost")):
         return {**base,"state":"INVALIDATED","lifecycle_state":"INVALIDATED","opportunity_phase":"INVALIDATED","continuity":"UPSTREAM_CAUSAL_EVIDENCE_LOST","opportunity_id":pid,"direction":pd,"setup":previous_setup,"bars_waited":age,"wait_for":"NEW_CAUSAL_OPPORTUNITY","invalidation_reason":"UPSTREAM_CAUSAL_EVIDENCE_LOST"}
-    if pending_watch and candidate and d == pd and oid and setup not in WATCH_SETUPS and setup not in {"","UNKNOWN","NONE","NO_SETUP"}:
+
+    # Promotion from an upstream watch is authorized only by E6's explicit
+    # thesis proof. A setup-family/candidate flag alone is not sufficient.
+    if pending_watch and thesis_proven and d == pd and oid and setup not in WATCH_SETUPS and setup not in {"", "UNKNOWN", "NONE", "NO_SETUP"}:
         state = "READY" if ready else "WAITING"
         phase = "EXECUTABLE" if ready else "TRIGGER_PENDING"
         return {**base,"state":state,"lifecycle_state":phase,"opportunity_phase":phase,"continuity":"PROMOTED_PENDING_OPPORTUNITY_TO_SETUP" if ready else "PROMOTED_PENDING_OPPORTUNITY","opportunity_id":oid,"direction":d,"setup":setup,"bars_waited":age,"origin_candle":p.get("origin_candle") or candle,"wait_for":c.get("wait_for") or ["E7_SETUP_SPECIFIC_CLOSED_CANDLE_CONFIRMATION"],"invalidation_reason":None}
@@ -104,13 +107,9 @@ def advance_opportunity(previous: dict[str, Any] | None, current: dict[str, Any]
         if age >= MAX_WATCH_BARS:
             return {**base,"state":"EXPIRED","lifecycle_state":"EXPIRED","opportunity_phase":"EXPIRED","continuity":"OPPORTUNITY_EXPIRED","opportunity_id":pid,"direction":pd,"setup":previous_setup,"bars_waited":age,"wait_for":"NEW_CAUSAL_OPPORTUNITY","invalidation_reason":"WATCH_MAX_AGE_REACHED"}
         # An active opportunity that has not proved its causal thesis remains a watch,
-        # even when E6 reports the event setup family but no candidate. TRIGGER_PENDING
-        # is reserved for a proven thesis awaiting E7/entry confirmation.
-        if thesis_proven:
-            phase = "TRIGGER_PENDING"
-        else:
-            phase = "OPPORTUNITY_WATCH"
-        return {**base,"state":ps if ps in ACTIVE_STATES else "WATCHING","lifecycle_state":phase,"opportunity_phase":phase,"continuity":"PRESERVING_PENDING_OPPORTUNITY" if not thesis_proven else "THESIS_PROVEN_TRIGGER_PENDING","opportunity_id":pid,"direction":pd,"setup":previous_setup,"bars_waited":age,"wait_for":"CAUSAL_FOLLOW_THROUGH_OR_INVALIDATION" if not thesis_proven else (c.get("wait_for") or "E7_SETUP_SPECIFIC_CLOSED_CANDLE_CONFIRMATION"),"invalidation_reason":None}
+        # even when E6 reports the event setup family but no candidate.
+        phase = "TRIGGER_PENDING" if thesis_proven else "OPPORTUNITY_WATCH"
+        return {**base,"state":ps if ps in ACTIVE_STATES else "WATCHING","lifecycle_state":phase,"opportunity_phase":phase,"continuity":"THESIS_PROVEN_TRIGGER_PENDING" if thesis_proven else "PRESERVING_PENDING_OPPORTUNITY","opportunity_id":pid,"direction":pd,"setup":previous_setup,"bars_waited":age,"wait_for":"CAUSAL_FOLLOW_THROUGH_OR_INVALIDATION" if not thesis_proven else (c.get("wait_for") or "E7_SETUP_SPECIFIC_CLOSED_CANDLE_CONFIRMATION"),"invalidation_reason":None}
     return {"state":"IDLE","lifecycle_state":"IDLE","opportunity_phase":"IDLE","continuity":"NO_ACTIVE_PENDING_OPPORTUNITY","opportunity_id":None,"direction":"NEUTRAL","setup":"UNKNOWN","bars_waited":0,"origin_candle":candle,"last_evaluated_candle":candle,"trade_authorized":False,"invalidation_reason":None,"event_id":event_id,"origin_event_id":event_id}
 
 
