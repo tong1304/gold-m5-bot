@@ -1,0 +1,20 @@
+name: Missed Opportunity Detector
+
+on:
+  push:
+    branches: [production-v2]
+    paths:
+      - 'production_v2/missed_opportunity.py'
+      - 'production_v2/test_missed_opportunity.py'
+      - '.github/workflows/missed-opportunity-tests.yml'
+
+jobs:
+  missed-opportunity:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Run detector tests
+        run: python -m pip install --upgrade pip pytest && python -m pytest -q production_v2/test_missed_opportunity.py
