@@ -20,7 +20,7 @@ jobs:
         with:
           python-version: '3.11'
       - name: Install test dependencies
-        run: python -m pip install --upgrade pip pytest
+        run: python -m pip install --upgrade pip pytest lse-data
       - name: Compile E3 single brain
         run: python -m py_compile production_v2/e3_brain.py
       - name: Run E3 professional regression suite
