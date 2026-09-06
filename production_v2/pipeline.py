@@ -140,7 +140,9 @@ def _directional_lifecycle_current(results: dict[str, EngineResult], decision: s
     for direction in ("BUY", "SELL"):
         candidate = next((item for item in candidates if _direction(item.get("direction")) == direction and str(item.get("state") or "").upper() not in {"INVALIDATED","EXPIRED","REPLACED","EXECUTED"}), None)
         if candidate:
-            event_id = candidate.get("event_id") or candidate.get("origin_event_id") or e4.get("event_id") or e4.get("auction_event_id")
+            event_id = candidate.get("event_id") or candidate.get("origin_event_id")
+            if not event_id and direction == e6_direction:
+                event_id = e4.get("event_id") or e4.get("auction_event_id")
             by_direction[direction] = {"candidate":True,"direction":direction,"setup":setup if direction == e6_direction and thesis_proven and setup not in {"", "UNKNOWN", "NONE", "NO_SETUP", "OPPORTUNITY_WATCH"} else "OPPORTUNITY_WATCH","event_id":event_id,"origin_event_id":candidate.get("origin_event_id") or event_id,"candle":candle,"ready":ready if direction == e6_direction else False,"invalidated":False,"thesis_proven":thesis_proven if direction == e6_direction else False,"wait_for":candidate.get("wait_for") or ["NEXT_CLOSED_M5_CANDLE"]}
         else:
             by_direction[direction] = {"candidate":False,"direction":direction,"setup":"OPPORTUNITY_WATCH","ready":False,"invalidated":False,"thesis_proven":False,"candle":candle}
@@ -191,5 +193,9 @@ class ProductionPipeline:
         results["E9"] = EngineResult("E9", results["E9"].name, results["E9"].gate_passed, results["E9"].score, dict(results["E9"].output, opportunity_lifecycle=lifecycle), results["E9"].reason_codes)
         self._opportunity_lifecycle[symbol] = lifecycle
         opportunity_memory.save(symbol, lifecycle)
+        active = lifecycle.get("active_directions") or []
+        directional = lifecycle.get("opportunities") if isinstance(lifecycle.get("opportunities"), dict) else {}
+        radar = {direction: {"state": item.get("state"), "phase": item.get("opportunity_phase"), "opportunity_id": item.get("opportunity_id"), "bars_waited": item.get("bars_waited", 0), "origin_event_id": item.get("origin_event_id"), "wait_for": item.get("wait_for"), "thesis_proven": item.get("thesis_proven", False)} for direction, item in directional.items()}
+        logger.info("[PRODUCTION V2] OPPORTUNITY_RADAR symbol=%s candle=%s leader=%s competition=%s active_directions=%s radar=%s execution=%s decision=%s", symbol, snapshot.get("candle_close_timestamp") or snapshot.get("candle"), lifecycle.get("leader"), lifecycle.get("competition"), active, radar, "AUTHORIZED" if decision == "TRADE" and trade_ready and gate_passed else "BLOCKED", decision)
         logger.info("[PRODUCTION V2] OPPORTUNITY_MEMORY_PERSIST symbol=%s backend=%s leader=%s competition=%s active_directions=%s state=%s opportunity_id=%s bars_waited=%s", symbol, opportunity_memory.backend(), lifecycle.get("leader"), lifecycle.get("competition"), lifecycle.get("active_directions"), lifecycle.get("state"), lifecycle.get("opportunity_id"), lifecycle.get("bars_waited", 0))
         return DecisionResult(decision=decision, state=state, engines=results, blocked_by=None, wait_bars=int(lifecycle.get("bars_waited", wait_bars) or 0))
