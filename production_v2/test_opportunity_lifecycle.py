@@ -61,13 +61,27 @@ def test_watching_opportunity_promotes_to_waiting_only_when_real_setup_appears()
     assert lifecycle["trade_authorized"] is False
 
 
-def test_pending_upstream_event_does_not_become_invalidated_just_because_e6_is_not_yet_proven():
+def test_pending_upstream_event_does_not_become_trigger_pending_before_thesis_proof():
     previous = {"state":"WATCHING","opportunity_id":"SELL|HIGH_FAILED_BREAK_RECLAIM","direction":"SELL","setup":"HIGH_FAILED_BREAK_RECLAIM","bars_waited":0,"origin_candle":"2026-09-04T13:35:00Z"}
-    current = {"causal_opportunity":False,"candidate":False,"direction":"SELL","setup":"HIGH_FAILED_BREAK_RECLAIM","invalidated":False,"candle":"2026-09-04T13:40:00Z"}
+    current = {"causal_opportunity":False,"candidate":False,"thesis_proven":False,"direction":"SELL","setup":"HIGH_FAILED_BREAK_RECLAIM","invalidated":False,"candle":"2026-09-04T13:40:00Z"}
     lifecycle = advance_lifecycle(previous, current, bar_id="2026-09-04T13:40:00Z")
+    assert lifecycle["state"] == "WATCHING"
     assert lifecycle["lifecycle_state"] == "OPPORTUNITY_WATCH"
+    assert lifecycle["opportunity_phase"] == "OPPORTUNITY_WATCH"
     assert lifecycle["wait_for"] == "CAUSAL_FOLLOW_THROUGH_OR_INVALIDATION"
     assert lifecycle["age_bars"] == 1
+    assert lifecycle["trade_authorized"] is False
+
+
+def test_pending_upstream_event_promotes_to_trigger_pending_only_after_thesis_proof():
+    previous = {"state":"WATCHING","opportunity_id":"SELL|HIGH_FAILED_BREAK_RECLAIM","direction":"SELL","setup":"HIGH_FAILED_BREAK_RECLAIM","bars_waited":1,"origin_candle":"2026-09-04T13:35:00Z"}
+    current = {"causal_opportunity":True,"candidate":True,"thesis_proven":True,"direction":"SELL","setup":"HIGH_FAILED_BREAK_RECLAIM","ready":False,"invalidated":False,"candle":"2026-09-04T13:45:00Z"}
+    lifecycle = advance_lifecycle(previous, current, bar_id="2026-09-04T13:45:00Z")
+    assert lifecycle["state"] == "WAITING"
+    assert lifecycle["lifecycle_state"] == "TRIGGER_PENDING"
+    assert lifecycle["opportunity_phase"] == "TRIGGER_PENDING"
+    assert lifecycle["bars_waited"] == 2
+    assert lifecycle["trade_authorized"] is False
 
 
 def test_active_opportunity_is_idempotent_when_same_closed_candle_is_evaluated_twice():
