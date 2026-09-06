@@ -43,6 +43,43 @@ def build_candidate(
     }
 
 
+def build_directional_watches(
+    origin_candle: Any,
+    *,
+    buy_score: Any,
+    sell_score: Any,
+    buy_wait_for: list[Any] | None = None,
+    sell_wait_for: list[Any] | None = None,
+    minimum_score: float = 0.35,
+) -> list[dict[str, Any]]:
+    """Create independent BUY/SELL opportunity watches without declaring a trade.
+
+    The weaker side is deliberately retained while it remains above the minimum
+    evidence floor. Invalidation belongs to downstream lifecycle evidence, not
+    merely to the fact that the opposite side currently scores higher.
+    """
+    floor = _quality(minimum_score)
+    rows = [
+        ("BUY", _quality(buy_score), buy_wait_for or ["BUY_CONFIRMATION"]),
+        ("SELL", _quality(sell_score), sell_wait_for or ["SELL_CONFIRMATION"]),
+    ]
+    rows = [row for row in rows if row[1] >= floor]
+    rows.sort(key=lambda row: row[1], reverse=True)
+    return [
+        build_candidate(
+            direction,
+            "DIRECTIONAL_WATCH",
+            origin_candle,
+            quality=score,
+            state="DEVELOPING",
+            wait_for=wait_for,
+            causal_evidence={"source": "E2_DIRECTIONAL_EVIDENCE", "score": score},
+            invalidation_conditions=["explicit closed-candle thesis invalidation"],
+        )
+        for direction, score, wait_for in rows
+    ]
+
+
 def compare_candidates(candidates: list[dict[str, Any]]) -> dict[str, Any]:
     active = [c for c in candidates if str(c.get("state") or "").upper() not in TERMINAL]
     ranked = sorted(active, key=lambda c: _quality(c.get("quality")), reverse=True)
