@@ -43,6 +43,7 @@ def test_e8_builds_risk_geometry_without_needing_setup_confirmation():
 
 def test_e8_expectancy_uses_execution_adjusted_rr_once():
     """REAL_RR already normalizes execution cost; EV must not charge it twice."""
+    import pytest
     from production_v2.e8_brain import _economic
 
     result = _economic(
@@ -55,8 +56,8 @@ def test_e8_expectancy_uses_execution_adjusted_rr_once():
         stop_quality={"state": "QUALITY"},
     )
 
-    assert result["expected_value_r"] == 0.50
-    assert result["expected_win_r"] == 0.90
-    assert result["expected_loss_r"] == 0.40
-    assert result["economic_edge_r"] == 0.50
-    assert result["breakeven_probability"] == 0.40
+    assert result["expected_value_r"] == pytest.approx(0.50)
+    assert result["expected_win_r"] == pytest.approx(0.90)
+    assert result["expected_loss_r"] == pytest.approx(0.40)
+    assert result["economic_edge_r"] == pytest.approx(0.50)
+    assert result["breakeven_probability"] == pytest.approx(0.40)
