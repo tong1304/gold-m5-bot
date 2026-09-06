@@ -90,8 +90,10 @@ def _causal_opportunity(upstream: dict[str, EngineResult]) -> dict[str, Any] | N
     else: direction=e4d
     counter=[]
     if e1d in {"BUY","SELL"} and external in {"BUY","SELL"} and e1d!=external:
-        if not (unresolved and e4d==external): return None
-        direction=external; counter.append("E1_COUNTER_EVIDENCE")
+        if not unresolved:
+            return None
+        counter.append("E1_COUNTER_EVIDENCE")
+        direction=e1d
     if direction not in {"BUY","SELL"}: return None
     if e2d not in {"NEUTRAL",direction}: return None
     if e4d not in {"NEUTRAL",direction}: return None
