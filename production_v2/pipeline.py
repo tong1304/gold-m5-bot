@@ -17,7 +17,7 @@ from .e6_runtime_authority import _normalize_watch_semantics
 from .nine_brain_surgery import harden_engine
 from .opportunity_layer import enrich_opportunity, recover_e9
 from .professional_governance import audit_engines, enforce_final_authority
-from .professional_opportunity import enrich_engine
+from .professional_opportunity import consolidate, enrich_engine
 from .professional_brain_audit import audit_all
 from .shared_market_picture import attach_brain_view, audit_shared_market_picture_contract, build_shared_market_picture
 from .conflict_resolution import build_conflict_ledger
@@ -146,16 +146,12 @@ def _build_causal_event_anchor(e4: dict[str, Any] | None, previous_lifecycle: di
     previous_anchor = previous.get("causal_event_anchor") if isinstance(previous.get("causal_event_anchor"), dict) else {}
     event_id = str(e4.get("event_id") or e4.get("auction_event_id") or "").strip()
     event_candle = str(e4.get("event_candle_id") or "").strip()
-    if not event_candle and event_id:
-        event_candle = event_id.split("|", 1)[0]
+    if not event_candle and event_id: event_candle = event_id.split("|", 1)[0]
     if not event_id and previous_anchor.get("event_id"):
-        event_id = str(previous_anchor.get("event_id")).strip()
-        event_candle = event_candle or str(previous_anchor.get("event_candle") or "").strip()
-    if not event_id:
-        return {}
+        event_id = str(previous_anchor.get("event_id")).strip(); event_candle = event_candle or str(previous_anchor.get("event_candle") or "").strip()
+    if not event_id: return {}
     state = str(e4.get("auction_state") or e4.get("auction_phase") or e4.get("state") or previous_anchor.get("state") or "PENDING").upper().strip()
-    current_ts = _parse_candle(current_candle)
-    event_ts = _parse_candle(event_candle)
+    current_ts = _parse_candle(current_candle); event_ts = _parse_candle(event_candle)
     if event_ts is not None and current_ts is not None and current_ts >= event_ts:
         age_bars = int((current_ts - event_ts).total_seconds() // 300)
     else:
@@ -168,16 +164,12 @@ def _directional_lifecycle_current(results: dict[str, EngineResult], decision: s
     e2 = results.get("E2").output if results.get("E2") else {}; e4 = results.get("E4").output if results.get("E4") else {}; e6 = results.get("E6").output if results.get("E6") else {}
     book = e2.get("opportunity_book") if isinstance(e2.get("opportunity_book"), dict) else {}; candidates = book.get("candidates") if isinstance(book.get("candidates"), list) else []
     by_direction: dict[str, dict[str, Any]] = {}
-    e6_direction = _direction(e6.get("direction") or e6.get("direction_thesis") or e6.get("thesis_direction") or e6.get("finding"))
-    thesis_proven = bool(e6.get("e6_thesis_proven") or e6.get("setup_exists") or e6.get("trade_ready"))
-    setup = str(e6.get("setup") or e6.get("setup_family") or e6.get("setup_type") or "OPPORTUNITY_WATCH").upper().strip()
-    ready = bool(decision == "TRADE" and gate_passed)
+    e6_direction = _direction(e6.get("direction") or e6.get("direction_thesis") or e6.get("thesis_direction") or e6.get("finding")); thesis_proven = bool(e6.get("e6_thesis_proven") or e6.get("setup_exists") or e6.get("trade_ready")); setup = str(e6.get("setup") or e6.get("setup_family") or e6.get("setup_type") or "OPPORTUNITY_WATCH").upper().strip(); ready = bool(decision == "TRADE" and gate_passed)
     for direction in ("BUY", "SELL"):
         candidate = next((item for item in candidates if _direction(item.get("direction")) == direction and str(item.get("state") or "").upper() not in {"INVALIDATED","EXPIRED","REPLACED","EXECUTED"}), None)
         if candidate:
             event_id = candidate.get("event_id") or candidate.get("origin_event_id")
-            if not event_id and direction == e6_direction:
-                event_id = e4.get("event_id") or e4.get("auction_event_id") or (causal_anchor or {}).get("event_id")
+            if not event_id and direction == e6_direction: event_id = e4.get("event_id") or e4.get("auction_event_id") or (causal_anchor or {}).get("event_id")
             by_direction[direction] = {"candidate":True,"direction":direction,"setup":setup if direction == e6_direction and thesis_proven and setup not in {"", "UNKNOWN", "NONE", "NO_SETUP", "OPPORTUNITY_WATCH"} else "OPPORTUNITY_WATCH","event_id":event_id,"origin_event_id":candidate.get("origin_event_id") or event_id,"candle":candle,"ready":ready if direction == e6_direction else False,"invalidated":False,"thesis_proven":thesis_proven if direction == e6_direction else False,"wait_for":candidate.get("wait_for") or ["NEXT_CLOSED_M5_CANDLE"],"causal_event_anchor":dict(causal_anchor or {})}
         else:
             by_direction[direction] = {"candidate":False,"direction":direction,"setup":"OPPORTUNITY_WATCH","ready":False,"invalidated":False,"thesis_proven":False,"candle":candle,"causal_event_anchor":dict(causal_anchor or {})}
@@ -216,23 +208,17 @@ class ProductionPipeline:
         causal_anchor = _build_causal_event_anchor(results.get("E4").output if results.get("E4") else {}, previous_lifecycle, candle)
         current_by_direction, leader, competition = _directional_lifecycle_current(results, decision, gate_passed, candle, causal_anchor)
         previous_directional = previous_lifecycle if isinstance(previous_lifecycle.get("opportunities"), dict) else {"opportunities": {}}
-        if not previous_directional.get("opportunities") and previous_lifecycle.get("direction") in {"BUY", "SELL"}:
-            previous_directional = {"opportunities": {str(previous_lifecycle["direction"]): previous_lifecycle}}
+        if not previous_directional.get("opportunities") and previous_lifecycle.get("direction") in {"BUY", "SELL"}: previous_directional = {"opportunities": {str(previous_lifecycle["direction"]): previous_lifecycle}}
         lifecycle = advance_opportunity_directions(previous_directional, current_by_direction, leader=leader, competition=competition)
         lifecycle["causal_event_anchor"] = causal_anchor or (previous_lifecycle.get("causal_event_anchor") if isinstance(previous_lifecycle.get("causal_event_anchor"), dict) else {})
         lifecycle["previous_state"] = previous_lifecycle.get("state") if previous_lifecycle else None
-        lifecycle["e6_thesis_proven"] = bool(results.get("E6") and results["E6"].output.get("e6_thesis_proven"))
-        lifecycle["e7_confirmation_state"] = str(results.get("E7").output.get("confirmation_state") if results.get("E7") else "UNKNOWN")
-        lifecycle["e8_economic_state"] = str(results.get("E8").output.get("economic_state") if results.get("E8") else "UNKNOWN")
-        lifecycle["e9_final_decision"] = decision
+        lifecycle["e6_thesis_proven"] = bool(results.get("E6") and results["E6"].output.get("e6_thesis_proven")); lifecycle["e7_confirmation_state"] = str(results.get("E7").output.get("confirmation_state") if results.get("E7") else "UNKNOWN"); lifecycle["e8_economic_state"] = str(results.get("E8").output.get("economic_state") if results.get("E8") else "UNKNOWN"); lifecycle["e9_final_decision"] = decision
         e2_book = results.get("E2").output.get("opportunity_book") if results.get("E2") and isinstance(results.get("E2").output, dict) else None
         if isinstance(e2_book, dict): lifecycle["opportunity_book"] = e2_book
         lifecycle["execution_candidate"] = {"direction": leader, "opportunity_id": lifecycle.get("opportunity_id"), "state": lifecycle.get("state"), "selected_by": "E9" if decision == "TRADE" else "E2_OPPORTUNITY_LEADER"}
         results["E9"] = EngineResult("E9", results["E9"].name, results["E9"].gate_passed, results["E9"].score, dict(results["E9"].output, opportunity_lifecycle=lifecycle), results["E9"].reason_codes)
-        self._opportunity_lifecycle[symbol] = lifecycle
-        opportunity_memory.save(symbol, lifecycle)
-        active = lifecycle.get("active_directions") or []
-        directional = lifecycle.get("opportunities") if isinstance(lifecycle.get("opportunities"), dict) else {}
+        self._opportunity_lifecycle[symbol] = lifecycle; opportunity_memory.save(symbol, lifecycle)
+        active = lifecycle.get("active_directions") or []; directional = lifecycle.get("opportunities") if isinstance(lifecycle.get("opportunities"), dict) else {}
         radar = {direction: {"state": item.get("state"), "phase": item.get("opportunity_phase"), "opportunity_id": item.get("opportunity_id"), "bars_waited": item.get("bars_waited", 0), "origin_event_id": item.get("origin_event_id"), "wait_for": item.get("wait_for"), "thesis_proven": item.get("thesis_proven", False), "causal_event_id": (item.get("causal_event_anchor") or {}).get("event_id")} for direction, item in directional.items()}
         logger.info("[PRODUCTION V2] OPPORTUNITY_RADAR symbol=%s candle=%s leader=%s competition=%s active_directions=%s radar=%s execution=%s decision=%s", symbol, candle, lifecycle.get("leader"), lifecycle.get("competition"), active, radar, "AUTHORIZED" if decision == "TRADE" and trade_ready and gate_passed else "BLOCKED", decision)
         logger.info("[PRODUCTION V2] OPPORTUNITY_MEMORY_PERSIST symbol=%s backend=%s leader=%s competition=%s active_directions=%s state=%s opportunity_id=%s bars_waited=%s causal_event_id=%s", symbol, opportunity_memory.backend(), lifecycle.get("leader"), lifecycle.get("competition"), lifecycle.get("active_directions"), lifecycle.get("state"), lifecycle.get("opportunity_id"), lifecycle.get("bars_waited", 0), (lifecycle.get("causal_event_anchor") or {}).get("event_id"))
