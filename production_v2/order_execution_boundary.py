@@ -4,20 +4,27 @@ from typing import Any
 
 STATES = ("NONE", "ORDER_INTENT", "ORDER_SUBMITTED", "BROKER_ACCEPTED", "POSITION_OPEN")
 RANK = {state: i for i, state in enumerate(STATES)}
+TRUE_VALUES = {"1", "TRUE", "YES", "PASS", "PASSED", "CONFIRMED", "READY", "TRADE"}
 
 
 class ExecutionBoundaryError(ValueError):
-    """Raised when execution state advances without the required authority/ack."""
+    """Raised when execution state advances without required authority/ack."""
 
 
 def _text(value: Any) -> str:
     return str(value or "").upper().strip()
 
 
+def _truth(value: Any) -> bool:
+    if isinstance(value, str):
+        return _text(value) in TRUE_VALUES
+    return bool(value)
+
+
 def initial_execution_state(e9: dict[str, Any] | None) -> dict[str, Any]:
     e9 = dict(e9 or {})
     decision = _text(e9.get("decision"))
-    if decision not in {"BUY", "SELL", "TRADE"} or not bool(e9.get("gate_passed")):
+    if decision not in {"BUY", "SELL", "TRADE"} or not _truth(e9.get("gate_passed")):
         return {"state": "NONE", "authorized_by": None, "history": []}
     return {"state": "ORDER_INTENT", "authorized_by": "E9", "history": ["ORDER_INTENT"]}
 
