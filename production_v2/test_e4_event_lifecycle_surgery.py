@@ -62,6 +62,31 @@ def test_pending_event_invalidates_on_post_event_reclamation():
     assert repaired["auction_confirmation"] == "POST_EVENT_RECLAMATION"
 
 
+def test_rejection_pending_event_ages_across_next_closed_candle():
+    bars = [
+        _bar("2026-09-06T06:00:00Z", 79952.90),
+        _bar("2026-09-06T06:05:00Z", 79957.87),
+    ]
+    output = {
+        "event_candle_id": "2026-09-06T06:00:00Z",
+        "event_level": 79952.90,
+        "event_atr": 57.586429,
+        "auction_state": "REJECTION_PENDING",
+        "event": {
+            "event_candle_id": "2026-09-06T06:00:00Z",
+            "event_level": 79952.90,
+            "event_atr": 57.586429,
+            "directional_implication": "DOWN",
+        },
+    }
+
+    repaired = _repair(output, bars, "2026-09-06T06:05:00Z")
+
+    assert repaired["event_age_bars"] == 1
+    assert repaired["event_index"] == 0
+    assert repaired["auction_lifecycle_repaired"] is True
+
+
 def test_e4_lifecycle_repair_runs_after_enrichment_when_enrichment_creates_pending_state():
     class FakePipeline:
         pass
