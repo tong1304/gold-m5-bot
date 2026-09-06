@@ -24,6 +24,8 @@ jobs:
         run: python -m pytest -q production_v2/test_opportunity_lifecycle.py
       - name: Run E4 lifecycle surgery tests
         run: python -m pytest -q production_v2/test_e4_event_lifecycle_surgery.py
+      - name: Run E4 nested event-age regression test
+        run: python -m pytest -q production_v2/test_e4_nested_age_regression.py
       - name: Run durable opportunity memory tests
         run: python -m pytest -q production_v2/test_opportunity_memory.py
       - name: Compile production-v2 Python modules
