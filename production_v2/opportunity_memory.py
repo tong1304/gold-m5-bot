@@ -42,6 +42,15 @@ def _load_postgres()->dict[str,dict[str,Any]]:
         if isinstance(state,dict):out[str(symbol).upper()]=dict(state)
     return out
 
+def _memory_summary(state:dict[str,Any])->str:
+    opportunities=state.get("opportunities") if isinstance(state.get("opportunities"),dict) else {}
+    directions=[]
+    for direction in ("BUY","SELL"):
+        item=opportunities.get(direction) if isinstance(opportunities.get(direction),dict) else {}
+        if item:
+            directions.append(f"{direction}:{item.get('state','IDLE')}:{item.get('opportunity_id')}")
+    return ",".join(directions) or "NONE"
+
 def load_all()->dict[str,dict[str,Any]]:
     with _LOCK:
         try:
@@ -55,10 +64,15 @@ def load_all()->dict[str,dict[str,Any]]:
             if _postgres_enabled():raise RuntimeError("Configured PostgreSQL opportunity memory is unavailable") from exc
             return {}
 
-def load(symbol:str)->dict[str,Any]:return dict(load_all().get(str(symbol or "UNKNOWN").upper()) or {})
+def load(symbol:str)->dict[str,Any]:
+    normalized=str(symbol or "UNKNOWN").upper()
+    state=dict(load_all().get(normalized) or {})
+    logger.info("[PRODUCTION V2] OPPORTUNITY_MEMORY_RESTORE symbol=%s backend=%s found=%s leader=%s active_directions=%s state=%s directions=%s",normalized,backend(),bool(state),state.get("leader"),state.get("active_directions"),state.get("state"),_memory_summary(state))
+    return state
 
 def save(symbol:str,state:dict[str,Any])->None:
     symbol=str(symbol or "UNKNOWN").upper()
+    require_persistent_backend()
     with _LOCK:
         try:
             if _postgres_enabled():
@@ -68,6 +82,7 @@ def save(symbol:str,state:dict[str,Any])->None:
             else:
                 path=_path(); path.parent.mkdir(parents=True,exist_ok=True); payload=load_all(); payload[symbol]=dict(state); tmp=path.with_suffix(path.suffix+".tmp"); tmp.write_text(json.dumps(payload,ensure_ascii=False,sort_keys=True),encoding="utf-8"); os.replace(tmp,path)
             _clear_error()
+            logger.info("[PRODUCTION V2] OPPORTUNITY_MEMORY_PERSIST symbol=%s backend=%s leader=%s active_directions=%s state=%s directions=%s",symbol,backend(),state.get("leader"),state.get("active_directions"),state.get("state"),_memory_summary(state))
         except Exception as exc:_record_error(exc,"SAVE"); raise
 
 def remove(symbol:str)->None:
