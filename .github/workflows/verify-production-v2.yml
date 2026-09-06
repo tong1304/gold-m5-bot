@@ -22,6 +22,12 @@ jobs:
         run: python -m pytest -q production_v2/test_professional_opportunity.py
       - name: Run opportunity lifecycle tests
         run: python -m pytest -q production_v2/test_opportunity_lifecycle.py
+      - name: Run opportunity lifecycle continuity tests
+        run: python -m pytest -q production_v2/test_opportunity_lifecycle_continuity.py
+      - name: Run E6 event direction and identity regression tests
+        run: python -m pytest -q production_v2/test_e6_event_direction.py
+      - name: Run E9 watch semantics tests
+        run: python -m pytest -q production_v2/test_e9_watch_semantics.py
       - name: Run E4 lifecycle surgery tests
         run: python -m pytest -q production_v2/test_e4_event_lifecycle_surgery.py
       - name: Run E4 nested event-age regression test
