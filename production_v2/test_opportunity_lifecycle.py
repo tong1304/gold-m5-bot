@@ -93,3 +93,34 @@ def test_active_opportunity_is_idempotent_when_same_closed_candle_is_evaluated_t
     assert lifecycle["continuity"] == "CONTINUING_UPSTREAM_WATCH"
     assert lifecycle["bars_waited"] == 1
     assert lifecycle["last_evaluated_candle"] == current["candle"]
+
+
+def test_same_direction_watch_keeps_identity_when_new_related_event_arrives():
+    previous = {
+        "state": "WATCHING",
+        "opportunity_id": "SELL|OPPORTUNITY_WATCH|2026-09-06T13:15:00Z|HIGH_FAILED_BREAK_RECLAIM|HIGH|79850|DOWN",
+        "direction": "SELL",
+        "setup": "OPPORTUNITY_WATCH",
+        "event_id": "2026-09-06T13:15:00Z|HIGH_FAILED_BREAK_RECLAIM|HIGH|79850|DOWN",
+        "origin_event_id": "2026-09-06T13:15:00Z|HIGH_FAILED_BREAK_RECLAIM|HIGH|79850|DOWN",
+        "bars_waited": 1,
+        "origin_candle": "2026-09-06T13:15:00Z",
+    }
+    current = {
+        "candidate": True,
+        "direction": "SELL",
+        "setup": "OPPORTUNITY_WATCH",
+        "ready": False,
+        "thesis_proven": False,
+        "invalidated": False,
+        "event_id": "2026-09-06T13:20:00Z|HIGH_FAILED_BREAK_RECLAIM|HIGH|79814.67|DOWN",
+        "candle": "2026-09-06T13:25:00Z",
+    }
+    lifecycle = advance_opportunity(previous, current)
+    assert lifecycle["state"] == "WATCHING"
+    assert lifecycle["continuity"] == "CONTINUING_UPSTREAM_WATCH"
+    assert lifecycle["opportunity_id"] == previous["opportunity_id"]
+    assert lifecycle["origin_event_id"] == previous["origin_event_id"]
+    assert lifecycle["event_id"] == current["event_id"]
+    assert lifecycle["bars_waited"] == 2
+    assert lifecycle["trade_authorized"] is False
