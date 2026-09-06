@@ -34,9 +34,18 @@ def _identity(previous: dict[str, Any], current: dict[str, Any]) -> str:
     return "|".join(part for part in (direction, setup, event) if part)
 
 
+def _with_event(result: dict[str, Any], current: dict[str, Any]) -> dict[str, Any]:
+    """Advance the event clock while keeping opportunity_id anchored to its origin."""
+    event_id = current.get("event_id") or result.get("event_id")
+    if event_id: result["event_id"] = event_id
+    result["origin_event_id"] = result.get("origin_event_id") or current.get("origin_event_id") or event_id
+    return result
+
+
 def _terminal_result(previous: dict[str, Any], stage: str, current: dict[str, Any]) -> dict[str, Any]:
     reason = _text(current.get("invalidation_reason")) or stage; state = "INVALIDATED" if stage == "INVALIDATED" else "EXPIRED" if stage != "REPLACED" else "REPLACED"
     result = {**previous, "opportunity_id": _identity(previous, current), "lifecycle_stage": stage, "state": state, "lifecycle_state": stage, "opportunity_phase": stage, "trade_authorized": False, "wait_for_stage": "NEW_CAUSAL_OPPORTUNITY", "terminal_stage": stage, "terminal_reason": reason, "invalidation_reason": current.get("invalidation_reason") or previous.get("invalidation_reason") or reason, "last_evaluated_candle": current.get("candle") or previous.get("last_evaluated_candle")}
+    result = _with_event(result, current)
     return _record_stage(result, stage, current.get("candle"))
 
 
@@ -55,6 +64,7 @@ def advance_lifecycle_stage(previous: dict[str, Any] | None, current: dict[str, 
         else: return dict(previous)
     if requested == "IDLE":
         result = {**previous, "opportunity_id": _identity(previous, current), "lifecycle_stage": previous_stage if previous_stage in STAGES else "IDLE", "trade_authorized": False, "last_evaluated_candle": current.get("candle") or previous.get("last_evaluated_candle")}
+        result = _with_event(result, current)
         if previous_stage in STAGES: result["wait_for_stage"] = STAGES[min(STAGE_RANK[previous_stage] + 1, len(STAGES) - 1)]; return _record_stage(result, previous_stage, current.get("candle"))
         result["wait_for_stage"] = "WATCH"; return result
     if requested == "TRADE" and not (_truth(current.get("e8_ready")) and (_truth(current.get("e9_trade")) or _text(current.get("execution_state")) == "POSITION_OPEN")): requested = "E8_READY"
@@ -64,6 +74,7 @@ def advance_lifecycle_stage(previous: dict[str, Any] | None, current: dict[str, 
     elif current_rank <= previous_rank: stage = previous_stage
     else: stage = STAGES[previous_rank + 1]
     result = {**previous, "opportunity_id": _identity(previous, current), "lifecycle_stage": stage, "last_evaluated_candle": current.get("candle") or previous.get("last_evaluated_candle"), "trade_authorized": stage == "TRADE", "terminal_stage": None, "terminal_reason": None}
+    result = _with_event(result, current)
     if stage == "WATCH": result.update(wait_for_stage="CONFIRMED", state="WATCHING", opportunity_phase="OPPORTUNITY_WATCH")
     elif stage == "CONFIRMED": result.update(wait_for_stage="E6_THESIS", state="WAITING", opportunity_phase="CONFIRMED")
     elif stage == "E6_THESIS": result.update(wait_for_stage="E7_CONFIRMED", state="WAITING", opportunity_phase="E6_THESIS")
