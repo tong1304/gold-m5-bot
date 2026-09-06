@@ -11,7 +11,7 @@ from .e6_pending_event_surgery import install as install_e6_pending_event_surger
 from .brain_handoff import attach_result_chain
 from .professional_opportunity_surgery import enrich_decision
 from .opportunity_lifecycle import advance_opportunity
-from .opportunity_memory import load_all as load_opportunity_memory, save as save_opportunity_memory, backend as opportunity_memory_backend, last_error as opportunity_memory_last_error
+from .opportunity_memory import load_all as load_opportunity_memory, save as save_opportunity_memory, backend as opportunity_memory_backend, last_error as opportunity_memory_last_error, require_persistent_backend
 from .causal_reconciliation import reconcile_causal_evidence
 from .statistics import build_statistics, store
 
@@ -113,6 +113,8 @@ def start_production_runtime():
     if os.getenv("PRODUCTION_V2_DISABLE_LIVE", "").strip() == "1": print("[PRODUCTION V2] Live runtime disabled by test environment", flush=True); _runtime_started=True; return
     key = os.getenv("LSE_API_KEY", "").strip()
     if not key: raise RuntimeError("LSE_API_KEY is required for production-v2 live runtime")
+    if str(os.getenv("PRODUCTION_V2_REQUIRE_PERSISTENT_MEMORY", "")).strip().lower() in {"1", "true", "yes", "on"}:
+        require_persistent_backend()
     from .service import start_live_service
     start_live_service(); _runtime_started=True; print(f"[PRODUCTION V2] Live M5 runtime started; architecture={ARCHITECTURE}; opportunity_memory_backend={opportunity_memory_backend()}; records={len(_last_opportunity_lifecycle)}", flush=True)
 start_production_runtime()
@@ -128,6 +130,6 @@ def statistics(): return jsonify(build_statistics())
 def signal():
     try:
         market_data = normalize_market_data(request.get_json(silent=True) or {}); result = pipeline.run(market_data, historical_calibration=_load_historical_calibration()); result = _connect_brains(result); result = enrich_decision(result); price = market_data["bars"][-1]["close"] if market_data["bars"] else None; store.record(result, price); return jsonify(result.as_dict())
-    except ValueError as exc: return jsonify({"error":str(exc),"system":"9-ENGINE","legacy_runtime":False}),400
+    except ValueError as exc: return jsonify({"error":str(exc),"system":"9-engine","legacy_runtime":False}),400
     except Exception as exc: logger.exception("production-v2 pipeline failure"); return jsonify({"error":"PIPELINE_ERROR","detail":str(exc)}),500
 if __name__ == "__main__": app.run(host="0.0.0.0",port=int(os.getenv("PORT","10000")))
