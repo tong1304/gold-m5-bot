@@ -23,7 +23,7 @@ def test_unresolved_liquidity_interaction_does_not_invent_opposite_direction():
         "E5": _engine("E5", {
             "finding": "REJECTED_BELOW_VALUE",
             "structural_location": "INSIDE_STRUCTURE",
-            "available_space_atr_short": 2.0,
+            "available_space_atr_short": 0.0,
             "available_space_atr_long": 0.2,
         }),
     }
@@ -31,6 +31,7 @@ def test_unresolved_liquidity_interaction_does_not_invent_opposite_direction():
     assert result.output["setup"] == "OPPORTUNITY_WATCH"
     assert result.output["direction"] == "SELL"
     assert result.output["event_id"] == "evt-high-1"
+    assert "STRUCTURAL_SPACE_INSUFFICIENT" in result.output["missing_proof"]
     assert result.output["trade_ready"] is False
 
 
