@@ -67,3 +67,7 @@ def test_e6_promotion_gate_rejects_unresolved_e2():
     assert candidate is not None
     assert not _promotion_ready(candidate)
     assert "E2_OPPORTUNITY_CONFIRMATION" in candidate["missing"]
+
+
+# Trigger the guarded surgery workflow after its creation; the workflow itself
+# patches production_v2/e6_pending_event_surgery.py and commits only after tests pass.
