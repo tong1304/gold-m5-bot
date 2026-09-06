@@ -13,9 +13,6 @@ def _identity(direction:Any,setup:Any,event_id:Any=None)->str:
     return f"{d}|{s}" if d in VALID_DIRECTIONS and s not in {"","UNKNOWN","NONE","NO_SETUP"} else ""
 def _stable_identity(previous:dict[str,Any],direction:str,setup:str,event_id:Any=None)->str:
     pid=_text(previous.get("opportunity_id")); pd=_text(previous.get("direction")); ps=_text(previous.get("setup")); state=_text(previous.get("state")); s=_text(setup)
-    # Keep the watch identity only while the current state is still a watch.
-    # Once a concrete setup appears, mint the setup identity so lifecycle and
-    # E6 describe the same opportunity object.
     if pid and pd==direction and direction in VALID_DIRECTIONS:
         if ps in WATCH_SETUPS and s in WATCH_SETUPS:return pid
         if ps not in WATCH_SETUPS and ps==s and state in ACTIVE_STATES:return pid
@@ -24,7 +21,9 @@ def _active_previous(p:dict[str,Any])->bool:return bool(_text(p.get("opportunity
 
 def advance_opportunity(previous:dict[str,Any]|None,current:dict[str,Any])->dict[str,Any]:
     """Canonical closed-candle opportunity lifecycle. It never grants execution authority."""
-    p,c=dict(previous or {}),dict(current or {}); d=_text(c.get("direction")); setup=_text(c.get("setup") or c.get("setup_family")); candle=_text(c.get("candle")); oid=_stable_identity(p,d,setup,c.get("event_id")); pid=_text(p.get("opportunity_id")); ps=_text(p.get("state")); pd=_text(p.get("direction")); previous_setup=_text(p.get("setup")); active=_active_previous(p); age=int(p.get("bars_waited",0) or 0)+(1 if active else 0); invalidated=bool(c.get("invalidated")); candidate=bool(c.get("candidate")); ready=bool(c.get("ready")); base={**p,"last_evaluated_candle":candle,"trade_authorized":False}
+    p,c=dict(previous or {}),dict(current or {}); d=_text(c.get("direction")); setup=_text(c.get("setup") or c.get("setup_family")); candle=_text(c.get("candle")); oid=_stable_identity(p,d,setup,c.get("event_id")); pid=_text(p.get("opportunity_id")); ps=_text(p.get("state")); pd=_text(p.get("direction")); previous_setup=_text(p.get("setup")); active=_active_previous(p)
+    previous_candle=_text(p.get("last_evaluated_candle")); same_candle=bool(active and candle and previous_candle and candle==previous_candle)
+    age=int(p.get("bars_waited",0) or 0)+(1 if active and not same_candle else 0); invalidated=bool(c.get("invalidated")); candidate=bool(c.get("candidate")); ready=bool(c.get("ready")); base={**p,"last_evaluated_candle":candle,"trade_authorized":False}
     if c.get("execution_state")=="POSITION_OPEN": return {**base,"state":"EXECUTED","continuity":"POSITION_OPEN","execution_state":"POSITION_OPEN"}
     if invalidated:
         if not active:return {"state":"IDLE","continuity":"NO_ACTIVE_PENDING_OPPORTUNITY","opportunity_id":None,"direction":"NEUTRAL","setup":"UNKNOWN","bars_waited":0,"origin_candle":candle,"last_evaluated_candle":candle,"trade_authorized":False,"invalidation_reason":None}
