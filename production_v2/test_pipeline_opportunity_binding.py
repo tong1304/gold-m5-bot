@@ -1,4 +1,4 @@
-from production_v2.e2_opportunity_surgery import enrich_directional_opportunity_book
+from production_v2.pipeline import bind_e2_opportunity_book
 
 
 def test_pipeline_e2_binding_preserves_both_directional_watches_without_execution():
@@ -10,15 +10,14 @@ def test_pipeline_e2_binding_preserves_both_directional_watches_without_executio
         "market_tree": {"directional_evidence": {"up": 5, "down": 5}},
     }
 
-    enriched = enrich_directional_opportunity_book(
+    enriched = bind_e2_opportunity_book(
         output,
         candle={"timestamp": "2026-09-06T13:10:00Z"},
-        buy_score=0.71,
-        sell_score=0.69,
+        previous_book=None,
     )
 
     assert enriched["direction"] == "UP"
-    assert enriched["counter_direction_preserved"] is True if "counter_direction_preserved" in enriched else True
+    assert enriched["counter_direction_preserved"] is True
     candidates = enriched["opportunity_book"]["candidates"]
     assert {candidate["direction"] for candidate in candidates} == {"BUY", "SELL"}
     assert enriched["opportunity_competition"] == "CONTESTED"
