@@ -1,6 +1,6 @@
 import pytest
 
-from production_v2.opportunity_book import build_candidate, compare_candidates, update_book
+from production_v2.opportunity_book import build_candidate, compare_candidates, update_book, build_directional_watches
 
 
 def test_book_keeps_competing_directional_candidates():
@@ -40,14 +40,16 @@ def test_terminal_candidates_are_not_leaders():
     assert comparison["competition"] == "UNCONTESTED"
 
 
-def test_directional_watches_preserve_both_sides_until_explicit_invalidation():
-    book = update_book({}, [
-        build_candidate("BUY", "DIRECTIONAL_WATCH", "C2", quality=0.72,
-                        state="DEVELOPING", wait_for=["BUY_CONFIRMATION"]),
-        build_candidate("SELL", "DIRECTIONAL_WATCH", "C2", quality=0.48,
-                        state="DEVELOPING", wait_for=["SELL_CONFIRMATION"]),
-    ])
-    assert len(book["candidates"]) == 2
-    assert {c["direction"] for c in book["ranked"]} == {"BUY", "SELL"}
-    assert book["leader"] == "BUY"
-    assert book["competition"] == "CONTESTED"
+def test_directional_watch_builder_preserves_both_sides_with_different_strength():
+    candidates = build_directional_watches(
+        "C2",
+        buy_score=0.72,
+        sell_score=0.48,
+        buy_wait_for=["BUY_CONFIRMATION"],
+        sell_wait_for=["SELL_CONFIRMATION"],
+    )
+    assert len(candidates) == 2
+    assert {c["direction"] for c in candidates} == {"BUY", "SELL"}
+    assert candidates[0]["direction"] == "BUY"
+    assert candidates[0]["state"] == "DEVELOPING"
+    assert candidates[1]["state"] == "DEVELOPING"
