@@ -4,7 +4,7 @@ from typing import Any
 
 from .contracts import EngineResult
 
-VERSION = "E6_PENDING_EVENT_SURGERY_V8"
+VERSION = "E6_PENDING_EVENT_SURGERY_V9"
 PENDING_AUCTION_STATES = {"PENDING", "DEVELOPING", "FORMING", "AWAITING_CONFIRMATION", "CONFIRMATION_PENDING"}
 WATCH_SETUPS = {"OPPORTUNITY_WATCH", "OPPORTUNITY_CANDIDATE", "OPPORTUNITY_THESIS"}
 DIRECTIONS = {"BUY", "SELL"}
@@ -99,7 +99,8 @@ def _structure_evidence(e3: dict[str, Any], direction: str) -> tuple[list[str], 
     external_state = _text(e3.get("external_state"))
     protected = _text(e3.get("protected_completeness"))
     protected_regime = _text(e3.get("protected_active_regime"))
-    if external_state == "MIXED" or protected_regime == "MIXED" or protected in {"NO_DIRECTIONAL_REGIME", "INCOMPLETE", "MIXED"}:
+    mixed_external = external_state == "MIXED" or protected_regime == "MIXED" or protected in {"NO_DIRECTIONAL_REGIME", "INCOMPLETE", "MIXED"}
+    if mixed_external:
         external = "NEUTRAL"
     else:
         external = _direction(e3.get("external_state"))
@@ -108,9 +109,9 @@ def _structure_evidence(e3: dict[str, Any], direction: str) -> tuple[list[str], 
     internal = _direction(e3.get("internal_state"))
     support: list[str] = []
     counter: list[str] = []
-    if external == direction and protected not in {"NO_DIRECTIONAL_REGIME", "INCOMPLETE", "MIXED"}:
+    if external == direction and not mixed_external:
         support.append("E3_EXTERNAL_STRUCTURE_SUPPORT")
-    elif external_state == "MIXED" or protected_regime == "MIXED" or protected in {"NO_DIRECTIONAL_REGIME", "INCOMPLETE", "MIXED"}:
+    elif mixed_external:
         support.append("E3_MIXED_CONTEXT")
     elif external in DIRECTIONS and external != direction:
         counter.append("E3_EXTERNAL_COUNTERFLOW")
@@ -248,6 +249,38 @@ def _reconcile_existing_watch_evidence(result: EngineResult, upstream: dict[str,
     return EngineResult(result.engine_id, result.name, result.gate_passed, result.score, out, result.reason_codes)
 
 
+def _canonicalize_watch_evidence(result: EngineResult, upstream: dict[str, EngineResult]) -> EngineResult:
+    """Final E6 evidence boundary: a watch may expose only evidence rebuilt from current E3/E4 facts plus non-E3/E4 claims preserved by E6."""
+    out = _out(result)
+    if not _is_existing_watch(out):
+        return result
+    direction = _first_direction(out.get("direction"), out.get("direction_thesis"), out.get("thesis_direction"))
+    if direction not in DIRECTIONS:
+        return result
+    e3 = _payload(upstream, "E3")
+    e4 = _payload(upstream, "E4")
+    forbidden = {
+        "E3_EXTERNAL_STRUCTURE_SUPPORT", "E3_INTERNAL_STRUCTURE_SUPPORT", "E3_INTERNAL_STRUCTURE_ALIGNMENT",
+        "E3_INTERNAL_MIXED_CONTEXT", "E3_MIXED_CONTEXT", "E3_EXTERNAL_COUNTERFLOW", "E3_INTERNAL_COUNTERFLOW",
+        "E4_DIRECTIONAL_AUCTION_EVIDENCE", "E4_DIRECTIONAL_EVENT_EVIDENCE", "E4_DIRECTIONAL_AUCTION_SUPPORT",
+        "E4_AUCTION_UNCONFIRMED", "E4_CONFIRMED_RESPONSE", "E4_DIRECTIONAL_EVENT_OBSERVATION",
+    }
+    support = [x for x in (out.get("supporting_evidence") or []) if _text(x) not in forbidden]
+    structure_support, _ = _structure_evidence(e3, direction)
+    support.extend(structure_support)
+    event = _text(e4.get("event") or e4.get("finding"))
+    event_direction = _event_direction(e4)
+    auction = _text(e4.get("auction_state") or e4.get("auction_phase") or e4.get("state"))
+    if event and event_direction == direction:
+        support.append("E4_DIRECTIONAL_EVENT_OBSERVATION")
+        if auction not in PENDING_AUCTION_STATES:
+            support.append("E4_CONFIRMED_RESPONSE")
+    out["supporting_evidence"] = list(dict.fromkeys(support))
+    out["evidence_attribution_authority"] = "E3_E4_FACTS_FINAL"
+    out["evidence_attribution_version"] = VERSION
+    return EngineResult(result.engine_id, result.name, result.gate_passed, result.score, out, result.reason_codes)
+
+
 def _normalize_space_consistency(result: EngineResult, upstream: dict[str, EngineResult]) -> EngineResult:
     out = _out(result)
     setup = _text(out.get("setup") or out.get("setup_family"))
@@ -279,7 +312,6 @@ def install(pipeline_module: Any) -> None:
     if getattr(pipeline_module, "_E6_PENDING_EVENT_SURGERY_INSTALLED", False):
         return
     original = pipeline_module.analyze_e6
-
     def patched_analyze_e6(market_data: dict[str, Any], upstream: dict[str, EngineResult]) -> EngineResult:
         result = original(market_data, upstream)
         if not isinstance(result, EngineResult):
@@ -288,13 +320,12 @@ def install(pipeline_module: Any) -> None:
         result = _reconcile_existing_watch_evidence(result, upstream)
         current = _out(result)
         if _is_existing_watch(current) or not _is_no_setup(current):
-            return _normalize_space_consistency(result, upstream)
+            return _canonicalize_watch_evidence(_normalize_space_consistency(result, upstream), upstream)
         candidate = _candidate(upstream)
         if candidate is None:
             return _normalize_space_consistency(result, upstream)
         print(f"[PRODUCTION V2] E6_PENDING_EVENT_SURGERY version={VERSION} action=WATCH direction={candidate['direction']} event_id={candidate['event_id']} source={candidate.get('direction_source')}", flush=True)
-        return _normalize_space_consistency(_watch(result, candidate), upstream)
-
+        return _canonicalize_watch_evidence(_normalize_space_consistency(_watch(result, candidate), upstream), upstream)
     pipeline_module.analyze_e6 = patched_analyze_e6
     pipeline_module._E6_RUNTIME_OVERRIDE = patched_analyze_e6
     pipeline_module._E6_PENDING_EVENT_SURGERY_INSTALLED = True
