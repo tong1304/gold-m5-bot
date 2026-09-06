@@ -10,7 +10,7 @@ CONFIRM_BARS = 2
 FOLLOW_WINDOW = 5
 INTERACTION_ATR = 0.05
 MIN_DISPLACEMENT_ATR = 0.20
-PENDING_STATES = {"PENDING", "DEVELOPING", "FORMING", "AWAITING_CONFIRMATION", "CONFIRMATION_PENDING"}
+PENDING_STATES = {"PENDING", "DEVELOPING", "FORMING", "AWAITING_CONFIRMATION", "CONFIRMATION_PENDING", "REJECTION_PENDING"}
 TERMINAL = {"CONFIRMED", "INVALIDATED", "EXPIRED"}
 
 
@@ -217,9 +217,3 @@ def install(pipeline_module: Any) -> None:
     install_enrichment_hook(pipeline_module)
 
     print(f"[PRODUCTION V2] E4_BINDING version={VERSION} module={pipeline_module.__name__} analyze={pipeline_module.analyze_e4.__module__}.{pipeline_module.analyze_e4.__name__}", flush=True)
-
-    try:
-        from .e5_e6_directional_evidence_surgery import install as install_e5_e6
-        install_e5_e6(pipeline_module)
-    except Exception as exc:
-        print(f"[PRODUCTION V2] E5_E6_DIRECTIONAL_EVIDENCE_SURGERY install_error={exc}", flush=True)
