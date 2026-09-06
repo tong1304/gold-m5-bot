@@ -95,50 +95,33 @@ def test_active_opportunity_is_idempotent_when_same_closed_candle_is_evaluated_t
     assert lifecycle["last_evaluated_candle"] == current["candle"]
 
 
-def test_same_direction_watch_keeps_identity_when_new_related_event_arrives():
-    previous = {
-        "state": "WATCHING",
-        "opportunity_id": "SELL|OPPORTUNITY_WATCH|2026-09-06T13:15:00Z|HIGH_FAILED_BREAK_RECLAIM|HIGH|79850|DOWN",
-        "direction": "SELL",
-        "setup": "OPPORTUNITY_WATCH",
-        "event_id": "2026-09-06T13:15:00Z|HIGH_FAILED_BREAK_RECLAIM|HIGH|79850|DOWN",
-        "origin_event_id": "2026-09-06T13:15:00Z|HIGH_FAILED_BREAK_RECLAIM|HIGH|79850|DOWN",
-        "bars_waited": 1,
-        "origin_candle": "2026-09-06T13:15:00Z",
-    }
-    current = {
-        "candidate": True,
-        "direction": "SELL",
-        "setup": "OPPORTUNITY_WATCH",
-        "ready": False,
-        "thesis_proven": False,
-        "invalidated": False,
-        "event_id": "2026-09-06T13:20:00Z|HIGH_FAILED_BREAK_RECLAIM|HIGH|79814.67|DOWN",
-        "candle": "2026-09-06T13:25:00Z",
-    }
+def test_new_causal_event_replaces_active_watch_and_resets_clock():
+    previous_event = "2026-09-06T13:15:00Z|HIGH_FAILED_BREAK_RECLAIM|HIGH|79850|DOWN"
+    previous = {"state":"WATCHING","opportunity_id":f"SELL|OPPORTUNITY_WATCH|{previous_event}","direction":"SELL","setup":"OPPORTUNITY_WATCH","event_id":previous_event,"origin_event_id":previous_event,"bars_waited":1,"origin_candle":"2026-09-06T13:15:00Z"}
+    new_event = "2026-09-06T13:20:00Z|HIGH_FAILED_BREAK_RECLAIM|HIGH|79814.67|DOWN"
+    current = {"candidate":True,"direction":"SELL","setup":"OPPORTUNITY_WATCH","ready":False,"thesis_proven":False,"invalidated":False,"event_id":new_event,"candle":"2026-09-06T13:25:00Z"}
+    lifecycle = advance_opportunity(previous, current)
+    assert lifecycle["state"] == "REPLACED"
+    assert lifecycle["opportunity_id"] != previous["opportunity_id"]
+    assert lifecycle["opportunity_id"].endswith(new_event)
+    assert lifecycle["previous_opportunity_id"] == previous["opportunity_id"]
+    assert lifecycle["bars_waited"] == 0
+    assert lifecycle["origin_event_id"] == new_event
+
+
+def test_active_watch_without_event_preserves_identity_across_setup_wording_change():
+    previous = {"state":"WATCHING","opportunity_id":"BUY|OPPORTUNITY_WATCH","direction":"BUY","setup":"OPPORTUNITY_WATCH","bars_waited":1,"origin_candle":"2026-09-03T00:15:00Z"}
+    current = {"candidate":True,"direction":"BUY","setup":"TREND_PULLBACK","ready":False,"thesis_proven":False,"invalidated":False,"candle":"2026-09-03T00:20:00Z"}
     lifecycle = advance_opportunity(previous, current)
     assert lifecycle["state"] == "WATCHING"
-    assert lifecycle["continuity"] == "CONTINUING_UPSTREAM_WATCH"
     assert lifecycle["opportunity_id"] == previous["opportunity_id"]
-    assert lifecycle["origin_event_id"] == previous["origin_event_id"]
-    assert lifecycle["event_id"] == current["event_id"]
     assert lifecycle["bars_waited"] == 2
-    assert lifecycle["trade_authorized"] is False
+    assert lifecycle["continuity"] == "PRESERVING_PENDING_OPPORTUNITY"
 
 
 def test_directional_lifecycles_preserve_counter_watch_when_leader_changes():
-    previous = {
-        "opportunities": {
-            "BUY": {"state":"WATCHING","opportunity_id":"BUY|DIRECTIONAL_WATCH","direction":"BUY","setup":"OPPORTUNITY_WATCH","bars_waited":2,"origin_candle":"2026-09-06T13:30:00Z"},
-            "SELL": {"state":"WATCHING","opportunity_id":"SELL|DIRECTIONAL_WATCH","direction":"SELL","setup":"OPPORTUNITY_WATCH","bars_waited":3,"origin_candle":"2026-09-06T13:25:00Z"},
-        },
-        "leader": "SELL",
-        "competition": "CONTESTED",
-    }
-    current = {
-        "BUY": {"candidate":True,"direction":"BUY","setup":"OPPORTUNITY_WATCH","ready":False,"thesis_proven":False,"invalidated":False,"candle":"2026-09-06T13:35:00Z"},
-        "SELL": {"candidate":True,"direction":"SELL","setup":"OPPORTUNITY_WATCH","ready":False,"thesis_proven":False,"invalidated":False,"candle":"2026-09-06T13:35:00Z"},
-    }
+    previous = {"opportunities":{"BUY":{"state":"WATCHING","opportunity_id":"BUY|DIRECTIONAL_WATCH","direction":"BUY","setup":"OPPORTUNITY_WATCH","bars_waited":2,"origin_candle":"2026-09-06T13:30:00Z"},"SELL":{"state":"WATCHING","opportunity_id":"SELL|DIRECTIONAL_WATCH","direction":"SELL","setup":"OPPORTUNITY_WATCH","bars_waited":3,"origin_candle":"2026-09-06T13:25:00Z"}},"leader":"SELL","competition":"CONTESTED"}
+    current = {"BUY":{"candidate":True,"direction":"BUY","setup":"OPPORTUNITY_WATCH","ready":False,"thesis_proven":False,"invalidated":False,"candle":"2026-09-06T13:35:00Z"},"SELL":{"candidate":True,"direction":"SELL","setup":"OPPORTUNITY_WATCH","ready":False,"thesis_proven":False,"invalidated":False,"candle":"2026-09-06T13:35:00Z"}}
     result = advance_opportunity_directions(previous, current, leader="BUY", competition="CONTESTED")
     assert result["leader"] == "BUY"
     assert result["competition"] == "CONTESTED"
