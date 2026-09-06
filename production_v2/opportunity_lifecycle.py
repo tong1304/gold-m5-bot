@@ -111,10 +111,10 @@ def advance_opportunity(previous: dict[str, Any] | None, current: dict[str, Any]
             state = "WAITING" if not ready else "READY"
             lifecycle_state = "EXECUTABLE" if ready else "TRIGGER_PENDING"
         phase = "OPPORTUNITY_WATCH" if pending_watch and not thesis_proven else _phase(state, setup, thesis_proven, ready, False)
-        if pending_watch and not thesis_proven:
-            continuity = "PRESERVING_PENDING_OPPORTUNITY"
-        elif pending_watch and setup in WATCH_SETUPS:
+        if setup in WATCH_SETUPS and pending_watch:
             continuity = "CONTINUING_UPSTREAM_WATCH"
+        elif pending_watch and not thesis_proven:
+            continuity = "PRESERVING_PENDING_OPPORTUNITY"
         else:
             continuity = "CONTINUING_EXISTING_OPPORTUNITY" if active else "NEW_OPPORTUNITY_WATCH"
         return {**base,"state":state,"lifecycle_state":lifecycle_state,"opportunity_phase":phase,"continuity":continuity,"opportunity_id":oid,"direction":d,"setup":setup,"bars_waited":age if active else 0,"origin_candle":p.get("origin_candle") if active else candle,"wait_for":c.get("wait_for") or ["NEXT_CLOSED_M5_CANDLE"],"invalidation_reason":None}
