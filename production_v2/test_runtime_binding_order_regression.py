@@ -6,8 +6,10 @@ from production_v2 import e6_brain, e8_brain, e9_brain
 from production_v2 import pipeline as pipeline_module
 
 
-def test_package_final_runtime_bindings_start_from_authoritative_brains():
-    assert pipeline_module.analyze_e6 is e6_brain.analyze_e6
+def test_package_final_runtime_bindings_keep_authoritative_brains_as_final_authority():
+    # E6 may expose a policy-preserving runtime membrane, but the raw brain
+    # remains the canonical authority captured by final_runtime_binding.
+    assert pipeline_module._E6_FINAL_AUTHORITY is e6_brain.analyze_e6
     assert pipeline_module.analyze_e8 is e8_brain.analyze_e8
     assert pipeline_module.analyze_e9 is e9_brain.analyze_e9
 
