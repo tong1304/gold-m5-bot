@@ -35,9 +35,6 @@ def _stable_identity(previous: dict[str, Any], direction: str, setup: str, event
     previous_event = previous.get("event_id") or previous.get("origin_event_id")
     if pid and pd == direction and direction in VALID_DIRECTIONS:
         current_setup = _text(setup)
-        # A new event from the same directional watch is supporting evidence,
-        # not a replacement. Keep the canonical opportunity identity and let
-        # explicit invalidation/expiry/true directional change terminate it.
         if ps in WATCH_SETUPS and current_setup in WATCH_SETUPS:
             return pid
         if _same_event(previous_event, event_id):
@@ -63,8 +60,6 @@ def _phase(state: str, setup: str, thesis_proven: bool, ready: bool, invalidated
         return "EXECUTABLE"
     if setup in WATCH_SETUPS:
         return "DEVELOPING" if thesis_proven else "FORMING"
-    if not thesis_proven:
-        return "TRIGGER_PENDING"
     return "TRIGGER_PENDING"
 
 
@@ -106,8 +101,6 @@ def advance_opportunity(previous: dict[str, Any] | None, current: dict[str, Any]
         return {**base,"state":"READY","lifecycle_state":phase,"opportunity_phase":phase,"continuity":"ADVANCING_EXISTING_OPPORTUNITY","opportunity_id":pid or oid,"direction":d or pd,"setup":setup or previous_setup,"bars_waited":age,"origin_candle":p.get("origin_candle") or candle,"invalidation_reason":None}
 
     if candidate and oid:
-        # A setup-specific candidate is WAITING until its thesis is proven.
-        # Only upstream watch families use WATCHING before thesis proof.
         if setup in WATCH_SETUPS:
             state = "WATCHING"
             lifecycle_state = "OPPORTUNITY_WATCH"
@@ -117,7 +110,7 @@ def advance_opportunity(previous: dict[str, Any] | None, current: dict[str, Any]
         else:
             state = "WAITING" if not ready else "READY"
             lifecycle_state = "EXECUTABLE" if ready else "TRIGGER_PENDING"
-        phase = _phase(state, setup, thesis_proven, ready, False)
+        phase = "OPPORTUNITY_WATCH" if pending_watch and not thesis_proven else _phase(state, setup, thesis_proven, ready, False)
         continuity = "CONTINUING_UPSTREAM_WATCH" if pending_watch else ("CONTINUING_EXISTING_OPPORTUNITY" if active else "NEW_OPPORTUNITY_WATCH")
         return {**base,"state":state,"lifecycle_state":lifecycle_state,"opportunity_phase":phase,"continuity":continuity,"opportunity_id":oid,"direction":d,"setup":setup,"bars_waited":age if active else 0,"origin_candle":p.get("origin_candle") if active else candle,"wait_for":c.get("wait_for") or ["NEXT_CLOSED_M5_CANDLE"],"invalidation_reason":None}
     if active:
