@@ -68,3 +68,13 @@ def test_pending_upstream_event_does_not_become_invalidated_just_because_e6_is_n
     assert lifecycle["lifecycle_state"] == "OPPORTUNITY_WATCH"
     assert lifecycle["wait_for"] == "CAUSAL_FOLLOW_THROUGH_OR_INVALIDATION"
     assert lifecycle["age_bars"] == 1
+
+
+def test_active_opportunity_is_idempotent_when_same_closed_candle_is_evaluated_twice():
+    previous = {"state":"WATCHING","opportunity_id":"SELL|OPPORTUNITY_WATCH","direction":"SELL","setup":"OPPORTUNITY_WATCH","bars_waited":1,"origin_candle":"2026-09-05T23:20:00Z","last_evaluated_candle":"2026-09-05T23:25:00Z"}
+    current = {"candidate":True,"direction":"SELL","setup":"OPPORTUNITY_WATCH","ready":False,"invalidated":False,"candle":"2026-09-05T23:25:00Z"}
+    lifecycle = advance_opportunity(previous, current)
+    assert lifecycle["state"] == "WATCHING"
+    assert lifecycle["continuity"] == "CONTINUING_UPSTREAM_WATCH"
+    assert lifecycle["bars_waited"] == 1
+    assert lifecycle["last_evaluated_candle"] == current["candle"]
