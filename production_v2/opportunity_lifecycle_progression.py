@@ -35,10 +35,10 @@ def _identity(previous: dict[str, Any], current: dict[str, Any]) -> str:
 
 
 def _with_event(result: dict[str, Any], current: dict[str, Any]) -> dict[str, Any]:
-    """Advance the event clock while keeping opportunity_id anchored to its origin."""
     event_id = current.get("event_id") or result.get("event_id")
     if event_id: result["event_id"] = event_id
     result["origin_event_id"] = result.get("origin_event_id") or current.get("origin_event_id") or event_id
+    result["last_progression_candle"] = current.get("candle") or result.get("last_progression_candle") or result.get("last_evaluated_candle")
     return result
 
 
