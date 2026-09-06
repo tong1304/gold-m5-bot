@@ -245,7 +245,7 @@ def _reconcile_existing_watch_evidence(result: EngineResult, upstream: dict[str,
     out["counter_evidence"] = list(dict.fromkeys(counter))
     out["evidence_attribution_authority"] = "E3_E4_FACTS"
     out["evidence_attribution_version"] = VERSION
-    return EngineResult(result.engine_id, result.name, result.gate_passed, out, result.reason_codes)
+    return EngineResult(result.engine_id, result.name, result.gate_passed, result.score, out, result.reason_codes)
 
 
 def _normalize_space_consistency(result: EngineResult, upstream: dict[str, EngineResult]) -> EngineResult:
@@ -272,7 +272,7 @@ def _normalize_space_consistency(result: EngineResult, upstream: dict[str, Engin
     elif "STRUCTURAL_SPACE_INSUFFICIENT" not in wait:
         wait.append("STRUCTURAL_SPACE_INSUFFICIENT")
     out.update({"available_space_atr": round(space, 4), "missing_proof": missing, "missing_evidence": missing, "reason_codes": reasons, "reasons": reasons, "wait_for": ",".join(wait), "space_consistency_authority": "E5", "space_consistency_version": VERSION})
-    return EngineResult(result.engine_id, result.name, result.gate_passed, out, tuple(reasons))
+    return EngineResult(result.engine_id, result.name, result.gate_passed, result.score, out, tuple(reasons))
 
 
 def install(pipeline_module: Any) -> None:
