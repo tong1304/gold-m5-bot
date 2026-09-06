@@ -41,15 +41,21 @@ def test_terminal_candidates_are_not_leaders():
 
 
 def test_directional_watch_builder_preserves_both_sides_with_different_strength():
-    candidates = build_directional_watches(
-        "C2",
-        buy_score=0.72,
-        sell_score=0.48,
-        buy_wait_for=["BUY_CONFIRMATION"],
-        sell_wait_for=["SELL_CONFIRMATION"],
-    )
+    candidates = build_directional_watches("C2", buy_score=0.72, sell_score=0.48, buy_wait_for=["BUY_CONFIRMATION"], sell_wait_for=["SELL_CONFIRMATION"])
     assert len(candidates) == 2
     assert {c["direction"] for c in candidates} == {"BUY", "SELL"}
     assert candidates[0]["direction"] == "BUY"
     assert candidates[0]["state"] == "DEVELOPING"
     assert candidates[1]["state"] == "DEVELOPING"
+
+
+def test_directional_watch_refresh_keeps_original_origin_across_new_candle():
+    first = update_book({}, build_directional_watches("C1", buy_score=0.60, sell_score=0.72))
+    second = update_book(first, build_directional_watches("C2", buy_score=0.55, sell_score=0.80))
+    assert len(second["candidates"]) == 2
+    sell = next(x for x in second["candidates"] if x["direction"] == "SELL")
+    buy = next(x for x in second["candidates"] if x["direction"] == "BUY")
+    assert sell["origin_candle"] == "C1"
+    assert buy["origin_candle"] == "C1"
+    assert sell["quality"] == 0.80
+    assert buy["quality"] == 0.55
