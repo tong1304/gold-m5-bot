@@ -30,12 +30,12 @@ _install_bootstrap_surgery(_pipeline_module)
 _install_mtf_runtime(_pipeline_module, _market_data_module)
 
 # E2 opportunity intelligence: preserve conditional BUY/SELL watches without
-authorizing entry, trigger, decision, or execution.
+# authorizing entry, trigger, decision, or execution.
 _install_e2_opportunity_book(_pipeline_module, _e2_module)
 
 # E6 single authority: no pending-counterflow, opportunity-guard, or runtime
-authority monkey-patch is installed. Those modules remain compatibility
-helpers only and cannot replace the authoritative E6 callable.
+# authority monkey-patch is installed. Those modules remain compatibility
+# helpers only and cannot replace the authoritative E6 callable.
 _pipeline_module.analyze_e6 = _e6_module.analyze_e6
 
 _install_e8_applicability_boundary(_e8_module)
