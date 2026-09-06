@@ -5,7 +5,7 @@ from typing import Any
 
 from .contracts import EngineResult
 
-VERSION = "E4_EVENT_LIFECYCLE_SURGERY_V5"
+VERSION = "E4_EVENT_LIFECYCLE_SURGERY_V6"
 CONFIRM_BARS = 2
 FOLLOW_WINDOW = 5
 INTERACTION_ATR = 0.05
@@ -185,8 +185,28 @@ def _repair_result(result: EngineResult, snapshot: dict[str, Any]) -> EngineResu
     return EngineResult(result.engine_id, result.name, result.gate_passed, result.score, after, tuple(after.get("reason_codes", result.reason_codes)))
 
 
+def install_enrichment_hook(pipeline_module: Any) -> None:
+    """Repair E4 after pipeline enrichment, where auction_state/event metadata are finalized."""
+    if getattr(pipeline_module, "_E4_EVENT_LIFECYCLE_ENRICHMENT_HOOK_INSTALLED", False):
+        return
+    original_enrich = getattr(pipeline_module, "_enrich", None)
+    if not callable(original_enrich):
+        raise AttributeError("pipeline module has no callable _enrich")
+
+    def patched_enrich(engine_id: str, result: EngineResult, snapshot: dict[str, Any]) -> EngineResult:
+        enriched = original_enrich(engine_id, result, snapshot)
+        if engine_id != "E4":
+            return enriched
+        return _repair_result(enriched, snapshot)
+
+    pipeline_module._enrich = patched_enrich
+    pipeline_module._E4_EVENT_LIFECYCLE_ENRICHMENT_HOOK_INSTALLED = True
+    print(f"[PRODUCTION V2] E4_ENRICHMENT_HOOK version={VERSION} module={pipeline_module.__name__} enrich={pipeline_module._enrich.__module__}.{pipeline_module._enrich.__name__}", flush=True)
+
+
 def install(pipeline_module: Any) -> None:
-    if getattr(pipeline_module, "_E4_EVENT_LIFECYCLE_SURGERY_INSTALLED", False): return
+    if getattr(pipeline_module, "_E4_EVENT_LIFECYCLE_SURGERY_INSTALLED", False):
+        return
     original_analyze = pipeline_module.analyze_e4
 
     def patched_analyze_e4(snapshot: dict[str, Any], upstream: dict[str, EngineResult]) -> EngineResult:
@@ -194,6 +214,7 @@ def install(pipeline_module: Any) -> None:
 
     pipeline_module.analyze_e4 = patched_analyze_e4
     pipeline_module._E4_EVENT_LIFECYCLE_SURGERY_INSTALLED = True
+    install_enrichment_hook(pipeline_module)
 
     print(f"[PRODUCTION V2] E4_BINDING version={VERSION} module={pipeline_module.__name__} analyze={pipeline_module.analyze_e4.__module__}.{pipeline_module.analyze_e4.__name__}", flush=True)
 
