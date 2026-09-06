@@ -10,13 +10,8 @@ changes E9 governance, or loosens an execution gate. It classifies what happened
 from typing import Any, Iterable
 
 VALID_DIRECTIONS = {"BUY", "SELL"}
-CLASSIFICATIONS = {
-    "GOOD_WAIT",
-    "MISSED_GOOD_TRADE",
-    "LATE_ENTRY",
-    "FALSE_OPPORTUNITY",
-    "UNRESOLVED",
-}
+CLASSIFICATIONS = {"GOOD_WAIT", "MISSED_GOOD_TRADE", "LATE_ENTRY", "FALSE_OPPORTUNITY", "UNRESOLVED"}
+TERMINAL_STATES = {"INVALIDATED", "EXPIRED", "REPLACED", "EXECUTED"}
 
 
 def _text(value: Any) -> str:
@@ -64,11 +59,7 @@ def classify_opportunity(
     favorable_r: float = 0.50,
     late_extension_r: float = 1.00,
 ) -> dict[str, Any]:
-    """Classify a completed/aged opportunity from subsequent closed candles.
-
-    Expected opportunity fields are intentionally permissive so this can consume
-    persisted lifecycle records without coupling the detector to E6/E8 schemas.
-    """
+    """Classify a completed/aged opportunity from subsequent closed candles."""
     op = dict(opportunity or {})
     candles = [dict(c) for c in (followup_candles or ()) if isinstance(c, dict)]
     direction = _text(op.get("direction"))
@@ -79,7 +70,6 @@ def classify_opportunity(
     stop = _num(op.get("stop") or op.get("stop_loss"))
     risk = abs(entry - stop) if entry is not None and stop is not None else None
     if entry is None or risk is None or risk <= 0:
-        # A watch can be useful even before E8 supplies executable geometry.
         if not op.get("thesis_proven") and _text(op.get("state")) in {"WATCHING", "DEVELOPING", "FORMING"}:
             return {"classification": "GOOD_WAIT", "reason": "THESIS_OR_ECONOMIC_GEOMETRY_NOT_PROVEN", "measured": True}
         return {"classification": "UNRESOLVED", "reason": "MISSING_EXECUTABLE_GEOMETRY", "measured": False}
@@ -92,46 +82,36 @@ def classify_opportunity(
     invalidated = _text(op.get("state")) in {"INVALIDATED", "EXPIRED", "REPLACED"} or bool(op.get("invalidated"))
 
     if executed or authorized:
-        return {
-            "classification": "GOOD_WAIT" if favorable < favorable_r else "MISSED_GOOD_TRADE" if not executed else "GOOD_WAIT",
-            "reason": "EXECUTED_OR_AUTHORIZED",
-            "measured": True,
-            "favorable_r": round(favorable, 4),
-            "adverse_r": round(adverse, 4),
-        }
-
+        return {"classification": "GOOD_WAIT", "reason": "EXECUTED_OR_AUTHORIZED", "measured": True, "favorable_r": round(favorable, 4), "adverse_r": round(adverse, 4)}
     if thesis_proven and favorable >= favorable_r:
         classification = "LATE_ENTRY" if favorable >= late_extension_r else "MISSED_GOOD_TRADE"
-        return {
-            "classification": classification,
-            "reason": "PROVEN_OPPORTUNITY_MOVED_WITHOUT_EXECUTION",
-            "measured": True,
-            "favorable_r": round(favorable, 4),
-            "adverse_r": round(adverse, 4),
-        }
-
+        return {"classification": classification, "reason": "PROVEN_OPPORTUNITY_MOVED_WITHOUT_EXECUTION", "measured": True, "favorable_r": round(favorable, 4), "adverse_r": round(adverse, 4)}
     if invalidated and adverse >= favorable_r:
-        return {
-            "classification": "FALSE_OPPORTUNITY",
-            "reason": "OPPORTUNITY_INVALIDATED_BEFORE_FAVORABLE_MOVE",
-            "measured": True,
-            "favorable_r": round(favorable, 4),
-            "adverse_r": round(adverse, 4),
-        }
-
+        return {"classification": "FALSE_OPPORTUNITY", "reason": "OPPORTUNITY_INVALIDATED_BEFORE_FAVORABLE_MOVE", "measured": True, "favorable_r": round(favorable, 4), "adverse_r": round(adverse, 4)}
     if not thesis_proven:
-        return {
-            "classification": "GOOD_WAIT",
-            "reason": "CONDITIONAL_OPPORTUNITY_NEVER_PROVED",
-            "measured": True,
-            "favorable_r": round(favorable, 4),
-            "adverse_r": round(adverse, 4),
-        }
+        return {"classification": "GOOD_WAIT", "reason": "CONDITIONAL_OPPORTUNITY_NEVER_PROVED", "measured": True, "favorable_r": round(favorable, 4), "adverse_r": round(adverse, 4)}
+    return {"classification": "UNRESOLVED", "reason": "INSUFFICIENT_FOLLOW_THROUGH_EVIDENCE", "measured": False, "favorable_r": round(favorable, 4), "adverse_r": round(adverse, 4)}
 
+
+def measure_terminal_opportunity(previous: dict[str, Any], current: dict[str, Any], bars: Iterable[dict[str, Any]]) -> dict[str, Any]:
+    """Measure an opportunity exactly when lifecycle reaches a terminal state.
+
+    The measurement uses only bars already closed by the current pipeline candle.
+    It deliberately evaluates the *previous* opportunity, so a counter-direction
+    replacement cannot accidentally borrow the new direction's geometry.
+    """
+    previous = dict(previous or {})
+    current = dict(current or {})
+    terminal_state = _text(current.get("state") or current.get("lifecycle_state"))
+    if terminal_state not in TERMINAL_STATES:
+        return {"measured": False, "reason": "NOT_TERMINAL"}
+    result = classify_opportunity(previous, bars)
     return {
-        "classification": "UNRESOLVED",
-        "reason": "INSUFFICIENT_FOLLOW_THROUGH_EVIDENCE",
-        "measured": False,
-        "favorable_r": round(favorable, 4),
-        "adverse_r": round(adverse, 4),
+        **result,
+        "measured": bool(result.get("measured")),
+        "opportunity_id": previous.get("opportunity_id"),
+        "direction": _text(previous.get("direction")),
+        "terminal_state": terminal_state,
+        "terminal_candle": current.get("last_evaluated_candle") or current.get("candle"),
+        "trade_authorized": False,
     }
