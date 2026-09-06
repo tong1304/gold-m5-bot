@@ -13,6 +13,7 @@ from .e4_event_lifecycle_surgery import install as install_e4_event_lifecycle_su
 from .e6_pending_event_surgery import install as install_e6_pending_event_surgery
 from .runtime_compatibility import install as install_runtime_compatibility, fingerprint as runtime_fingerprint
 from .execution_geometry_surgery import install as install_execution_geometry
+from .opportunity_lifecycle_progression_surgery import install as install_opportunity_lifecycle_progression
 from .brain_handoff import attach_result_chain
 from .professional_opportunity_surgery import enrich_decision
 from .opportunity_memory import (
@@ -25,15 +26,12 @@ from .statistics import build_statistics, store
 
 logger = logging.getLogger(__name__)
 app = Flask(__name__)
-# Install compatibility before any live worker is constructed. This makes a
-# stale 4-argument lifecycle helper harmless while retaining causal_anchor on
-# current builds, and prevents a healthy HTTP process from hiding a broken
-# opportunity pipeline.
 install_runtime_compatibility(pipeline_module)
 install_bootstrap_surgery(pipeline_module)
 install_e4_event_lifecycle_surgery(pipeline_module)
 install_e6_pending_event_surgery(pipeline_module)
 install_execution_geometry(pipeline_module)
+install_opportunity_lifecycle_progression(pipeline_module)
 pipeline = ProductionPipeline()
 app.config["PRODUCTION_V2_LIVE_REQUIRED"] = True
 _runtime_started = False
@@ -87,6 +85,10 @@ def _connect_brains(result):
         result.engines,
         risk,
         result.reason_codes,
+        result.state,
+        result.blocked_by,
+        result.wait_bars,
+        result.execution_state,
     )
 
 
@@ -109,7 +111,8 @@ def start_production_runtime():
         f"[PRODUCTION V2] Live M5 runtime started; architecture={ARCHITECTURE}; "
         f"opportunity_memory_backend={opportunity_memory_backend()}; "
         f"records={len(_last_opportunity_lifecycle)}; "
-        f"runtime={runtime_fingerprint(pipeline_module)}",
+        f"runtime={runtime_fingerprint(pipeline_module)}; "
+        f"lifecycle_progression=True",
         flush=True,
     )
 
@@ -134,6 +137,7 @@ def index():
             "opportunity_memory_records": len(_last_opportunity_lifecycle),
             "opportunity_memory_error": opportunity_memory_last_error(),
             "runtime_fingerprint": runtime_fingerprint(pipeline_module),
+            "opportunity_lifecycle_progression": True,
         }
     )
 
@@ -155,6 +159,7 @@ def health():
             "opportunity_memory_records": len(_last_opportunity_lifecycle),
             "opportunity_memory_error": opportunity_memory_last_error(),
             "runtime_fingerprint": runtime_fingerprint(pipeline_module),
+            "opportunity_lifecycle_progression": True,
         }
     ), (200 if _runtime_started else 503)
 
