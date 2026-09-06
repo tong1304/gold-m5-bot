@@ -85,6 +85,18 @@ def save(symbol:str,state:dict[str,Any])->None:
             logger.info("[PRODUCTION V2] OPPORTUNITY_MEMORY_PERSIST symbol=%s backend=%s leader=%s active_directions=%s state=%s directions=%s",symbol,backend(),state.get("leader"),state.get("active_directions"),state.get("state"),_memory_summary(state))
         except Exception as exc:_record_error(exc,"SAVE"); raise
 
+def append_terminal_outcome(state:dict[str,Any], outcome:dict[str,Any])->tuple[bool,dict[str,Any]]:
+    """Append one retrospective terminal measurement exactly once."""
+    updated=dict(state or {})
+    history=list(updated.get("missed_opportunity_outcomes") or [])
+    key=(str(outcome.get("opportunity_id") or ""), str(outcome.get("terminal_state") or ""), str(outcome.get("terminal_candle") or ""))
+    for existing in history:
+        if isinstance(existing,dict) and (str(existing.get("opportunity_id") or ""),str(existing.get("terminal_state") or ""),str(existing.get("terminal_candle") or ""))==key:
+            return False, updated
+    history.append(dict(outcome)); updated["missed_opportunity_outcomes"]=history
+    updated["missed_opportunity_stats"]={"total":len(history),"missed_good_trade":sum(1 for x in history if isinstance(x,dict) and x.get("classification")=="MISSED_GOOD_TRADE"),"late_entry":sum(1 for x in history if isinstance(x,dict) and x.get("classification")=="LATE_ENTRY"),"false_opportunity":sum(1 for x in history if isinstance(x,dict) and x.get("classification")=="FALSE_OPPORTUNITY"),"good_wait":sum(1 for x in history if isinstance(x,dict) and x.get("classification")=="GOOD_WAIT"),"unresolved":sum(1 for x in history if isinstance(x,dict) and x.get("classification")=="UNRESOLVED")}
+    return True, updated
+
 def remove(symbol:str)->None:
     symbol=str(symbol or "UNKNOWN").upper()
     with _LOCK:
