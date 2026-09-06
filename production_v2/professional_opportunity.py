@@ -32,6 +32,10 @@ def _text(value: Any) -> str:
 
 
 def _direction(output: dict[str, Any]) -> str:
+    book = output.get("opportunity_book")
+    if isinstance(book, dict):
+        leader = _text(book.get("leader") or output.get("opportunity_leader"))
+        if leader in DIRECTIONS: return leader
     values = (
         output.get("direction"), output.get("opportunity_direction"), output.get("structure_direction"),
         output.get("market_direction"), output.get("pressure"), output.get("bos_direction"),
@@ -155,6 +159,26 @@ def _price_geometry(output: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _directional_radar(output: dict[str, Any]) -> dict[str, Any]:
+    book = output.get("opportunity_book")
+    if not isinstance(book, dict): return {}
+    radar = {}
+    for candidate in book.get("candidates", []):
+        if not isinstance(candidate, dict): continue
+        direction = _text(candidate.get("direction"))
+        if direction not in DIRECTIONS: continue
+        quality = candidate.get("quality", candidate.get("score", 0.0))
+        try: quality = float(quality); quality = quality * 100.0 if quality <= 1.0 else quality
+        except (TypeError, ValueError): quality = 0.0
+        radar[direction] = {
+            "state": candidate.get("state", "DEVELOPING"),
+            "quality": round(max(0.0, min(100.0, quality)), 2),
+            "wait_for": candidate.get("wait_for") or ["NEXT_CLOSED_M5_CANDLE"],
+            "conditional": True,
+        }
+    return radar
+
+
 def _conditional_thesis(engine: str, direction: str, output: dict[str, Any], stage: str) -> dict[str, Any]:
     paths = _conditional_paths(engine, direction, output, stage)
     invalidators = _failure_conditions(engine, direction, output, _codes(output))
@@ -196,7 +220,7 @@ def _strength_trend(previous: dict[str, Any] | None, current: float) -> str:
 def enrich_engine(engine: str, output: dict[str, Any], upstream: dict[str, dict[str, Any]] | None = None) -> dict[str, Any]:
     out = dict(output or {}); direction = _direction(out); codes = _codes(out); stage = _stage(engine, direction, out, codes); confidence = _confidence(out); space = _space(out, direction); space_quality = _space_quality(space); hard_block = _hard_blocked(codes, out)
     counter = [c for c in codes if any(x in c for x in ("CONFLICT", "MISSING", "PENDING", "BLOCK", "RISK", "CONSTRAINED", "UNRESOLVED"))]
-    state = "NO_OPPORTUNITY" if direction == "NEUTRAL" else "OPPORTUNITY_INVALIDATED" if stage == "INVALIDATED" else "OPPORTUNITY_EXECUTABLE" if stage == "EXECUTABLE" else "OPPORTUNITY_WAITING"
+    state = "NO_OPPORTUNITY" if direction == "NEUTRAL" and not _directional_radar(out) else "OPPORTUNITY_INVALIDATED" if stage == "INVALIDATED" else "OPPORTUNITY_EXECUTABLE" if stage == "EXECUTABLE" else "OPPORTUNITY_WAITING"
     score = confidence * 100.0
     if space_quality is not None: score = 0.65 * score + 0.35 * space_quality
     score = round(max(0.0, min(100.0, score - min(30.0, len(counter) * 5.0))), 2)
@@ -205,10 +229,14 @@ def enrich_engine(engine: str, output: dict[str, Any], upstream: dict[str, dict[
     previous = (upstream or {}).get("previous_opportunity") if isinstance(upstream, dict) else None
     thesis = _conditional_thesis(engine, direction, out, stage)
     execution_quality = _execution_quality(engine, stage, hard_block, out)
+    radar = _directional_radar(out)
+    if radar:
+        strongest = max(radar.values(), key=lambda x: x.get("quality", 0.0))
+        strength = max(strength, float(strongest.get("quality", 0.0)))
     op = {
         "engine": engine, "scope": ENGINE_SCOPES.get(engine, engine), "authority": engine,
         "direction": direction, "state": state, "stage": stage, "score": score,
-        "opportunity_strength": strength, "strength_trend": _strength_trend(previous, strength),
+        "opportunity_strength": round(strength, 2), "strength_trend": _strength_trend(previous, strength),
         "evidence_quality": round(confidence * 100.0, 2), "space_atr": space, "space_quality": space_quality,
         "observed_evidence": codes, "counter_evidence": counter,
         "conditional_paths": _conditional_paths(engine, direction, out, stage),
@@ -217,6 +245,8 @@ def enrich_engine(engine: str, output: dict[str, Any], upstream: dict[str, dict[
         "wait_for": [NEXT_EVENT.get(engine, "NEXT_CLOSED_CANDLE_UPDATE")],
         "failure_conditions": _failure_conditions(engine, direction, out, codes),
         "price_geometry": _price_geometry(out) if engine == "E5" else None,
+        "directional_opportunities": radar,
+        "competition": out.get("opportunity_competition") or (out.get("opportunity_book") or {}).get("competition") if isinstance(out.get("opportunity_book"), dict) else None,
         "trade_authorized": authorized, "execution_authority": "E9_ONLY",
         "execution_quality": execution_quality,
         "authority_boundary": f"{engine}_OWN_SCOPE_ONLY", "execution_separation": True,
@@ -225,7 +255,7 @@ def enrich_engine(engine: str, output: dict[str, Any], upstream: dict[str, dict[
     }
     out["professional_opportunity"] = op
     out["opportunity_state"] = state; out["opportunity_stage"] = stage; out["opportunity_direction"] = direction; out["opportunity_next_event"] = NEXT_EVENT.get(engine, "NEXT_CLOSED_CANDLE_UPDATE"); out["opportunity_score"] = score; out["opportunity_authority"] = engine
-    out["opportunity_strength"] = strength
+    out["opportunity_strength"] = round(strength, 2)
     out["opportunity_execution_quality"] = execution_quality
     return out
 
