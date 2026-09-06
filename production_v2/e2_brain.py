@@ -5,7 +5,7 @@ from typing import Any
 
 QUESTION = "What opportunity is the market offering right now?"
 MIN_BARS = 80
-ARCHITECTURE = "E2_PROFESSIONAL_OPPORTUNITY_CORE_V8"
+ARCHITECTURE = "E2_PROFESSIONAL_OPPORTUNITY_CORE_V9"
 MATURITY_ORDER = {"UNPROVEN": 0, "EMERGING": 1, "DEVELOPING": 2, "CONFIRMED": 3, "ACTIONABLE": 4}
 
 
@@ -64,35 +64,44 @@ def _pivots(bars: list[dict[str, Any]], wing: int = 2) -> tuple[list[float], lis
 def _unavailable() -> dict[str, Any]:
     return {
         "role":"OPPORTUNITY_REGIME_ANALYST","question":QUESTION,"finding":"INSUFFICIENT_DATA","state":"UNAVAILABLE",
-        "architecture":ARCHITECTURE,"regime":"UNRESOLVED","direction":"NEUTRAL","phase":"UNRESOLVED",
+        "architecture":ARCHITECTURE,"regime":"UNRESOLVED","direction":"NEUTRAL","opportunity_direction":"NEUTRAL","phase":"UNRESOLVED",
         "opportunity":"NONE","opportunity_state":"WAIT","opportunity_maturity":"UNPROVEN","independence":"E2_FIRST_E1_CROSS_CHECK",
         "auction_state":"UNKNOWN","auction_intent":"UNKNOWN","auction_intent_detail":{},"location_context":"UNKNOWN",
-        "opposing_space_atr":0.0,"regime_confidence":0.0,"confidence":0.0,"opportunity_score":0.0,"candidate_hypotheses":[],
+        "opposing_space_atr":0.0,"regime_confidence":0.0,"confidence":0.0,"opportunity_score":0.0,"candidate_hypotheses":[],"candidate_setups":[],
         "counter_evidence":[],"counter_evidence_severity":"HIGH","missing_evidence":["sufficient closed-candle market evidence"],
         "confirmation_required":["sufficient closed-candle market evidence"],"invalidation_evidence":[],"why_not_trade":["INSUFFICIENT_MARKET_DATA"],
         "conditional_map":[],"market_tree":{},"opportunity_hierarchy":{},"hard_veto":["INSUFFICIENT_MARKET_DATA"],
         "requires_downstream_confirmation":True,"opportunity_decision":"WAIT","entry":None,"trigger":None,"decision":None,
         "professional_reasoning":{"question":QUESTION,"thesis":"No thesis: insufficient data.","independent_thesis":True,"e1_used_as":"CROSS_CHECK_ONLY","entry_authorized":False},
-        "reasoning_mode":"SINGLE_PROFESSIONAL_CORE","sub_engines_active":False,"gate":None,"timing_state":"WAIT",
-        "reasons":["INSUFFICIENT_MARKET_DATA"],
-    }
+        "reasoning_mode":"SINGLE_PROFESSIONAL_CORE","sub_engines_active":False,"gate":None,"timing_state":"WAIT","reasons":["INSUFFICIENT_MARKET_DATA"]}
 
 
-def _classify_opportunity(*, up: int, down: int, auction: str, balanced: bool, acceptance: bool, rejection: bool,
+def _classify_opportunity(*, up: int, down: int, auction: str, balanced: bool, acceptance_up: bool,
+                          acceptance_down: bool, rejection_high: bool, rejection_low: bool,
                           space_atr: float, location_ok: bool) -> dict[str, Any]:
-    """Classify opportunity maturity without turning auction evidence into a trade thesis."""
-    if up >= 5 and up - down >= 2:
+    """E2 recognizes an opportunity path; E6 owns the surviving causal setup thesis."""
+    # A professional directional edge requires both absolute evidence and separation.
+    # This prevents marginal 5-vs-3 scoring from becoming a directional opportunity.
+    if up >= 5 and up - down >= 3:
         direction = "BUY"
-    elif down >= 5 and down - up >= 2:
+    elif down >= 5 and down - up >= 3:
         direction = "SELL"
     else:
         direction = "NEUTRAL"
 
-    # E2 may confirm the auction event, but it must not call the opportunity
-    # itself CONFIRMED. Surviving causal thesis ownership belongs to E6.
-    if acceptance and direction != "NEUTRAL":
+    # Auction evidence must agree with the directional thesis. Opposite-side
+    # acceptance/rejection is counter-evidence, not confirmation.
+    auction_conflict = ((direction == "BUY" and acceptance_down) or
+                        (direction == "SELL" and acceptance_up))
+    aligned_acceptance = (direction == "BUY" and acceptance_up) or (direction == "SELL" and acceptance_down)
+    aligned_rejection = (direction == "BUY" and rejection_low) or (direction == "SELL" and rejection_high)
+
+    if direction != "NEUTRAL" and auction_conflict:
+        direction = "NEUTRAL"
+        maturity, finding = "UNPROVEN", "DIRECTIONAL_AUCTION_CONFLICT"
+    elif aligned_acceptance:
         maturity, finding = "DEVELOPING", "AUCTION_ACCEPTANCE_CONFIRMED_OPPORTUNITY_DEVELOPING"
-    elif rejection and direction != "NEUTRAL":
+    elif aligned_rejection:
         maturity, finding = "DEVELOPING", "AUCTION_REJECTION_CONFIRMED_OPPORTUNITY_DEVELOPING"
     elif direction != "NEUTRAL":
         maturity, finding = "DEVELOPING", "CONDITIONAL_DIRECTIONAL_OPPORTUNITY"
@@ -102,7 +111,7 @@ def _classify_opportunity(*, up: int, down: int, auction: str, balanced: bool, a
         maturity, finding = "UNPROVEN", "UNRESOLVED"
 
     missing, blockers = [], []
-    if direction != "NEUTRAL" and not acceptance and not rejection:
+    if direction != "NEUTRAL" and not aligned_acceptance and not aligned_rejection:
         missing.append("closed-candle acceptance/follow-through proves the auction")
         blockers.append("AUCTION_CONFIRMATION_PENDING")
     if direction != "NEUTRAL" and not location_ok:
@@ -111,11 +120,14 @@ def _classify_opportunity(*, up: int, down: int, auction: str, balanced: bool, a
     if direction != "NEUTRAL" and space_atr < 1.0:
         missing.append("adequate opposing space")
         blockers.append("INSUFFICIENT_OPPOSING_SPACE")
+    if auction_conflict:
+        blockers.append("OPPOSING_AUCTION_EVIDENCE")
     if auction in {"UNCOMMITTED_AUCTION", "BUYER_INITIATIVE_PENDING_ACCEPTANCE", "SELLER_INITIATIVE_PENDING_ACCEPTANCE"}:
         blockers.append("AUCTION_ACCEPTANCE_NOT_PROVEN")
     if direction == "NEUTRAL":
         blockers.append("DIRECTIONAL_EDGE_NOT_ESTABLISHED")
-    return {"direction":direction,"finding":finding,"opportunity_maturity":maturity,"missing_evidence":_dedupe(missing),"blockers":_dedupe(blockers)}
+    return {"direction":direction,"finding":finding,"opportunity_maturity":maturity,
+            "missing_evidence":_dedupe(missing),"blockers":_dedupe(blockers)}
 
 
 def _candidate(name: str, direction: str, structure: bool, acceptance: bool, rejection: bool, pullback: bool,
@@ -128,26 +140,22 @@ def _candidate(name: str, direction: str, structure: bool, acceptance: bool, rej
     if name == "LIQUIDITY_REVERSAL" and not rejection: vetoes.append("FAILED_AUCTION_NOT_PROVEN")
     if name == "TREND_PULLBACK_CONTINUATION" and not pullback: vetoes.append("PULLBACK_NOT_ESTABLISHED")
     if name == "TREND_PULLBACK_CONTINUATION" and not (acceptance or displacement): vetoes.append("CONTINUATION_EVIDENCE_NOT_ESTABLISHED")
-    quality = 0.22*structure + 0.22*acceptance + 0.18*rejection + 0.16*pullback + 0.10*displacement + 0.06*location_ok + 0.06*min(space_atr/3,1)
+    quality=0.22*structure+0.22*acceptance+0.18*rejection+0.16*pullback+0.10*displacement+0.06*location_ok+0.06*min(space_atr/3,1)
     return {"name":name,"direction":direction,"evidence_score":round(quality,3),"quality":round(quality,3),"space_atr":round(space_atr,3),
             "structure":structure,"acceptance":acceptance,"rejection":rejection,"pullback":pullback,"displacement":displacement,
             "location_ok":location_ok,"auction_intent":auction,"eligible":not vetoes,"vetoes":vetoes,"efficiency":round(efficiency,3)}
 
 
 def _opportunity_blockers(*, direction: str, maturity: str, eligible: bool, base_blockers: list[str]) -> list[str]:
-    """Separate a visible developing opportunity from absence of an opportunity path."""
-    blockers = list(base_blockers)
-    if direction in {"BUY", "SELL"} and not eligible:
-        if maturity in {"DEVELOPING", "EMERGING", "CONFIRMED"}:
-            blockers.append("NO_TRADEABLE_OPPORTUNITY_PATH_YET")
-        else:
-            blockers.append("NO_ELIGIBLE_OPPORTUNITY_PATH")
+    blockers=list(base_blockers)
+    if direction in {"BUY","SELL"} and not eligible:
+        blockers.append("NO_TRADEABLE_OPPORTUNITY_PATH_YET" if maturity in {"DEVELOPING","EMERGING","CONFIRMED"} else "NO_ELIGIBLE_OPPORTUNITY_PATH")
     return _dedupe(blockers)
 
 
 def analyze_e2(snapshot: dict[str, Any]) -> dict[str, Any]:
-    bars = _bars(snapshot)
-    if len(bars) < MIN_BARS: return _unavailable()
+    bars=_bars(snapshot)
+    if len(bars)<MIN_BARS: return _unavailable()
     closes=[_num(b["close"]) for b in bars]; highs=[_num(b["high"]) for b in bars]; lows=[_num(b["low"]) for b in bars]; opens=[_num(b["open"]) for b in bars]
     atr=max(_atr(bars),1e-12); last=closes[-1]
     e20,e50=_ema(closes,20),_ema(closes,50); prev20=_ema(closes[:-5],20); prev50=_ema(closes[:-5],50)
@@ -171,7 +179,7 @@ def analyze_e2(snapshot: dict[str, Any]) -> dict[str, Any]:
     elif abs(s20p)<.65 and efficiency<.30 and width/atr<8.5: auction="TWO_SIDED_BALANCE"; phase="BALANCE"; strength="LOW"; reason="price is rotational and directionally inefficient"
     else: auction="UNCOMMITTED_AUCTION"; phase="UNRESOLVED"; strength="LOW"; reason="neither side has sufficient closed-candle auction proof"
     balanced=auction=="TWO_SIDED_BALANCE"; long_loc=.10<=pos<=.75; short_loc=.25<=pos<=.90; long_space=max((hi40-last)/atr,0); short_space=max((last-lo40)/atr,0)
-    base=_classify_opportunity(up=up,down=down,auction=auction,balanced=balanced,acceptance=acceptance_up or acceptance_down,rejection=rejection_high or rejection_low,space_atr=long_space if up>=down else short_space,location_ok=long_loc if up>=down else short_loc)
+    base=_classify_opportunity(up=up,down=down,auction=auction,balanced=balanced,acceptance_up=acceptance_up,acceptance_down=acceptance_down,rejection_high=rejection_high,rejection_low=rejection_low,space_atr=long_space if up>=down else short_space,location_ok=long_loc if up>=down else short_loc)
     direction=base["direction"]; candidates=[]
     if bullish and rejection_low: candidates.append(_candidate("LIQUIDITY_REVERSAL","BUY",bullish,False,True,False,displacement_up,long_loc,long_space,auction,efficiency))
     if bearish and rejection_high: candidates.append(_candidate("LIQUIDITY_REVERSAL","SELL",bearish,False,True,False,displacement_down,short_loc,short_space,auction,efficiency))
@@ -187,25 +195,20 @@ def analyze_e2(snapshot: dict[str, Any]) -> dict[str, Any]:
     if direction!="NEUTRAL" and (long_space if direction=="BUY" else short_space)<1.0: blockers.append("OPPOSING_SPACE_CONSTRAINED")
     blockers=_dedupe(blockers); missing=list(base["missing_evidence"])
     if direction in {"BUY","SELL"} and "adequate opposing space" not in missing and (long_space if direction=="BUY" else short_space)<1.0: missing.append("adequate opposing space")
-    confidence=100*(0.45*(max(up,down)/7)+0.25*(abs(up-down)/7)+0.15*min(efficiency/.5,1)+0.15*min((long_space if direction=="BUY" else short_space)/2,1)) if direction!="NEUTRAL" else 100*(0.5*min(abs(up-down)/3,1)+0.5*(1 if balanced else 0))
-    maturity=base["opportunity_maturity"]
-    decision="WAIT" if maturity!="ACTIONABLE" else "CONDITIONAL"
-    public_direction = "UP" if direction == "BUY" else "DOWN" if direction == "SELL" else "NEUTRAL"
-    regime = "TREND" if direction != "NEUTRAL" and not balanced else "RANGE" if balanced else "TRANSITION"
-    reasoning = {"question":QUESTION,"conclusion":f"{public_direction} opportunity is {maturity.lower()} based on closed-candle evidence.","why_now":reason,"expected_path":"AUCTION_ACCEPTANCE_AND_FOLLOW_THROUGH" if direction != "NEUTRAL" else "WAIT_FOR_DIRECTIONAL_EVIDENCE","required_evidence":_dedupe(missing),"invalidation_conditions":["closed-candle invalidation of the directional auction or structural thesis"],"timing":"READY_FOR_CONFIRMATION" if maturity=="CONFIRMED" else "DEVELOPING" if direction != "NEUTRAL" else "WAIT","opportunity_quality":round(confidence,2),"counter_evidence_count":len(blockers),"independent_thesis":True,"e1_used_as":"CROSS_CHECK_ONLY","entry_authorized":False}
-    return {
-        "role":"OPPORTUNITY_REGIME_ANALYST","question":QUESTION,"finding":base["finding"],"state":"ANALYSIS_COMPLETE","architecture":ARCHITECTURE,
-        "regime":regime,
-        "direction":public_direction,"opportunity_direction":public_direction,
-        "reasoning_mode":"SINGLE_PROFESSIONAL_CORE","sub_engines_active":False,"gate":None,"timing_state":reasoning["timing"],"independence":"E2_FIRST_E1_CROSS_CHECK","phase":phase,"auction_state":"CONFIRMED" if phase=="ACCEPTANCE" else "PENDING" if phase in {"INITIATIVE","UNRESOLVED"} else "REJECTED",
-        "auction_intent":auction,"auction_intent_detail":{"strength":strength,"reason":reason,"closed_candle_only":True,"follow_through_up":follow_up,"follow_through_down":follow_down},
+    edge_margin=abs(up-down); confidence=100*(0.40*(max(up,down)/7)+0.25*min(edge_margin/5,1)+0.15*min(efficiency/.5,1)+0.20*min((long_space if direction=="BUY" else short_space)/2,1)) if direction!="NEUTRAL" else 100*(0.5*min(edge_margin/4,1)+0.5*(1 if balanced else 0))
+    maturity=base["opportunity_maturity"]; decision="WAIT"
+    public_direction="UP" if direction=="BUY" else "DOWN" if direction=="SELL" else "NEUTRAL"; regime="TREND" if direction!="NEUTRAL" and not balanced else "RANGE" if balanced else "TRANSITION"
+    reasoning={"question":QUESTION,"conclusion":f"{public_direction} opportunity is {maturity.lower()} based on closed-candle evidence.","why_now":reason,"expected_path":"AUCTION_ACCEPTANCE_AND_FOLLOW_THROUGH" if direction!="NEUTRAL" else "WAIT_FOR_DIRECTIONAL_EVIDENCE","required_evidence":_dedupe(missing),"invalidation_conditions":["closed-candle invalidation of the directional auction or structural thesis"],"timing":"DEVELOPING" if direction!="NEUTRAL" else "WAIT","opportunity_quality":round(confidence,2),"counter_evidence_count":len(blockers),"independent_thesis":True,"e1_used_as":"CROSS_CHECK_ONLY","entry_authorized":False}
+    return {"role":"OPPORTUNITY_REGIME_ANALYST","question":QUESTION,"finding":base["finding"],"state":"ANALYSIS_COMPLETE","architecture":ARCHITECTURE,"regime":regime,
+        "direction":public_direction,"opportunity_direction":public_direction,"reasoning_mode":"SINGLE_PROFESSIONAL_CORE","sub_engines_active":False,"gate":None,"timing_state":reasoning["timing"],"independence":"E2_FIRST_E1_CROSS_CHECK","phase":phase,
+        "auction_state":"CONFIRMED" if phase=="ACCEPTANCE" else "PENDING" if phase in {"INITIATIVE","UNRESOLVED"} else "REJECTED","auction_intent":auction,
+        "auction_intent_detail":{"strength":strength,"reason":reason,"closed_candle_only":True,"follow_through_up":follow_up,"follow_through_down":follow_down},
         "location_context":"FAVORABLE" if (long_loc if direction=="BUY" else short_loc) else "CONSTRAINED","opposing_space_atr":round(long_space if direction=="BUY" else short_space,3),
         "regime_confidence":round(confidence/100,3),"confidence":round(confidence/100,3),"opportunity_score":round(confidence,2),"opportunity_maturity":maturity,
-        "opportunity_state":"VISIBLE_PENDING_PROOF" if direction!="NEUTRAL" and maturity!="CONFIRMED" else "VISIBLE","candidate_hypotheses":candidates,
-        "candidate_setups":candidates,"counter_evidence":blockers,"counter_evidence_severity":"HIGH" if blockers else "LOW","missing_evidence":_dedupe(missing),
-        "confirmation_required":_dedupe(missing),"invalidation_evidence":[],"why_not_trade":blockers,"conditional_map":[{"condition":"AUCTION_CONFIRMED","path":"CONTINUATION" if direction else "WAIT"},{"condition":"AUCTION_REJECTED","path":"REVERSAL_WATCH"}],
-        "market_tree":{"directional_evidence":{"up":up,"down":down},"auction":auction,"balanced":balanced,"position40":round(pos,3)},"opportunity_hierarchy":{"direction":"E2","auction":"E2","execution":"E9"},
-        "hard_veto":[],"requires_downstream_confirmation":True,"opportunity_decision":decision,"entry":None,"trigger":None,"decision":None,
-        "professional_reasoning":{**reasoning,"thesis":reasoning["conclusion"],"evidence_hierarchy":["closed_candle_auction","structure","directional_pressure","location","space"],"maturity_boundary":"E2 may classify opportunity maturity; E7/E8/E9 control confirmation, economics and execution."},
-        "reasons":_dedupe(blockers+["E2_OPPORTUNITY_CLASSIFICATION","CLOSED_CANDLE_ONLY","NO_LOOKAHEAD"]),
-    }
+        "opportunity_state":"VISIBLE_PENDING_PROOF" if direction!="NEUTRAL" and maturity!="CONFIRMED" else "VISIBLE","candidate_hypotheses":candidates,"candidate_setups":candidates,
+        "counter_evidence":blockers,"counter_evidence_severity":"HIGH" if blockers else "LOW","missing_evidence":_dedupe(missing),"confirmation_required":_dedupe(missing),"invalidation_evidence":[],"why_not_trade":blockers,
+        "conditional_map":[{"condition":"AUCTION_CONFIRMED","path":"CONTINUATION" if direction else "WAIT"},{"condition":"AUCTION_REJECTED","path":"REVERSAL_WATCH"}],
+        "market_tree":{"directional_evidence":{"up":up,"down":down,"edge_margin":edge_margin},"auction":auction,"balanced":balanced,"position40":round(pos,3)},
+        "opportunity_hierarchy":{"direction":"E2","auction":"E2","execution":"E9"},"hard_veto":[],"requires_downstream_confirmation":True,"opportunity_decision":decision,"entry":None,"trigger":None,"decision":None,
+        "professional_reasoning":{**reasoning,"thesis":reasoning["conclusion"],"evidence_hierarchy":["closed_candle_auction","structure","directional_pressure","location","space"],"maturity_boundary":"E2 classifies opportunity maturity; E6 owns the causal setup thesis; E7/E8/E9 control confirmation, economics and execution."},
+        "reasons":_dedupe(blockers+["E2_OPPORTUNITY_CLASSIFICATION","CLOSED_CANDLE_ONLY","NO_LOOKAHEAD"])}
