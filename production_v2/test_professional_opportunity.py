@@ -104,3 +104,20 @@ def test_consolidate_keeps_both_directional_watches_from_neutral_e2():
     assert result["leader"] == "SELL"
     assert result["competition"] == "CONTESTED"
     assert result["best"]["direction"] == "SELL"
+
+
+def test_counter_direction_does_not_inherit_current_e4_event_identity():
+    from production_v2.contracts import EngineResult
+    from production_v2.pipeline import _directional_lifecycle_current
+
+    results = {
+        "E2": EngineResult("E2", "E2", None, 0.0, {"opportunity_book": {"leader": "SELL", "competition": "CONTESTED", "candidates": [
+            {"direction": "BUY", "state": "DEVELOPING", "quality": 0.6},
+            {"direction": "SELL", "state": "DEVELOPING", "quality": 0.8},
+        ]}}, ()),
+        "E4": EngineResult("E4", "E4", None, 0.0, {"event_id": "E4-SELL-EVENT"}, ()),
+        "E6": EngineResult("E6", "E6", None, 0.0, {"direction": "SELL", "e6_thesis_proven": False}, ()),
+    }
+    current, _, _ = _directional_lifecycle_current(results, "NO_TRADE", False, "2026-09-06T15:25:00Z")
+    assert current["SELL"]["event_id"] == "E4-SELL-EVENT"
+    assert current["BUY"].get("event_id") is None
