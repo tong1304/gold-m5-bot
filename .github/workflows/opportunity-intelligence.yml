@@ -17,6 +17,6 @@ jobs:
       - name: Install test dependencies
         run: python -m pip install -r requirements.txt
       - name: Compile opportunity intelligence
-        run: python -m py_compile production_v2/professional_opportunity.py production_v2/opportunity_lifecycle.py
+        run: python -m py_compile production_v2/professional_opportunity.py production_v2/opportunity_lifecycle.py production_v2/opportunity_lifecycle_runtime.py production_v2/pipeline.py
       - name: Run opportunity intelligence tests
-        run: python -m pytest -q production_v2/test_professional_opportunity_core.py production_v2/test_opportunity_lifecycle_regression.py
+        run: python -m pytest -q production_v2/test_professional_opportunity_core.py production_v2/test_professional_opportunity.py production_v2/test_opportunity_lifecycle_regression.py
