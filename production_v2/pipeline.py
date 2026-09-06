@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 from .contracts import DecisionResult, EngineResult
@@ -22,6 +23,9 @@ from .shared_market_picture import attach_brain_view, audit_shared_market_pictur
 from .conflict_resolution import build_conflict_ledger
 from .profit_edge import evaluate_profit_edge
 from .opportunity_lifecycle import advance_opportunity
+from . import opportunity_memory
+
+logger = logging.getLogger(__name__)
 
 ENGINE_ORDER = ("E1", "E2", "E3", "E4", "E5", "E6", "E7", "E8", "E9")
 EVIDENCE_INPUTS = {"E1": (), "E2": ("E1",), "E3": (), "E4": ("E1", "E3"), "E5": ("E1", "E3", "E4"), "E6": ("E1", "E2", "E3", "E4", "E5"), "E7": ("E4", "E6"), "E8": ("E5", "E6", "E7"), "E9": ("E1", "E2", "E3", "E4", "E5", "E6", "E7", "E8")}
@@ -186,6 +190,13 @@ class ProductionPipeline:
         symbol = str(snapshot.get("symbol") or snapshot.get("asset") or "UNKNOWN").upper()
         if resume_state is not None:
             self._opportunity_lifecycle[symbol] = dict(resume_state)
+        elif symbol not in self._opportunity_lifecycle:
+            persisted = opportunity_memory.load(symbol)
+            if persisted:
+                self._opportunity_lifecycle[symbol] = dict(persisted)
+                logger.info("[PRODUCTION V2] OPPORTUNITY_MEMORY_RESTORE symbol=%s state=%s opportunity_id=%s bars_waited=%s", symbol, persisted.get("state"), persisted.get("opportunity_id"), persisted.get("bars_waited", 0))
+            else:
+                logger.info("[PRODUCTION V2] OPPORTUNITY_MEMORY_RESTORE symbol=%s state=NONE", symbol)
         previous_lifecycle = dict(self._opportunity_lifecycle.get(symbol) or {})
         calibration_records = _historical_records(historical_calibration)
         if calibration_records is not None: snapshot["historical_outcomes"] = calibration_records
@@ -233,4 +244,6 @@ class ProductionPipeline:
         lifecycle["e9_final_decision"] = decision
         results["E9"] = EngineResult("E9", results["E9"].name, results["E9"].gate_passed, results["E9"].score, dict(results["E9"].output, opportunity_lifecycle=lifecycle), results["E9"].reason_codes)
         self._opportunity_lifecycle[symbol] = lifecycle
+        opportunity_memory.save(symbol, lifecycle)
+        logger.info("[PRODUCTION V2] OPPORTUNITY_MEMORY_PERSIST symbol=%s backend=%s state=%s opportunity_id=%s bars_waited=%s", symbol, opportunity_memory.backend(), lifecycle.get("state"), lifecycle.get("opportunity_id"), lifecycle.get("bars_waited", 0))
         return DecisionResult(decision=decision, state=state, engines=results, blocked_by=None, wait_bars=int(lifecycle.get("bars_waited", wait_bars) or 0))
