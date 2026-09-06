@@ -34,18 +34,18 @@ def advance_opportunity(previous:dict[str,Any]|None,current:dict[str,Any])->dict
     if invalidated:
         if not active:return {"state":"IDLE","continuity":"NO_ACTIVE_PENDING_OPPORTUNITY","opportunity_id":None,"direction":"NEUTRAL","setup":"UNKNOWN","bars_waited":0,"origin_candle":candle,"last_evaluated_candle":candle,"trade_authorized":False,"invalidation_reason":None,"event_id":event_id,"origin_event_id":event_id}
         return {**base,"state":"INVALIDATED","continuity":"OPPORTUNITY_INVALIDATED","opportunity_id":pid,"bars_waited":age,"invalidation_reason":c.get("invalidation_reason") or "CURRENT_CANDLE_INVALIDATED"}
-    if active and pd in VALID_DIRECTIONS and d in VALID_DIRECTIONS and d!=pd:return {**base,"state":"INVALIDATED","continuity":"DIRECTION_CHANGED","opportunity_id":pid,"direction":pd,"setup":previous_setup or setup,"bars_waited":age,"invalidation_reason":"DIRECTION_CHANGED"}
+    if active and pd in VALID_DIRECTIONS and d in VALID_DIRECTIONS and d!=pd:
+        return {**c,"state":"REPLACED","continuity":"DIRECTION_CHANGED_REPLACED_OPPORTUNITY","previous_opportunity_id":pid,"opportunity_id":oid or _identity(d,setup,event_id),"event_id":event_id,"origin_event_id":event_id,"bars_waited":0,"origin_candle":candle,"last_evaluated_candle":candle,"trade_authorized":False,"invalidation_reason":"DIRECTION_CHANGED"}
     if active and not same_event and oid and pid and oid!=pid:return {**c,"state":"REPLACED","continuity":"NEW_CAUSAL_EVENT_REPLACED_ACTIVE_OPPORTUNITY","previous_opportunity_id":pid,"opportunity_id":oid,"event_id":event_id,"origin_event_id":event_id,"bars_waited":0,"origin_candle":candle,"last_evaluated_candle":candle,"trade_authorized":False,"invalidation_reason":"NEW_CAUSAL_EVENT"}
-    pending=active and (previous_setup in WATCH_SETUPS or ps in {"WATCHING","WAITING"})
-    if pending and age>MAX_WATCH_BARS:return {**base,"state":"EXPIRED","continuity":"OPPORTUNITY_EXPIRED","opportunity_id":pid,"direction":pd,"setup":previous_setup,"bars_waited":age,"wait_for":"NEW_CAUSAL_OPPORTUNITY","invalidation_reason":"WATCH_MAX_AGE_REACHED"}
-    if pending and bool(c.get("upstream_evidence_lost") or c.get("causal_evidence_lost")):return {**base,"state":"INVALIDATED","continuity":"UPSTREAM_CAUSAL_EVIDENCE_LOST","opportunity_id":pid,"direction":pd,"setup":previous_setup,"bars_waited":age,"wait_for":"NEW_CAUSAL_OPPORTUNITY","invalidation_reason":"UPSTREAM_CAUSAL_EVIDENCE_LOST"}
-    if pending and candidate and d==pd and oid and setup not in WATCH_SETUPS and setup not in {"","UNKNOWN","NONE","NO_SETUP"}:
+    pending_watch=active and previous_setup in WATCH_SETUPS
+    if pending_watch and age>MAX_WATCH_BARS:return {**base,"state":"EXPIRED","continuity":"OPPORTUNITY_EXPIRED","opportunity_id":pid,"direction":pd,"setup":previous_setup,"bars_waited":age,"wait_for":"NEW_CAUSAL_OPPORTUNITY","invalidation_reason":"WATCH_MAX_AGE_REACHED"}
+    if pending_watch and bool(c.get("upstream_evidence_lost") or c.get("causal_evidence_lost")):return {**base,"state":"INVALIDATED","continuity":"UPSTREAM_CAUSAL_EVIDENCE_LOST","opportunity_id":pid,"direction":pd,"setup":previous_setup,"bars_waited":age,"wait_for":"NEW_CAUSAL_OPPORTUNITY","invalidation_reason":"UPSTREAM_CAUSAL_EVIDENCE_LOST"}
+    if pending_watch and candidate and d==pd and oid and setup not in WATCH_SETUPS and setup not in {"","UNKNOWN","NONE","NO_SETUP"}:
         return {**base,"state":"READY" if ready else "WAITING","continuity":"PROMOTED_PENDING_OPPORTUNITY_TO_SETUP" if ready else "PROMOTED_PENDING_OPPORTUNITY","opportunity_id":oid,"direction":d,"setup":setup,"bars_waited":age,"origin_candle":p.get("origin_candle") or candle,"wait_for":c.get("wait_for") or ["E7_SETUP_SPECIFIC_CLOSED_CANDLE_CONFIRMATION"],"invalidation_reason":None}
     if active and pid and oid and pid!=oid:return {**c,"state":"REPLACED","continuity":"OPPORTUNITY_ID_CHANGED","previous_opportunity_id":pid,"opportunity_id":oid,"event_id":event_id,"origin_event_id":event_id,"bars_waited":0,"origin_candle":candle,"last_evaluated_candle":candle,"trade_authorized":False,"invalidation_reason":"OPPORTUNITY_ID_CHANGED"}
     if active and ready and candidate and oid:return {**base,"state":"READY","continuity":"ADVANCING_EXISTING_OPPORTUNITY","opportunity_id":pid or oid,"direction":d or pd,"setup":setup or previous_setup,"bars_waited":age,"origin_candle":p.get("origin_candle") or candle,"invalidation_reason":None}
     if candidate and oid:
-        state="WATCHING" if setup in WATCH_SETUPS else "WAITING"
-        continuity="CONTINUING_UPSTREAM_WATCH" if pending else ("CONTINUING_EXISTING_OPPORTUNITY" if active else "NEW_OPPORTUNITY_WATCH")
+        state="WATCHING" if setup in WATCH_SETUPS else "WAITING"; continuity="CONTINUING_UPSTREAM_WATCH" if pending_watch else ("CONTINUING_EXISTING_OPPORTUNITY" if active else "NEW_OPPORTUNITY_WATCH")
         return {**base,"state":state,"continuity":continuity,"opportunity_id":oid,"direction":d,"setup":setup,"bars_waited":age if active else 0,"origin_candle":p.get("origin_candle") if active else candle,"wait_for":c.get("wait_for") or ["NEXT_CLOSED_M5_CANDLE"],"invalidation_reason":None}
     if active:
         if age>MAX_WATCH_BARS:return {**base,"state":"EXPIRED","continuity":"OPPORTUNITY_EXPIRED","opportunity_id":pid,"direction":pd,"setup":previous_setup,"bars_waited":age,"wait_for":"NEW_CAUSAL_OPPORTUNITY","invalidation_reason":"WATCH_MAX_AGE_REACHED"}
@@ -56,7 +56,5 @@ def advance_lifecycle(previous:dict[str,Any]|None,current:dict[str,Any]|None,bar
     """Compatibility projection for legacy lifecycle callers; execution authority stays with E9."""
     c=dict(current or {})
     if bar_id is not None:c.setdefault("candle",bar_id)
-    result=advance_opportunity(previous,c)
-    state=_text(result.get("state")); setup=_text(result.get("setup"))
-    lifecycle_state="OPPORTUNITY_WATCH" if state=="WATCHING" or setup in WATCH_SETUPS else state
+    result=advance_opportunity(previous,c); state=_text(result.get("state")); setup=_text(result.get("setup")); lifecycle_state="OPPORTUNITY_WATCH" if state=="WATCHING" or setup in WATCH_SETUPS else state
     return {**result,"lifecycle_state":lifecycle_state,"age_bars":int(result.get("bars_waited",0) or 0),"wait_for":result.get("wait_for") or "CAUSAL_FOLLOW_THROUGH_OR_INVALIDATION"}
