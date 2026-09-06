@@ -50,14 +50,15 @@ def test_watching_opportunity_stays_watching_on_next_candle_with_upstream_eviden
     assert lifecycle["trade_authorized"] is False
 
 
-def test_watching_opportunity_promotes_to_waiting_only_when_real_setup_appears():
+def test_watching_setup_family_does_not_promote_without_explicit_thesis_proof():
     previous = {"state":"WATCHING","opportunity_id":"BUY|OPPORTUNITY_WATCH","direction":"BUY","setup":"OPPORTUNITY_WATCH","bars_waited":1,"origin_candle":"2026-09-03T00:15:00Z"}
-    current = {"candidate":True,"direction":"BUY","setup":"TREND_PULLBACK","ready":False,"invalidated":False,"thesis_status":"FORMING","upstream_evidence":["E6_CAUSAL_SETUP_PROOF"],"candle":"2026-09-03T00:20:00Z"}
+    current = {"candidate":True,"direction":"BUY","setup":"TREND_PULLBACK","ready":False,"thesis_proven":False,"invalidated":False,"thesis_status":"FORMING","upstream_evidence":["E6_CAUSAL_SETUP_NOT_PROVEN"],"candle":"2026-09-03T00:20:00Z"}
     lifecycle = advance_opportunity(previous, current)
-    assert lifecycle["state"] == "WAITING"
-    assert lifecycle["continuity"] == "PROMOTED_PENDING_OPPORTUNITY"
+    assert lifecycle["state"] == "WATCHING"
+    assert lifecycle["lifecycle_state"] == "OPPORTUNITY_WATCH"
+    assert lifecycle["opportunity_phase"] == "OPPORTUNITY_WATCH"
+    assert lifecycle["continuity"] == "PRESERVING_PENDING_OPPORTUNITY"
     assert lifecycle["bars_waited"] == 2
-    assert lifecycle["opportunity_id"] == previous["opportunity_id"]
     assert lifecycle["trade_authorized"] is False
 
 
