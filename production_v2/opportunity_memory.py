@@ -13,6 +13,12 @@ def backend()->str:return "POSTGRES" if _postgres_enabled() else "FILE"
 def last_error()->str|None:
     with _LOCK:return _LAST_ERROR
 
+def require_persistent_backend()->None:
+    """Production guard: lifecycle continuity must survive process restart/deploy."""
+    required=str(os.getenv("PRODUCTION_V2_REQUIRE_PERSISTENT_MEMORY","")).strip().lower() in {"1","true","yes","on"}
+    if required and not _postgres_enabled():
+        raise RuntimeError("Persistent opportunity memory is required in production; configure OPPORTUNITY_MEMORY_DATABASE_URL or DATABASE_URL with PostgreSQL")
+
 def _record_error(exc:Exception,operation:str)->None:
     global _LAST_ERROR; _LAST_ERROR=f"{type(exc).__name__}: {exc}"; logger.exception("[PRODUCTION V2] OPPORTUNITY_MEMORY %s failed backend=%s",operation,backend())
 def _clear_error()->None:
