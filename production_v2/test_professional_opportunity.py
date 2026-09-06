@@ -62,3 +62,45 @@ def test_directional_space_is_part_of_quality_not_a_trade_trigger():
     assert op["space_quality"] < 50
     assert op["trade_authorized"] is False
     assert op["conditional_paths"]
+
+
+def test_neutral_market_with_directional_radar_is_not_no_opportunity():
+    output = enrich_engine("E2", {
+        "direction": "NEUTRAL",
+        "confidence": 0.3,
+        "opportunity_book": {
+            "leader": "SELL",
+            "competition": "CONTESTED",
+            "candidates": [
+                {"direction": "BUY", "state": "DEVELOPING", "quality": 0.61, "wait_for": ["BUY_CONFIRMATION"]},
+                {"direction": "SELL", "state": "DEVELOPING", "quality": 0.74, "wait_for": ["SELL_CONFIRMATION"]},
+            ],
+        },
+    })
+    op = output["professional_opportunity"]
+    assert output["opportunity_direction"] == "SELL"
+    assert output["opportunity_state"] == "OPPORTUNITY_WAITING"
+    assert op["directional_opportunities"]["BUY"]["quality"] == 61.0
+    assert op["directional_opportunities"]["SELL"]["quality"] == 74.0
+    assert output["opportunity_strength"] == 74.0
+
+
+def test_consolidate_keeps_both_directional_watches_from_neutral_e2():
+    e2 = enrich_engine("E2", {
+        "direction": "NEUTRAL",
+        "confidence": 0.3,
+        "opportunity_book": {
+            "leader": "SELL",
+            "competition": "CONTESTED",
+            "candidates": [
+                {"direction": "BUY", "state": "DEVELOPING", "quality": 0.61, "wait_for": ["BUY_CONFIRMATION"]},
+                {"direction": "SELL", "state": "DEVELOPING", "quality": 0.74, "wait_for": ["SELL_CONFIRMATION"]},
+            ],
+        },
+    })
+    result = consolidate({"E2": type("R", (), {"output": e2})()})
+    directional = result["directional_radar"]
+    assert set(directional) == {"BUY", "SELL"}
+    assert result["leader"] == "SELL"
+    assert result["competition"] == "CONTESTED"
+    assert result["best"]["direction"] == "SELL"
