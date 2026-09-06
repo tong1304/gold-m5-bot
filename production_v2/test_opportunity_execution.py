@@ -1,4 +1,5 @@
 from .opportunity_execution import evaluate_execution_geometry
+from .runtime_compatibility import install
 
 
 def test_good_opportunity_is_actionable_inside_optimal_zone():
@@ -35,3 +36,11 @@ def test_invalid_geometry_is_not_marked_as_missed():
     )
     assert result["state"] == "INVALID_GEOMETRY"
     assert result["thesis_status"] == "INVALID"
+
+
+def test_legacy_lifecycle_helper_accepts_new_causal_anchor_call():
+    class Module:
+        _directional_lifecycle_current = staticmethod(lambda results, decision, gate_passed, candle: (results, decision, gate_passed, candle))
+
+    install(Module)
+    assert Module._directional_lifecycle_current(1, 2, 3, 4, {"event_id": "x"}) == (1, 2, 3, 4)
