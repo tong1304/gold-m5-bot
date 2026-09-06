@@ -103,8 +103,14 @@ def advance_opportunity(previous: dict[str, Any] | None, current: dict[str, Any]
     if active:
         if age >= MAX_WATCH_BARS:
             return {**base,"state":"EXPIRED","lifecycle_state":"EXPIRED","opportunity_phase":"EXPIRED","continuity":"OPPORTUNITY_EXPIRED","opportunity_id":pid,"direction":pd,"setup":previous_setup,"bars_waited":age,"wait_for":"NEW_CAUSAL_OPPORTUNITY","invalidation_reason":"WATCH_MAX_AGE_REACHED"}
-        phase = "FORMING" if previous_setup in WATCH_SETUPS else "TRIGGER_PENDING"
-        return {**base,"state":ps if ps in ACTIVE_STATES else "WAITING","lifecycle_state":phase,"opportunity_phase":phase,"continuity":"PRESERVING_PENDING_OPPORTUNITY","opportunity_id":pid,"direction":pd,"setup":previous_setup,"bars_waited":age,"wait_for":"CAUSAL_FOLLOW_THROUGH_OR_INVALIDATION","invalidation_reason":None}
+        # An active opportunity that has not proved its causal thesis remains a watch,
+        # even when E6 reports the event setup family but no candidate. TRIGGER_PENDING
+        # is reserved for a proven thesis awaiting E7/entry confirmation.
+        if thesis_proven:
+            phase = "TRIGGER_PENDING"
+        else:
+            phase = "OPPORTUNITY_WATCH"
+        return {**base,"state":ps if ps in ACTIVE_STATES else "WATCHING","lifecycle_state":phase,"opportunity_phase":phase,"continuity":"PRESERVING_PENDING_OPPORTUNITY" if not thesis_proven else "THESIS_PROVEN_TRIGGER_PENDING","opportunity_id":pid,"direction":pd,"setup":previous_setup,"bars_waited":age,"wait_for":"CAUSAL_FOLLOW_THROUGH_OR_INVALIDATION" if not thesis_proven else (c.get("wait_for") or "E7_SETUP_SPECIFIC_CLOSED_CANDLE_CONFIRMATION"),"invalidation_reason":None}
     return {"state":"IDLE","lifecycle_state":"IDLE","opportunity_phase":"IDLE","continuity":"NO_ACTIVE_PENDING_OPPORTUNITY","opportunity_id":None,"direction":"NEUTRAL","setup":"UNKNOWN","bars_waited":0,"origin_candle":candle,"last_evaluated_candle":candle,"trade_authorized":False,"invalidation_reason":None,"event_id":event_id,"origin_event_id":event_id}
 
 
