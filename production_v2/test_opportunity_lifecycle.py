@@ -1,4 +1,4 @@
-from production_v2.opportunity_lifecycle import advance_opportunity, advance_lifecycle
+from production_v2.opportunity_lifecycle import advance_opportunity, advance_lifecycle, advance_opportunity_directions
 
 
 def test_waiting_opportunity_continues_on_next_closed_candle():
@@ -124,3 +124,29 @@ def test_same_direction_watch_keeps_identity_when_new_related_event_arrives():
     assert lifecycle["event_id"] == current["event_id"]
     assert lifecycle["bars_waited"] == 2
     assert lifecycle["trade_authorized"] is False
+
+
+def test_directional_lifecycles_preserve_counter_watch_when_leader_changes():
+    previous = {
+        "opportunities": {
+            "BUY": {"state":"WATCHING","opportunity_id":"BUY|DIRECTIONAL_WATCH","direction":"BUY","setup":"OPPORTUNITY_WATCH","bars_waited":2,"origin_candle":"2026-09-06T13:30:00Z"},
+            "SELL": {"state":"WATCHING","opportunity_id":"SELL|DIRECTIONAL_WATCH","direction":"SELL","setup":"OPPORTUNITY_WATCH","bars_waited":3,"origin_candle":"2026-09-06T13:25:00Z"},
+        },
+        "leader": "SELL",
+        "competition": "CONTESTED",
+    }
+    current = {
+        "BUY": {"candidate":True,"direction":"BUY","setup":"OPPORTUNITY_WATCH","ready":False,"thesis_proven":False,"invalidated":False,"candle":"2026-09-06T13:35:00Z"},
+        "SELL": {"candidate":True,"direction":"SELL","setup":"OPPORTUNITY_WATCH","ready":False,"thesis_proven":False,"invalidated":False,"candle":"2026-09-06T13:35:00Z"},
+    }
+    result = advance_opportunity_directions(previous, current, leader="BUY", competition="CONTESTED")
+    assert result["leader"] == "BUY"
+    assert result["competition"] == "CONTESTED"
+    assert result["opportunities"]["BUY"]["state"] == "WATCHING"
+    assert result["opportunities"]["SELL"]["state"] == "WATCHING"
+    assert result["opportunities"]["SELL"]["opportunity_id"] == previous["opportunities"]["SELL"]["opportunity_id"]
+    assert result["opportunities"]["SELL"]["continuity"] == "CONTINUING_UPSTREAM_WATCH"
+    assert result["opportunities"]["BUY"]["continuity"] == "CONTINUING_UPSTREAM_WATCH"
+    assert result["opportunities"]["SELL"]["bars_waited"] == 4
+    assert result["opportunities"]["BUY"]["bars_waited"] == 3
+    assert result["opportunities"]["SELL"]["trade_authorized"] is False
