@@ -87,6 +87,35 @@ def test_rejection_pending_event_ages_across_next_closed_candle():
     assert repaired["auction_lifecycle_repaired"] is True
 
 
+def test_repaired_event_age_is_consistent_in_nested_e4_audit_and_auction_views():
+    bars = [
+        _bar("2026-09-06T06:00:00Z", 79952.90),
+        _bar("2026-09-06T06:05:00Z", 79957.87),
+        _bar("2026-09-06T06:10:00Z", 79960.00),
+    ]
+    output = {
+        "event_candle_id": "2026-09-06T06:00:00Z",
+        "event_level": 79952.90,
+        "event_atr": 57.586429,
+        "auction_state": "REJECTION_PENDING",
+        "event_age_bars": 0,
+        "auction": {"event_age_bars": 0},
+        "audit": {"event_age_bars": 0},
+        "event": {
+            "event_candle_id": "2026-09-06T06:00:00Z",
+            "event_level": 79952.90,
+            "event_atr": 57.586429,
+            "directional_implication": "DOWN",
+        },
+    }
+
+    repaired = _repair(output, bars, "2026-09-06T06:10:00Z")
+
+    assert repaired["event_age_bars"] == 2
+    assert repaired["auction"]["event_age_bars"] == 2
+    assert repaired["audit"]["event_age_bars"] == 2
+
+
 def test_e4_lifecycle_repair_runs_after_enrichment_when_enrichment_creates_pending_state():
     class FakePipeline:
         pass
