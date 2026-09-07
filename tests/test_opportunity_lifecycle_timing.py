@@ -148,3 +148,64 @@ def test_progression_propagates_late_no_chase_boundary():
     assert progressed["wait_for_stage"] == "NO_CHASE;WAIT_FOR_NEW_CAUSAL_EVENT"
     assert progressed["chase_prohibited"] is True
     assert progressed["trade_authorized"] is False
+
+
+def test_opposite_direction_rejects_stale_opportunity_id_and_builds_new_identity():
+    progressed = advance_lifecycle_stage(
+        {"opportunity_id": "SELL|OPPORTUNITY_WATCH|old-event", "direction": "SELL"},
+        {
+            "candidate": True,
+            "direction": "BUY",
+            "setup": "OPPORTUNITY_WATCH",
+            "opportunity_id": "SELL|OPPORTUNITY_WATCH|old-event",
+            "event_id": "buy-event-1",
+            "candle": "2026-09-07T05:55:00Z",
+        },
+    )
+    assert progressed["direction"] == "BUY"
+    assert progressed["opportunity_id"] == "BUY|OPPORTUNITY_WATCH|buy-event-1"
+    assert not progressed["opportunity_id"].startswith("SELL|")
+
+
+def test_same_direction_new_causal_event_creates_new_opportunity_identity():
+    progressed = advance_lifecycle_stage(
+        {
+            "opportunity_id": "BUY|OPPORTUNITY_WATCH|old-event",
+            "direction": "BUY",
+            "event_id": "old-event",
+            "origin_event_id": "old-event",
+            "lifecycle_stage": "WATCH",
+        },
+        {
+            "candidate": True,
+            "direction": "BUY",
+            "setup": "OPPORTUNITY_WATCH",
+            "event_id": "new-event",
+            "origin_event_id": "new-event",
+            "candle": "2026-09-07T05:55:00Z",
+        },
+    )
+    assert progressed["opportunity_id"] == "BUY|OPPORTUNITY_WATCH|new-event"
+    assert progressed["event_id"] == "new-event"
+    assert progressed["origin_event_id"] == "new-event"
+
+
+def test_same_direction_same_causal_event_keeps_existing_identity():
+    progressed = advance_lifecycle_stage(
+        {
+            "opportunity_id": "BUY|OPPORTUNITY_WATCH|same-event",
+            "direction": "BUY",
+            "event_id": "same-event",
+            "origin_event_id": "same-event",
+            "lifecycle_stage": "WATCH",
+        },
+        {
+            "candidate": True,
+            "direction": "BUY",
+            "setup": "OPPORTUNITY_WATCH",
+            "event_id": "same-event",
+            "candle": "2026-09-07T05:55:00Z",
+        },
+    )
+    assert progressed["opportunity_id"] == "BUY|OPPORTUNITY_WATCH|same-event"
+    assert progressed["origin_event_id"] == "same-event"
