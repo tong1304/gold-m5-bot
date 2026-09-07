@@ -9,13 +9,15 @@ on:
 jobs:
   pytest-production-v2:
     runs-on: ubuntu-latest
+    env:
+      PRODUCTION_V2_DISABLE_LIVE: "1"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
-          python-version: '3.12'
+          python-version: '3.11'
       - name: Install test dependencies
-        run: python -m pip install -U pytest
+        run: python -m pip install -U pytest pandas numpy flask requests lse-data
       - name: Run targeted lifecycle tests
         run: python -m pytest -q production_v2/test_professional_opportunity_lifecycle.py production_v2/test_e6_event_direction.py production_v2/test_e6_space_consistency.py
       - name: Compile production runtime
