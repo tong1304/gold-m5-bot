@@ -1,5 +1,6 @@
 from production_v2.contracts import EngineResult
 from production_v2.opportunity_timing_runtime_hotfix import _apply, _merge_evidence
+from production_v2.pipeline import finalize_e6_output
 import production_v2.pipeline as pipeline_module
 
 
@@ -96,6 +97,22 @@ def test_slow_early_opportunity_is_still_an_e7_confirmation_candidate():
     assert result.output["opportunity_timing"]["phase"] == "EARLY_OPPORTUNITY"
     assert result.output["candidate_type"] == "EARLY_OPPORTUNITY_CANDIDATE"
     assert result.output["confirmation_window"] == "NEXT_CLOSED_M5_CANDLE"
+
+
+def test_finalize_e6_preserves_early_candidate_after_watch_normalization():
+    output = finalize_e6_output({
+        "setup": "OPPORTUNITY_WATCH",
+        "direction": "SELL",
+        "watch_only": True,
+        "trade_ready": False,
+        "candidate_type": "EARLY_OPPORTUNITY_CANDIDATE",
+        "opportunity_phase_speed": "EARLY_OPPORTUNITY",
+        "opportunity_decision_speed": "SLOW",
+        "opportunity_timing": {"phase": "EARLY_OPPORTUNITY", "decision_speed": "SLOW"},
+    })
+    assert output["candidate_type"] == "EARLY_OPPORTUNITY_CANDIDATE"
+    assert output["confirmation_window"] == "NEXT_CLOSED_M5_CANDLE"
+    assert output["wait_for"] == "CLOSED_CANDLE_CONFIRMATION"
 
 
 def test_timing_hotfix_owns_final_e6_runtime_binding():
