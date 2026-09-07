@@ -74,13 +74,9 @@ def test_e9_watch_reports_opportunity_not_ready_and_keeps_trade_blocked():
 
     e9 = FakeE9()
     e9_watch_boundary.install(e9)
-    e6 = SimpleNamespace(output={
-        "setup":"OPPORTUNITY_WATCH", "direction":"BUY", "watch_only":True,
-        "trade_ready":False, "gate_passed":False, "event":"LOW_SWEEP_REJECTION",
-        "event_age_bars":1, "confidence":0.70, "available_space_atr":2.4697,
-    })
+    e6 = SimpleNamespace(output={"setup":"OPPORTUNITY_WATCH","direction":"BUY","watch_only":True,"trade_ready":False,"gate_passed":False,"event":"LOW_SWEEP_REJECTION","event_age_bars":1,"confidence":0.70,"available_space_atr":2.4697})
     e8 = SimpleNamespace(output={"applicability":"NOT_APPLICABLE_WITHOUT_SURVIVING_E6_THESIS"})
     result = e9.analyze_e9({}, {"E6":e6,"E8":e8})
     assert result.output["decision"] == "NO_TRADE"
     assert result.output["governance_reason"] in {"OPPORTUNITY_EXISTS_NOT_READY","EARLY_OPPORTUNITY_FAST_PATH_PENDING"}
-    assert result.output["trade_authorized"] if "trade_authorized" in result.output else True
+    assert result.output.get("trade_authorized", False) is False
