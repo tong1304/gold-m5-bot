@@ -1,5 +1,6 @@
 from production_v2.contracts import EngineResult
 from production_v2.opportunity_timing_runtime_hotfix import _apply, _merge_evidence
+import production_v2.pipeline as pipeline_module
 
 
 def _result(output):
@@ -69,3 +70,9 @@ def test_apply_marks_every_early_opportunity_for_e7_confirmation_without_trade_a
     assert out["confirmation_window"] == "NEXT_CLOSED_M5_CANDLE"
     assert out["execution_authority"] == "E9"
     assert out["trade_ready"] is False
+
+
+def test_timing_hotfix_owns_final_e6_runtime_binding():
+    binding = getattr(pipeline_module, "_E6_RUNTIME_OVERRIDE", None)
+    assert binding is not None
+    assert "opportunity_timing_runtime_hotfix" in getattr(binding, "__module__", "")
