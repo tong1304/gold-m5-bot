@@ -183,8 +183,6 @@ def _runtime_watch_or_original(result: EngineResult, upstream: dict[str, EngineR
             thesis_out["runtime_candidate_event_id"] = candidate.get("event_id")
             result = EngineResult(thesis.engine_id, thesis.name, False, thesis.score, _sync_professional_reasoning(thesis_out), thesis.reason_codes)
     result = _apply_opportunity_timing(result, upstream)
-    timing = result.output.get("opportunity_timing") or {}
-    print(f"[PRODUCTION V2] OPPORTUNITY_TIMING phase={timing.get('phase')} speed={timing.get('decision_speed')} direction={timing.get('direction')} age={timing.get('event_age_bars')} quality={timing.get('evidence_quality')} space_atr={timing.get('available_space_atr')} fast={timing.get('fast_path_eligible')} chase_prohibited={timing.get('chase_prohibited')} authority=E9", flush=True)
     return result
 
 
