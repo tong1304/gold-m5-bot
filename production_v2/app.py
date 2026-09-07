@@ -104,6 +104,8 @@ def start_production_runtime():
     if not key:
         raise RuntimeError("LSE_API_KEY is required for production-v2 live runtime")
     require_persistent_backend()
+    from .alert_delivery_boundary import install as install_alert_delivery
+    install_alert_delivery()
     from .service import start_live_service
     start_live_service()
     _runtime_started = True
@@ -112,7 +114,7 @@ def start_production_runtime():
         f"opportunity_memory_backend={opportunity_memory_backend()}; "
         f"records={len(_last_opportunity_lifecycle)}; "
         f"runtime={runtime_fingerprint(pipeline_module)}; "
-        f"lifecycle_progression=True",
+        f"lifecycle_progression=True; alert_delivery_boundary=True; execution_mode=MANUAL",
         flush=True,
     )
 
