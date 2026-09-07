@@ -34,7 +34,8 @@ def _symbol(result: DecisionResult, market_data: dict[str, Any], lifecycle: dict
 def lifecycle_telemetry(symbol: str, lifecycle: dict[str, Any]) -> str:
     terminal = _text(lifecycle.get("terminal_stage")) or "NONE"
     alert = _text((lifecycle.get("trade_alert") or {}).get("state")) or "NONE"
-    return ("[PRODUCTION V2] OPPORTUNITY_LIFECYCLE " f"symbol={_text(symbol) or 'UNKNOWN'} " f"opportunity_id={lifecycle.get('opportunity_id') or 'NONE'} " f"origin_event_id={lifecycle.get('origin_event_id') or 'NONE'} " f"event_id={lifecycle.get('event_id') or 'NONE'} " f"candle={lifecycle.get('last_progression_candle') or lifecycle.get('last_evaluated_candle') or lifecycle.get('stage_candle') or 'NONE'} " f"stage={_text(lifecycle.get('lifecycle_stage')) or 'IDLE'} " f"state={_text(lifecycle.get('state')) or 'UNKNOWN'} " f"wait_for={_text(lifecycle.get('wait_for_stage')) or 'NONE'} " f"terminal={terminal} " f"alert={alert} " f"user_action={_text((lifecycle.get('trade_alert') or {}).get('user_action')) or 'NONE'}")
+    trade_authorized = "1" if _bool(lifecycle.get("trade_authorized")) else "0"
+    return ("[PRODUCTION V2] OPPORTUNITY_LIFECYCLE " f"symbol={_text(symbol) or 'UNKNOWN'} " f"opportunity_id={lifecycle.get('opportunity_id') or 'NONE'} " f"origin_event_id={lifecycle.get('origin_event_id') or 'NONE'} " f"event_id={lifecycle.get('event_id') or 'NONE'} " f"candle={lifecycle.get('last_progression_candle') or lifecycle.get('last_evaluated_candle') or lifecycle.get('stage_candle') or 'NONE'} " f"stage={_text(lifecycle.get('lifecycle_stage')) or 'IDLE'} " f"state={_text(lifecycle.get('state')) or 'UNKNOWN'} " f"wait_for={_text(lifecycle.get('wait_for_stage')) or 'NONE'} " f"terminal={terminal} " f"trade_authorized={trade_authorized} " f"alert={alert} " f"user_action={_text((lifecycle.get('trade_alert') or {}).get('user_action')) or 'NONE'}")
 
 
 def _current_stage_input(result: DecisionResult, lifecycle: dict[str, Any], market_data: dict[str, Any]) -> dict[str, Any]:
@@ -50,7 +51,7 @@ def _current_stage_input(result: DecisionResult, lifecycle: dict[str, Any], mark
     event_id = e4.get("event_id") or e4.get("auction_event_id") or e4.get("event_candle_id") or lifecycle.get("event_id") or lifecycle.get("origin_event_id")
     origin_event_id = lifecycle.get("origin_event_id") or event_id
     direction = _text(e6.get("direction") or e6.get("direction_thesis") or e6.get("thesis_direction") or lifecycle.get("direction") or e4.get("direction") or e3.get("direction"))
-    return {"symbol": _symbol(result, market_data, lifecycle), "direction": direction, "candidate": bool(lifecycle.get("opportunity_id")) or _bool(e6.get("watch_only")) or _text(e6.get("candidate_type")) in {"OPPORTUNITY_CANDIDATE", "SETUP_CANDIDATE"} or bool(event_id), "confirmed": e4_state in {"CONFIRMED", "TERMINALLY_CONFIRMED", "ACCEPTED", "RECLAIMED"}, "e4_state": e4_state, "thesis_proven": _bool(e6.get("e6_thesis_proven")) or _text(e6.get("thesis_state") or e6.get("maturity") or e6.get("setup_state")) in {"MATURE", "CONFIRMED", "VALIDATED", "TRADE_READY", "ESTABLISHED"}, "e7_confirmed": e7_state in {"PASS", "PASSED", "CONFIRMED", "TRIGGER_CONFIRMED", "PROVEN", "VALIDATED", "TRADE_READY"}, "e7_confirmation_state": e7_state, "e8_ready": bool(_engine(result, "E8") and _engine(result, "E8").gate_passed) or e8_state in {"PASS", "PASSED", "READY", "APPROVED", "POSITIVE", "RISK_READY", "ECONOMICALLY_ACCEPTABLE", "TRADE_READY"}, "e8_economic_state": e8_state, "e9_trade": e9_decision in {"BUY", "SELL", "TRADE"} and bool(result.gate_passed) and geometry_state not in {"TOO_LATE", "EXPIRED", "INVALID_GEOMETRY", "UNFAVORABLE_RR"}, "execution_state": geometry_state or _text(lifecycle.get("execution_state")), "invalidated": _bool(e6.get("invalidated")) or _text(lifecycle.get("state")) == "INVALIDATED" or bool(invalidation_reason), "invalidation_reason": invalidation_reason, "event_id": event_id, "origin_event_id": origin_event_id, "candle": candle}
+    return {"symbol": _symbol(result, market_data, lifecycle), "direction": direction, "candidate": direction in {"BUY", "SELL"} and (bool(lifecycle.get("opportunity_id")) or _bool(e6.get("watch_only")) or _text(e6.get("candidate_type")) in {"OPPORTUNITY_CANDIDATE", "SETUP_CANDIDATE"} or bool(event_id)), "confirmed": e4_state in {"CONFIRMED", "TERMINALLY_CONFIRMED", "ACCEPTED", "RECLAIMED"}, "e4_state": e4_state, "thesis_proven": _bool(e6.get("e6_thesis_proven")) or _text(e6.get("thesis_state") or e6.get("maturity") or e6.get("setup_state")) in {"MATURE", "CONFIRMED", "VALIDATED", "TRADE_READY", "ESTABLISHED"}, "e7_confirmed": e7_state in {"PASS", "PASSED", "CONFIRMED", "TRIGGER_CONFIRMED", "PROVEN", "VALIDATED", "TRADE_READY"}, "e7_confirmation_state": e7_state, "e8_ready": bool(_engine(result, "E8") and _engine(result, "E8").gate_passed) or e8_state in {"PASS", "PASSED", "READY", "APPROVED", "POSITIVE", "RISK_READY", "ECONOMICALLY_ACCEPTABLE", "TRADE_READY"}, "e8_economic_state": e8_state, "e9_trade": e9_decision in {"BUY", "SELL", "TRADE"} and bool(result.gate_passed) and geometry_state not in {"TOO_LATE", "EXPIRED", "INVALID_GEOMETRY", "UNFAVORABLE_RR"}, "execution_state": geometry_state or _text(lifecycle.get("execution_state")), "invalidated": _bool(e6.get("invalidated")) or _text(lifecycle.get("state")) == "INVALIDATED" or bool(invalidation_reason), "invalidation_reason": invalidation_reason, "event_id": event_id, "origin_event_id": origin_event_id, "candle": candle}
 
 
 def e3_invalidation(e4: dict[str, Any], e6: dict[str, Any], e3: dict[str, Any]) -> str:
@@ -63,26 +64,35 @@ def e3_invalidation(e4: dict[str, Any], e6: dict[str, Any], e3: dict[str, Any]) 
 def _direction_item(lifecycle: dict[str, Any], direction: str) -> dict[str, Any]:
     opportunities = lifecycle.get("opportunities") if isinstance(lifecycle.get("opportunities"), dict) else {}
     item = opportunities.get(direction)
-    return dict(item) if isinstance(item, dict) else dict(lifecycle)
+    return dict(item) if isinstance(item, dict) else {}
 
 
 def _write_direction_item(lifecycle: dict[str, Any], direction: str, item: dict[str, Any]) -> dict[str, Any]:
     updated = dict(lifecycle); opportunities = dict(updated.get("opportunities") or {}) if isinstance(updated.get("opportunities"), dict) else {}; opportunities[direction] = dict(item); updated["opportunities"] = opportunities; return updated
 
 
+def _neutral_snapshot(lifecycle: dict[str, Any], symbol: str, current: dict[str, Any]) -> dict[str, Any]:
+    snapshot = {"symbol": symbol, "direction": "NEUTRAL", "opportunity_id": None, "origin_event_id": None, "event_id": current.get("event_id"), "lifecycle_stage": "IDLE", "state": "NO_OPPORTUNITY", "wait_for_stage": "NEW_CAUSAL_OPPORTUNITY", "terminal_stage": None, "terminal_reason": None, "trade_authorized": False, "execution_state": "NONE", "last_evaluated_candle": current.get("candle")}
+    snapshot["stage_history"] = []; snapshot["trade_alert"] = build_trade_alert(type("Result", (), {"decision": "NO_TRADE", "gate_passed": False})(), snapshot)
+    if isinstance(lifecycle.get("opportunities"), dict): snapshot["opportunities"] = dict(lifecycle["opportunities"])
+    return snapshot
+
+
 def enrich(result: DecisionResult, market_data: dict[str, Any]) -> DecisionResult:
     e9_engine = _engine(result, "E9")
     if not e9_engine: return result
-    e9 = dict(e9_engine.output or {}); lifecycle = e9.get("opportunity_lifecycle") if isinstance(e9.get("opportunity_lifecycle"), dict) else {}; symbol = _symbol(result, market_data, lifecycle); current = _current_stage_input(result, lifecycle, market_data); direction = current.get("direction") or _text(lifecycle.get("direction")); previous_item = _direction_item(lifecycle, direction) if direction in {"BUY", "SELL"} else dict(lifecycle); progressed = advance_lifecycle_stage(previous_item, current)
-    progressed["symbol"] = symbol; progressed["opportunity_id"] = previous_item.get("opportunity_id") or lifecycle.get("opportunity_id") or progressed.get("opportunity_id"); progressed["event_id"] = progressed.get("event_id") or previous_item.get("event_id") or lifecycle.get("event_id") or current.get("event_id"); progressed["origin_event_id"] = progressed.get("origin_event_id") or previous_item.get("origin_event_id") or lifecycle.get("origin_event_id") or current.get("origin_event_id"); progressed["direction"] = progressed.get("direction") or previous_item.get("direction") or lifecycle.get("direction") or direction
-    progressed["e6_thesis_proven"] = bool(current.get("thesis_proven")); progressed["e7_confirmation_state"] = current.get("e7_confirmation_state") or "UNKNOWN"; progressed["e8_economic_state"] = current.get("e8_economic_state") or "UNKNOWN"; progressed["e9_final_decision"] = result.decision; progressed["execution_geometry_state"] = current.get("execution_state") or "UNKNOWN"
-    lifecycle = _write_direction_item(lifecycle, direction, progressed) if direction in {"BUY", "SELL"} else progressed; lifecycle["symbol"] = symbol; lifecycle["lifecycle_stage"] = progressed.get("lifecycle_stage"); lifecycle["lifecycle_stage_history"] = progressed.get("stage_history") or []; lifecycle["lifecycle_wait_for_stage"] = progressed.get("wait_for_stage"); lifecycle["lifecycle_terminal_state"] = progressed.get("terminal_stage"); lifecycle["lifecycle_terminal_reason"] = progressed.get("terminal_reason")
+    e9 = dict(e9_engine.output or {}); lifecycle = e9.get("opportunity_lifecycle") if isinstance(e9.get("opportunity_lifecycle"), dict) else {}; symbol = _symbol(result, market_data, lifecycle); current = _current_stage_input(result, lifecycle, market_data); direction = current.get("direction") or _text(lifecycle.get("direction"))
+    if direction not in {"BUY", "SELL"}:
+        progressed = _neutral_snapshot(lifecycle, symbol, current)
+    else:
+        previous_item = _direction_item(lifecycle, direction); progressed = advance_lifecycle_stage(previous_item, current)
+        progressed["symbol"] = symbol; progressed["opportunity_id"] = progressed.get("opportunity_id") or previous_item.get("opportunity_id"); progressed["event_id"] = progressed.get("event_id") or previous_item.get("event_id") or current.get("event_id"); progressed["origin_event_id"] = progressed.get("origin_event_id") or previous_item.get("origin_event_id") or current.get("origin_event_id"); progressed["direction"] = direction
+        progressed["e6_thesis_proven"] = bool(current.get("thesis_proven")); progressed["e7_confirmation_state"] = current.get("e7_confirmation_state") or "UNKNOWN"; progressed["e8_economic_state"] = current.get("e8_economic_state") or "UNKNOWN"; progressed["e9_final_decision"] = result.decision; progressed["execution_geometry_state"] = current.get("execution_state") or "UNKNOWN"
+    lifecycle = _write_direction_item(lifecycle, direction, progressed) if direction in {"BUY", "SELL"} else progressed
+    lifecycle["symbol"] = symbol; lifecycle["lifecycle_stage"] = progressed.get("lifecycle_stage"); lifecycle["lifecycle_stage_history"] = progressed.get("stage_history") or []; lifecycle["lifecycle_wait_for_stage"] = progressed.get("wait_for_stage"); lifecycle["lifecycle_terminal_state"] = progressed.get("terminal_stage"); lifecycle["lifecycle_terminal_reason"] = progressed.get("terminal_reason")
     lifecycle["execution_candidate"] = {"direction": direction, "opportunity_id": progressed.get("opportunity_id"), "state": progressed.get("state"), "lifecycle_stage": progressed.get("lifecycle_stage"), "selected_by": "E9" if progressed.get("lifecycle_stage") == "TRADE" else "OPPORTUNITY_LIFECYCLE"}
-    lifecycle["execution_boundary_state"] = "NONE"
-    lifecycle["execution_boundary_history"] = []
-    lifecycle["execution_authorized_by"] = None
-    alert = build_trade_alert(result, progressed)
-    lifecycle["trade_alert"] = alert
+    lifecycle["execution_boundary_state"] = "NONE"; lifecycle["execution_boundary_history"] = []; lifecycle["execution_authorized_by"] = None
+    alert = build_trade_alert(result, progressed); lifecycle["trade_alert"] = alert
     e9["opportunity_lifecycle"] = lifecycle; e9["lifecycle_stage"] = progressed.get("lifecycle_stage"); e9["lifecycle_stage_history"] = progressed.get("stage_history") or []; e9["lifecycle_wait_for_stage"] = progressed.get("wait_for_stage"); e9["lifecycle_terminal_state"] = progressed.get("terminal_stage"); e9["lifecycle_terminal_reason"] = progressed.get("terminal_reason"); e9["opportunity_symbol"] = symbol; e9["execution_boundary_state"] = "NONE"; e9["execution_boundary_history"] = []; e9["trade_alert"] = alert
     if progressed.get("lifecycle_stage") == "TRADE": e9["execution_intent"] = None
     engines = [EngineResult(e.engine_id, e.name, e.gate_passed, e.score, e9 if e.engine_id == "E9" else e.output, e.reason_codes) for e in result.engines]
