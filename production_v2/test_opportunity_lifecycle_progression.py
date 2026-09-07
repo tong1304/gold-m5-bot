@@ -33,6 +33,8 @@ def test_opportunity_walks_watch_to_confirmed_to_e6_to_e7_to_e8_to_trade_across_
     state = _advance(state, candle="2026-09-07T10:25:00Z", thesis_proven=True, e7_confirmed=True, e8_ready=True, e9_trade=True, ready=True, event_id="E6")
     assert state["lifecycle_stage"] == "TRADE"
     assert state["trade_authorized"] is True
+    assert state["execution_state"] == "ALERT_READY"
+    assert state["wait_for_stage"] == "USER_ACTION_REQUIRED"
     assert state["opportunity_id"] == opportunity_id
     assert state["event_id"] == "E6"
     assert state["origin_event_id"] == "E1"
