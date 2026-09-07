@@ -5,7 +5,7 @@ from typing import Any
 from .contracts import EngineResult
 from .opportunity_timing import enrich_timing
 
-RUNTIME_VERSION = "OPPORTUNITY_TIMING_MEMBRANE_V2"
+RUNTIME_VERSION = "OPPORTUNITY_TIMING_MEMBRANE_V3"
 
 
 def _out(result: Any) -> dict[str, Any]:
@@ -31,7 +31,6 @@ def _first_usable(*values: Any) -> Any:
 
 
 def _merge_evidence(e6: dict[str, Any], e4: dict[str, Any], e5: dict[str, Any]) -> dict[str, Any]:
-    """Build timing evidence with upstream E4/E5 taking precedence over stale zeroes."""
     out = dict(e6)
     for key in ("event", "event_type", "event_level", "event_atr_frozen", "event_age_bars", "auction_state", "response_actor"):
         value = _first_usable(e4.get(key), out.get(key))
@@ -41,7 +40,7 @@ def _merge_evidence(e6: dict[str, Any], e4: dict[str, Any], e5: dict[str, Any]) 
         value = _first_usable(e4.get(key), out.get(key))
         if value is not None:
             out[key] = value
-    for key in ("price", "current_price", "last_price"):
+    for key in ("price", "current_price", "last_price", "available_space_atr", "effective_space_atr", "space_atr"):
         value = _first_usable(e5.get(key), out.get(key))
         if value is not None:
             out[key] = value
@@ -68,7 +67,6 @@ def _apply(result: EngineResult, upstream: dict[str, EngineResult]) -> EngineRes
     out["execution_authority"] = "E9"
     out["timing_membrane_version"] = RUNTIME_VERSION
     if timing.get("phase") == "EARLY_OPPORTUNITY":
-        # EARLY is always eligible for E7 evaluation. FAST/SLOW only changes cadence.
         out["candidate_type"] = "EARLY_OPPORTUNITY_CANDIDATE"
         out["confirmation_window"] = "NEXT_CLOSED_M5_CANDLE"
         out["wait_for"] = "FAST_CLOSED_CANDLE_CONFIRMATION" if timing.get("decision_speed") == "FAST" else "CLOSED_CANDLE_CONFIRMATION"
@@ -78,10 +76,25 @@ def _apply(result: EngineResult, upstream: dict[str, EngineResult]) -> EngineRes
     return EngineResult(result.engine_id, result.name, result.gate_passed, result.score, out, result.reason_codes)
 
 
+def _is_live_membrane(value: Any) -> bool:
+    return callable(value) and getattr(value, "_timing_membrane_version", "") == RUNTIME_VERSION
+
+
 def install(pipeline_module) -> None:
-    if getattr(pipeline_module, "_OPPORTUNITY_TIMING_HOTFIX_INSTALLED", False):
+    current = getattr(pipeline_module, "_E6_RUNTIME_OVERRIDE", None) or getattr(pipeline_module, "analyze_e6")
+    existing = getattr(pipeline_module, "_E6_TIMING_MEMBRANE", None)
+    if _is_live_membrane(existing):
+        pipeline_module._E6_RUNTIME_OVERRIDE = existing
+        pipeline_module.analyze_e6 = existing
+        pipeline_module._OPPORTUNITY_TIMING_HOTFIX_INSTALLED = True
         return
-    original = getattr(pipeline_module, "_E6_RUNTIME_OVERRIDE", None) or pipeline_module.analyze_e6
+    if _is_live_membrane(current):
+        pipeline_module._E6_TIMING_MEMBRANE = current
+        pipeline_module._E6_RUNTIME_OVERRIDE = current
+        pipeline_module.analyze_e6 = current
+        pipeline_module._OPPORTUNITY_TIMING_HOTFIX_INSTALLED = True
+        return
+    original = current
     def wrapped(snapshot, upstream):
         return _apply(original(snapshot, upstream), upstream)
     wrapped.__name__ = "timing_membrane_e6"
