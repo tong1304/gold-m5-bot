@@ -7,6 +7,7 @@ opportunity should receive the next closed-candle evidence check while E9
 remains the sole execution authority.
 """
 
+from datetime import datetime, timezone
 from typing import Any
 
 DIRECTIONS = {"BUY", "SELL"}
@@ -44,6 +45,21 @@ def _num(output: dict[str, Any], *keys: str, default: float | None = None) -> fl
     return default
 
 
+def _parse_time(value: Any) -> datetime | None:
+    if value in (None, ""):
+        return None
+    if isinstance(value, datetime):
+        return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
+    text = str(value).strip()
+    if text.endswith("Z"):
+        text = text[:-1] + "+00:00"
+    try:
+        parsed = datetime.fromisoformat(text)
+    except ValueError:
+        return None
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+
+
 def _direction(output: dict[str, Any]) -> str:
     for key in ("direction", "direction_thesis", "thesis_direction", "opportunity_direction"):
         value = _text(output.get(key))
@@ -60,8 +76,24 @@ def _direction(output: dict[str, Any]) -> str:
 
 
 def _age_bars(output: dict[str, Any]) -> int:
+    """Use the causal event clock first; never let a stale E4 age override it.
+
+    When both event and current candle timestamps are present, age is derived
+    from the canonical five-minute candle clock. The explicit numeric age is
+    only a fallback for legacy callers that do not provide timestamps.
+    """
     anchor = output.get("causal_event_anchor")
-    for value in (output.get("event_age_bars"), output.get("bars_waited"), anchor.get("age_bars") if isinstance(anchor, dict) else None):
+    if isinstance(anchor, dict):
+        event_ts = _parse_time(anchor.get("event_candle") or anchor.get("event_timestamp"))
+        current_ts = _parse_time(anchor.get("last_evaluated_candle") or anchor.get("current_candle"))
+        if event_ts is not None and current_ts is not None and current_ts >= event_ts:
+            return max(0, int((current_ts - event_ts).total_seconds() // 300))
+        for value in (anchor.get("age_bars"),):
+            try:
+                return max(0, int(value))
+            except (TypeError, ValueError):
+                pass
+    for value in (output.get("event_age_bars"), output.get("bars_waited")):
         try:
             return max(0, int(value))
         except (TypeError, ValueError):
@@ -112,7 +144,11 @@ def classify_opportunity_timing(output: dict[str, Any]) -> dict[str, Any]:
     event_atr = _num(out, "event_atr_frozen", "event_atr", "atr")
     displacement_atr = abs(price - event_level) / event_atr if event_level is not None and price is not None and event_atr and event_atr > 0 else None
     late_by_age = age >= 2
-    late_by_displacement = displacement_atr is not None and displacement_atr >= LATE_DISPLACEMENT_ATR
+    # Displacement is a valid late signal only after at least one completed
+    # candle has elapsed. A same-candle event is still actionable evidence;
+    # this prevents a stale/incorrect displacement clock from converting age=0
+    # into a no-chase state.
+    late_by_displacement = age >= 1 and displacement_atr is not None and displacement_atr >= LATE_DISPLACEMENT_ATR
     late = late_by_age or late_by_displacement
     if direction not in DIRECTIONS:
         phase, speed, reasons = NEUTRAL, STANDARD, ["NO_DIRECTIONAL_EVIDENCE"]
