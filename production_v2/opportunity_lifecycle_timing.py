@@ -44,34 +44,32 @@ def _decorate(result: dict[str, Any], current: dict[str, Any], previous: dict[st
 
 def install(pipeline_module: Any) -> Callable[..., Any]:
     """Bind timing while preserving the production lifecycle helper contracts."""
-    original_current = getattr(pipeline_module, "_directional_lifecycle_current")
+    original_current = getattr(pipeline_module, "_directional_lifecycle_current", None)
     original_advance = getattr(pipeline_module, "advance_opportunity_directions")
     if getattr(original_advance, "_timing_membrane", False):
         return original_advance
 
-    def current_with_timing(results: dict[str, Any], decision: str, gate_passed: bool, candle: Any, causal_anchor: dict[str, Any] | None = None) -> tuple[dict[str, dict[str, Any]], str, str]:
-        # causal_anchor is accepted at the pipeline boundary but intentionally not
-        # forwarded to the legacy four-argument helper.
-        legacy_result = original_current(results, decision, gate_passed, candle)
-        if not isinstance(legacy_result, tuple) or len(legacy_result) != 3:
-            raise TypeError("_directional_lifecycle_current must return (current_by_direction, leader, competition)")
-        current, leader, competition = legacy_result
-        if not isinstance(current, dict):
-            raise TypeError("_directional_lifecycle_current current_by_direction must be a dict")
-        current = {direction: dict(item or {}) for direction, item in current.items() if isinstance(item, dict)}
-        e6 = results.get("E6")
-        e6_output = e6.output if e6 and isinstance(getattr(e6, "output", None), dict) else {}
-        direction = _text(e6_output.get("direction") or e6_output.get("direction_thesis") or e6_output.get("thesis_direction") or e6_output.get("finding"))
-        if direction not in {"BUY", "SELL"}:
+    if original_current is not None:
+        def current_with_timing(results: dict[str, Any], decision: str, gate_passed: bool, candle: Any, causal_anchor: dict[str, Any] | None = None) -> tuple[dict[str, dict[str, Any]], str, str]:
+            legacy_result = original_current(results, decision, gate_passed, candle)
+            if not isinstance(legacy_result, tuple) or len(legacy_result) != 3:
+                raise TypeError("_directional_lifecycle_current must return (current_by_direction, leader, competition)")
+            current, leader, competition = legacy_result
+            if not isinstance(current, dict):
+                raise TypeError("_directional_lifecycle_current current_by_direction must be a dict")
+            current = {direction: dict(item or {}) for direction, item in current.items() if isinstance(item, dict)}
+            e6 = results.get("E6")
+            e6_output = e6.output if e6 and isinstance(getattr(e6, "output", None), dict) else {}
+            direction = _text(e6_output.get("direction") or e6_output.get("direction_thesis") or e6_output.get("thesis_direction") or e6_output.get("finding"))
+            if direction not in {"BUY", "SELL"}:
+                return current, leader, competition
+            current.setdefault(direction, {})
+            for key in ("opportunity_phase", "opportunity_speed", "opportunity_decision_speed", "confirmation_window", "chase_prohibited", "opportunity_timing"):
+                if key in e6_output:
+                    current[direction][key] = e6_output[key]
+            current[direction].update(_timing_fields(current[direction]))
             return current, leader, competition
-        current.setdefault(direction, {})
-        for key in ("opportunity_phase", "opportunity_speed", "opportunity_decision_speed", "confirmation_window", "chase_prohibited", "opportunity_timing"):
-            if key in e6_output:
-                current[direction][key] = e6_output[key]
-        current[direction].update(_timing_fields(current[direction]))
-        return current, leader, competition
-
-    pipeline_module._directional_lifecycle_current = current_with_timing
+        pipeline_module._directional_lifecycle_current = current_with_timing
 
     def wrapped(previous: dict[str, Any] | None, current_by_direction: dict[str, dict[str, Any]], *, leader: str = "NEUTRAL", competition: str = "UNCONTESTED") -> dict[str, Any]:
         current = {direction: dict(current_by_direction.get(direction) or {}) for direction in ("BUY", "SELL")}

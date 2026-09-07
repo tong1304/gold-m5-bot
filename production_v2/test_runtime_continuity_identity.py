@@ -5,11 +5,12 @@ def advance(previous, event_id, candle, **evidence):
     return advance_lifecycle_stage(previous, {"direction": "BUY", "candidate": True, "event_id": event_id, "candle": candle, **evidence})
 
 
-def test_event_changes_preserve_opportunity_and_origin_identity():
+def test_event_changes_create_a_new_causal_opportunity_identity():
     first = advance(None, "EVENT-A", "2026-09-07T10:00:00Z")
     second = advance(first, "EVENT-B", "2026-09-07T10:05:00Z", confirmed=True)
-    assert second["opportunity_id"] == first["opportunity_id"]
-    assert second["origin_event_id"] == "EVENT-A"
+    assert second["opportunity_id"] != first["opportunity_id"]
+    assert second["opportunity_id"] == "BUY|OPPORTUNITY|EVENT-B"
+    assert second["origin_event_id"] == "EVENT-B"
     assert second["event_id"] == "EVENT-B"
     assert second["last_progression_candle"] == "2026-09-07T10:05:00Z"
 
