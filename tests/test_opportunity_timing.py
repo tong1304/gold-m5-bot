@@ -2,6 +2,7 @@ from types import SimpleNamespace
 
 from production_v2.opportunity_timing import classify_opportunity_timing
 from production_v2 import professional_opportunity_surgery
+from production_v2 import e6_runtime_authority
 from production_v2 import e7_thesis_boundary
 from production_v2 import e9_watch_boundary
 
@@ -66,6 +67,29 @@ def test_professional_opportunity_surgery_exposes_timing_without_authorizing_tra
     assert out["opportunity_timing"]["phase"] == "EARLY_OPPORTUNITY"
     assert out["opportunity_timing"]["decision_speed"] == "FAST"
     assert out["trade_authorized"] is False
+
+
+def test_e6_runtime_authority_attaches_timing_to_live_callable():
+    class FakeE6:
+        def analyze_e6(self, market_data, upstream):
+            return SimpleNamespace(engine_id="E6", name="Setup Brain", gate_passed=False, score=0.0, output={
+                "setup":"OPPORTUNITY_WATCH",
+                "direction":"SELL",
+                "watch_only":True,
+                "trade_ready":False,
+                "candidate_type":"OPPORTUNITY_CANDIDATE",
+            }, reason_codes=())
+
+    e6 = FakeE6()
+    e6_runtime_authority.install(e6)
+    result = e6.analyze_e6({}, {
+        "E4": SimpleNamespace(output={"event":"HIGH_SWEEP_REJECTION","event_age_bars":0,"auction_state":"PENDING","event_level":4409.78,"event_atr_frozen":7.75,"auction_quality":73.0}),
+        "E5": SimpleNamespace(output={"price":4408.69,"available_space_atr_short":2.50,"available_space_atr_long":2.16}),
+    })
+    assert result.output["opportunity_timing"]["phase"] == "EARLY_OPPORTUNITY"
+    assert result.output["opportunity_timing"]["decision_speed"] == "FAST"
+    assert result.output["opportunity_fast_path"] is True
+    assert result.output["execution_authority"] == "E9"
 
 
 def test_early_opportunity_candidate_is_handed_to_e7_as_pending_confirmation():
