@@ -47,21 +47,15 @@ def _identity(previous: dict[str, Any], current: dict[str, Any]) -> str:
     previous_id = str(previous.get("opportunity_id") or "").strip()
     current_event = str(current.get("event_id") or current.get("origin_event_id") or "").strip()
     previous_event = str(previous.get("event_id") or previous.get("origin_event_id") or _identity_event(previous_id) or "").strip()
-
-    # A lifecycle identity is reusable only when both direction and causal event
-    # still match. This prevents a stale SELL id from contaminating a new BUY,
-    # and prevents a genuinely new causal event from inheriting the old id.
     if previous_id and current_direction in {"BUY", "SELL"} and previous_direction == current_direction:
         if not current_event or not previous_event or current_event == previous_event:
             return previous_id
-
     explicit = str(current.get("opportunity_id") or "").strip()
     if explicit and current_direction in {"BUY", "SELL"}:
         explicit_direction = _identity_direction(explicit)
         explicit_event = _identity_event(explicit)
         if explicit_direction == current_direction and (not current_event or not explicit_event or explicit_event == current_event):
             return explicit
-
     if current_direction not in {"BUY", "SELL"}: return ""
     setup = _text(current.get("setup") or "OPPORTUNITY") or "OPPORTUNITY"; event = current_event
     return "|".join(part for part in (current_direction, setup, event) if part)
@@ -128,7 +122,7 @@ def advance_lifecycle_stage(previous: dict[str, Any] | None, current: dict[str, 
     if current_rank < 0: return dict(previous)
     if previous_rank < 0: stage = "WATCH" if current_rank > 0 else requested
     elif current_rank <= previous_rank: stage = previous_stage
-    else: stage = STAGES[previous_rank + 1]
+    else: stage = requested
     identity = _identity(previous, current); new_identity = bool(identity and identity != str(previous.get("opportunity_id") or "").strip())
     result = {**previous, "opportunity_id": identity, "lifecycle_stage": stage, "last_evaluated_candle": current.get("candle") or previous.get("last_evaluated_candle"), "trade_authorized": stage == "TRADE", "terminal_stage": None, "terminal_reason": None, "direction": _text(current.get("direction")) or previous.get("direction")}
     result = _with_event(result, current, new_identity=new_identity)
