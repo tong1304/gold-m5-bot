@@ -7,7 +7,6 @@ from typing import Any
 from . import opportunity_lifecycle_progression as progression
 
 logger = logging.getLogger(__name__)
-_TERMINAL = {"INVALIDATED", "EXPIRED", "REPLACED", "EXECUTED"}
 _VALID = {"BUY", "SELL"}
 
 
@@ -36,6 +35,22 @@ def _canonical_event(e4: dict[str, Any], causal_anchor: Any) -> Any:
     return e4.get("event_id") or e4.get("auction_event_id") or e4.get("liquidity_event_id")
 
 
+def _safe_stage_input(current: dict[str, Any]) -> dict[str, Any]:
+    """Prevent downstream evidence from leapfrogging an unproven prerequisite."""
+    stage = dict(current)
+    thesis = bool(stage.get("thesis_proven"))
+    e7 = bool(stage.get("e7_confirmed")) or str(stage.get("e7_confirmation_state") or stage.get("confirmation_state") or "").upper() in {"PASS", "PASSED", "CONFIRMED", "TRIGGER_CONFIRMED", "PROVEN", "VALIDATED", "TRADE_READY"}
+    e8 = bool(stage.get("e8_ready"))
+    e9 = bool(stage.get("e9_trade"))
+    if not thesis:
+        stage.pop("e7_confirmed", None); stage.pop("e7_confirmation_state", None); stage.pop("confirmation_state", None); e7 = False
+    if not e7:
+        stage.pop("e8_ready", None); e8 = False
+    if not e8:
+        stage.pop("e9_trade", None); e9 = False
+    return stage
+
+
 def install(pipeline_module: Any) -> None:
     if getattr(pipeline_module, "_P0_OPPORTUNITY_INTEGRITY_BOUND", False):
         return
@@ -58,15 +73,14 @@ def install(pipeline_module: Any) -> None:
             item["origin_event_id"] = item.get("origin_event_id") or item.get("event_id")
             if _is_early_watch(e6):
                 item["setup"] = "OPPORTUNITY_WATCH"
-                item["thesis_proven"] = bool(item.get("thesis_proven", False))
-                item["ready"] = False if not (decision == "TRADE" and gate_passed) else item.get("ready", False)
                 item["candidate_type"] = "EARLY_OPPORTUNITY_CANDIDATE"
-                item["wait_for"] = e6.get("wait_for") or ("FAST_CLOSED_CANDLE_CONFIRMATION" if str(e6.get("opportunity_decision_speed") or "").upper() == "FAST" else "CLOSED_CANDLE_CONFIRMATION")
                 item["opportunity_phase_speed"] = "EARLY_OPPORTUNITY"
+                item["wait_for"] = e6.get("wait_for") or ("FAST_CLOSED_CANDLE_CONFIRMATION" if str(e6.get("opportunity_decision_speed") or "").upper() == "FAST" else "CLOSED_CANDLE_CONFIRMATION")
             current[d6] = item
-            # A stale counter-direction event is not allowed to become the E6 event.
+            # The E6-supported direction owns the current causal event. A stale
+            # event from the opposite direction must not become E6's identity.
             other = "SELL" if d6 == "BUY" else "BUY"
-            if other in current and current[other].get("event_id") and not current[other].get("candidate"):
+            if other in current and not current[other].get("candidate"):
                 current[other] = dict(current[other]); current[other].pop("event_id", None); current[other].pop("origin_event_id", None)
             leader = d6 if bool(item.get("candidate")) else leader
         return current, leader, competition
@@ -81,16 +95,15 @@ def install(pipeline_module: Any) -> None:
             current = dict(current_by_direction.get(direction) or {})
             if not current.get("candidate"):
                 continue
-            # The opportunity lifecycle is the production path. Apply the same
-            # stage machine here, so promotion cannot live only in a parallel module.
             prior = previous_map.get(direction) if isinstance(previous_map.get(direction), dict) else {}
-            stage_input = {**current, "opportunity_id": item.get("opportunity_id"), "event_id": item.get("event_id")}
+            stage_input = _safe_stage_input({**current, "opportunity_id": item.get("opportunity_id"), "event_id": item.get("event_id")})
             staged = progression.advance_lifecycle_stage(prior, stage_input)
-            for key in ("lifecycle_stage", "wait_for_stage", "stage_history", "stage_candle", "terminal_stage", "terminal_reason"):
+            for key in ("lifecycle_stage", "wait_for_stage", "stage_history", "stage_candle", "terminal_stage", "terminal_reason", "trade_authorized"):
                 if key in staged:
                     item[key] = staged[key]
-            if item.get("opportunity_id") and staged.get("opportunity_id") and item.get("opportunity_id") != staged.get("opportunity_id"):
-                item["previous_opportunity_id"] = item.get("opportunity_id")
+            if staged.get("opportunity_id"):
+                if item.get("opportunity_id") and item.get("opportunity_id") != staged.get("opportunity_id"):
+                    item["previous_opportunity_id"] = item.get("opportunity_id")
                 item["opportunity_id"] = staged["opportunity_id"]
             item["canonical_direction"] = direction
             item["canonical_event_id"] = item.get("event_id") or current.get("event_id")
