@@ -27,15 +27,20 @@ def _requested_stage(current: dict[str, Any]) -> str:
     if _truth(current.get("thesis_proven")): return "E6_THESIS"
     auction = _text(current.get("e4_state") or current.get("auction_state") or current.get("confirmation"))
     if _truth(current.get("confirmed")) or auction in {"CONFIRMED", "TERMINALLY_CONFIRMED", "ACCEPTED", "RECLAIMED"}: return "CONFIRMED"
-    if _truth(current.get("candidate")): return "WATCH"
+    if _truth(current.get("candidate")) and _text(current.get("direction")) in {"BUY", "SELL"}: return "WATCH"
     return "IDLE"
 
 
 def _identity(previous: dict[str, Any], current: dict[str, Any]) -> str:
-    existing = str(previous.get("opportunity_id") or current.get("opportunity_id") or "").strip()
-    if existing: return existing
-    direction = _text(current.get("direction")) or "NEUTRAL"; setup = _text(current.get("setup") or "OPPORTUNITY") or "OPPORTUNITY"; event = str(current.get("event_id") or current.get("origin_event_id") or "").strip()
-    return "|".join(part for part in (direction, setup, event) if part)
+    current_direction = _text(current.get("direction"))
+    previous_direction = _text(previous.get("direction"))
+    existing = str(previous.get("opportunity_id") or "").strip()
+    if existing and current_direction in {"BUY", "SELL"} and previous_direction == current_direction: return existing
+    explicit = str(current.get("opportunity_id") or "").strip()
+    if explicit and current_direction in {"BUY", "SELL"}: return explicit
+    if current_direction not in {"BUY", "SELL"}: return ""
+    setup = _text(current.get("setup") or "OPPORTUNITY") or "OPPORTUNITY"; event = str(current.get("event_id") or current.get("origin_event_id") or "").strip()
+    return "|".join(part for part in (current_direction, setup, event) if part)
 
 
 def _with_event(result: dict[str, Any], current: dict[str, Any]) -> dict[str, Any]:
@@ -54,7 +59,7 @@ def _record_stage(result: dict[str, Any], stage: str, candle: Any) -> dict[str, 
 
 def _terminal_result(previous: dict[str, Any], stage: str, current: dict[str, Any]) -> dict[str, Any]:
     reason = _text(current.get("invalidation_reason")) or stage; state = "INVALIDATED" if stage == "INVALIDATED" else "EXPIRED" if stage != "REPLACED" else "REPLACED"
-    result = {**previous, "opportunity_id": _identity(previous, current), "lifecycle_stage": stage, "state": state, "lifecycle_state": stage, "opportunity_phase": stage, "trade_authorized": False, "wait_for_stage": "NEW_CAUSAL_OPPORTUNITY", "terminal_stage": stage, "terminal_reason": reason, "invalidation_reason": current.get("invalidation_reason") or previous.get("invalidation_reason") or reason}
+    result = {**previous, "opportunity_id": _identity(previous, current) or previous.get("opportunity_id"), "direction": _text(current.get("direction")) or previous.get("direction"), "lifecycle_stage": stage, "state": state, "lifecycle_state": stage, "opportunity_phase": stage, "trade_authorized": False, "wait_for_stage": "NEW_CAUSAL_OPPORTUNITY", "terminal_stage": stage, "terminal_reason": reason, "invalidation_reason": current.get("invalidation_reason") or previous.get("invalidation_reason") or reason}
     return _record_stage(_with_event(result, current), stage, current.get("candle"))
 
 
@@ -76,7 +81,7 @@ def advance_lifecycle_stage(previous: dict[str, Any] | None, current: dict[str, 
     if previous_rank < 0: stage = "WATCH" if current_rank > 0 else requested
     elif current_rank <= previous_rank: stage = previous_stage
     else: stage = STAGES[previous_rank + 1]
-    result = {**previous, "opportunity_id": _identity(previous, current), "lifecycle_stage": stage, "last_evaluated_candle": current.get("candle") or previous.get("last_evaluated_candle"), "trade_authorized": stage == "TRADE", "terminal_stage": None, "terminal_reason": None}
+    result = {**previous, "opportunity_id": _identity(previous, current), "lifecycle_stage": stage, "last_evaluated_candle": current.get("candle") or previous.get("last_evaluated_candle"), "trade_authorized": stage == "TRADE", "terminal_stage": None, "terminal_reason": None, "direction": _text(current.get("direction")) or previous.get("direction")}
     result = _with_event(result, current)
     if stage == "WATCH": result.update(wait_for_stage="CONFIRMED", state="WATCHING", opportunity_phase="OPPORTUNITY_WATCH", execution_state="NONE")
     elif stage == "CONFIRMED": result.update(wait_for_stage="E6_THESIS", state="WAITING", opportunity_phase="CONFIRMED", execution_state="NONE")
