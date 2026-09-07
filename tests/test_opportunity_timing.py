@@ -132,6 +132,37 @@ def test_early_opportunity_candidate_is_handed_to_e7_as_pending_confirmation():
     assert "E6_OPPORTUNITY_WATCH_NOT_SETUP" not in result.output["reason_codes"]
 
 
+def test_e9_early_fast_candidate_waits_for_e7_not_for_new_e6_thesis():
+    class FakeE9:
+        def analyze_e9(self, snapshot, upstream):
+            return SimpleNamespace(output={}, engine_id="E9", name="Master Decision Brain", gate_passed=False, score=0.0, reason_codes=())
+
+    e9 = FakeE9()
+    e9_watch_boundary.install(e9)
+    e6 = SimpleNamespace(output={
+        "setup":"OPPORTUNITY_WATCH",
+        "direction":"SELL",
+        "candidate_type":"EARLY_OPPORTUNITY_CANDIDATE",
+        "watch_only":True,
+        "trade_ready":False,
+        "gate_passed":False,
+        "opportunity_timing":{"phase":"EARLY_OPPORTUNITY","decision_speed":"FAST"},
+        "opportunity_phase_speed":"EARLY_OPPORTUNITY",
+        "opportunity_decision_speed":"FAST",
+        "opportunity_fast_path":True,
+        "event":"HIGH_SWEEP_REJECTION",
+        "event_age_bars":0,
+        "available_space_atr":2.5,
+    })
+    e8 = SimpleNamespace(output={"applicability":"NOT_APPLICABLE_WITHOUT_SURVIVING_E6_THESIS"})
+    result = e9.analyze_e9({}, {"E6":e6,"E8":e8})
+    assert result.output["decision"] == "NO_TRADE"
+    assert result.output["governance_reason"] == "EARLY_OPPORTUNITY_FAST_PATH_PENDING"
+    assert "E7_SETUP_SPECIFIC_CLOSED_CANDLE_CONFIRMATION" in result.output["next_required_events"]
+    assert "E6_SETUP_THESIS_REQUIRED" not in result.output["next_required_events"]
+    assert result.output.get("trade_authorized", False) is False
+
+
 def test_e9_watch_reports_opportunity_not_ready_and_keeps_trade_blocked():
     class FakeE9:
         def analyze_e9(self, snapshot, upstream):
