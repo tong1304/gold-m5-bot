@@ -26,12 +26,13 @@ from .runtime_trace_boundary import install as _install_runtime_trace_boundary
 from .opportunity_lifecycle_runtime import install as _install_opportunity_lifecycle_runtime
 from .professional_opportunity_surgery import install as _install_professional_opportunity
 from .terminal_opportunity_runtime import install as _install_terminal_opportunity_runtime
+from .opportunity_timing_runtime_hotfix import install as _install_opportunity_timing_hotfix
 
 _install_bootstrap_surgery(_pipeline_module)
 _install_mtf_runtime(_pipeline_module, _market_data_module)
 
 # E2 opportunity intelligence: preserve conditional BUY/SELL watches without
-# authorizing entry, trigger, decision, or execution.
+authorizing entry, trigger, decision, or execution.
 _install_e2_opportunity_book(_pipeline_module, _e2_module)
 
 # E6 runtime membrane is installed on the authoritative E6 module and then
@@ -61,5 +62,10 @@ _install_terminal_opportunity_runtime(_pipeline_module)
 # Professional opportunity is observational only. It exposes the canonical
 # E2 directional BUY/SELL radar while preserving E9 as execution authority.
 _install_professional_opportunity(_professional_opportunity_module, _pipeline_module)
+
+# Final runtime hotfix: repair stale zero-valued E6 fields by sourcing timing
+# evidence from the authoritative E4/E5 upstream results, and hand every
+# EARLY opportunity to E7 for confirmation without granting trade authority.
+_install_opportunity_timing_hotfix(_pipeline_module)
 
 __all__ = ["ProductionPipeline"]
