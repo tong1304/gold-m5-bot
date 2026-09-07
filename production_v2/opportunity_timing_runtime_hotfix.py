@@ -33,7 +33,7 @@ def _merge_evidence(e6: dict[str, Any], e4: dict[str, Any], e5: dict[str, Any]) 
     out = dict(e6)
 
     for key in ("event", "event_type", "event_level", "event_atr_frozen", "event_age_bars", "auction_state", "response_actor"):
-        value = _first_usable(out.get(key), e4.get(key))
+        value = _first_usable(e4.get(key), out.get(key))
         if value is not None:
             out[key] = value
 
@@ -118,11 +118,17 @@ def _apply(result: EngineResult, upstream: dict[str, EngineResult]) -> EngineRes
 def install(pipeline_module) -> None:
     if getattr(pipeline_module, "_OPPORTUNITY_TIMING_HOTFIX_INSTALLED", False):
         return
-    original = pipeline_module.analyze_e6
+
+    # final_runtime_binding.py restores _E6_RUNTIME_OVERRIDE on every candle.
+    # Therefore the hotfix must own that override, not merely pipeline.analyze_e6.
+    original = getattr(pipeline_module, "_E6_RUNTIME_OVERRIDE", None)
+    if original is None:
+        original = pipeline_module.analyze_e6
 
     def wrapped(snapshot, upstream):
         result = original(snapshot, upstream)
         return _apply(result, upstream)
 
     pipeline_module.analyze_e6 = wrapped
+    pipeline_module._E6_RUNTIME_OVERRIDE = wrapped
     pipeline_module._OPPORTUNITY_TIMING_HOTFIX_INSTALLED = True
