@@ -20,6 +20,12 @@ def _new_causal_event(previous: dict[str, Any], current: dict[str, Any]) -> bool
     return bool(p and c and p.casefold() != c.casefold())
 
 
+def _same_closed_candle(previous: dict[str, Any], current: dict[str, Any]) -> bool:
+    p = str(previous.get("last_evaluated_candle") or "").strip()
+    c = str(current.get("candle") or current.get("event_candle") or "").strip()
+    return bool(p and c and p == c)
+
+
 def _as_new_watch(result: dict[str, Any], current: dict[str, Any]) -> dict[str, Any]:
     return {
         **result,
@@ -64,10 +70,12 @@ def install(module: Any) -> None:
         ps = str(previous.get("setup") or "").upper()
         cs = str(current.get("setup") or current.get("setup_family") or "").upper()
         ts = str(current.get("thesis_status") or "").upper()
+        thesis_proven = bool(current.get("thesis_proven")) or ts in THESIS_STATES - {"FORMING", "VALIDATING"}
         previous_state = str(previous.get("state") or "").upper()
         pd = str(previous.get("direction") or "").upper()
         cd = str(current.get("direction") or "").upper()
         fresh_event = _new_causal_event(previous, current)
+        same_candle = _same_closed_candle(previous, current)
 
         # A fresh causal event creates a NEW active watch. The old opportunity
         # is historical; the active result must never be REPLACED.
@@ -75,9 +83,13 @@ def install(module: Any) -> None:
             return _as_new_watch(result, current)
 
         # WATCHING is a causal-discovery state. A concrete setup label alone
-        # does not prove the thesis. Never promote WATCHING to WAITING merely
-        # because a setup name appeared; E6 thesis proof is the required gate.
-        if previous_state == "WATCHING" and pd == cd and not ts:
+        # does not prove the thesis. Explicit thesis_proven=True (or a strong
+        # thesis status) is the only promotion gate.
+        if previous_state == "WATCHING" and pd == cd and not thesis_proven:
+            if same_candle or cs in WATCH_SETUPS:
+                continuity = "CONTINUING_UPSTREAM_WATCH"
+            else:
+                continuity = "PRESERVING_PENDING_OPPORTUNITY"
             return {
                 **result,
                 "state": "WATCHING",
@@ -89,7 +101,7 @@ def install(module: Any) -> None:
                 "candidate": bool(current.get("candidate", result.get("candidate", True))),
                 "trade_authorized": False,
                 "ready": False,
-                "continuity": "PRESERVING_PENDING_OPPORTUNITY",
+                "continuity": continuity,
                 "bars_waited": result.get("bars_waited", previous.get("bars_waited", 0)),
                 "age_bars": result.get("age_bars", previous.get("age_bars", 0)),
             }
@@ -100,7 +112,7 @@ def install(module: Any) -> None:
             previous_state in ACTIVE
             and ps in WATCH_SETUPS
             and cs not in CONCRETE_EXCLUDED
-            and ts in THESIS_STATES
+            and thesis_proven
             and not current.get("ready")
         ):
             return {
