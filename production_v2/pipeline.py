@@ -42,7 +42,22 @@ def _dict_result(engine_id: str, output: dict[str, Any]) -> EngineResult:
     return EngineResult(engine_id, NAMES[engine_id], output.get("gate_passed"), score, output, reasons)
 
 
-def finalize_e6_output(output: dict[str, Any]) -> dict[str, Any]: return _normalize_watch_semantics(dict(output or {}))
+def finalize_e6_output(output: dict[str, Any]) -> dict[str, Any]:
+    """Normalize E6 watch semantics without destroying the timing membrane's candidate state."""
+    normalized = _normalize_watch_semantics(dict(output or {}))
+    timing = normalized.get("opportunity_timing") if isinstance(normalized.get("opportunity_timing"), dict) else {}
+    phase = str(normalized.get("opportunity_phase_speed") or timing.get("phase") or "").upper().strip()
+    candidate_type = str(normalized.get("candidate_type") or "").upper().strip()
+    # V4 deliberately promotes every EARLY opportunity to an E7 confirmation candidate.
+    # The generic watch normalizer historically rewrote it back to OPPORTUNITY_CANDIDATE,
+    # creating the exact E6 -> E7 deadlock this membrane is designed to prevent.
+    if phase == "EARLY_OPPORTUNITY" and candidate_type == "OPPORTUNITY_CANDIDATE":
+        normalized["candidate_type"] = "EARLY_OPPORTUNITY_CANDIDATE"
+        normalized["confirmation_window"] = normalized.get("confirmation_window") or "NEXT_CLOSED_M5_CANDLE"
+        if not normalized.get("wait_for"):
+            speed = str(normalized.get("opportunity_decision_speed") or timing.get("decision_speed") or "SLOW").upper()
+            normalized["wait_for"] = "FAST_CLOSED_CANDLE_CONFIRMATION" if speed == "FAST" else "CLOSED_CANDLE_CONFIRMATION"
+    return normalized
 
 
 def _enrich(engine_id: str, result: EngineResult, snapshot: dict[str, Any]) -> EngineResult:
@@ -179,17 +194,13 @@ def _directional_lifecycle_current(results: dict[str, EngineResult], decision: s
 class ProductionPipeline:
     ENGINE_ORDER = ENGINE_ORDER
     def __init__(self): self._opportunity_lifecycle: dict[str, dict[str, Any]] = {}
-
     def run(self, market_data: dict[str, Any], *, wait_bars=0, resume_state=None, historical_calibration=None):
         snapshot = dict(market_data); symbol = str(snapshot.get("symbol") or snapshot.get("asset") or "UNKNOWN").upper()
         if resume_state is not None: self._opportunity_lifecycle[symbol] = dict(resume_state)
         elif symbol not in self._opportunity_lifecycle:
             persisted = opportunity_memory.load(symbol)
-            if persisted:
-                self._opportunity_lifecycle[symbol] = dict(persisted)
-                logger.info("[PRODUCTION V2] OPPORTUNITY_MEMORY_RESTORE symbol=%s state=%s leader=%s active_directions=%s opportunity_id=%s", symbol, persisted.get("state"), persisted.get("leader"), persisted.get("active_directions"), persisted.get("opportunity_id"))
-            else:
-                logger.info("[PRODUCTION V2] OPPORTUNITY_MEMORY_RESTORE symbol=%s state=NONE", symbol)
+            if persisted: self._opportunity_lifecycle[symbol] = dict(persisted); logger.info("[PRODUCTION V2] OPPORTUNITY_MEMORY_RESTORE symbol=%s state=%s leader=%s active_directions=%s opportunity_id=%s", symbol, persisted.get("state"), persisted.get("leader"), persisted.get("active_directions"), persisted.get("opportunity_id"))
+            else: logger.info("[PRODUCTION V2] OPPORTUNITY_MEMORY_RESTORE symbol=%s state=NONE", symbol)
         previous_lifecycle = dict(self._opportunity_lifecycle.get(symbol) or {}); calibration_records = _historical_records(historical_calibration)
         if calibration_records is not None: snapshot["historical_outcomes"] = calibration_records
         shared_picture = build_shared_market_picture(snapshot); snapshot["shared_market_picture"] = shared_picture; bars = list(snapshot.get("bars") or []); results: dict[str, EngineResult] = {}
@@ -204,22 +215,8 @@ class ProductionPipeline:
         if decision == "TRADE" and (not trade_ready or not gate_passed): decision = "NO_TRADE"
         if decision not in {"TRADE", "NO_TRADE"}: decision = "NO_TRADE"
         state = "SIGNAL_READY" if decision == "TRADE" and trade_ready and gate_passed else "ANALYSIS_COMPLETE_NO_TRADE"
-        candle = snapshot.get("candle_close_timestamp") or snapshot.get("candle")
-        causal_anchor = _build_causal_event_anchor(results.get("E4").output if results.get("E4") else {}, previous_lifecycle, candle)
-        current_by_direction, leader, competition = _directional_lifecycle_current(results, decision, gate_passed, candle, causal_anchor)
-        previous_directional = previous_lifecycle if isinstance(previous_lifecycle.get("opportunities"), dict) else {"opportunities": {}}
-        if not previous_directional.get("opportunities") and previous_lifecycle.get("direction") in {"BUY", "SELL"}: previous_directional = {"opportunities": {str(previous_lifecycle["direction"]): previous_lifecycle}}
-        lifecycle = advance_opportunity_directions(previous_directional, current_by_direction, leader=leader, competition=competition)
-        lifecycle["causal_event_anchor"] = causal_anchor or (previous_lifecycle.get("causal_event_anchor") if isinstance(previous_lifecycle.get("causal_event_anchor"), dict) else {})
-        lifecycle["previous_state"] = previous_lifecycle.get("state") if previous_lifecycle else None
-        lifecycle["e6_thesis_proven"] = bool(results.get("E6") and results["E6"].output.get("e6_thesis_proven")); lifecycle["e7_confirmation_state"] = str(results.get("E7").output.get("confirmation_state") if results.get("E7") else "UNKNOWN"); lifecycle["e8_economic_state"] = str(results.get("E8").output.get("economic_state") if results.get("E8") else "UNKNOWN"); lifecycle["e9_final_decision"] = decision
-        e2_book = results.get("E2").output.get("opportunity_book") if results.get("E2") and isinstance(results.get("E2").output, dict) else None
+        candle = snapshot.get("candle_close_timestamp") or snapshot.get("candle"); causal_anchor = _build_causal_event_anchor(results.get("E4").output if results.get("E4") else {}, previous_lifecycle, candle); current_by_direction, leader, competition = _directional_lifecycle_current(results, decision, gate_passed, candle, causal_anchor); previous_directional = previous_lifecycle if isinstance(previous_lifecycle.get("opportunities"), dict) else {"opportunities": {}}
+        if not previous_directional.get("opportunities") and previous_lifecycle.get("direction") in {"BUY", "SELL"}: previous_directional = {"opportunities": {str(previous_lifecycle["direction"]): previous_lifecycle}
+        lifecycle = advance_opportunity_directions(previous_directional, current_by_direction, leader=leader, competition=competition); lifecycle["causal_event_anchor"] = causal_anchor or (previous_lifecycle.get("causal_event_anchor") if isinstance(previous_lifecycle.get("causal_event_anchor"), dict) else {}); lifecycle["previous_state"] = previous_lifecycle.get("state") if previous_lifecycle else None; lifecycle["e6_thesis_proven"] = bool(results.get("E6") and results["E6"].output.get("e6_thesis_proven")); lifecycle["e7_confirmation_state"] = str(results.get("E7").output.get("confirmation_state") if results.get("E7") else "UNKNOWN"); lifecycle["e8_economic_state"] = str(results.get("E8").output.get("economic_state") if results.get("E8") else "UNKNOWN"); lifecycle["e9_final_decision"] = decision; e2_book = results.get("E2").output.get("opportunity_book") if results.get("E2") and isinstance(results.get("E2").output, dict) else None
         if isinstance(e2_book, dict): lifecycle["opportunity_book"] = e2_book
-        lifecycle["execution_candidate"] = {"direction": leader, "opportunity_id": lifecycle.get("opportunity_id"), "state": lifecycle.get("state"), "selected_by": "E9" if decision == "TRADE" else "E2_OPPORTUNITY_LEADER"}
-        results["E9"] = EngineResult("E9", results["E9"].name, results["E9"].gate_passed, results["E9"].score, dict(results["E9"].output, opportunity_lifecycle=lifecycle), results["E9"].reason_codes)
-        self._opportunity_lifecycle[symbol] = lifecycle; opportunity_memory.save(symbol, lifecycle)
-        active = lifecycle.get("active_directions") or []; directional = lifecycle.get("opportunities") if isinstance(lifecycle.get("opportunities"), dict) else {}
-        radar = {direction: {"state": item.get("state"), "phase": item.get("opportunity_phase"), "opportunity_id": item.get("opportunity_id"), "bars_waited": item.get("bars_waited", 0), "origin_event_id": item.get("origin_event_id"), "wait_for": item.get("wait_for"), "thesis_proven": item.get("thesis_proven", False), "causal_event_id": (item.get("causal_event_anchor") or {}).get("event_id")} for direction, item in directional.items()}
-        logger.info("[PRODUCTION V2] OPPORTUNITY_RADAR symbol=%s candle=%s leader=%s competition=%s active_directions=%s radar=%s execution=%s decision=%s", symbol, candle, lifecycle.get("leader"), lifecycle.get("competition"), active, radar, "AUTHORIZED" if decision == "TRADE" and trade_ready and gate_passed else "BLOCKED", decision)
-        logger.info("[PRODUCTION V2] OPPORTUNITY_MEMORY_PERSIST symbol=%s backend=%s leader=%s competition=%s active_directions=%s state=%s opportunity_id=%s bars_waited=%s causal_event_id=%s", symbol, opportunity_memory.backend(), lifecycle.get("leader"), lifecycle.get("competition"), lifecycle.get("active_directions"), lifecycle.get("state"), lifecycle.get("opportunity_id"), lifecycle.get("bars_waited", 0), (lifecycle.get("causal_event_anchor") or {}).get("event_id"))
-        return DecisionResult(decision=decision, state=state, engines=results, blocked_by=None, wait_bars=int(lifecycle.get("bars_waited", wait_bars) or 0))
+        lifecycle["execution_candidate"] = {"direction": leader, "opportunity_id": lifecycle.get("opportunity_id"), "state": lifecycle.get("state"), "selected_by": "E9" if decision == "TRADE" else "E2_OPPORTUNITY_LEADER"}; results["E9"] = EngineResult("E9", results["E9"].name, results["E9"].gate_passed, results["E9"].score, dict(results["E9"].output, opportunity_lifecycle=lifecycle), results["E9"].reason_codes); self._opportunity_lifecycle[symbol] = lifecycle; opportunity_memory.save(symbol, lifecycle); active = lifecycle.get("active_directions") or []; directional = lifecycle.get("opportunities") if isinstance(lifecycle.get("opportunities"), dict) else {}; radar = {direction: {"state": item.get("state"), "phase": item.get("opportunity_phase"), "opportunity_id": item.get("opportunity_id"), "bars_waited": item.get("bars_waited", 0), "origin_event_id": item.get("origin_event_id"), "wait_for": item.get("wait_for"), "thesis_proven": item.get("thesis_proven", False), "causal_event_id": (item.get("causal_event_anchor") or {}).get("event_id")} for direction, item in directional.items()}; logger.info("[PRODUCTION V2] OPPORTUNITY_RADAR symbol=%s candle=%s leader=%s competition=%s active_directions=%s radar=%s execution=%s decision=%s", symbol, candle, lifecycle.get("leader"), lifecycle.get("competition"), active, radar, "AUTHORIZED" if decision == "TRADE" and trade_ready and gate_passed else "BLOCKED", decision); logger.info("[PRODUCTION V2] OPPORTUNITY_MEMORY_PERSIST symbol=%s backend=%s leader=%s competition=%s active_directions=%s state=%s opportunity_id=%s bars_waited=%s causal_event_id=%s", symbol, opportunity_memory.backend(), lifecycle.get("leader"), lifecycle.get("competition"), lifecycle.get("active_directions"), lifecycle.get("state"), lifecycle.get("opportunity_id"), lifecycle.get("bars_waited", 0), (lifecycle.get("causal_event_anchor") or {}).get("event_id")); return DecisionResult(decision=decision, state=state, engines=results, blocked_by=None, wait_bars=int(lifecycle.get("bars_waited", wait_bars) or 0))
