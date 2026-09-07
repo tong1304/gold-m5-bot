@@ -2,6 +2,7 @@ from types import SimpleNamespace
 
 from production_v2.opportunity_timing import classify_opportunity_timing
 from production_v2 import professional_opportunity_surgery
+from production_v2 import e7_thesis_boundary
 from production_v2 import e9_watch_boundary
 
 
@@ -65,6 +66,46 @@ def test_professional_opportunity_surgery_exposes_timing_without_authorizing_tra
     assert out["opportunity_timing"]["phase"] == "EARLY_OPPORTUNITY"
     assert out["opportunity_timing"]["decision_speed"] == "FAST"
     assert out["trade_authorized"] is False
+
+
+def test_early_opportunity_candidate_is_handed_to_e7_as_pending_confirmation():
+    class FakeE7:
+        def analyze_e7(self, snapshot, upstream):
+            return SimpleNamespace(
+                output={"state":"WAIT","confirmation":"UNRESOLVED","confirmation_state":"NOT_APPLICABLE","trade_decision_authority":False},
+                engine_id="E7",
+                name="Confirmation Brain",
+                gate_passed=False,
+                score=0.0,
+                reason_codes=("CONFIRMATION_NOT_APPLICABLE",),
+            )
+
+    e7 = FakeE7()
+    e7_thesis_boundary.install(e7)
+    e6 = SimpleNamespace(output={
+        "setup":"OPPORTUNITY_WATCH",
+        "direction":"SELL",
+        "candidate_type":"EARLY_OPPORTUNITY_CANDIDATE",
+        "watch_only":True,
+        "trade_ready":False,
+        "gate_passed":False,
+        "setup_exists":False,
+        "thesis_status":"CONTESTED",
+        "opportunity_phase_speed":"EARLY_OPPORTUNITY",
+        "opportunity_decision_speed":"FAST",
+        "opportunity_fast_path":True,
+        "event":"HIGH_SWEEP_REJECTION",
+        "event_age_bars":0,
+        "available_space_atr":2.5,
+        "thesis":"SELL liquidity-response hypothesis; confirmation still required.",
+    })
+    result = e7.analyze_e7({}, {"E6":e6})
+    assert result.output["state"] == "WAIT"
+    assert result.output["confirmation_state"] == "PENDING"
+    assert result.output["trigger_status"] == "NOT_OBSERVED"
+    assert result.output["trade_decision_authority"] is False
+    assert "E7_SETUP_SPECIFIC_CLOSED_CANDLE_CONFIRMATION" in result.output["missing_evidence"]
+    assert "E6_OPPORTUNITY_WATCH_NOT_SETUP" not in result.output["reason_codes"]
 
 
 def test_e9_watch_reports_opportunity_not_ready_and_keeps_trade_blocked():
