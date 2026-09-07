@@ -63,6 +63,24 @@ def _terminal_result(previous: dict[str, Any], stage: str, current: dict[str, An
     return _record_stage(_with_event(result, current), stage, current.get("candle"))
 
 
+def _timing_fields(current: dict[str, Any]) -> dict[str, Any]:
+    timing = current.get("opportunity_timing") if isinstance(current.get("opportunity_timing"), dict) else {}
+    phase = _text(current.get("opportunity_phase") or timing.get("phase"))
+    speed = _text(current.get("opportunity_speed") or current.get("opportunity_decision_speed") or timing.get("decision_speed"))
+    confirmation_window = current.get("confirmation_window") or timing.get("confirmation_window")
+    wait_for = current.get("wait_for") or timing.get("wait_for")
+    chase_prohibited = bool(current.get("chase_prohibited", False))
+    if phase == "EARLY_OPPORTUNITY":
+        confirmation_window = confirmation_window or "NEXT_CLOSED_M5_CANDLE"
+        wait_for = wait_for or ("FAST_CLOSED_CANDLE_CONFIRMATION" if speed == "FAST" else "CLOSED_CANDLE_CONFIRMATION")
+    elif phase == "LATE_OPPORTUNITY":
+        speed = "SLOW"
+        confirmation_window = confirmation_window or "NEW_CAUSAL_EVENT"
+        wait_for = "NO_CHASE;WAIT_FOR_NEW_CAUSAL_EVENT"
+        chase_prohibited = True
+    return {"opportunity_phase": phase, "opportunity_speed": speed, "confirmation_window": confirmation_window, "wait_for": wait_for, "chase_prohibited": chase_prohibited}
+
+
 def advance_lifecycle_stage(previous: dict[str, Any] | None, current: dict[str, Any] | None) -> dict[str, Any]:
     previous = dict(previous or {}); current = dict(current or {}); requested = _requested_stage(current); previous_stage = _text(previous.get("lifecycle_stage")) or "IDLE"
     if requested in TERMINAL_STAGES: return _terminal_result(previous, requested, current)
@@ -83,7 +101,10 @@ def advance_lifecycle_stage(previous: dict[str, Any] | None, current: dict[str, 
     else: stage = STAGES[previous_rank + 1]
     result = {**previous, "opportunity_id": _identity(previous, current), "lifecycle_stage": stage, "last_evaluated_candle": current.get("candle") or previous.get("last_evaluated_candle"), "trade_authorized": stage == "TRADE", "terminal_stage": None, "terminal_reason": None, "direction": _text(current.get("direction")) or previous.get("direction")}
     result = _with_event(result, current)
-    if stage == "WATCH": result.update(wait_for_stage="CONFIRMED", state="WATCHING", opportunity_phase="OPPORTUNITY_WATCH", execution_state="NONE")
+    timing = _timing_fields(current)
+    result.update({key: value for key, value in timing.items() if value not in (None, "")})
+    if stage == "WATCH":
+        result.update(wait_for_stage=timing.get("wait_for") or "CONFIRMED", state="WATCHING", opportunity_phase=timing.get("opportunity_phase") or "OPPORTUNITY_WATCH", execution_state="NONE")
     elif stage == "CONFIRMED": result.update(wait_for_stage="E6_THESIS", state="WAITING", opportunity_phase="CONFIRMED", execution_state="NONE")
     elif stage == "E6_THESIS": result.update(wait_for_stage="E7_CONFIRMED", state="WAITING", opportunity_phase="E6_THESIS", execution_state="NONE")
     elif stage == "E7_CONFIRMED": result.update(wait_for_stage="E8_READY", state="WAITING", opportunity_phase="E7_CONFIRMED", execution_state="NONE")
