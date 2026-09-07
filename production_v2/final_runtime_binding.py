@@ -8,18 +8,16 @@ def _module_name(value: Any) -> str:
 
 
 def install(pipeline_module, e6_module, e8_module, e9_module) -> None:
-    """Make final authority bindings deterministic without clobbering later E6 surgery.
-
-    E6 is authoritative, but production startup may install a policy-preserving
-    E6 membrane after package initialization. The final runtime binder must use
-    that explicitly registered pipeline binding instead of blindly restoring the
-    raw e6_brain callable on every candle.
-    """
+    """Install the final runtime binder while preserving the latest E6 membrane."""
     if getattr(pipeline_module, "_FINAL_RUNTIME_BINDING_INSTALLED", False):
         return
 
     original_run = pipeline_module.ProductionPipeline.run
-    pipeline_module._E6_FINAL_AUTHORITY = getattr(pipeline_module, "analyze_e6", e6_module.analyze_e6)
+    pipeline_module._E6_FINAL_AUTHORITY = getattr(
+        pipeline_module,
+        "_E6_RUNTIME_OVERRIDE",
+        getattr(pipeline_module, "analyze_e6", e6_module.analyze_e6),
+    )
 
     def run_with_final_bindings(self, market_data, *, wait_bars=0, resume_state=None, historical_calibration=None):
         e6_binding = getattr(
@@ -30,11 +28,16 @@ def install(pipeline_module, e6_module, e8_module, e9_module) -> None:
         pipeline_module.analyze_e6 = e6_binding
         pipeline_module.analyze_e8 = e8_module.analyze_e8
         pipeline_module.analyze_e9 = e9_module.analyze_e9
+        timing_active = bool(
+            getattr(pipeline_module, "_OPPORTUNITY_TIMING_HOTFIX_INSTALLED", False)
+            and getattr(pipeline_module, "_E6_RUNTIME_OVERRIDE", None) is e6_binding
+        )
         print(
             "[PRODUCTION V2] FINAL_BINDING "
-            f"E6={_module_name(pipeline_module.analyze_e6)} "
+            f"E6={_module_name(e6_binding)} "
             f"E8={_module_name(pipeline_module.analyze_e8)} "
-            f"E9={_module_name(pipeline_module.analyze_e9)}",
+            f"E9={_module_name(pipeline_module.analyze_e9)} "
+            f"TIMING_MEMBRANE={'ACTIVE' if timing_active else 'INACTIVE'}",
             flush=True,
         )
         return original_run(
