@@ -30,11 +30,45 @@ def test_late_opportunity_slows_and_blocks_chasing():
     assert result["fast_path_eligible"] is False
 
 
+def test_age_one_with_reasonable_displacement_remains_early():
+    result = classify_opportunity_timing({
+        "direction":"SELL",
+        "event":"HIGH_FAILED_BREAK_RECLAIM",
+        "event_age_bars":1,
+        "confidence":0.88,
+        "available_space_atr":1.0,
+        "event_level":4425.73,
+        "price":4424.50,
+        "event_atr_frozen":4.92,
+    })
+    assert result["event_age_bars"] == 1
+    assert result["late_by_age"] is False
+    assert result["late_by_displacement"] is False
+    assert result["phase"] == "EARLY_OPPORTUNITY"
+
+
 def test_large_event_displacement_is_late_even_on_first_recheck():
     result = classify_opportunity_timing({"direction":"SELL","event":"HIGH_FAILED_BREAK_RECLAIM","event_age_bars":1,"confidence":0.88,"available_space_atr":1.0,"event_level":4425.73,"price":4422.27,"event_atr_frozen":4.920714})
     assert result["phase"] == "LATE_OPPORTUNITY"
     assert result["late_by_displacement"] is True
     assert result["decision_speed"] == "SLOW"
+
+
+def test_canonical_event_clock_overrides_stale_numeric_age():
+    result = classify_opportunity_timing({
+        "direction":"BUY",
+        "event":"LOW_SWEEP_REJECTION",
+        "event_age_bars":0,
+        "causal_event_anchor": {
+            "event_candle":"2026-09-07T10:00:00Z",
+            "last_evaluated_candle":"2026-09-07T10:05:00Z",
+            "age_bars":0,
+        },
+        "confidence":0.70,
+        "available_space_atr":1.2,
+    })
+    assert result["event_age_bars"] == 1
+    assert result["late_by_age"] is False
 
 
 def test_gold_like_pending_sweep_is_fast_candidate_but_not_trade_authority():
