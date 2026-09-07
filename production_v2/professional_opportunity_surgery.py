@@ -10,6 +10,7 @@ the sole execution authority.
 from typing import Any
 
 from .contracts import DecisionResult, EngineResult
+from .opportunity_timing import classify_opportunity_timing
 
 DIRECTIONS = {"BUY", "SELL"}
 
@@ -52,7 +53,10 @@ def _space(output: dict[str, Any], direction: str) -> float | None:
     except (TypeError, ValueError): return None
 
 
-def _brain(results: tuple[EngineResult, ...], engine_id: str) -> dict[str, Any]:
+def _brain(results: dict[str, Any] | tuple[EngineResult, ...], engine_id: str) -> dict[str, Any]:
+    if isinstance(results, dict):
+        result = results.get(engine_id)
+        return dict(getattr(result, "output", result) or {})
     for result in results:
         if result.engine_id == engine_id: return dict(result.output or {})
     return {}
@@ -74,6 +78,26 @@ def _directional_book_view(output: dict[str, Any]) -> dict[str, Any]:
         except (TypeError, ValueError): quality = 0.0
         radar[direction] = {"state": candidate.get("state", "DEVELOPING"), "quality": round(max(0.0, min(100.0, quality)), 2), "wait_for": candidate.get("wait_for") or ["NEXT_CLOSED_M5_CANDLE"], "conditional": True}
     return {"radar": radar, "leader": _text(book.get("leader") or "NEUTRAL"), "competition": _text(book.get("competition") or "UNCONTESTED")}
+
+
+def _combined_timing(results: dict[str, Any] | tuple[EngineResult, ...]) -> dict[str, Any]:
+    """Build timing from the causal event plus E5 geometry, never from E9's decision."""
+    e4, e5, e6 = (_brain(results, x) for x in ("E4", "E5", "E6"))
+    direction = _direction(e6) if _direction(e6) in DIRECTIONS else _direction(e4)
+    merged = dict(e4)
+    merged.update({k: v for k, v in e5.items() if v is not None})
+    merged.update({k: v for k, v in e6.items() if k not in {"direction"} and v is not None})
+    merged["direction"] = direction
+    event = e4.get("event") or e4.get("auction_event") or e4.get("liquidity_event")
+    if event: merged["event"] = event
+    for source_key, target_key in (("quality","confidence"),("event_quality","confidence"),("auction_quality","auction_quality")):
+        if target_key not in merged and e4.get(source_key) is not None: merged[target_key] = e4[source_key]
+    if e4.get("event_age_bars") is not None: merged["event_age_bars"] = e4.get("event_age_bars")
+    if e4.get("causal_event_anchor") and "event_age_bars" not in merged:
+        merged["event_age_bars"] = e4["causal_event_anchor"].get("age_bars")
+    space_key = "available_space_atr_long" if direction == "BUY" else "available_space_atr_short" if direction == "SELL" else None
+    if space_key and e5.get(space_key) is not None: merged["available_space_atr"] = e5.get(space_key)
+    return classify_opportunity_timing(merged)
 
 
 def synthesize(engines: tuple[EngineResult, ...]) -> dict[str, Any]:
@@ -100,13 +124,16 @@ def synthesize(engines: tuple[EngineResult, ...]) -> dict[str, Any]:
     for output in (e6, e7, e8, e9):
         for code in _codes(output):
             if any(x in code for x in ("INVALID_TRADE_GEOMETRY", "NO_USABLE_STRUCTURAL_TARGET", "REAL_RR_BELOW_MINIMUM", "STRUCTURAL_SURVIVAL_NOT_PROVEN", "HARD_VETO")): hard_blockers.append(code)
+    timing = _combined_timing(engines)
     if dominant not in DIRECTIONS: state = "NO_DIRECTIONAL_EDGE"
     elif hard_blockers: state = "OPPORTUNITY_BLOCKED"
+    elif timing["phase"] == "LATE_OPPORTUNITY": state = "OPPORTUNITY_DECAYING"
+    elif timing["phase"] in {"EARLY_OPPORTUNITY", "CONFIRMED_OPPORTUNITY"}: state = "OPPORTUNITY_EXISTS_NOT_READY" if missing else "OPPORTUNITY_READY_FOR_FINAL_AUTHORITY"
     elif setup and setup not in {"NONE", "UNKNOWN", "NO_SETUP"}: state = "OPPORTUNITY_FORMING" if missing else "OPPORTUNITY_READY_FOR_FINAL_AUTHORITY"
     else: state = "OPPORTUNITY_WATCH"
     if agreement < 0.50: state = "DIRECTIONAL_CONFLICT" if dominant in DIRECTIONS else state
     directional = _directional_book_view(e2)
-    return {"architecture":"PROFESSIONAL_OPPORTUNITY_SYNTHESIS_V1","authority":"OBSERVATIONAL_ONLY","execution_authority":"E9_ONLY","state":state,"direction":dominant,"directional_consensus":round(agreement,3),"supporting_evidence":list(dict.fromkeys(support)),"counter_evidence":list(dict.fromkeys(counter)),"missing_evidence":list(dict.fromkeys(missing)),"hard_blockers":list(dict.fromkeys(hard_blockers)),"setup":setup or "UNKNOWN","setup_state":setup_state or "UNKNOWN","confirmation_state":confirmation or "UNKNOWN","economic_state":economics or "UNKNOWN","space_atr":space,"directional_opportunities":directional.get("radar",{}),"competition":directional.get("competition","UNCONTESTED"),"leader":directional.get("leader","NEUTRAL"),"next_required_event":missing[0] if missing else "E9_FINAL_AUTHORITY_CHECK","professional_rule":"SEE_OPPORTUNITY_FIRST_PROVE_IT_SECOND_EXECUTE_LAST","trade_authorized":False}
+    return {"architecture":"PROFESSIONAL_OPPORTUNITY_SYNTHESIS_V2","authority":"OBSERVATIONAL_ONLY","execution_authority":"E9_ONLY","state":state,"direction":dominant,"directional_consensus":round(agreement,3),"supporting_evidence":list(dict.fromkeys(support)),"counter_evidence":list(dict.fromkeys(counter)),"missing_evidence":list(dict.fromkeys(missing)),"hard_blockers":list(dict.fromkeys(hard_blockers)),"setup":setup or "UNKNOWN","setup_state":setup_state or "UNKNOWN","confirmation_state":confirmation or "UNKNOWN","economic_state":economics or "UNKNOWN","space_atr":space,"directional_opportunities":directional.get("radar",{}),"competition":directional.get("competition","UNCONTESTED"),"leader":directional.get("leader","NEUTRAL"),"opportunity_timing":timing,"next_required_event":missing[0] if missing else "E9_FINAL_AUTHORITY_CHECK","professional_rule":"SEE_OPPORTUNITY_FIRST_PROVE_IT_SECOND_EXECUTE_LAST","trade_authorized":False}
 
 
 def enrich_decision(result: DecisionResult) -> DecisionResult:
@@ -117,19 +144,33 @@ def enrich_decision(result: DecisionResult) -> DecisionResult:
     return DecisionResult(symbol=result.symbol,timeframe=result.timeframe,decision=result.decision,gate_passed=result.gate_passed,score=result.score,engines=tuple(engines),risk=risk,reason_codes=result.reason_codes)
 
 
-def install(module: Any) -> None:
-    """Patch the legacy consolidator to expose the canonical E2 directional book."""
-    if getattr(module, "_DIRECTIONAL_CONSOLIDATOR_BOUND", False): return
-    original = module.consolidate
-    def consolidate(results: dict[str, Any]) -> dict[str, Any]:
-        result = dict(original(results) or {})
-        e2_result = results.get("E2") if isinstance(results, dict) else None
-        e2 = e2_result.output if hasattr(e2_result, "output") else e2_result
-        view = _directional_book_view(e2 if isinstance(e2, dict) else {})
-        result["directional_radar"] = view.get("radar", {})
-        result["leader"] = view.get("leader", "NEUTRAL")
-        result["competition"] = view.get("competition", "UNCONTESTED")
-        result["counter_direction"] = "SELL" if result["leader"] == "BUY" and "SELL" in result["directional_radar"] else "BUY" if result["leader"] == "SELL" and "BUY" in result["directional_radar"] else None
-        return result
-    module.consolidate = consolidate
-    module._DIRECTIONAL_CONSOLIDATOR_BOUND = True
+def install(module: Any, pipeline: Any = None) -> None:
+    """Patch consolidation and pipeline consolidation without changing E9 authority."""
+    if not getattr(module, "_DIRECTIONAL_CONSOLIDATOR_BOUND", False):
+        original = module.consolidate
+        def consolidate(results: dict[str, Any]) -> dict[str, Any]:
+            result = dict(original(results) or {})
+            e2_result = results.get("E2") if isinstance(results, dict) else None
+            e2 = e2_result.output if hasattr(e2_result, "output") else e2_result
+            view = _directional_book_view(e2 if isinstance(e2, dict) else {})
+            result["directional_radar"] = view.get("radar", {})
+            result["leader"] = view.get("leader", "NEUTRAL")
+            result["competition"] = view.get("competition", "UNCONTESTED")
+            result["counter_direction"] = "SELL" if result["leader"] == "BUY" and "SELL" in result["directional_radar"] else "BUY" if result["leader"] == "SELL" and "BUY" in result["directional_radar"] else None
+            result["opportunity_timing"] = _combined_timing(results)
+            result["opportunity_lifecycle_state"] = "DECAYING" if result["opportunity_timing"]["phase"] == "LATE_OPPORTUNITY" else "EARLY" if result["opportunity_timing"]["phase"] == "EARLY_OPPORTUNITY" else "CONFIRMED" if result["opportunity_timing"]["phase"] == "CONFIRMED_OPPORTUNITY" else "IDLE"
+            result["trade_authorized"] = False
+            return result
+        module.consolidate = consolidate
+        module._DIRECTIONAL_CONSOLIDATOR_BOUND = True
+
+    if pipeline is not None and not getattr(pipeline, "_OPPORTUNITY_TIMING_BOUND", False):
+        original_pipeline_consolidate = getattr(pipeline, "consolidate", None)
+        if callable(original_pipeline_consolidate):
+            def pipeline_consolidate(results):
+                result = dict(original_pipeline_consolidate(results) or {})
+                result["opportunity_timing"] = _combined_timing(results)
+                result["trade_authorized"] = False
+                return result
+            pipeline.consolidate = pipeline_consolidate
+            pipeline._OPPORTUNITY_TIMING_BOUND = True
