@@ -1,0 +1,75 @@
+name: Opportunity Timing Integration
+
+on:
+  push:
+    branches: [production-v2]
+    paths:
+      - 'production_v2/opportunity_timing.py'
+      - '.github/workflows/opportunity-timing-integration.yml'
+      - 'production_v2/professional_opportunity.py'
+      - 'tests/**'
+
+permissions:
+  contents: write
+
+jobs:
+  integrate:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: production-v2
+          fetch-depth: 0
+
+      - name: Integrate timing layer
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          p = Path('production_v2/professional_opportunity.py')
+          text = p.read_text()
+          if 'from .opportunity_timing import enrich_timing' not in text:
+              text = text.replace('from typing import Any\n', 'from typing import Any\n\nfrom .opportunity_timing import enrich_timing\n', 1)
+          marker = '    out = dict(output or {}); direction = _direction(out);'
+          if marker not in text:
+              raise SystemExit('professional_opportunity.py integration marker not found')
+          if 'out = enrich_timing(out)' not in text:
+              text = text.replace(marker, marker + ' out = enrich_timing(out);', 1)
+          p.write_text(text)
+          PY
+
+      - name: Run focused timing tests
+        run: |
+          python -m pytest -q tests/test_opportunity_timing.py
+
+      - name: Verify import
+        run: |
+          python - <<'PY'
+          from production_v2.professional_opportunity import enrich_engine
+          out = enrich_engine('E4', {
+              'direction': 'SELL',
+              'event': 'HIGH_FAILED_BREAK_RECLAIM',
+              'event_age_bars': 0,
+              'confidence': 0.80,
+              'available_space_atr': 1.0,
+              'auction_state': 'PENDING',
+          })
+          timing = out['opportunity_timing']
+          assert timing['phase'] == 'EARLY_OPPORTUNITY'
+          assert timing['decision_speed'] == 'FAST'
+          assert timing['fast_path_eligible'] is True
+          print(timing)
+          PY
+
+      - name: Commit integration
+        run: |
+          if git diff --quiet -- production_v2/professional_opportunity.py; then
+            echo 'Timing integration already present'
+            exit 0
+          fi
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add production_v2/professional_opportunity.py
+          git commit -m 'feat: integrate evidence-speed opportunity timing [skip ci]'
+          git push origin production-v2
