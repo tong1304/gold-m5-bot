@@ -36,8 +36,6 @@ def install(lifecycle_module: Any, pipeline_module: Any | None = None) -> None:
         if state in TERMINAL_STATES:
             previous_event = p.get("event_id") or p.get("origin_event_id")
             current_event = c.get("event_id") or c.get("origin_event_id")
-            # A terminal opportunity must stay terminal on the same/no causal
-            # event. It can reopen only when a genuinely new causal event exists.
             if _same_event(previous_event, current_event):
                 out = dict(p)
                 candle = c.get("candle")
@@ -47,18 +45,20 @@ def install(lifecycle_module: Any, pipeline_module: Any | None = None) -> None:
                 return out
 
         result = original_advance(p, c)
+        previous_direction = _text(p.get("direction"))
+        current_direction = _text(c.get("direction"))
 
-        # A new causal event currently falls through the legacy helper as
-        # REPLACED, which makes the new opportunity disappear from the active
-        # set. Promote that new event into a fresh WATCH/WAIT/READY state while
-        # retaining the old identity only as historical lineage.
+        # Same-direction new causal events must become the new active
+        # opportunity. Direction changes intentionally remain REPLACED so the
+        # directional lifecycle layer can keep the transition explicit.
         if (
             _text(result.get("state")) == "REPLACED"
             and _text(p.get("state")) in ACTIVE_STATES
-            and _text(c.get("direction")) in VALID_DIRECTIONS
+            and current_direction in VALID_DIRECTIONS
+            and current_direction == previous_direction
             and bool(c.get("candidate"))
         ):
-            direction = _text(c.get("direction"))
+            direction = current_direction
             setup = _text(c.get("setup") or c.get("setup_family") or "OPPORTUNITY_WATCH")
             event_id = c.get("event_id") or c.get("origin_event_id")
             opportunity_id = lifecycle_module._identity(direction, setup, event_id)
@@ -87,7 +87,5 @@ def install(lifecycle_module: Any, pipeline_module: Any | None = None) -> None:
     lifecycle_module._CONTRACT_SURGERY_ORIGINAL = original_advance
 
     if pipeline_module is not None:
-        # pipeline.py imports the callable into its module namespace, so bind the
-        # same guarded function there before later lifecycle membranes wrap it.
         pipeline_module.advance_opportunity = guarded_advance
         pipeline_module.advance_opportunity_directions = lifecycle_module.advance_opportunity_directions
