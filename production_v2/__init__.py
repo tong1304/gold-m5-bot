@@ -27,6 +27,7 @@ from .opportunity_lifecycle_runtime import install as _install_opportunity_lifec
 from .professional_opportunity_surgery import install as _install_professional_opportunity
 from .terminal_opportunity_runtime import install as _install_terminal_opportunity_runtime
 from .opportunity_timing_runtime_hotfix import install as _install_opportunity_timing_hotfix
+from .opportunity_lifecycle_timing import install as _install_opportunity_lifecycle_timing
 
 _install_bootstrap_surgery(_pipeline_module)
 _install_mtf_runtime(_pipeline_module, _market_data_module)
@@ -67,5 +68,10 @@ _install_professional_opportunity(_professional_opportunity_module, _pipeline_mo
 # evidence from the authoritative E4/E5 upstream results, and hand every
 # EARLY opportunity to E7 for confirmation without granting trade authority.
 _install_opportunity_timing_hotfix(_pipeline_module)
+
+# Lifecycle membrane: preserve FAST/STANDARD/SLOW timing semantics after the
+# pipeline's imported lifecycle function normalizes opportunity state. This is
+# observational only; E9 remains the sole execution authority.
+_install_opportunity_lifecycle_timing(_pipeline_module)
 
 __all__ = ["ProductionPipeline"]
