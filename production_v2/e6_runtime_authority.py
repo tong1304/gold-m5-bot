@@ -2,9 +2,10 @@ from __future__ import annotations
 from typing import Any
 from .contracts import EngineResult
 from .e6_opportunity_guard import _direction, _fallback_opportunity, _watch
+from .opportunity_timing import enrich_timing
 
 WATCH_SETUPS = {"OPPORTUNITY_WATCH", "OPPORTUNITY_CANDIDATE", "OPPORTUNITY_THESIS"}
-RUNTIME_AUTHORITY_VERSION = "E6_FINAL_OPPORTUNITY_MEMBRANE_V8"
+RUNTIME_AUTHORITY_VERSION = "E6_FINAL_OPPORTUNITY_MEMBRANE_V9"
 PENDING_AUCTION_STATES = {"PENDING", "DEVELOPING", "FORMING", "AWAITING_CONFIRMATION", "CONFIRMATION_PENDING"}
 
 
@@ -82,8 +83,37 @@ def _pending_event_direction(event: str) -> str:
     return "NEUTRAL"
 
 
+def _apply_opportunity_timing(result: EngineResult, upstream: dict[str, EngineResult]) -> EngineResult:
+    """Attach timing to the E6 opportunity membrane without granting trade authority."""
+    out = _out(result)
+    e4 = _out(upstream.get("E4"))
+    e5 = _out(upstream.get("E5"))
+    timing_input = dict(out)
+    for key in ("event", "event_type", "event_level", "event_atr_frozen", "event_age_bars", "auction_state", "response_actor", "liquidity_quality", "auction_quality"):
+        if key not in timing_input and key in e4:
+            timing_input[key] = e4[key]
+    for key in ("price", "current_price", "last_price", "available_space_atr", "effective_space_atr", "space_atr", "available_space_atr_long", "available_space_atr_short"):
+        if key not in timing_input and key in e5:
+            timing_input[key] = e5[key]
+    timing = enrich_timing(timing_input)
+    timing_data = dict(timing.get("opportunity_timing") or {})
+    out["opportunity_timing"] = timing_data
+    out["opportunity_phase_speed"] = timing_data.get("phase")
+    out["opportunity_decision_speed"] = timing_data.get("decision_speed")
+    out["opportunity_fast_path"] = bool(timing_data.get("fast_path_eligible"))
+    out["opportunity_chase_prohibited"] = bool(timing_data.get("chase_prohibited"))
+    out["opportunity_lifecycle_state"] = {"EARLY_OPPORTUNITY": "EARLY", "CONFIRMED_OPPORTUNITY": "CONFIRMED", "LATE_OPPORTUNITY": "DECAYING", "NO_DIRECTIONAL_OPPORTUNITY": "NO_OPPORTUNITY"}.get(timing_data.get("phase"), "FORMING")
+    if timing_data.get("phase") == "EARLY_OPPORTUNITY" and timing_data.get("decision_speed") == "FAST":
+        out["candidate_type"] = "EARLY_OPPORTUNITY_CANDIDATE"
+        out["confirmation_window"] = "NEXT_CLOSED_M5_CANDLE"
+        out["wait_for"] = "FAST_CLOSED_CANDLE_CONFIRMATION"
+    elif timing_data.get("phase") == "LATE_OPPORTUNITY":
+        out["wait_for"] = "NO_CHASE;WAIT_FOR_NEW_CAUSAL_EVENT"
+    out["execution_authority"] = "E9"
+    return EngineResult(result.engine_id, result.name, result.gate_passed, result.score, out, result.reason_codes)
+
+
 def _pending_event_rescue(result: EngineResult, upstream: dict[str, EngineResult]) -> EngineResult:
-    """Preserve a live pending E4 event as an E6 watch when legacy E6 collapses it."""
     if not _has_no_setup(result):
         return result
     e4 = _out(upstream.get("E4"))
@@ -109,49 +139,7 @@ def _pending_event_rescue(result: EngineResult, upstream: dict[str, EngineResult
     missing = ["E4_AUCTION_FOLLOW_THROUGH", "E7_CONFIRMATION"]
     if space < 0.75:
         missing.append("STRUCTURAL_SPACE_INSUFFICIENT")
-    out.update({
-        "architecture": "E6_OPPORTUNITY_THESIS_LIFECYCLE_V10",
-        "version": "10.0",
-        "state": "FORMING_WATCH",
-        "setup_state": "FORMING_WATCH",
-        "opportunity_stage": "FORMING_WATCH",
-        "setup": "OPPORTUNITY_WATCH",
-        "setup_family": "LIQUIDITY_RESPONSE",
-        "candidate_type": "OPPORTUNITY_CANDIDATE",
-        "direction": direction,
-        "direction_thesis": direction,
-        "thesis_direction": direction,
-        "thesis_status": "FORMING",
-        "setup_exists": False,
-        "watch_only": True,
-        "trade_ready": False,
-        "trade_permission": False,
-        "gate_passed": False,
-        "e6_thesis_proven": False,
-        "e6_causal_gate": "WATCH_ONLY",
-        "finding": f"{direction} opportunity is forming from pending E4 {event}; causal follow-through is not yet proven.",
-        "thesis": f"{direction} pending-event hypothesis from {event}; wait for closed-candle follow-through before E7 confirmation.",
-        "supporting_evidence": ["E4_PENDING_DIRECTIONAL_EVENT"],
-        "counter_evidence": ["E4_AUCTION_UNCONFIRMED"],
-        "hard_conflicts": [],
-        "missing_proof": missing,
-        "missing_evidence": missing,
-        "next_required_event": "NEXT_CLOSED_M5_CANDLE",
-        "wait_for": ",".join(missing),
-        "candidate_identity": f"OPPORTUNITY_WATCH:{direction}:LIQUIDITY_RESPONSE:{event_id}",
-        "opportunity_id": f"{direction}|OPPORTUNITY_WATCH|{event_id}" if event_id else f"{direction}|OPPORTUNITY_WATCH",
-        "event_id": event_id,
-        "origin_event_id": event_id,
-        "available_space_atr": space,
-        "reason_codes": missing,
-        "reasons": missing,
-        "execution_authority": "E9",
-        "invalidated": False,
-        "upstream_evidence_lost": False,
-        "causal_evidence_lost": False,
-        "lifecycle_state": "OPPORTUNITY_WATCH",
-        "pending_event_authority": RUNTIME_AUTHORITY_VERSION,
-    })
+    out.update({"architecture":"E6_OPPORTUNITY_THESIS_LIFECYCLE_V10","version":"10.0","state":"FORMING_WATCH","setup_state":"FORMING_WATCH","opportunity_stage":"FORMING_WATCH","setup":"OPPORTUNITY_WATCH","setup_family":"LIQUIDITY_RESPONSE","candidate_type":"OPPORTUNITY_CANDIDATE","direction":direction,"direction_thesis":direction,"thesis_direction":direction,"thesis_status":"FORMING","setup_exists":False,"watch_only":True,"trade_ready":False,"trade_permission":False,"gate_passed":False,"e6_thesis_proven":False,"e6_causal_gate":"WATCH_ONLY","finding":f"{direction} opportunity is forming from pending E4 {event}; causal follow-through is not yet proven.","thesis":f"{direction} pending-event hypothesis from {event}; wait for closed-candle follow-through before E7 confirmation.","supporting_evidence":["E4_PENDING_DIRECTIONAL_EVENT"],"counter_evidence":["E4_AUCTION_UNCONFIRMED"],"hard_conflicts":[],"missing_proof":missing,"missing_evidence":missing,"next_required_event":"NEXT_CLOSED_M5_CANDLE","wait_for":",".join(missing),"candidate_identity":f"OPPORTUNITY_WATCH:{direction}:LIQUIDITY_RESPONSE:{event_id}","opportunity_id":f"{direction}|OPPORTUNITY_WATCH|{event_id}" if event_id else f"{direction}|OPPORTUNITY_WATCH","event_id":event_id,"origin_event_id":event_id,"available_space_atr":space,"reason_codes":missing,"reasons":missing,"execution_authority":"E9","invalidated":False,"upstream_evidence_lost":False,"causal_evidence_lost":False,"lifecycle_state":"OPPORTUNITY_WATCH","pending_event_authority":RUNTIME_AUTHORITY_VERSION})
     print(f"[PRODUCTION V2] E6_RUNTIME_MEMBRANE version={RUNTIME_AUTHORITY_VERSION} action=PRESERVE_PENDING_EVENT event={event} direction={direction} state=FORMING_WATCH", flush=True)
     return EngineResult("E6", result.name, False, result.score, out, tuple(missing))
 
@@ -176,22 +164,28 @@ def _runtime_watch_or_original(result: EngineResult, upstream: dict[str, EngineR
     result = _pending_event_rescue(result, upstream)
     out = _out(result)
     if _watch_marked(out) and _falseish(out.get("trade_ready")):
-        return EngineResult(result.engine_id, result.name, False, result.score, _sync_professional_reasoning(_normalize_watch_semantics(out)), result.reason_codes)
-    if not _has_no_setup(result):
-        return EngineResult(result.engine_id, result.name, result.gate_passed, result.score, _sync_professional_reasoning(out), result.reason_codes)
-    candidate = _fallback_opportunity(upstream)
-    if candidate is None:
-        normalized = _sync_professional_reasoning(out)
-        print(f"[PRODUCTION V2] E6_RUNTIME_MEMBRANE version={RUNTIME_AUTHORITY_VERSION} action=NO_RESCUE candidate=NONE", flush=True)
-        return EngineResult(result.engine_id, result.name, result.gate_passed, result.score, normalized, result.reason_codes)
-    thesis = thesis_builder(result, candidate) if thesis_builder is not None else _watch(result, candidate)
-    thesis_out = dict(thesis.output or {})
-    thesis_out["runtime_rescue_reason"] = "CAUSAL_E1_E5_EVIDENCE_SURVIVES_LEGACY_NO_SETUP"
-    thesis_out["runtime_direction_source"] = _direction(candidate.get("direction"))
-    thesis_out["runtime_candidate_family"] = candidate.get("family")
-    thesis_out["runtime_candidate_event_id"] = candidate.get("event_id")
-    thesis_out = _sync_professional_reasoning(thesis_out)
-    return EngineResult(thesis.engine_id, thesis.name, False, thesis.score, thesis_out, thesis.reason_codes)
+        normalized = _sync_professional_reasoning(_normalize_watch_semantics(out))
+        result = EngineResult(result.engine_id, result.name, False, result.score, normalized, result.reason_codes)
+    elif not _has_no_setup(result):
+        result = EngineResult(result.engine_id, result.name, result.gate_passed, result.score, _sync_professional_reasoning(out), result.reason_codes)
+    else:
+        candidate = _fallback_opportunity(upstream)
+        if candidate is None:
+            normalized = _sync_professional_reasoning(out)
+            print(f"[PRODUCTION V2] E6_RUNTIME_MEMBRANE version={RUNTIME_AUTHORITY_VERSION} action=NO_RESCUE candidate=NONE", flush=True)
+            result = EngineResult(result.engine_id, result.name, result.gate_passed, result.score, normalized, result.reason_codes)
+        else:
+            thesis = thesis_builder(result, candidate) if thesis_builder is not None else _watch(result, candidate)
+            thesis_out = dict(thesis.output or {})
+            thesis_out["runtime_rescue_reason"] = "CAUSAL_E1_E5_EVIDENCE_SURVIVES_LEGACY_NO_SETUP"
+            thesis_out["runtime_direction_source"] = _direction(candidate.get("direction"))
+            thesis_out["runtime_candidate_family"] = candidate.get("family")
+            thesis_out["runtime_candidate_event_id"] = candidate.get("event_id")
+            result = EngineResult(thesis.engine_id, thesis.name, False, thesis.score, _sync_professional_reasoning(thesis_out), thesis.reason_codes)
+    result = _apply_opportunity_timing(result, upstream)
+    timing = result.output.get("opportunity_timing") or {}
+    print(f"[PRODUCTION V2] OPPORTUNITY_TIMING phase={timing.get('phase')} speed={timing.get('decision_speed')} direction={timing.get('direction')} age={timing.get('event_age_bars')} quality={timing.get('evidence_quality')} space_atr={timing.get('available_space_atr')} fast={timing.get('fast_path_eligible')} chase_prohibited={timing.get('chase_prohibited')} authority=E9", flush=True)
+    return result
 
 
 def install(e6_module) -> None:
