@@ -9,11 +9,15 @@ CONCRETE_EXCLUDED = {"", "UNKNOWN", "NONE", "NO_SETUP", *WATCH_SETUPS}
 THESIS_STATES = {"FORMING", "VALIDATING", "THESIS_FORMED", "PROVEN"}
 
 
+def _event(previous: dict[str, Any], current: dict[str, Any]) -> tuple[str, str]:
+    p = str(previous.get("event_id") or previous.get("event_timestamp") or previous.get("event_candle") or "").strip()
+    c = str(current.get("event_id") or current.get("event_timestamp") or current.get("event_candle") or "").strip()
+    return p, c
+
+
 def _new_causal_event(previous: dict[str, Any], current: dict[str, Any]) -> bool:
-    """A fresh causal event supersedes the old watch identity."""
-    previous_event = previous.get("event_id") or previous.get("event_timestamp") or previous.get("event_candle")
-    current_event = current.get("event_id") or current.get("event_timestamp") or current.get("event_candle")
-    return bool(previous_event and current_event and previous_event != current_event)
+    p, c = _event(previous, current)
+    return bool(p and c and p.casefold() != c.casefold())
 
 
 def _as_new_watch(result: dict[str, Any], current: dict[str, Any]) -> dict[str, Any]:
@@ -22,7 +26,7 @@ def _as_new_watch(result: dict[str, Any], current: dict[str, Any]) -> dict[str, 
         "state": "WATCHING",
         "lifecycle_state": "OPPORTUNITY_WATCH",
         "opportunity_phase": "OPPORTUNITY_WATCH",
-        "setup": current.get("setup") or current.get("setup_family") or result.get("setup"),
+        "setup": current.get("setup") or current.get("setup_family") or result.get("setup") or "OPPORTUNITY_WATCH",
         "direction": current.get("direction") or result.get("direction"),
         "candidate": bool(current.get("candidate", result.get("candidate", True))),
         "trade_authorized": False,
@@ -31,13 +35,14 @@ def _as_new_watch(result: dict[str, Any], current: dict[str, Any]) -> dict[str, 
         "event_id": current.get("event_id", result.get("event_id")),
         "event_timestamp": current.get("event_timestamp", result.get("event_timestamp")),
         "event_candle": current.get("event_candle", result.get("event_candle")),
-        "age_bars": current.get("age_bars", 0),
-        "age_minutes": current.get("age_minutes", 0),
+        "bars_waited": 0,
+        "age_bars": 0,
+        "age_minutes": 0,
     }
 
 
 def install(module: Any) -> None:
-    if getattr(module, "_PROFESSIONAL_LIFECYCLE_CONTRACT_V2", False):
+    if getattr(module, "_PROFESSIONAL_LIFECYCLE_CONTRACT_V3", False):
         return
     original = module.advance_opportunity
     original_directions = module.advance_opportunity_directions
@@ -59,25 +64,46 @@ def install(module: Any) -> None:
         ps = str(previous.get("setup") or "").upper()
         cs = str(current.get("setup") or current.get("setup_family") or "").upper()
         ts = str(current.get("thesis_status") or "").upper()
+        previous_state = str(previous.get("state") or "").upper()
+        pd = str(previous.get("direction") or "").upper()
+        cd = str(current.get("direction") or "").upper()
+        fresh_event = _new_causal_event(previous, current)
 
-        # A new causal event becomes a fresh active watch. Do this before the
-        # generic REPLACED result can erase the new opportunity identity.
-        if (
-            previous.get("state") in ACTIVE
-            and ps in WATCH_SETUPS
-            and cs not in CONCRETE_EXCLUDED
-            and _new_causal_event(previous, current)
-        ):
+        # A fresh causal event creates a NEW active watch. The old opportunity
+        # is historical; the active result must never be REPLACED.
+        if previous_state in ACTIVE and pd == cd and fresh_event:
             return _as_new_watch(result, current)
 
+        # WATCHING is a causal-discovery state. A concrete setup label alone
+        # does not prove the thesis. Never promote WATCHING to WAITING merely
+        # because a setup name appeared; E6 thesis proof is the required gate.
+        if previous_state == "WATCHING" and pd == cd and not ts:
+            return {
+                **result,
+                "state": "WATCHING",
+                "lifecycle_state": "OPPORTUNITY_WATCH",
+                "opportunity_phase": "OPPORTUNITY_WATCH",
+                "opportunity_id": previous.get("opportunity_id") or result.get("opportunity_id"),
+                "direction": pd or cd or result.get("direction"),
+                "setup": previous.get("setup") or "OPPORTUNITY_WATCH",
+                "candidate": bool(current.get("candidate", result.get("candidate", True))),
+                "trade_authorized": False,
+                "ready": False,
+                "continuity": "PRESERVING_PENDING_OPPORTUNITY",
+                "bars_waited": result.get("bars_waited", previous.get("bars_waited", 0)),
+                "age_bars": result.get("age_bars", previous.get("age_bars", 0)),
+            }
+
+        # A proven thesis may promote into the trigger-pending setup lifecycle,
+        # but this still does not grant execution authority.
         if (
-            previous.get("state") in ACTIVE
+            previous_state in ACTIVE
             and ps in WATCH_SETUPS
             and cs not in CONCRETE_EXCLUDED
             and ts in THESIS_STATES
             and not current.get("ready")
         ):
-            result = {
+            return {
                 **result,
                 "state": "WAITING",
                 "lifecycle_state": "TRIGGER_PENDING",
@@ -114,4 +140,4 @@ def install(module: Any) -> None:
 
     module.advance_opportunity = advance_opportunity
     module.advance_opportunity_directions = advance_opportunity_directions
-    module._PROFESSIONAL_LIFECYCLE_CONTRACT_V2 = True
+    module._PROFESSIONAL_LIFECYCLE_CONTRACT_V3 = True
