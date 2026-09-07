@@ -13,4 +13,4 @@ def test_watch_finding_uses_opportunity_stage_and_direction():
         }
     )
     assert output["finding"] == "SELL opportunity is contested; causal setup is not yet proven."
-    assert output["runtime_authority"] == "E6_FINAL_OPPORTUNITY_MEMBRANE_V8"
+    assert output["runtime_authority"] == "E6_FINAL_OPPORTUNITY_MEMBRANE_V9"
