@@ -1,0 +1,22 @@
+name: professional-opportunity-validation
+
+on:
+  push:
+    branches: [production-v2-professional-opportunity]
+  pull_request:
+    branches: [production-v2]
+
+jobs:
+  pytest-production-v2:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install test dependencies
+        run: python -m pip install -U pytest
+      - name: Run targeted lifecycle tests
+        run: python -m pytest -q production_v2/test_professional_opportunity_lifecycle.py production_v2/test_e6_event_direction.py production_v2/test_e6_space_consistency.py
+      - name: Compile production runtime
+        run: python -m compileall -q production_v2
