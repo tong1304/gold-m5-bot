@@ -39,6 +39,8 @@ from .professional_lifecycle_guard import install as _install_professional_lifec
 from .professional_e5_direct_runtime import install as _install_professional_e5_direct
 from .professional_lifecycle_identity_runtime import install as _install_professional_lifecycle_identity
 from .professional_lifecycle_authority_runtime import install as _install_professional_lifecycle_authority
+from .professional_e5_direct_runtime_v2 import install as _install_professional_e5_direct_v2
+from .professional_lifecycle_contract_v2 import install as _install_professional_lifecycle_contract_v2
 
 _install_bootstrap_surgery(_pipeline_module)
 _install_mtf_runtime(_pipeline_module, _market_data_module)
@@ -69,5 +71,7 @@ _install_professional_e9_runtime(_pipeline_module)
 _install_professional_e5_direct(_e5_module)
 _install_professional_lifecycle_identity(_opportunity_lifecycle_module)
 _install_professional_lifecycle_authority(_pipeline_module)
+_install_professional_e5_direct_v2(_e5_module)
+_install_professional_lifecycle_contract_v2(_opportunity_lifecycle_module)
 
 __all__ = ["ProductionPipeline"]
