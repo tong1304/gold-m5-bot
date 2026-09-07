@@ -44,6 +44,20 @@ def _direction(output: dict[str, Any], keys: tuple[str, ...]) -> str:
     return "NEUTRAL"
 
 
+def _auction_event_direction(event: str) -> str:
+    """Map causal auction event semantics to directional implication."""
+    text = _text(event)
+    if any(token in text for token in ("HIGH_FAILED_BREAK", "HIGH_REJECTION", "HIGH_SWEEP_REJECTION", "HIGH_SWEEP", "HIGH_LIQUIDITY_REJECTION")):
+        return "SELL"
+    if any(token in text for token in ("LOW_FAILED_BREAK", "LOW_REJECTION", "LOW_SWEEP_REJECTION", "LOW_SWEEP", "LOW_LIQUIDITY_REJECTION")):
+        return "BUY"
+    if "HIGH_ACCEPTANCE" in text or "HIGH_BREAK" in text:
+        return "BUY"
+    if "LOW_ACCEPTANCE" in text or "LOW_BREAK" in text:
+        return "SELL"
+    return "NEUTRAL"
+
+
 def _item(code: str, severity: str, brains: tuple[str, ...], authority: str, explanation: str, evidence: dict[str, Any]) -> dict[str, Any]:
     return {"code": code, "severity": severity, "brains": list(brains), "authority": authority, "explanation": explanation, "evidence": evidence, "resolution": "E9_RECONCILE_WITHOUT_REWRITING_UPSTREAM_FACTS"}
 
@@ -51,27 +65,23 @@ def _item(code: str, severity: str, brains: tuple[str, ...], authority: str, exp
 def build_conflict_ledger(results: dict[str, EngineResult]) -> dict[str, Any]:
     e1, e3, e4, e5, e6, e7, e8 = (_out(results, x) for x in ("E1", "E3", "E4", "E5", "E6", "E7", "E8"))
     conflicts: list[dict[str, Any]] = []
-
     d1 = _direction(e1, ("trend_state", "pressure", "structure", "market_state", "finding"))
     d3 = _direction(e3, ("structure_direction", "external_state", "internal_state", "finding"))
     d6 = _direction(e6, ("direction", "direction_thesis", "thesis_direction", "finding"))
     d5 = _direction(e5, ("direction", "location_direction", "finding"))
-    d4 = _direction(e4, ("directional_implication", "response_direction", "auction_direction", "finding"))
 
-    directional = [("E1", d1), ("E3", d3), ("E6", d6)]
-    claimed = [(brain, direction) for brain, direction in directional if direction in DIRECTIONS]
+    claimed = [(brain, direction) for brain, direction in (("E1", d1), ("E3", d3), ("E6", d6)) if direction in DIRECTIONS]
     if len({direction for _, direction in claimed}) > 1:
         conflicts.append(_item("DIRECTION_EVIDENCE_CONFLICT", "HIGH", tuple(brain for brain, _ in claimed), "E1/E3/E6_ROLE_BOUNDARIES", "Market-state, structure, and setup evidence point in different directions.", {brain: direction for brain, direction in claimed}))
 
-    # Explicitly expose structure-versus-auction tension. This is awareness,
-    # not a veto: E9 remains responsible for deciding whether the contradiction
-    # is resolved by the newest causal event or remains a blocker.
     e3_structure = _text(e3.get("structure_direction") or e3.get("external_state") or e3.get("active_regime") or e3.get("finding"))
     e4_event = _text(e4.get("event") or e4.get("event_type") or e4.get("auction_event") or e4.get("liquidity_event") or e4.get("finding"))
     e4_response = _text(e4.get("response_actor") or e4.get("response_direction") or e4.get("directional_implication"))
-    e4_event_direction = _direction(e4, ("directional_implication", "response_direction", "auction_direction", "direction"))
-    if d3 in DIRECTIONS and e4_event_direction in DIRECTIONS and d3 != e4_event_direction:
-        conflicts.append(_item("STRUCTURE_AUCTION_CONFLICT", "MEDIUM", ("E3", "E4"), "E9_RECONCILIATION", "Market structure and the newest auction/liquidity response imply opposite directions; preserve both observations until E9 reconciles them.", {"E3_structure_direction": d3, "E3_structure_state": e3_structure, "E4_event": e4_event, "E4_response": e4_response, "E4_direction": e4_event_direction}))
+    e4_direction = _direction(e4, ("directional_implication", "response_direction", "auction_direction", "direction"))
+    if e4_direction not in DIRECTIONS:
+        e4_direction = _auction_event_direction(e4_event)
+    if d3 in DIRECTIONS and e4_direction in DIRECTIONS and d3 != e4_direction:
+        conflicts.append(_item("STRUCTURE_AUCTION_CONFLICT", "MEDIUM", ("E3", "E4"), "E9_RECONCILIATION", "Market structure and the newest auction/liquidity response imply opposite directions; preserve both observations until E9 reconciles them.", {"E3_structure_direction": d3, "E3_structure_state": e3_structure, "E4_event": e4_event, "E4_response": e4_response, "E4_direction": e4_direction}))
 
     structural_location = _text(e5.get("structural_location") or e5.get("location_state"))
     long_space = _num(e5.get("available_space_atr_long")); short_space = _num(e5.get("available_space_atr_short"))
