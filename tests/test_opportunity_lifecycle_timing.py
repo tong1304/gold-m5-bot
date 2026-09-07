@@ -1,4 +1,6 @@
 from production_v2 import opportunity_lifecycle_timing
+from production_v2 import e6_runtime_authority
+from production_v2.contracts import EngineResult
 from production_v2.opportunity_lifecycle_progression import advance_lifecycle_stage
 
 
@@ -209,5 +211,16 @@ def test_same_direction_same_causal_event_keeps_existing_identity():
     )
     assert progressed["opportunity_id"] == "BUY|OPPORTUNITY_WATCH|same-event"
     assert progressed["origin_event_id"] == "same-event"
+
+
+def test_pre_membrane_timing_path_does_not_emit_authoritative_opportunity_timing_log(capsys):
+    result = EngineResult("E6", "E6", False, 0.0, {"direction": "SELL", "event": "LOW_FAILED_BREAK_RECLAIM", "event_age_bars": 1}, ())
+    upstream = {
+        "E4": EngineResult("E4", "E4", False, 0.0, {"event": "LOW_FAILED_BREAK_RECLAIM", "event_age_bars": 1, "auction_quality": 60.5}, ()),
+        "E5": EngineResult("E5", "E5", False, 0.0, {"available_space_atr_short": 0.789}, ()),
+    }
+    e6_runtime_authority._apply_opportunity_timing(result, upstream)
+    captured = capsys.readouterr().out
+    assert "OPPORTUNITY_TIMING" not in captured
 
 # Trigger marker for the latest production-v2 lifecycle identity regression.
