@@ -31,36 +31,56 @@ def _has_hard_invalidation(upstream: dict[str, EngineResult]) -> bool:
     return False
 
 
-def _watch_wait_events(e6: dict[str, Any]) -> list[str]:
+def _is_early_fast_candidate(e6: dict[str, Any], timing: dict[str, Any]) -> bool:
+    return (
+        _text(e6.get("candidate_type")) == "EARLY_OPPORTUNITY_CANDIDATE"
+        and _text(timing.get("phase")) == "EARLY_OPPORTUNITY"
+        and _text(timing.get("decision_speed")) == "FAST"
+    )
+
+
+def _watch_wait_events(e6: dict[str, Any], *, early_fast: bool = False) -> list[str]:
     missing = e6.get("missing_proof") or e6.get("missing_evidence") or ()
     if isinstance(missing, str): missing = [missing]
     events = [str(value).strip().upper() for value in missing if str(value).strip()]
-    events = [value for value in events if value not in {"E7_CONFIRMATION","E7_VALID_CLOSED_CANDLE_TRIGGER_REQUIRED"}]
-    events.extend(["E6_SETUP_THESIS_REQUIRED","E7_TRIGGER_BLOCKED_UNTIL_E6_THESIS"])
+    events = [value for value in events if value not in {"E7_CONFIRMATION","E7_VALID_CLOSED_CANDLE_TRIGGER_REQUIRED","E6_SETUP_THESIS_REQUIRED","E7_TRIGGER_BLOCKED_UNTIL_E6_THESIS"}]
+    if early_fast:
+        events.append("E7_SETUP_SPECIFIC_CLOSED_CANDLE_CONFIRMATION")
+    else:
+        events.extend(["E6_SETUP_THESIS_REQUIRED","E7_TRIGGER_BLOCKED_UNTIL_E6_THESIS"])
     return list(dict.fromkeys(events))
 
 
 def _watch_result(direction: str, setup: str, e6: dict[str, Any]) -> EngineResult:
-    wait_events = _watch_wait_events(e6)
-    timing_input = dict(e6)
-    timing = e6.get("opportunity_timing") if isinstance(e6.get("opportunity_timing"), dict) else classify_opportunity_timing(timing_input)
+    timing = e6.get("opportunity_timing") if isinstance(e6.get("opportunity_timing"), dict) else classify_opportunity_timing(e6)
     timing_phase = _text(timing.get("phase")); timing_speed = _text(timing.get("decision_speed"))
+    early_fast = _is_early_fast_candidate(e6, timing)
     timing_reason = "LATE_CHASE_BLOCKED" if timing_phase == "LATE_OPPORTUNITY" else "OPPORTUNITY_EXISTS_NOT_READY"
-    if timing_phase == "EARLY_OPPORTUNITY" and timing_speed == "FAST": timing_reason = "EARLY_OPPORTUNITY_FAST_PATH_PENDING"
-    reasons = ["E9_FINAL_GOVERNANCE","E6_OPPORTUNITY_WATCH","E6_SETUP_THESIS_REQUIRED","E7_TRIGGER_BLOCKED_UNTIL_E6_THESIS",timing_reason]
+    if early_fast: timing_reason = "EARLY_OPPORTUNITY_FAST_PATH_PENDING"
+    reasons = ["E9_FINAL_GOVERNANCE","E6_OPPORTUNITY_WATCH",timing_reason]
+    if early_fast:
+        reasons.extend(["E7_CONFIRMATION_PENDING","E8_WAITING_FOR_CONFIRMED_SETUP"])
+    else:
+        reasons.extend(["E6_SETUP_THESIS_REQUIRED","E7_TRIGGER_BLOCKED_UNTIL_E6_THESIS"])
+    wait_events = _watch_wait_events(e6, early_fast=early_fast)
+    thesis_text = (
+        f"{direction} early opportunity candidate is active; E7 must evaluate the next closed-candle confirmation."
+        if early_fast else
+        f"{direction} opportunity watch is active; E6 thesis proof is not complete. E7 confirmation remains gated."
+    )
     output = {
         "decision":"NO_TRADE","final_governance":"WATCH","governance_decision":"WATCH","governance_reason":timing_reason,
-        "governance_blockers":["E6_SETUP_THESIS_REQUIRED"],"next_required_events":wait_events,"execution_state":"BLOCKED",
+        "governance_blockers":["E7_CONFIRMATION_PENDING" if early_fast else "E6_SETUP_THESIS_REQUIRED"],"next_required_events":wait_events,"execution_state":"BLOCKED",
         "all_gates_pass":False,"direction":direction,"thesis_direction":direction,"setup":setup,
-        "thesis":f"{direction} opportunity watch is active; E6 thesis proof is not complete. E7 confirmation is blocked until E6 establishes a surviving setup thesis.",
-        "thesis_state":"HYPOTHESIS","thesis_lifecycle_source":"E6","setup_state":"FORMING","confirmation_state":"NOT_APPLICABLE","economic_state":"NOT_APPLICABLE","economic_blockers":[],"economic_pending":[],"hard_conflicts":[],
-        "proof_summary":{"core_thesis":False,"e6_thesis":"OPPORTUNITY_WATCH","e7_trigger":"NOT_APPLICABLE","e8_economics":"NOT_APPLICABLE"},
+        "thesis":thesis_text,
+        "thesis_state":"HYPOTHESIS","thesis_lifecycle_source":"E6","setup_state":"FORMING","confirmation_state":"PENDING" if early_fast else "NOT_APPLICABLE","economic_state":"NOT_APPLICABLE","economic_blockers":[],"economic_pending":[],"hard_conflicts":[],
+        "proof_summary":{"core_thesis":False,"e6_thesis":"EARLY_OPPORTUNITY_CANDIDATE" if early_fast else "OPPORTUNITY_WATCH","e7_trigger":"PENDING" if early_fast else "NOT_APPLICABLE","e8_economics":"NOT_APPLICABLE"},
         "mandatory_gates":{"core_thesis":False,"closed_candle_trigger":False,"survivable_economics":False,"fatal_veto_clear":True},
-        "opportunity_state":"WATCH","opportunity":{"direction":direction,"setup":setup,"state":"WATCH","do_not_execute":True},
+        "opportunity_state":"EARLY" if early_fast else "WATCH","opportunity":{"direction":direction,"setup":setup,"state":"EARLY" if early_fast else "WATCH","do_not_execute":True},
         "reason_codes":list(dict.fromkeys(reasons)),"reasons":list(dict.fromkeys(reasons)),"reason_scope":"E6_WATCH_BOUNDARY_ONLY",
         "opportunity_timing":timing,"opportunity_lifecycle_state":"DECAYING" if timing_phase == "LATE_OPPORTUNITY" else "EARLY" if timing_phase == "EARLY_OPPORTUNITY" else "CONFIRMED" if timing_phase == "CONFIRMED_OPPORTUNITY" else "FORMING",
         "authority_contract":{"market_evidence_owner":"E1-E5","trade_thesis_owner":"E6","trigger_owner":"E7","trade_economics_owner":"E8","final_decision_owner":"E9","e9_may_rewrite_e6_thesis":False,"e9_may_bypass_e7":False,"e9_may_bypass_e8":False},
-        "architecture":"E9_FINAL_GOVERNANCE_THESIS_TRIGGER_ECONOMICS","watch_boundary":"E6_WATCH_REQUIRES_E6_THESIS_BEFORE_E7_AND_E8",
+        "architecture":"E9_FINAL_GOVERNANCE_THESIS_TRIGGER_ECONOMICS","watch_boundary":"E6_WATCH_REQUIRES_E6_THESIS_BEFORE_TRADE;EARLY_CANDIDATE_MAY_BE_EVALUATED_BY_E7",
         "governance_layers":{"market_control":"MARKET_CONTROL","thesis_control":"E6_OWNER","proof_control":"E7_CONFIRMATION_AND_E8_ECONOMICS","final_governance":"E9_FINAL_AUTHORITY"},
     }
     return EngineResult("E9","Master Decision Brain",False,0.0,output,tuple(reasons))
