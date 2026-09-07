@@ -33,11 +33,10 @@ def _is_concrete_surviving_setup(e6: dict[str, Any]) -> bool:
 
 
 def _is_early_opportunity_candidate(e6: dict[str, Any]) -> bool:
-    """An early timing candidate is still a watch, but E7 should inspect it for confirmation."""
+    """Every early timing candidate reaches E7; speed only controls cadence."""
     return (
         _text(e6.get("candidate_type")) == "EARLY_OPPORTUNITY_CANDIDATE"
         and _text(e6.get("opportunity_phase_speed")) == "EARLY_OPPORTUNITY"
-        and _text(e6.get("opportunity_decision_speed")) == "FAST"
         and e6.get("watch_only") is True
         and e6.get("trade_ready") is not True
         and _text(e6.get("direction")) in {"BUY", "SELL"}
@@ -126,26 +125,7 @@ def _preserve_concrete_thesis(result: EngineResult, e6o: dict[str, Any]) -> Engi
     cleaned = [x for x in reason_codes if _text(x) not in {"E6_OPPORTUNITY_WATCH_NOT_SETUP", "E7_DID_NOT_CREATE_THESIS"}]
     cleaned = list(dict.fromkeys(cleaned + ["E6_THESIS_SURVIVES", "E7_EVALUATES_SETUP_CONFIRMATION"]))
     out.update({
-        "state": "WAIT",
-        "confirmation": "UNRESOLVED",
-        "confirmation_state": "PENDING",
-        "trigger_status": "NOT_OBSERVED",
-        "trigger_observed": False,
-        "confirmation_strength": "NONE",
-        "confirmation_score": 0.0,
-        "trade_decision_authority": False,
-        "candidate_setup_thesis": thesis,
-        "setup": e6_setup,
-        "setup_family": e6_setup,
-        "direction": e6_direction,
-        "supporting_evidence": list(dict.fromkeys(list(out.get("supporting_evidence") or []) + ["E6_SURVIVING_SETUP_THESIS"])),
-        "counter_evidence": list(out.get("counter_evidence") or []),
-        "missing_evidence": ["E7_SETUP_SPECIFIC_CLOSED_CANDLE_CONFIRMATION"],
-        "next_required_evidence": ["E7_SETUP_SPECIFIC_CLOSED_CANDLE_CONFIRMATION"],
-        "next_required_event": "E7_SETUP_SPECIFIC_CLOSED_CANDLE_CONFIRMATION",
-        "reason_codes": cleaned,
-        "thesis_boundary": {"e6_owns_thesis": True,"e7_may_confirm_only_surviving_setup": True,"watch_is_not_setup": True,"legacy_watch_downgrade_repaired": True,"enforced": True},
-        "reasoning_trace": {**dict(out.get("reasoning_trace") or {}),"conclusion": "E6 owns a surviving setup thesis; E7 is evaluating confirmation and has not yet proven a trigger.","why_not_confirmed": ["E7_SETUP_SPECIFIC_CLOSED_CANDLE_CONFIRMATION"],"next_required_event": "E7_SETUP_SPECIFIC_CLOSED_CANDLE_CONFIRMATION"},
+        "state": "WAIT","confirmation": "UNRESOLVED","confirmation_state": "PENDING","trigger_status": "NOT_OBSERVED","trigger_observed": False,"confirmation_strength": "NONE","confirmation_score": 0.0,"trade_decision_authority": False,"candidate_setup_thesis": thesis,"setup": e6_setup,"setup_family": e6_setup,"direction": e6_direction,"supporting_evidence": list(dict.fromkeys(list(out.get("supporting_evidence") or []) + ["E6_SURVIVING_SETUP_THESIS"])),"counter_evidence": list(out.get("counter_evidence") or []),"missing_evidence": ["E7_SETUP_SPECIFIC_CLOSED_CANDLE_CONFIRMATION"],"next_required_evidence": ["E7_SETUP_SPECIFIC_CLOSED_CANDLE_CONFIRMATION"],"next_required_event": "E7_SETUP_SPECIFIC_CLOSED_CANDLE_CONFIRMATION","reason_codes": cleaned,"thesis_boundary": {"e6_owns_thesis": True,"e7_may_confirm_only_surviving_setup": True,"watch_is_not_setup": True,"legacy_watch_downgrade_repaired": True,"enforced": True},"reasoning_trace": {**dict(out.get("reasoning_trace") or {}),"conclusion": "E6 owns a surviving setup thesis; E7 is evaluating confirmation and has not yet proven a trigger.","why_not_confirmed": ["E7_SETUP_SPECIFIC_CLOSED_CANDLE_CONFIRMATION"],"next_required_event": "E7_SETUP_SPECIFIC_CLOSED_CANDLE_CONFIRMATION"},
     })
     out["professional_reasoning"] = {**dict(out.get("professional_reasoning") or {}),"conclusion": out["reasoning_trace"]["conclusion"],"hypothesis": thesis,"missing_evidence": out["missing_evidence"],"next_required_event": out["next_required_event"]}
     return EngineResult(result.engine_id, result.name, False, result.score, out, tuple(cleaned))
