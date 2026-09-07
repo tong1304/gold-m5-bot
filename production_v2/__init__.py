@@ -32,7 +32,7 @@ _install_bootstrap_surgery(_pipeline_module)
 _install_mtf_runtime(_pipeline_module, _market_data_module)
 
 # E2 opportunity intelligence: preserve conditional BUY/SELL watches without
-authorizing entry, trigger, decision, or execution.
+# authorizing entry, trigger, decision, or execution.
 _install_e2_opportunity_book(_pipeline_module, _e2_module)
 
 # E6 runtime membrane is installed on the authoritative E6 module and then
