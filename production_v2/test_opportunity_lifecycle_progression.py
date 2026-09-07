@@ -90,6 +90,23 @@ def test_invalidated_is_terminal_and_records_reason():
     assert state["invalidation_reason"] == "STRUCTURE_INVALIDATED"
 
 
+def test_direction_change_starts_a_new_opportunity_identity():
+    state = _advance(None, candle="2026-09-07T10:00:00Z", event_id="BUY-EVENT")
+    old_id = state["opportunity_id"]
+    state = advance_lifecycle_stage(state, {"direction": "SELL", "candidate": True, "candle": "2026-09-07T10:05:00Z", "event_id": "SELL-EVENT"})
+    assert state["lifecycle_stage"] == "WATCH"
+    assert state["direction"] == "SELL"
+    assert state["opportunity_id"] != old_id
+    assert state["opportunity_id"].startswith("SELL|")
+    assert state["origin_event_id"] == "SELL-EVENT"
+
+
+def test_neutral_direction_does_not_become_a_directional_opportunity():
+    state = advance_lifecycle_stage({}, {"direction": "NEUTRAL", "candidate": True, "candle": "2026-09-07T10:00:00Z", "event_id": "NEUTRAL-EVENT"})
+    assert state["lifecycle_stage"] == "IDLE"
+    assert not state.get("opportunity_id")
+
+
 def test_lifecycle_telemetry_is_machine_readable_and_keeps_wait_and_terminal_fields():
     line = lifecycle_telemetry("BTC", {"opportunity_id": "BUY|TREND|E4-22", "origin_event_id": "E4-22", "event_id": "E4-23", "last_evaluated_candle": "2026-09-07T10:05:00Z", "lifecycle_stage": "E7_CONFIRMED", "state": "WAITING", "wait_for_stage": "E8_READY", "terminal_stage": None, "trade_authorized": False})
     assert line.startswith("[PRODUCTION V2] OPPORTUNITY_LIFECYCLE")
