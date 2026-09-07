@@ -15,11 +15,11 @@ def _watch(event_id, candle):
     }
 
 
-def test_new_causal_event_replaces_active_watch_even_when_setup_family_is_same():
+def test_new_causal_event_promotes_same_direction_watch_to_new_active_identity():
     previous = advance_opportunity(None, _watch("2026-09-06T16:25:00Z|LOW_FAILED_BREAK_RECLAIM", "2026-09-06T16:25:00Z"))
     current = advance_opportunity(previous, _watch("2026-09-06T16:35:00Z|HIGH_SWEEP_REJECTION", "2026-09-06T16:35:00Z"))
 
-    assert current["state"] == "REPLACED"
+    assert current["state"] == "WATCHING"
     assert current["continuity"] == "NEW_CAUSAL_EVENT_REPLACED_ACTIVE_OPPORTUNITY"
     assert current["previous_opportunity_id"] == previous["opportunity_id"]
     assert current["opportunity_id"] != previous["opportunity_id"]

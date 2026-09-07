@@ -33,17 +33,17 @@ def test_e4_never_promotes_current_candle_to_confirmed_auction():
     assert result["auction_state"] in {"UNRESOLVED", "ACCEPTANCE_PENDING", "REJECTION_PENDING", "INTERACTION_PENDING"}
 
 
-def test_e4_dispatcher_uses_v23_and_keeps_decision_authority_with_e9():
-    from production_v2.engines import run_engine
-    result = run_engine("E4", {"bars": _bars()}, None)
-    assert result.output["architecture"] == "E4_SINGLE_PROFESSIONAL_LIQUIDITY_AUCTION_BRAIN_V23"
-    assert result.output["reasoning_role"] == "LIQUIDITY_AUCTION_ANALYST"
-    assert result.output["decision"] is None
-    assert result.output["gate"] is None
-    assert result.output["decision_authority"] == "E9_ONLY"
-    assert result.output["evidence"]["decisions_used"] is False
-    assert result.output["evidence"]["gates_used"] is False
-    assert result.output["evidence"]["scores_used"] is False
+def test_e4_runtime_contract_keeps_decision_authority_with_e9():
+    mod = _module()
+    result = mod.analyze_e4({"bars": _bars()})
+    assert result["architecture"] == "E4_SINGLE_PROFESSIONAL_LIQUIDITY_AUCTION_BRAIN_V51"
+    assert result["reasoning_role"] == "LIQUIDITY_AUCTION_ANALYST"
+    assert result["decision"] is None
+    assert result["gate"] is None
+    assert result["decision_authority"] == "E9_ONLY"
+    assert result["upstream_decisions_used"] is False
+    assert result["upstream_gates_used"] is False
+    assert result["scores_used"] is False
 
 
 def test_e4_exposes_direct_observations_and_audit_contract():
