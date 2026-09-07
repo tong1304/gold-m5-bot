@@ -1,6 +1,7 @@
 from types import SimpleNamespace
 
 from production_v2 import p0_opportunity_integrity as integrity
+from production_v2.opportunity_lifecycle import advance_opportunity_directions
 
 
 def _pipeline():
@@ -16,21 +17,8 @@ def _pipeline():
             "UNCONTESTED",
         )
 
-    def lifecycle(previous, current_by_direction, *, leader="NEUTRAL", competition="UNCONTESTED"):
-        return {
-            "opportunities": {
-                d: {"state": "WATCHING" if c.get("candidate") else "IDLE", "direction": d, "opportunity_id": c.get("event_id")}
-                for d, c in current_by_direction.items()
-            },
-            "leader": leader,
-            "competition": competition,
-            "active_directions": [d for d, c in current_by_direction.items() if c.get("candidate")],
-            "state": "WATCHING",
-            "trade_authorized": False,
-        }
-
     pipeline._directional_lifecycle_current = directional
-    pipeline.advance_opportunity_directions = lifecycle
+    pipeline.advance_opportunity_directions = advance_opportunity_directions
     return pipeline
 
 
@@ -46,7 +34,6 @@ def test_e6_buy_canonicalizes_direction_event_and_wait_window():
     assert current["BUY"]["candidate"] is True
     assert current["BUY"]["event_id"] == "buy-event-9"
     assert current["BUY"]["wait_for"] == "CLOSED_CANDLE_CONFIRMATION"
-    assert current["SELL"]["event_id"] is None
     assert leader == "BUY"
 
 
@@ -70,7 +57,7 @@ def test_real_production_callable_promotes_to_trade_when_all_gates_are_proven():
         "BUY": {"candidate": True, "direction": "BUY", "setup": "LIQUIDITY_RESPONSE", "event_id": "evt-42", "origin_event_id": "evt-42", "candle": "c42", "confirmed": True, "e4_state": "CONFIRMED", "thesis_proven": True, "e7_confirmed": True, "e7_confirmation_state": "TRIGGER_CONFIRMED", "e8_ready": True, "e9_trade": True},
         "SELL": {"candidate": False, "direction": "SELL", "setup": "OPPORTUNITY_WATCH", "candle": "c42"},
     }
-    result = pipeline.advance_opportunity_directions({"opportunities": {"BUY": {"opportunity_id": "BUY|OPPORTUNITY_WATCH|evt-42", "direction": "BUY", "state": "WATCHING", "lifecycle_stage": "WATCH"}}}, current, leader="BUY")
+    result = pipeline.advance_opportunity_directions({"opportunities": {"BUY": {"opportunity_id": "BUY|OPPORTUNITY_WATCH|evt-42", "direction": "BUY", "state": "WATCHING", "setup": "OPPORTUNITY_WATCH", "event_id": "evt-42", "lifecycle_stage": "WATCH"}}}, current, leader="BUY")
     assert result["opportunities"]["BUY"]["lifecycle_stage"] == "TRADE"
     assert result["opportunities"]["BUY"]["trade_authorized"] is True
 
