@@ -30,7 +30,7 @@ jobs:
           assert strong['direction'] == 'BUY', strong
           assert strong['opportunity_maturity'] == 'DEVELOPING', strong
 
-          conflict = _classify_opportunity(up=6, down=2, auction='SELL_SIDE_ACCEPTANCE', balanced=False, acceptance_up=False, acceptance_down=True, rejection_high=False, rejection_low=False, space_atr=2.0, location_ok=True)
+          conflict = _classify_opportunity(up=6, down=2, auction='SELL_SIDE_ACCEPTANCE', balanced=False, acceptance_up=False, acceptance_down=True, rejection_high=False, rejection_low=True, space_atr=2.0, location_ok=True)
           assert conflict['direction'] == 'NEUTRAL', conflict
           assert 'DIRECTIONAL_AUCTION_CONFLICT' in conflict['finding'], conflict
 
@@ -39,3 +39,5 @@ jobs:
           assert 'LOCATION_NOT_ADVANTAGEOUS' in blocked['blockers'], blocked
           assert 'INSUFFICIENT_OPPOSING_SPACE' in blocked['blockers'], blocked
           PY
+      - name: Lifecycle identity regression
+        run: PYTHONPATH=. pytest -q tests/test_opportunity_lifecycle_timing.py
