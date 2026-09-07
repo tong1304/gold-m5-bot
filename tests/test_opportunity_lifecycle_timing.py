@@ -209,3 +209,5 @@ def test_same_direction_same_causal_event_keeps_existing_identity():
     )
     assert progressed["opportunity_id"] == "BUY|OPPORTUNITY_WATCH|same-event"
     assert progressed["origin_event_id"] == "same-event"
+
+# Trigger marker for the latest production-v2 lifecycle identity regression.
