@@ -223,4 +223,48 @@ def test_pre_membrane_timing_path_does_not_emit_authoritative_opportunity_timing
     captured = capsys.readouterr().out
     assert "OPPORTUNITY_TIMING" not in captured
 
-# Trigger marker for the latest production-v2 lifecycle identity regression.
+
+def test_lifecycle_promotes_all_proven_stages_on_the_same_closed_candle():
+    previous = {"opportunity_id": "BUY|OPPORTUNITY_WATCH|evt-1", "direction": "BUY", "lifecycle_stage": "WATCH", "event_id": "evt-1", "origin_event_id": "evt-1"}
+    current = {
+        "candidate": True,
+        "direction": "BUY",
+        "setup": "TREND_PULLBACK_CONTINUATION",
+        "event_id": "evt-1",
+        "origin_event_id": "evt-1",
+        "candle": "2026-09-07T06:15:00Z",
+        "confirmed": True,
+        "thesis_proven": True,
+        "e7_confirmed": True,
+        "e7_confirmation_state": "CONFIRMED",
+        "e8_ready": True,
+        "e8_economic_state": "RISK_READY",
+        "e9_trade": True,
+        "execution_state": "SIGNAL_READY",
+    }
+    progressed = advance_lifecycle_stage(previous, current)
+    assert progressed["lifecycle_stage"] == "TRADE"
+    assert progressed["trade_authorized"] is True
+    assert progressed["wait_for_stage"] == "USER_ACTION_REQUIRED"
+
+
+def test_lifecycle_does_not_promote_past_missing_evidence():
+    previous = {"opportunity_id": "BUY|OPPORTUNITY_WATCH|evt-2", "direction": "BUY", "lifecycle_stage": "WATCH", "event_id": "evt-2", "origin_event_id": "evt-2"}
+    current = {
+        "candidate": True,
+        "direction": "BUY",
+        "setup": "TREND_PULLBACK_CONTINUATION",
+        "event_id": "evt-2",
+        "candle": "2026-09-07T06:15:00Z",
+        "confirmed": True,
+        "thesis_proven": False,
+        "e7_confirmed": True,
+        "e7_confirmation_state": "CONFIRMED",
+        "e8_ready": False,
+        "e9_trade": False,
+    }
+    progressed = advance_lifecycle_stage(previous, current)
+    assert progressed["lifecycle_stage"] == "CONFIRMED"
+    assert progressed["trade_authorized"] is False
+
+# Trigger marker for the latest production-v2 lifecycle promotion regression.
