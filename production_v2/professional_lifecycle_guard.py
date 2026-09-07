@@ -13,6 +13,24 @@ def install(pipeline_module: Any) -> None:
         return
     original_directional = pipeline_module._directional_lifecycle_current
     original_advance = pipeline_module.advance_opportunity_directions
+    original_e5 = pipeline_module.analyze_e5
+
+    @wraps(original_e5)
+    def analyze_e5(*args: Any, **kwargs: Any):
+        result = original_e5(*args, **kwargs)
+        output = dict(getattr(result, "output", {}) or {})
+        extension = _text(output.get("extension_state"))
+        location = _text(output.get("location_state"))
+        # Extended/excessive aligned price is a location warning, not a reversal
+        # signal. Preserve the richer finding but expose the professional contract
+        # expected by downstream lifecycle logic.
+        if extension in {"EXTENDED", "EXCESSIVE"} and location == "ACCEPTED_AUCTION_NO_REVERSAL_EDGE":
+            output["location_state"] = "WAIT_REPRICING"
+            output["location_contract_state"] = location
+            reasons = list(output.get("reason_codes") or [])
+            reasons.append("EXTENDED_ALIGNED_MARKET_WAIT_REPRICING")
+            output["reason_codes"] = list(dict.fromkeys(reasons))
+        return result.__class__(result.engine_id, result.name, result.gate_passed, result.score, output, result.reason_codes)
 
     @wraps(original_directional)
     def directional(*args: Any, **kwargs: Any):
@@ -20,12 +38,19 @@ def install(pipeline_module: Any) -> None:
         results = args[0] if args and isinstance(args[0], dict) else {}
         e6 = dict(getattr(results.get("E6"), "output", {}) or {})
         tradeability = _text(e6.get("tradeability")) or "UNKNOWN"
+        setup_exists = bool(e6.get("setup_exists"))
+        setup = _text(e6.get("setup") or e6.get("setup_family"))
+        source = "E6_SETUP" if setup_exists and setup else "E6_THESIS" if setup_exists else ""
         if isinstance(result, tuple) and result and isinstance(result[0], dict):
             book = result[0]
-            for item in book.values():
-                if isinstance(item, dict):
-                    item["tradeability"] = tradeability
-                    item["structural_space_is_economic_gate"] = True
+            for direction, item in book.items():
+                if not isinstance(item, dict):
+                    continue
+                item["tradeability"] = tradeability
+                item["structural_space_is_economic_gate"] = True
+                if source and _text(item.get("direction")) == _text(direction):
+                    item["lifecycle_source"] = source
+                    item.setdefault("setup", setup)
             return result
         return result
 
@@ -53,6 +78,7 @@ def install(pipeline_module: Any) -> None:
                 result["wait_for"] = lead.get("wait_for", result.get("wait_for"))
         return result
 
+    pipeline_module.analyze_e5 = analyze_e5
     pipeline_module._directional_lifecycle_current = directional
     pipeline_module.advance_opportunity_directions = advance
     pipeline_module._PROFESSIONAL_LIFECYCLE_GUARD_V1 = True
