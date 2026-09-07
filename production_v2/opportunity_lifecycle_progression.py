@@ -31,22 +31,49 @@ def _requested_stage(current: dict[str, Any]) -> str:
     return "IDLE"
 
 
+def _identity_direction(opportunity_id: Any) -> str:
+    value = str(opportunity_id or "").strip()
+    return _text(value.split("|", 1)[0]) if value else ""
+
+
+def _identity_event(opportunity_id: Any) -> str:
+    parts = str(opportunity_id or "").strip().split("|")
+    return parts[2].strip() if len(parts) >= 3 else ""
+
+
 def _identity(previous: dict[str, Any], current: dict[str, Any]) -> str:
     current_direction = _text(current.get("direction"))
     previous_direction = _text(previous.get("direction"))
-    existing = str(previous.get("opportunity_id") or "").strip()
-    if existing and current_direction in {"BUY", "SELL"} and previous_direction == current_direction: return existing
+    previous_id = str(previous.get("opportunity_id") or "").strip()
+    current_event = str(current.get("event_id") or current.get("origin_event_id") or "").strip()
+    previous_event = str(previous.get("event_id") or previous.get("origin_event_id") or _identity_event(previous_id) or "").strip()
+
+    # A lifecycle identity is reusable only when both direction and causal event
+    # still match. This prevents a stale SELL id from contaminating a new BUY,
+    # and prevents a genuinely new causal event from inheriting the old id.
+    if previous_id and current_direction in {"BUY", "SELL"} and previous_direction == current_direction:
+        if not current_event or not previous_event or current_event == previous_event:
+            return previous_id
+
     explicit = str(current.get("opportunity_id") or "").strip()
-    if explicit and current_direction in {"BUY", "SELL"}: return explicit
+    if explicit and current_direction in {"BUY", "SELL"}:
+        explicit_direction = _identity_direction(explicit)
+        explicit_event = _identity_event(explicit)
+        if explicit_direction == current_direction and (not current_event or not explicit_event or explicit_event == current_event):
+            return explicit
+
     if current_direction not in {"BUY", "SELL"}: return ""
-    setup = _text(current.get("setup") or "OPPORTUNITY") or "OPPORTUNITY"; event = str(current.get("event_id") or current.get("origin_event_id") or "").strip()
+    setup = _text(current.get("setup") or "OPPORTUNITY") or "OPPORTUNITY"; event = current_event
     return "|".join(part for part in (current_direction, setup, event) if part)
 
 
-def _with_event(result: dict[str, Any], current: dict[str, Any]) -> dict[str, Any]:
+def _with_event(result: dict[str, Any], current: dict[str, Any], *, new_identity: bool = False) -> dict[str, Any]:
     event_id = current.get("event_id") or result.get("event_id")
     if event_id: result["event_id"] = event_id
-    result["origin_event_id"] = result.get("origin_event_id") or current.get("origin_event_id") or event_id
+    if new_identity:
+        result["origin_event_id"] = current.get("origin_event_id") or event_id
+    else:
+        result["origin_event_id"] = result.get("origin_event_id") or current.get("origin_event_id") or event_id
     result["last_progression_candle"] = current.get("candle") or result.get("last_progression_candle") or result.get("last_evaluated_candle")
     return result
 
@@ -59,8 +86,10 @@ def _record_stage(result: dict[str, Any], stage: str, candle: Any) -> dict[str, 
 
 def _terminal_result(previous: dict[str, Any], stage: str, current: dict[str, Any]) -> dict[str, Any]:
     reason = _text(current.get("invalidation_reason")) or stage; state = "INVALIDATED" if stage == "INVALIDATED" else "EXPIRED" if stage != "REPLACED" else "REPLACED"
-    result = {**previous, "opportunity_id": _identity(previous, current) or previous.get("opportunity_id"), "direction": _text(current.get("direction")) or previous.get("direction"), "lifecycle_stage": stage, "state": state, "lifecycle_state": stage, "opportunity_phase": stage, "trade_authorized": False, "wait_for_stage": "NEW_CAUSAL_OPPORTUNITY", "terminal_stage": stage, "terminal_reason": reason, "invalidation_reason": current.get("invalidation_reason") or previous.get("invalidation_reason") or reason}
-    return _record_stage(_with_event(result, current), stage, current.get("candle"))
+    identity = _identity(previous, current)
+    new_identity = bool(identity and identity != str(previous.get("opportunity_id") or "").strip())
+    result = {**previous, "opportunity_id": identity or previous.get("opportunity_id"), "direction": _text(current.get("direction")) or previous.get("direction"), "lifecycle_stage": stage, "state": state, "lifecycle_state": stage, "opportunity_phase": stage, "trade_authorized": False, "wait_for_stage": "NEW_CAUSAL_OPPORTUNITY", "terminal_stage": stage, "terminal_reason": reason, "invalidation_reason": current.get("invalidation_reason") or previous.get("invalidation_reason") or reason}
+    return _record_stage(_with_event(result, current, new_identity=new_identity), stage, current.get("candle"))
 
 
 def _timing_fields(current: dict[str, Any]) -> dict[str, Any]:
@@ -89,8 +118,9 @@ def advance_lifecycle_stage(previous: dict[str, Any] | None, current: dict[str, 
         if current_event and previous_event and current_event != previous_event: previous = {"stage_history": []}; previous_stage = "IDLE"
         else: return dict(previous)
     if requested == "IDLE":
-        result = {**previous, "opportunity_id": _identity(previous, current), "lifecycle_stage": previous_stage if previous_stage in STAGES else "IDLE", "trade_authorized": False, "last_evaluated_candle": current.get("candle") or previous.get("last_evaluated_candle")}
-        result = _with_event(result, current)
+        identity = _identity(previous, current); new_identity = bool(identity and identity != str(previous.get("opportunity_id") or "").strip())
+        result = {**previous, "opportunity_id": identity, "lifecycle_stage": previous_stage if previous_stage in STAGES else "IDLE", "trade_authorized": False, "last_evaluated_candle": current.get("candle") or previous.get("last_evaluated_candle")}
+        result = _with_event(result, current, new_identity=new_identity)
         if previous_stage in STAGES: result["wait_for_stage"] = STAGES[min(STAGE_RANK[previous_stage] + 1, len(STAGES) - 1)]; return _record_stage(result, previous_stage, current.get("candle"))
         result["wait_for_stage"] = "WATCH"; return result
     if requested == "TRADE" and not (_truth(current.get("e8_ready")) and _truth(current.get("e9_trade"))): requested = "E8_READY"
@@ -99,8 +129,9 @@ def advance_lifecycle_stage(previous: dict[str, Any] | None, current: dict[str, 
     if previous_rank < 0: stage = "WATCH" if current_rank > 0 else requested
     elif current_rank <= previous_rank: stage = previous_stage
     else: stage = STAGES[previous_rank + 1]
-    result = {**previous, "opportunity_id": _identity(previous, current), "lifecycle_stage": stage, "last_evaluated_candle": current.get("candle") or previous.get("last_evaluated_candle"), "trade_authorized": stage == "TRADE", "terminal_stage": None, "terminal_reason": None, "direction": _text(current.get("direction")) or previous.get("direction")}
-    result = _with_event(result, current)
+    identity = _identity(previous, current); new_identity = bool(identity and identity != str(previous.get("opportunity_id") or "").strip())
+    result = {**previous, "opportunity_id": identity, "lifecycle_stage": stage, "last_evaluated_candle": current.get("candle") or previous.get("last_evaluated_candle"), "trade_authorized": stage == "TRADE", "terminal_stage": None, "terminal_reason": None, "direction": _text(current.get("direction")) or previous.get("direction")}
+    result = _with_event(result, current, new_identity=new_identity)
     timing = _timing_fields(current)
     result.update({key: value for key, value in timing.items() if value not in (None, "")})
     if stage == "WATCH":
