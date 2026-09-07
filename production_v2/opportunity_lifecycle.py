@@ -48,9 +48,6 @@ def _stable_identity(previous: dict[str, Any], direction: str, setup: str, event
         return _identity(direction, setup, event_id)
     pe = _event_key(previous.get("event_id") or previous.get("origin_event_id"))
     ce = _event_key(event_id)
-    # Identity is event-owned, not setup-label-owned. Without a genuinely new
-    # causal event, preserve the active opportunity id even when setup metadata
-    # becomes richer on a later candle.
     if not ce or (pe and _same_event(pe, ce)):
         return pid
     return _identity(direction, setup or ps or "OPPORTUNITY_WATCH", ce)
@@ -84,14 +81,21 @@ def advance_opportunity(previous: dict[str, Any] | None, current: dict[str, Any]
     if active and pd in VALID_DIRECTIONS and d in VALID_DIRECTIONS and d != pd:
         return {**c,"state":"REPLACED","lifecycle_state":"REPLACED","opportunity_phase":"REPLACED","continuity":"DIRECTION_CHANGED_REPLACED_OPPORTUNITY","previous_opportunity_id":pid,"opportunity_id":_identity(d,setup,event_id),"event_id":event_id,"origin_event_id":event_id,"bars_waited":0,"origin_candle":candle,"last_evaluated_candle":candle,"trade_authorized":False,"invalidation_reason":"DIRECTION_CHANGED","causal_event_anchor":anchor}
 
-    # New same-direction causal event: active state is WATCHING. REPLACED is
-    # historical only, carried by previous_opportunity_id.
-    new_event = bool(active and pd == d and previous_event and event_id and not same_event)
-    if new_event and previous_setup in WATCH_SETUPS:
-        oid = _identity(d, setup or "OPPORTUNITY_WATCH", event_id)
-        return {**c,"state":"WATCHING","lifecycle_state":"OPPORTUNITY_WATCH","opportunity_phase":"OPPORTUNITY_WATCH","continuity":"NEW_CAUSAL_EVENT_REPLACED_ACTIVE_WATCH","previous_opportunity_id":pid,"opportunity_id":oid,"direction":d,"setup":setup or "OPPORTUNITY_WATCH","event_id":event_id,"origin_event_id":event_id,"bars_waited":0,"origin_candle":candle,"last_evaluated_candle":candle,"trade_authorized":False,"invalidation_reason":None,"wait_for":c.get("wait_for") or "NEXT_CLOSED_M5_CANDLE","causal_event_anchor":anchor}
+    # A new causal event on an active WATCHING opportunity starts a new active
+    # watch regardless of the richer setup label reported on that candle. The
+    # old opportunity is historical only; it must never be returned as REPLACED.
+    new_event = bool(active and ps == "WATCHING" and pd == d and previous_event and event_id and not same_event)
+    if new_event:
+        oid = _identity(d, setup or previous_setup or "OPPORTUNITY_WATCH", event_id)
+        return {**c,"state":"WATCHING","lifecycle_state":"OPPORTUNITY_WATCH","opportunity_phase":"OPPORTUNITY_WATCH","continuity":"NEW_CAUSAL_EVENT_REPLACED_ACTIVE_WATCH","previous_opportunity_id":pid,"opportunity_id":oid,"direction":d,"setup":setup or previous_setup or "OPPORTUNITY_WATCH","event_id":event_id,"origin_event_id":event_id,"bars_waited":0,"origin_candle":candle,"last_evaluated_candle":candle,"trade_authorized":False,"invalidation_reason":None,"wait_for":c.get("wait_for") or "NEXT_CLOSED_M5_CANDLE","causal_event_anchor":anchor}
 
     pending_watch = active and previous_setup in WATCH_SETUPS
+    # WATCHING is an upstream state. Without explicit thesis proof it remains
+    # WATCHING even when the current candle supplies a concrete setup label.
+    if active and ps == "WATCHING" and d == pd and not thesis:
+        continuity_code = "CONTINUING_UPSTREAM_WATCH" if setup in WATCH_SETUPS else "PRESERVING_PENDING_OPPORTUNITY"
+        return {**base,"state":"WATCHING","lifecycle_state":"OPPORTUNITY_WATCH","opportunity_phase":"OPPORTUNITY_WATCH","continuity":continuity_code,"opportunity_id":pid,"direction":pd,"setup":previous_setup or setup or "OPPORTUNITY_WATCH","bars_waited":age,"origin_candle":p.get("origin_candle") or candle,"wait_for":c.get("wait_for") or "CAUSAL_FOLLOW_THROUGH_OR_INVALIDATION","invalidation_reason":None}
+
     if pending_watch and age >= MAX_WATCH_BARS:
         return {**base,"state":"EXPIRED","lifecycle_state":"EXPIRED","opportunity_phase":"EXPIRED","continuity":"OPPORTUNITY_EXPIRED","opportunity_id":pid,"direction":pd,"setup":previous_setup,"bars_waited":age,"wait_for":"NEW_CAUSAL_OPPORTUNITY","invalidation_reason":"WATCH_MAX_AGE_REACHED"}
     if pending_watch and bool(c.get("upstream_evidence_lost") or c.get("causal_evidence_lost")):
@@ -109,8 +113,6 @@ def advance_opportunity(previous: dict[str, Any] | None, current: dict[str, Any]
         else: state = "READY" if ready else "WAITING"; lifecycle = "EXECUTABLE" if ready else "TRIGGER_PENDING"; phase = lifecycle
         return {**base,"state":state,"lifecycle_state":lifecycle,"opportunity_phase":phase,"continuity":"CONTINUING_UPSTREAM_WATCH" if setup in WATCH_SETUPS and pending_watch else ("PRESERVING_PENDING_OPPORTUNITY" if pending_watch else ("CONTINUING_EXISTING_OPPORTUNITY" if active else "NEW_OPPORTUNITY_WATCH")),"opportunity_id":oid,"direction":d,"setup":setup,"bars_waited":age if active else 0,"origin_candle":p.get("origin_candle") if active else candle,"wait_for":c.get("wait_for") or ["NEXT_CLOSED_M5_CANDLE"],"invalidation_reason":None}
     if active:
-        if pending_watch and not thesis:
-            return {**base,"state":"WATCHING","lifecycle_state":"OPPORTUNITY_WATCH","opportunity_phase":"OPPORTUNITY_WATCH","continuity":"PRESERVING_PENDING_OPPORTUNITY","opportunity_id":pid,"direction":pd,"setup":previous_setup,"bars_waited":age,"wait_for":c.get("wait_for") or "CAUSAL_FOLLOW_THROUGH_OR_INVALIDATION","invalidation_reason":None}
         phase = "TRIGGER_PENDING" if thesis else "OPPORTUNITY_WATCH"
         return {**base,"state":ps if ps in ACTIVE_STATES else "WATCHING","lifecycle_state":phase,"opportunity_phase":phase,"continuity":"THESIS_PROVEN_TRIGGER_PENDING" if thesis else "PRESERVING_PENDING_OPPORTUNITY","opportunity_id":pid,"direction":pd,"setup":previous_setup,"bars_waited":age,"wait_for":c.get("wait_for") or ("E7_SETUP_SPECIFIC_CLOSED_CANDLE_CONFIRMATION" if thesis else "CAUSAL_FOLLOW_THROUGH_OR_INVALIDATION"),"invalidation_reason":None}
     return {"state":"IDLE","lifecycle_state":"IDLE","opportunity_phase":"IDLE","continuity":"NO_ACTIVE_PENDING_OPPORTUNITY","opportunity_id":None,"direction":"NEUTRAL","setup":"UNKNOWN","bars_waited":0,"origin_candle":candle,"last_evaluated_candle":candle,"trade_authorized":False,"invalidation_reason":None,"event_id":event_id,"origin_event_id":event_id,"causal_event_anchor":anchor}
