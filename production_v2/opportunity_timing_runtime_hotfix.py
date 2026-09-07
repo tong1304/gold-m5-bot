@@ -5,7 +5,7 @@ from typing import Any
 from .contracts import EngineResult
 from .opportunity_timing import enrich_timing
 
-RUNTIME_VERSION = "OPPORTUNITY_TIMING_MEMBRANE_V3"
+RUNTIME_VERSION = "OPPORTUNITY_TIMING_MEMBRANE_V4"
 
 
 def _out(result: Any) -> dict[str, Any]:
@@ -30,25 +30,64 @@ def _first_usable(*values: Any) -> Any:
     return None
 
 
+def _observation_map(output: dict[str, Any]) -> dict[str, Any]:
+    """Normalize EngineResult observations such as ['auction_quality=64.35']."""
+    parsed: dict[str, Any] = {}
+    observations = output.get("observations")
+    if isinstance(observations, dict):
+        for key, value in observations.items():
+            parsed[str(key).strip()] = value
+    elif isinstance(observations, (list, tuple, set)):
+        for item in observations:
+            if not isinstance(item, str) or "=" not in item:
+                continue
+            key, value = item.split("=", 1)
+            key = key.strip()
+            value = value.strip()
+            if key:
+                parsed[key] = value
+    return parsed
+
+
+def _value(output: dict[str, Any], key: str) -> Any:
+    direct = output.get(key)
+    if _usable(direct):
+        return direct
+    return _observation_map(output).get(key)
+
+
 def _merge_evidence(e6: dict[str, Any], e4: dict[str, Any], e5: dict[str, Any]) -> dict[str, Any]:
     out = dict(e6)
+    e4_obs = _observation_map(e4)
+    e5_obs = _observation_map(e5)
+
     for key in ("event", "event_type", "event_level", "event_atr_frozen", "event_age_bars", "auction_state", "response_actor"):
-        value = _first_usable(e4.get(key), out.get(key))
+        value = _first_usable(e4.get(key), e4_obs.get(key), out.get(key), _observation_map(out).get(key))
         if value is not None:
             out[key] = value
+
     for key in ("liquidity_quality", "auction_quality"):
-        value = _first_usable(e4.get(key), out.get(key))
+        value = _first_usable(e4.get(key), e4_obs.get(key), out.get(key), _observation_map(out).get(key))
         if value is not None:
             out[key] = value
+
     for key in ("price", "current_price", "last_price", "available_space_atr", "effective_space_atr", "space_atr"):
-        value = _first_usable(e5.get(key), out.get(key))
+        value = _first_usable(e5.get(key), e5_obs.get(key), out.get(key), _observation_map(out).get(key))
         if value is not None:
             out[key] = value
+
     for key in ("available_space_atr_long", "available_space_atr_short"):
-        value = _first_usable(e5.get(key), out.get(key))
+        value = _first_usable(e5.get(key), e5_obs.get(key), out.get(key), _observation_map(out).get(key))
         if value is not None:
             out[key] = value
+
     direction = str(out.get("direction") or out.get("direction_thesis") or out.get("thesis_direction") or "").upper().strip()
+    if direction not in {"BUY", "SELL"}:
+        finding = str(out.get("finding") or "").upper().strip()
+        if finding.startswith("BUY"):
+            direction = "BUY"
+        elif finding.startswith("SELL"):
+            direction = "SELL"
     if direction in {"BUY", "SELL"} and not _usable(out.get("available_space_atr")):
         out["available_space_atr"] = out.get("available_space_atr_long" if direction == "BUY" else "available_space_atr_short", 0.0)
     return out
