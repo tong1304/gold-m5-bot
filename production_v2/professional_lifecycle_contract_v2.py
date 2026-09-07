@@ -47,6 +47,22 @@ def _as_new_watch(result: dict[str, Any], current: dict[str, Any]) -> dict[str, 
     }
 
 
+def _as_invalidated(result: dict[str, Any], previous: dict[str, Any], current: dict[str, Any], reason: str) -> dict[str, Any]:
+    return {
+        **result,
+        "state": "INVALIDATED",
+        "lifecycle_state": "INVALIDATED",
+        "opportunity_phase": "INVALIDATED",
+        "opportunity_id": previous.get("opportunity_id") or result.get("opportunity_id"),
+        "direction": previous.get("direction") or current.get("direction") or result.get("direction"),
+        "setup": previous.get("setup") or current.get("setup") or current.get("setup_family") or result.get("setup") or "OPPORTUNITY_WATCH",
+        "continuity": "OPPORTUNITY_INVALIDATED",
+        "trade_authorized": False,
+        "ready": False,
+        "invalidation_reason": reason,
+    }
+
+
 def install(module: Any) -> None:
     if getattr(module, "_PROFESSIONAL_LIFECYCLE_CONTRACT_V3", False):
         return
@@ -70,19 +86,31 @@ def install(module: Any) -> None:
         ps = str(previous.get("setup") or "").upper()
         cs = str(current.get("setup") or current.get("setup_family") or "").upper()
         ts = str(current.get("thesis_status") or "").upper()
-        thesis_proven = bool(current.get("thesis_proven")) or ts in {"THESIS_FORMED", "PROVEN"}
+        thesis_proven = bool(current.get("thesis_proven")) or ts in {"VALIDATING", "THESIS_FORMED", "PROVEN"}
         previous_state = str(previous.get("state") or "").upper()
         pd = str(previous.get("direction") or "").upper()
         cd = str(current.get("direction") or "").upper()
         fresh_event = _new_causal_event(previous, current)
         same_candle = _same_closed_candle(previous, current)
 
+        # Terminal evidence loss must win over every active-state preservation
+        # rule. Otherwise the later WATCHING branch can resurrect an invalid
+        # opportunity on the same closed candle.
+        if current.get("invalidated"):
+            if previous_state in ACTIVE:
+                return _as_invalidated(result, previous, current, current.get("invalidation_reason") or "CURRENT_CANDLE_INVALIDATED")
+            return result
+        if current.get("upstream_evidence_lost") or current.get("causal_evidence_lost"):
+            if previous_state in ACTIVE and ps in WATCH_SETUPS:
+                return _as_invalidated(result, previous, current, "UPSTREAM_CAUSAL_EVIDENCE_LOST")
+            return result
+
         if previous_state in ACTIVE and pd == cd and fresh_event:
             return _as_new_watch(result, current)
 
         # Expiry is evaluated before preserving WATCHING. A new closed candle
         # that reaches the maximum watch age terminates the watch; evaluating
-        # the same candle twice must remain idempotent.
+        # the same candle twice remains idempotent.
         if previous_state == "WATCHING" and pd == cd and not same_candle and not thesis_proven:
             try:
                 max_watch_bars = int(getattr(module, "MAX_WATCH_BARS", 5))
@@ -107,7 +135,8 @@ def install(module: Any) -> None:
                 }
 
         # WATCHING is a causal-discovery state. A concrete setup label alone
-        # does not prove the thesis. Explicit thesis proof is the promotion gate.
+        # does not prove the thesis. Explicit validation/proof is the promotion
+        # gate; FORMING remains WATCHING.
         if previous_state == "WATCHING" and pd == cd and not thesis_proven:
             if same_candle or cs in WATCH_SETUPS:
                 continuity = "CONTINUING_UPSTREAM_WATCH"
