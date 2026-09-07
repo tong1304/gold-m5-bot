@@ -44,14 +44,25 @@ def _decorate(result: dict[str, Any], current: dict[str, Any], previous: dict[st
 
 
 def install(pipeline_module: Any) -> Callable[..., dict[str, Any]]:
-    """Bind timing to both lifecycle-input construction and lifecycle normalization."""
+    """Bind timing to both lifecycle-input construction and lifecycle normalization.
+
+    The production lifecycle-current helper has a legacy four-positional-argument
+    contract: (results, decision, gate_passed, candle). The pipeline now computes
+    a causal_anchor separately and passes five arguments at its call boundary, but
+    runtime_compatibility deliberately trims that call for the legacy helper. This
+    membrane must therefore remain compatible with both forms without forwarding
+    causal_anchor into the legacy helper.
+    """
     original_current = getattr(pipeline_module, "_directional_lifecycle_current")
     original_advance = getattr(pipeline_module, "advance_opportunity_directions")
     if getattr(original_advance, "_timing_membrane", False):
         return original_advance
 
-    def current_with_timing(results: dict[str, Any], decision: str, gate_passed: bool, candle: Any, causal_anchor: dict[str, Any] | None) -> dict[str, dict[str, Any]]:
-        current = original_current(results, decision, gate_passed, candle, causal_anchor)
+    def current_with_timing(results: dict[str, Any], decision: str, gate_passed: bool, candle: Any, causal_anchor: dict[str, Any] | None = None) -> dict[str, dict[str, Any]]:
+        # Do not forward causal_anchor to the legacy four-argument helper.
+        # The anchor remains owned by pipeline.py and is persisted into lifecycle
+        # after this helper returns, preserving the existing causal-event contract.
+        current = original_current(results, decision, gate_passed, candle)
         e6 = results.get("E6")
         e6_output = e6.output if e6 and isinstance(getattr(e6, "output", None), dict) else {}
         direction = _text(e6_output.get("direction") or e6_output.get("direction_thesis") or e6_output.get("thesis_direction") or e6_output.get("finding"))
