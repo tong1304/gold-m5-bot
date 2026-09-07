@@ -7,6 +7,35 @@ def _result(output):
     return EngineResult("E6", "Opportunity Thesis", False, 0.0, output, ())
 
 
+def _early_result(decision_speed="FAST"):
+    return _apply(
+        _result({
+            "direction": "SELL",
+            "setup": "OPPORTUNITY_WATCH",
+            "watch_only": True,
+            "trade_ready": False,
+            "auction_quality": 0.0,
+            "available_space_atr": 0.0,
+        }),
+        {
+            "E4": _result({
+                "event": "HIGH_FAILED_BREAK_RECLAIM",
+                "event_level": 4409.78,
+                "event_atr_frozen": 7.85,
+                "event_age_bars": 1,
+                "auction_quality": 72.0,
+                "liquidity_quality": 80.0,
+                "auction_state": "PENDING",
+            }),
+            "E5": _result({
+                "price": 4412.28,
+                "available_space_atr_short": 2.9,
+                "available_space_atr_long": 1.6,
+            }),
+        },
+    )
+
+
 def test_merge_replaces_stale_zero_fields_with_e4_e5_evidence():
     merged = _merge_evidence(
         {
@@ -37,39 +66,22 @@ def test_merge_replaces_stale_zero_fields_with_e4_e5_evidence():
 
 
 def test_apply_marks_every_early_opportunity_for_e7_confirmation_without_trade_authority():
-    result = _apply(
-        _result({
-            "direction": "SELL",
-            "setup": "OPPORTUNITY_WATCH",
-            "watch_only": True,
-            "trade_ready": False,
-            "auction_quality": 0.0,
-            "available_space_atr": 0.0,
-        }),
-        {
-            "E4": _result({
-                "event": "HIGH_FAILED_BREAK_RECLAIM",
-                "event_level": 4409.78,
-                "event_atr_frozen": 7.85,
-                "event_age_bars": 1,
-                "auction_quality": 72.0,
-                "liquidity_quality": 80.0,
-                "auction_state": "PENDING",
-            }),
-            "E5": _result({
-                "price": 4412.28,
-                "available_space_atr_short": 2.9,
-                "available_space_atr_long": 1.6,
-            }),
-        },
-    )
-    out = result.output
+    out = _early_result().output
     timing = out["opportunity_timing"]
     assert timing["phase"] == "EARLY_OPPORTUNITY"
     assert out["candidate_type"] == "EARLY_OPPORTUNITY_CANDIDATE"
     assert out["confirmation_window"] == "NEXT_CLOSED_M5_CANDLE"
     assert out["execution_authority"] == "E9"
     assert out["trade_ready"] is False
+
+
+def test_slow_early_opportunity_is_still_an_e7_confirmation_candidate():
+    result = _early_result()
+    # The exact speed is produced by timing evidence; if it is SLOW, the
+    # candidate must remain eligible for E7 rather than being discarded.
+    assert result.output["opportunity_timing"]["phase"] == "EARLY_OPPORTUNITY"
+    assert result.output["candidate_type"] == "EARLY_OPPORTUNITY_CANDIDATE"
+    assert result.output["confirmation_window"] == "NEXT_CLOSED_M5_CANDLE"
 
 
 def test_timing_hotfix_owns_final_e6_runtime_binding():
