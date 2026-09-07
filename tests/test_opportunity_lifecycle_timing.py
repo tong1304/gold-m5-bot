@@ -1,4 +1,5 @@
 from production_v2 import opportunity_lifecycle_timing
+from production_v2.opportunity_lifecycle_progression import advance_lifecycle_stage
 
 
 def _install_test_wrapper():
@@ -80,3 +81,70 @@ def test_current_with_timing_preserves_production_tuple_contract_and_five_arg_bo
     assert competition == "CONTESTED"
     assert current["BUY"]["opportunity_speed"] == "FAST"
     assert current["BUY"]["confirmation_window"] == "NEXT_CLOSED_M5_CANDLE"
+
+
+def test_progression_does_not_downgrade_early_fast_to_generic_confirmed_wait():
+    progressed = advance_lifecycle_stage(
+        {},
+        {
+            "candidate": True,
+            "direction": "BUY",
+            "opportunity_phase": "EARLY_OPPORTUNITY",
+            "opportunity_speed": "FAST",
+            "confirmation_window": "NEXT_CLOSED_M5_CANDLE",
+            "wait_for": "FAST_CLOSED_CANDLE_CONFIRMATION",
+            "chase_prohibited": False,
+            "candle": "2026-09-07T05:35:00+07:00",
+            "event_id": "evt-early-1",
+        },
+    )
+    assert progressed["lifecycle_stage"] == "WATCH"
+    assert progressed["opportunity_phase"] == "EARLY_OPPORTUNITY"
+    assert progressed["opportunity_speed"] == "FAST"
+    assert progressed["confirmation_window"] == "NEXT_CLOSED_M5_CANDLE"
+    assert progressed["wait_for_stage"] == "FAST_CLOSED_CANDLE_CONFIRMATION"
+    assert progressed["trade_authorized"] is False
+
+
+def test_progression_propagates_early_standard_closed_candle_confirmation():
+    progressed = advance_lifecycle_stage(
+        {},
+        {
+            "candidate": True,
+            "direction": "BUY",
+            "opportunity_phase": "EARLY_OPPORTUNITY",
+            "opportunity_speed": "STANDARD",
+            "confirmation_window": "NEXT_CLOSED_M5_CANDLE",
+            "wait_for": "CLOSED_CANDLE_CONFIRMATION",
+            "candle": "2026-09-07T05:35:00+07:00",
+            "event_id": "evt-early-2",
+        },
+    )
+    assert progressed["lifecycle_stage"] == "WATCH"
+    assert progressed["wait_for_stage"] == "CLOSED_CANDLE_CONFIRMATION"
+    assert progressed["opportunity_phase"] == "EARLY_OPPORTUNITY"
+    assert progressed["opportunity_speed"] == "STANDARD"
+
+
+def test_progression_propagates_late_no_chase_boundary():
+    progressed = advance_lifecycle_stage(
+        {},
+        {
+            "candidate": True,
+            "direction": "SELL",
+            "opportunity_phase": "LATE_OPPORTUNITY",
+            "opportunity_speed": "SLOW",
+            "confirmation_window": "NEW_CAUSAL_EVENT",
+            "wait_for": "NO_CHASE;WAIT_FOR_NEW_CAUSAL_EVENT",
+            "chase_prohibited": True,
+            "candle": "2026-09-07T05:35:00+07:00",
+            "event_id": "evt-late-1",
+        },
+    )
+    assert progressed["lifecycle_stage"] == "WATCH"
+    assert progressed["opportunity_phase"] == "LATE_OPPORTUNITY"
+    assert progressed["opportunity_speed"] == "SLOW"
+    assert progressed["confirmation_window"] == "NEW_CAUSAL_EVENT"
+    assert progressed["wait_for_stage"] == "NO_CHASE;WAIT_FOR_NEW_CAUSAL_EVENT"
+    assert progressed["chase_prohibited"] is True
+    assert progressed["trade_authorized"] is False
