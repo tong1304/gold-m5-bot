@@ -29,6 +29,7 @@ from .terminal_opportunity_runtime import install as _install_terminal_opportuni
 from .opportunity_timing_runtime_hotfix import install as _install_opportunity_timing_hotfix
 from .opportunity_lifecycle_timing import install as _install_opportunity_lifecycle_timing
 from .opportunity_lifecycle_promotion import install as _install_opportunity_lifecycle_promotion
+from .p0_opportunity_integrity import install as _install_p0_opportunity_integrity
 
 _install_bootstrap_surgery(_pipeline_module)
 _install_mtf_runtime(_pipeline_module, _market_data_module)
@@ -77,7 +78,12 @@ _install_opportunity_lifecycle_timing(_pipeline_module)
 
 # Promotion membrane: remove only the artificial one-stage-per-candle delay
 # when the current closed candle proves multiple downstream gates. E9 remains
-# the sole execution authority and all existing safety checks stay in force.
+# the sole execution authority and all existing stage-specific safety checks stay in force.
 _install_opportunity_lifecycle_promotion()
+
+# P0 integrity membrane is deliberately LAST: it wraps the exact lifecycle
+# callable used by pipeline.py, canonicalizes E6 direction/event identity, and
+# synchronizes E6 WATCH state into lifecycle state without granting execution authority.
+_install_p0_opportunity_integrity(_pipeline_module)
 
 __all__ = ["ProductionPipeline"]
