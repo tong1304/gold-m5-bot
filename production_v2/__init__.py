@@ -33,25 +33,19 @@ from .opportunity_lifecycle_promotion import install as _install_opportunity_lif
 from .p0_opportunity_integrity import install as _install_p0_opportunity_integrity
 from .opportunity_lifecycle_contract_surgery import install as _install_lifecycle_contract_surgery
 from .professional_runtime import install as _install_professional_runtime
+from .professional_e9_runtime import install as _install_professional_e9_runtime
 
 _install_bootstrap_surgery(_pipeline_module)
 _install_mtf_runtime(_pipeline_module, _market_data_module)
-
-# E2 opportunity intelligence: preserve conditional BUY/SELL watches without
-# authorizing entry, trigger, decision, or execution.
 _install_e2_opportunity_book(_pipeline_module, _e2_module)
-
 _install_e6_runtime_authority(_e6_module)
 _pipeline_module.analyze_e6 = _e6_module.analyze_e6
 _pipeline_module._E6_RUNTIME_OVERRIDE = _e6_module.analyze_e6
-
 _install_e8_applicability_boundary(_e8_module)
 _pipeline_module.analyze_e8 = _e8_module.analyze_e8
-
 _install_e9_watch_boundary(_e9_module)
 _install_e9_thesis_contract(_e9_module)
 _pipeline_module.analyze_e9 = _e9_module.analyze_e9
-
 _install_evidence_collaboration(_e6_module, _e9_module)
 _install_e7_thesis_boundary(_pipeline_module)
 _install_final_runtime_binding(_pipeline_module, _e6_module, _e8_module, _e9_module)
@@ -64,10 +58,7 @@ _install_opportunity_timing_hotfix(_pipeline_module)
 _install_opportunity_lifecycle_timing(_pipeline_module)
 _install_opportunity_lifecycle_promotion()
 _install_p0_opportunity_integrity(_pipeline_module)
-
-# Last membrane: causal-event direction, canonical event clock, explicit
-# THESIS/ARMED states, E8 pre-economics, and lifecycle semantics. It never
-# grants execution authority; E9 remains final.
 _install_professional_runtime(_pipeline_module)
+_install_professional_e9_runtime(_pipeline_module)
 
 __all__ = ["ProductionPipeline"]
