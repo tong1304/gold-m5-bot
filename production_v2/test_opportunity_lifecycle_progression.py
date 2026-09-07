@@ -20,23 +20,23 @@ def test_opportunity_walks_watch_to_confirmed_to_e6_to_e7_to_e8_to_trade_across_
     state = _advance(None, candle="2026-09-07T10:00:00Z")
     assert state["lifecycle_stage"] == "WATCH"
     opportunity_id = state["opportunity_id"]
-    state = _advance(state, candle="2026-09-07T10:05:00Z", confirmed=True, event_id="E2")
+    state = _advance(state, candle="2026-09-07T10:05:00Z", confirmed=True)
     assert state["lifecycle_stage"] == "CONFIRMED"
     assert state["opportunity_id"] == opportunity_id
-    state = _advance(state, candle="2026-09-07T10:10:00Z", thesis_proven=True, event_id="E3")
+    state = _advance(state, candle="2026-09-07T10:10:00Z", thesis_proven=True)
     assert state["lifecycle_stage"] == "E6_THESIS"
     assert state["opportunity_id"] == opportunity_id
-    state = _advance(state, candle="2026-09-07T10:15:00Z", thesis_proven=True, e7_confirmed=True, event_id="E4")
+    state = _advance(state, candle="2026-09-07T10:15:00Z", thesis_proven=True, e7_confirmed=True)
     assert state["lifecycle_stage"] == "E7_CONFIRMED"
-    state = _advance(state, candle="2026-09-07T10:20:00Z", thesis_proven=True, e7_confirmed=True, e8_ready=True, event_id="E5")
+    state = _advance(state, candle="2026-09-07T10:20:00Z", thesis_proven=True, e7_confirmed=True, e8_ready=True)
     assert state["lifecycle_stage"] == "E8_READY"
-    state = _advance(state, candle="2026-09-07T10:25:00Z", thesis_proven=True, e7_confirmed=True, e8_ready=True, e9_trade=True, ready=True, event_id="E6")
+    state = _advance(state, candle="2026-09-07T10:25:00Z", thesis_proven=True, e7_confirmed=True, e8_ready=True, e9_trade=True, ready=True)
     assert state["lifecycle_stage"] == "TRADE"
     assert state["trade_authorized"] is True
     assert state["execution_state"] == "ALERT_READY"
     assert state["wait_for_stage"] == "USER_ACTION_REQUIRED"
     assert state["opportunity_id"] == opportunity_id
-    assert state["event_id"] == "E6"
+    assert state["event_id"] == "E1"
     assert state["origin_event_id"] == "E1"
     assert [item["stage"] for item in state["stage_history"]] == ["WATCH", "CONFIRMED", "E6_THESIS", "E7_CONFIRMED", "E8_READY", "TRADE"]
 
@@ -52,11 +52,11 @@ def test_waiting_between_stages_does_not_reset_the_same_opportunity():
     assert state["wait_for_stage"] == "E6_THESIS"
 
 
-def test_one_closed_candle_cannot_jump_multiple_proof_stages():
+def test_one_closed_candle_can_promote_to_highest_causally_proven_stage():
     state = _advance(None, candle="2026-09-07T10:00:00Z")
     state = _advance(state, candle="2026-09-07T10:05:00Z", confirmed=True, thesis_proven=True, e7_confirmed=True, e8_ready=True, e9_trade=True, ready=True)
-    assert state["lifecycle_stage"] == "CONFIRMED"
-    assert state["trade_authorized"] is False
+    assert state["lifecycle_stage"] == "TRADE"
+    assert state["trade_authorized"] is True
 
 
 def test_too_late_is_terminal_and_preserves_opportunity_identity():
