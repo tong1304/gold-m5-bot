@@ -18,10 +18,8 @@ class DecisionResult:
         if self.score==0.0 and e9 is not None:object.__setattr__(self,"score",float(e9.score))
         if e9 is not None and e9.gate_passed is not None:object.__setattr__(self,"gate_passed",bool(e9.gate_passed))
         if not self.risk:
-            if isinstance(e8o,dict) and e8o:
-                object.__setattr__(self,"risk",dict(e8o))
-            elif isinstance(e9o,dict) and e9o:
-                object.__setattr__(self,"risk",dict(e9o))
+            if isinstance(e8o,dict) and e8o: object.__setattr__(self,"risk",dict(e8o))
+            elif isinstance(e9o,dict) and e9o: object.__setattr__(self,"risk",dict(e9o))
         if self.reason_codes==() and e9 is not None:object.__setattr__(self,"reason_codes",tuple(e9.reason_codes))
         if self.decision=="TRADE":
             d=str(e9o.get("decision") or "").upper().strip(); object.__setattr__(self,"decision",d if d in {"BUY","SELL"} and self.gate_passed else "NO_TRADE")
@@ -30,9 +28,10 @@ class DecisionResult:
             if d in {"BUY","SELL"}:object.__setattr__(self,"decision",d)
         elif self.decision in {"BUY","SELL"} and not self.gate_passed:object.__setattr__(self,"decision","NO_TRADE")
         if self.decision in {"BUY","SELL"} and self.gate_passed and self.state in {"ANALYSIS_COMPLETE_NO_TRADE","",None}:object.__setattr__(self,"state","SIGNAL_READY")
-        execution=dict(self.execution_state or {}); valid={"NOT_REQUESTED","ORDER_INTENT","ORDER_SUBMITTED","ACCEPTED","REJECTED","POSITION_OPEN","POSITION_CLOSED"}
+        execution=dict(self.execution_state or {}); valid={"NOT_REQUESTED","ORDER_INTENT","ORDER_SUBMITTED","ACCEPTED","BROKER_ACCEPTED","REJECTED","POSITION_OPEN","POSITION_CLOSED"}
         if execution.get("state") not in valid:execution={"state":"NOT_REQUESTED","order_id":None,"position_id":None,"error":"INVALID_EXECUTION_STATE"}
-        if execution.get("state")=="NOT_REQUESTED" and self.decision in {"BUY","SELL"} and self.gate_passed:execution={"state":"ORDER_INTENT","order_id":None,"position_id":None,"error":None}
+        # Production V2 is alert-only: a BUY/SELL decision never implies broker execution.
+        # Any legacy execution metadata supplied by a caller is preserved for compatibility.
         object.__setattr__(self,"execution_state",execution)
 
     @property
