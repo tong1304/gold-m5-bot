@@ -34,6 +34,7 @@ from .p0_opportunity_integrity import install as _install_p0_opportunity_integri
 from .opportunity_lifecycle_contract_surgery import install as _install_lifecycle_contract_surgery
 from .professional_runtime import install as _install_professional_runtime
 from .professional_e9_runtime import install as _install_professional_e9_runtime
+from .professional_lifecycle_guard import install as _install_professional_lifecycle_guard
 
 _install_bootstrap_surgery(_pipeline_module)
 _install_mtf_runtime(_pipeline_module, _market_data_module)
@@ -59,6 +60,7 @@ _install_opportunity_lifecycle_timing(_pipeline_module)
 _install_opportunity_lifecycle_promotion()
 _install_p0_opportunity_integrity(_pipeline_module)
 _install_professional_runtime(_pipeline_module)
+_install_professional_lifecycle_guard(_pipeline_module)
 _install_professional_e9_runtime(_pipeline_module)
 
 __all__ = ["ProductionPipeline"]
