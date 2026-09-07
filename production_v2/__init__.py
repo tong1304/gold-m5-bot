@@ -28,6 +28,7 @@ from .professional_opportunity_surgery import install as _install_professional_o
 from .terminal_opportunity_runtime import install as _install_terminal_opportunity_runtime
 from .opportunity_timing_runtime_hotfix import install as _install_opportunity_timing_hotfix
 from .opportunity_lifecycle_timing import install as _install_opportunity_lifecycle_timing
+from .opportunity_lifecycle_promotion import install as _install_opportunity_lifecycle_promotion
 
 _install_bootstrap_surgery(_pipeline_module)
 _install_mtf_runtime(_pipeline_module, _market_data_module)
@@ -73,5 +74,10 @@ _install_opportunity_timing_hotfix(_pipeline_module)
 # pipeline's imported lifecycle function normalizes opportunity state. This is
 # observational only; E9 remains the sole execution authority.
 _install_opportunity_lifecycle_timing(_pipeline_module)
+
+# Promotion membrane: remove only the artificial one-stage-per-candle delay
+# when the current closed candle proves multiple downstream gates. E9 remains
+# the sole execution authority and all existing safety checks stay in force.
+_install_opportunity_lifecycle_promotion()
 
 __all__ = ["ProductionPipeline"]
