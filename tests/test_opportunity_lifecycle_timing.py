@@ -47,7 +47,7 @@ def test_late_opportunity_is_chase_prohibited_and_waits_for_new_event():
     assert result["trade_authorized"] is False
 
 
-def test_current_with_timing_accepts_pipeline_five_arg_boundary_without_breaking_legacy_helper():
+def test_current_with_timing_preserves_production_tuple_contract_and_five_arg_boundary():
     class Pipeline:
         pass
 
@@ -56,7 +56,7 @@ def test_current_with_timing_accepts_pipeline_five_arg_boundary_without_breaking
 
     def original_current(results, decision, gate_passed, candle):
         calls.append((results, decision, gate_passed, candle))
-        return {"BUY": {"direction": "BUY"}, "SELL": {"direction": "SELL"}}
+        return ({"BUY": {"direction": "BUY"}, "SELL": {"direction": "SELL"}}, "BUY", "CONTESTED")
 
     def original_advance(previous, current_by_direction, *, leader="NEUTRAL", competition="UNCONTESTED"):
         return {"opportunities": current_by_direction, "leader": leader, "competition": competition}
@@ -75,5 +75,8 @@ def test_current_with_timing_accepts_pipeline_five_arg_boundary_without_breaking
 
     assert len(calls) == 1
     assert calls[0][-1] == "2026-09-07T04:50:00Z"
-    assert result["BUY"]["opportunity_speed"] == "FAST"
-    assert result["BUY"]["confirmation_window"] == "NEXT_CLOSED_M5_CANDLE"
+    current, leader, competition = result
+    assert leader == "BUY"
+    assert competition == "CONTESTED"
+    assert current["BUY"]["opportunity_speed"] == "FAST"
+    assert current["BUY"]["confirmation_window"] == "NEXT_CLOSED_M5_CANDLE"
