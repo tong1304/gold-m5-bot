@@ -37,7 +37,7 @@ def _as_new_watch(result: dict[str, Any], current: dict[str, Any]) -> dict[str, 
         "candidate": bool(current.get("candidate", result.get("candidate", True))),
         "trade_authorized": False,
         "ready": False,
-        "continuity": "NEW_CAUSAL_EVENT_NEW_ACTIVE_WATCH",
+        "continuity": "NEW_CAUSAL_EVENT_REPLACED_ACTIVE_OPPORTUNITY",
         "event_id": current.get("event_id", result.get("event_id")),
         "event_timestamp": current.get("event_timestamp", result.get("event_timestamp")),
         "event_candle": current.get("event_candle", result.get("event_candle")),
@@ -70,21 +70,44 @@ def install(module: Any) -> None:
         ps = str(previous.get("setup") or "").upper()
         cs = str(current.get("setup") or current.get("setup_family") or "").upper()
         ts = str(current.get("thesis_status") or "").upper()
-        thesis_proven = bool(current.get("thesis_proven")) or ts in THESIS_STATES - {"FORMING", "VALIDATING"}
+        thesis_proven = bool(current.get("thesis_proven")) or ts in {"THESIS_FORMED", "PROVEN"}
         previous_state = str(previous.get("state") or "").upper()
         pd = str(previous.get("direction") or "").upper()
         cd = str(current.get("direction") or "").upper()
         fresh_event = _new_causal_event(previous, current)
         same_candle = _same_closed_candle(previous, current)
 
-        # A fresh causal event creates a NEW active watch. The old opportunity
-        # is historical; the active result must never be REPLACED.
         if previous_state in ACTIVE and pd == cd and fresh_event:
             return _as_new_watch(result, current)
 
+        # Expiry is evaluated before preserving WATCHING. A new closed candle
+        # that reaches the maximum watch age terminates the watch; evaluating
+        # the same candle twice must remain idempotent.
+        if previous_state == "WATCHING" and pd == cd and not same_candle and not thesis_proven:
+            try:
+                max_watch_bars = int(getattr(module, "MAX_WATCH_BARS", 5))
+                waited = int(result.get("bars_waited", previous.get("bars_waited", 0)) or 0)
+            except (TypeError, ValueError):
+                max_watch_bars, waited = 5, 0
+            if waited >= max_watch_bars:
+                return {
+                    **result,
+                    "state": "EXPIRED",
+                    "lifecycle_state": "EXPIRED",
+                    "opportunity_phase": "EXPIRED",
+                    "opportunity_id": previous.get("opportunity_id") or result.get("opportunity_id"),
+                    "direction": pd or cd or result.get("direction"),
+                    "setup": previous.get("setup") or cs or "OPPORTUNITY_WATCH",
+                    "continuity": "OPPORTUNITY_EXPIRED",
+                    "bars_waited": waited,
+                    "trade_authorized": False,
+                    "ready": False,
+                    "invalidation_reason": "WATCH_MAX_AGE_REACHED",
+                    "wait_for": "NEW_CAUSAL_OPPORTUNITY",
+                }
+
         # WATCHING is a causal-discovery state. A concrete setup label alone
-        # does not prove the thesis. Explicit thesis_proven=True (or a strong
-        # thesis status) is the only promotion gate.
+        # does not prove the thesis. Explicit thesis proof is the promotion gate.
         if previous_state == "WATCHING" and pd == cd and not thesis_proven:
             if same_candle or cs in WATCH_SETUPS:
                 continuity = "CONTINUING_UPSTREAM_WATCH"
@@ -106,8 +129,6 @@ def install(module: Any) -> None:
                 "age_bars": result.get("age_bars", previous.get("age_bars", 0)),
             }
 
-        # A proven thesis may promote into the trigger-pending setup lifecycle,
-        # but this still does not grant execution authority.
         if (
             previous_state in ACTIVE
             and ps in WATCH_SETUPS
