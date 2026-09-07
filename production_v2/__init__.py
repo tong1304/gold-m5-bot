@@ -10,6 +10,7 @@ from . import e2_brain as _e2_module
 from . import e6_brain as _e6_module
 from . import e8_brain as _e8_module
 from . import e9_brain as _e9_module
+from . import e5_brain as _e5_module
 from . import market_data as _market_data_module
 from . import professional_opportunity as _professional_opportunity_module
 from . import opportunity_lifecycle as _opportunity_lifecycle_module
@@ -35,6 +36,8 @@ from .opportunity_lifecycle_contract_surgery import install as _install_lifecycl
 from .professional_runtime import install as _install_professional_runtime
 from .professional_e9_runtime import install as _install_professional_e9_runtime
 from .professional_lifecycle_guard import install as _install_professional_lifecycle_guard
+from .professional_e5_direct_runtime import install as _install_professional_e5_direct
+from .professional_lifecycle_identity_runtime import install as _install_professional_lifecycle_identity
 
 _install_bootstrap_surgery(_pipeline_module)
 _install_mtf_runtime(_pipeline_module, _market_data_module)
@@ -62,5 +65,7 @@ _install_p0_opportunity_integrity(_pipeline_module)
 _install_professional_runtime(_pipeline_module)
 _install_professional_lifecycle_guard(_pipeline_module)
 _install_professional_e9_runtime(_pipeline_module)
+_install_professional_e5_direct(_e5_module)
+_install_professional_lifecycle_identity(_opportunity_lifecycle_module)
 
 __all__ = ["ProductionPipeline"]
