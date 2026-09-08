@@ -93,7 +93,7 @@ def analyze_e1(bars):
     transition_present=(not trend_confirmed) and ((ema_conflict and persistence>=1/3) or (structure_conflict and persistence>=1/3) or (horizon_conflict and _efficiency(closes,20)<0.45))
     atr_ratio=atr14/max(mean([max(bar["high"]-bar["low"],0.0) for bar in valid[-64:-14]]) if len(valid)>=64 else atr14,1e-12);compression=atr_ratio<0.78;expansion=atr_ratio>1.18;efficiency10=_efficiency(closes,10);efficiency20=_efficiency(closes,20)
     compression_regime=compression and efficiency20<0.35 and not trend_confirmed
-    range_regime=efficiency20<0.35 and not trend_confirmed and (internal_pressure=="BALANCED" or persistence<1/3) and not compression_regime
+    range_regime=efficiency20<0.35 and not trend_confirmed and (internal_pressure=="BALANCED" or persistence<=1/3) and not compression_regime
     if compression_regime:market_state,final_direction,classification_reason="COMPRESSION","NEUTRAL","volatility_compression_with_low_directional_efficiency"
     elif range_regime:market_state,final_direction,classification_reason="RANGE","NEUTRAL","balanced_or_rotational_pressure_with_low_directional_efficiency"
     elif transition_present:market_state,final_direction,classification_reason="TRANSITION",internal_pressure,"material_conflict_between_regime_dimensions"
