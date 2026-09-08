@@ -6,10 +6,13 @@ def test_upstream_watch_waits_across_next_closed_candle():
     assert first["state"] == "WATCHING"
     assert first["bars_waited"] == 0
     assert first["opportunity_id"] == "SELL|OPPORTUNITY_WATCH"
+    assert first["canonical_stage"] == "WATCH"
+    assert first["opportunity_record"]["decision_authority"] == "E9_ONLY"
     second = advance_opportunity(first, {"candidate": True, "direction": "SELL", "setup": "OPPORTUNITY_WATCH", "upstream_evidence": ["E4_AUCTION_PENDING"], "ready": False, "invalidated": False, "executed": False, "thesis_status": "FORMING", "candle": "2026-09-02T10:15:00Z"})
     assert second["state"] == "WATCHING"
     assert second["continuity"] == "CONTINUING_UPSTREAM_WATCH"
     assert second["bars_waited"] == 1
+    assert second["opportunity_id"] == first["opportunity_id"]
 
 
 def test_pending_watch_promotes_to_real_setup_without_resetting_thesis():
@@ -20,6 +23,7 @@ def test_pending_watch_promotes_to_real_setup_without_resetting_thesis():
     assert promoted["direction"] == "SELL"
     assert promoted["setup"] == "SWEEP_RECLAIM"
     assert promoted["bars_waited"] == 1
+    assert promoted["canonical_stage"] == "THESIS"
 
 
 def test_direction_change_replaces_pending_opportunity():
@@ -29,6 +33,7 @@ def test_direction_change_replaces_pending_opportunity():
     assert changed["invalidation_reason"] == "DIRECTION_CHANGED"
     assert changed["previous_opportunity_id"] == first["opportunity_id"]
     assert changed["opportunity_id"] != first["opportunity_id"]
+    assert changed["canonical_stage"] == "INVALIDATED"
 
 
 def test_explicit_invalidation_is_hard_stop():
@@ -36,6 +41,7 @@ def test_explicit_invalidation_is_hard_stop():
     invalidated = advance_opportunity(first, {"candidate": False, "direction": "SELL", "setup": "OPPORTUNITY_WATCH", "upstream_evidence": [], "ready": False, "invalidated": True, "executed": False, "thesis_status": "NONE", "candle": "2026-09-02T10:15:00Z"})
     assert invalidated["state"] == "INVALIDATED"
     assert invalidated["invalidation_reason"] == "CURRENT_CANDLE_INVALIDATED"
+    assert invalidated["canonical_stage"] == "INVALIDATED"
 
 
 def test_upstream_watch_invalidates_when_causal_evidence_is_lost():
