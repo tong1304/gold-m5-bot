@@ -88,9 +88,6 @@ if not getattr(_pipeline_module, "_E8_EXECUTION_BOUNDARY_ADAPTER", False):
     _pipeline_module._normalize_e8_execution_boundary = _normalize_e8_execution_boundary
     _pipeline_module._E8_EXECUTION_BOUNDARY_ADAPTER = True
 
-# E6 timing membrane compatibility: the public pipeline boundary accepts the
-# historical list snapshot used by isolated tests and keeps the stable semantic
-# candidate type while retaining the richer opportunity_timing phase metadata.
 if not getattr(_pipeline_module, "_E6_SAFE_INPUT_ADAPTER", False):
     _e6_public_original = _pipeline_module.analyze_e6
     def _safe_analyze_e6(snapshot, upstream):
@@ -106,8 +103,6 @@ if not getattr(_pipeline_module, "_E6_SAFE_INPUT_ADAPTER", False):
     _pipeline_module._E6_RUNTIME_OVERRIDE = _safe_analyze_e6
     _pipeline_module._E6_SAFE_INPUT_ADAPTER = True
 
-# E9 watch contract: an opportunity watch without a surviving E6 setup thesis
-# is explicitly waiting for the thesis, never economically blocked.
 if not getattr(_e9_module, "_E9_WATCH_GOVERNANCE_COMPAT", False):
     _e9_public_original = _e9_module.analyze_e9
     def _e9_governance_compat(snapshot, upstream):
@@ -122,8 +117,6 @@ if not getattr(_e9_module, "_E9_WATCH_GOVERNANCE_COMPAT", False):
     _pipeline_module.analyze_e9 = _e9_module.analyze_e9
     _e9_module._E9_WATCH_GOVERNANCE_COMPAT = True
 
-# Legacy app hook retained as an injectable evidence reconciler. Production
-# lifecycle authority remains in pipeline.py; this hook is diagnostic only.
 try:
     from . import app as _app_module
     if not hasattr(_app_module, "reconcile_causal_evidence"):
@@ -137,11 +130,15 @@ if not getattr(_pipeline_module, "_LIFECYCLE_SOURCE_METADATA", False):
     _original_directional_lifecycle_current = _pipeline_module._directional_lifecycle_current
     def _directional_lifecycle_current_with_source(*args, **kwargs):
         current, leader, competition = _original_directional_lifecycle_current(*args, **kwargs)
+        results = args[0] if args and isinstance(args[0], dict) else kwargs.get("results") or {}
+        e6_result = results.get("E6") if isinstance(results, dict) else None
+        e6 = dict(getattr(e6_result, "output", {}) or {}) if e6_result is not None else {}
+        e6_setup = str(e6.get("setup") or e6.get("setup_family") or "").upper().strip()
+        e6_concrete = bool(e6.get("setup_exists")) or (e6_setup not in {"", "OPPORTUNITY_WATCH", "OPPORTUNITY_CANDIDATE", "OPPORTUNITY_THESIS", "UNKNOWN", "NONE", "NO_SETUP"} and e6.get("setup_state") not in {"", "NO_SETUP", "UNKNOWN", "NONE"})
         for direction, payload in current.items():
             if not isinstance(payload, dict) or not payload.get("candidate"):
                 continue
-            setup_name = str(payload.get("setup") or "").upper().strip()
-            payload["lifecycle_source"] = "E6_SETUP" if setup_name not in {"", "OPPORTUNITY_WATCH", "UNKNOWN", "NONE", "NO_SETUP"} else "E2_OPPORTUNITY_BOOK"
+            payload["lifecycle_source"] = "E6_SETUP" if e6_concrete and direction == str(e6.get("direction") or "").upper().strip() else "E2_OPPORTUNITY_BOOK"
         return current, leader, competition
     _pipeline_module._directional_lifecycle_current = _directional_lifecycle_current_with_source
     _pipeline_module._LIFECYCLE_SOURCE_METADATA = True
