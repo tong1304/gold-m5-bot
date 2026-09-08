@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from .opportunity_core import OpportunityRecord
+
 VALID_DIRECTIONS = {"BUY", "SELL"}
 TERMINAL_STATES = {"INVALIDATED", "EXPIRED", "REPLACED"}
 ACTIVE_STATES = {"WATCHING", "WAITING", "READY"}
@@ -23,6 +25,16 @@ def _same_event(previous: Any, current: Any) -> bool:
     return not p and not c
 
 
+def _canonical(result: dict[str, Any], previous: dict[str, Any], current: dict[str, Any]) -> dict[str, Any]:
+    data = dict(result or {})
+    symbol = current.get("symbol") or previous.get("symbol") or "UNKNOWN"
+    timeframe = current.get("timeframe") or previous.get("timeframe") or "M5"
+    record = OpportunityRecord.from_lifecycle(data, symbol, timeframe)
+    data["canonical_stage"] = record.stage
+    data["opportunity_record"] = record.as_dict()
+    return data
+
+
 def install(lifecycle_module: Any, pipeline_module: Any | None = None) -> None:
     if getattr(lifecycle_module, "_CONTRACT_SURGERY_INSTALLED", False):
         return
@@ -42,15 +54,12 @@ def install(lifecycle_module: Any, pipeline_module: Any | None = None) -> None:
                 if candle not in (None, ""):
                     out["last_evaluated_candle"] = candle
                 out["trade_authorized"] = False
-                return out
+                return _canonical(out, p, c)
 
         result = original_advance(p, c)
         previous_direction = _text(p.get("direction"))
         current_direction = _text(c.get("direction"))
 
-        # Same-direction new causal events must become the new active
-        # opportunity. Direction changes intentionally remain REPLACED so the
-        # directional lifecycle layer can keep the transition explicit.
         if (
             _text(result.get("state")) == "REPLACED"
             and _text(p.get("state")) in ACTIVE_STATES
@@ -64,7 +73,7 @@ def install(lifecycle_module: Any, pipeline_module: Any | None = None) -> None:
             opportunity_id = lifecycle_module._identity(direction, setup, event_id)
             if opportunity_id:
                 ready = bool(c.get("ready"))
-                return {
+                return _canonical({
                     **c,
                     "state": "READY" if ready else "WATCHING" if setup in WATCH_SETUPS else "WAITING",
                     "lifecycle_state": "EXECUTABLE" if ready else "OPPORTUNITY_WATCH" if setup in WATCH_SETUPS else "TRIGGER_PENDING",
@@ -79,8 +88,8 @@ def install(lifecycle_module: Any, pipeline_module: Any | None = None) -> None:
                     "last_evaluated_candle": c.get("candle"),
                     "trade_authorized": False,
                     "invalidation_reason": None,
-                }
-        return result
+                }, p, c)
+        return _canonical(result, p, c)
 
     lifecycle_module.advance_opportunity = guarded_advance
     lifecycle_module._CONTRACT_SURGERY_INSTALLED = True
