@@ -110,9 +110,14 @@ def analyze_e1(bars):
     if horizon_conflict:conflicts.append("SHORT_VS_LONG_HORIZON")
     if internal_pressure=="BALANCED":conflicts.append("DIRECTIONAL_PRESSURE_BALANCED")
     consensus=internal_pressure in {"UP","DOWN"} and max(up_count,down_count)>=2 and persistence>=2/3
+    long_medium_coherent=internal_pressure in {"UP","DOWN"} and directions[1]==internal_pressure and directions[2]==internal_pressure
     strong_structure=structure_direction==internal_pressure and structure_quality>=0.55
     trend_confirmed=consensus and ema_ok and abs(ema_gap)>=0.10 and not ema_conflict and not structure_conflict and (strong_structure or persistence==1.0)
-    transition_present=(not trend_confirmed) and ((ema_conflict and persistence>=1/3) or (structure_conflict and persistence>=1/3) or (horizon_conflict and _efficiency(closes,20)<0.45))
+    # A short-term counter move is counter-evidence, not a regime transition, when
+    # medium + long horizons remain coherent. Transition still requires independent
+    # EMA/structure conflict or an actual higher-horizon disagreement.
+    higher_horizon_reversal = not long_medium_coherent and horizon_conflict
+    transition_present=(not trend_confirmed) and ((ema_conflict and persistence>=1/3) or (structure_conflict and persistence>=1/3) or (higher_horizon_reversal and _efficiency(closes,20)<0.45))
     trs=_true_ranges(valid);recent_atr=atr14;baseline_trs=trs[-64:-14];baseline_atr=mean(baseline_trs) if baseline_trs else recent_atr;atr_ratio=recent_atr/max(baseline_atr,1e-12);compression=atr_ratio<0.78;expansion=atr_ratio>1.10;efficiency10=_efficiency(closes,10);efficiency20=_efficiency(closes,20)
     deltas=[closes[i]-closes[i-1] for i in range(1,len(closes))];prior_mean=mean(deltas[-6:-1]) if len(deltas)>=6 else 0.0;prior_abs=mean(abs(x) for x in deltas[-6:-1]) if len(deltas)>=6 else 0.0;last_delta=deltas[-1] if deltas else 0.0;single_counter_candle=bool(prior_mean and last_delta and prior_mean*last_delta<0 and abs(last_delta)>1.5*max(prior_abs,1e-12))
     compression_regime=compression and efficiency20<0.35 and not trend_confirmed
@@ -123,11 +128,13 @@ def analyze_e1(bars):
     elif trend_confirmed:market_state,final_direction,classification_reason=("TREND_UP" if internal_pressure=="UP" else "TREND_DOWN"),internal_pressure,"persistent_multi_horizon_direction_with_ema_and_structure_coherence"
     elif expansion and internal_pressure in {"UP","DOWN"} and efficiency10>=0.25:market_state,final_direction,classification_reason="EXPANSION",internal_pressure,"volatility_expansion_with_directional_displacement"
     else:market_state,final_direction,classification_reason="UNCLEAR",internal_pressure,"directional_evidence_exists_but_regime_confirmation_is_insufficient"
-    long_medium_coherent=internal_pressure in {"UP","DOWN"} and directions[1]==internal_pressure and directions[2]==internal_pressure
     pressure_is_directional=internal_pressure in {"UP","DOWN"} and (consensus or strong_structure or persistence==1.0 or long_medium_coherent)
     if market_state in {"RANGE","COMPRESSION"} and not pressure_is_directional:final_direction="NEUTRAL"
     directional_pressure="BULLISH" if internal_pressure=="UP" and pressure_is_directional else "BEARISH" if internal_pressure=="DOWN" and pressure_is_directional else "NEUTRAL"
-    trend_state="UP" if market_state=="TREND_UP" else "DOWN" if market_state=="TREND_DOWN" else "NONE";transition="PRESENT" if transition_present else "ABSENT";volatility_state="EXPANDING" if expansion else "CONTRACTING" if compression else "NORMAL";maturity="ESTABLISHED" if trend_confirmed else "DEVELOPING" if consensus and ema_ok else "DIRECTIONAL_ONLY" if pressure_is_directional else "NONE"
+    trend_state="UP" if market_state=="TREND_UP" else "DOWN" if market_state=="TREND_DOWN" else "NONE";transition="PRESENT" if transition_present else "ABSENT";volatility_state="EXPANDING" if expansion else "CONTRACTING" if compression else "NORMAL"
+    # Mature trend can still be developing when the only disagreement is a
+    # short-horizon counter move; the macro trend remains confirmed.
+    maturity="DEVELOPING" if (long_medium_coherent and horizon_conflict) else "ESTABLISHED" if trend_confirmed else "DEVELOPING" if consensus and ema_ok else "DIRECTIONAL_ONLY" if pressure_is_directional else "NONE"
     pressure_score=_clamp((max(up_count,down_count)/3.0)*(0.5+0.5*persistence)) if pressure_is_directional else 0.0
     structure_alignment=structure_quality if structure_direction==internal_pressure else 0.0
     trend_score=_clamp(0.5*float(ema_ok)+0.3*persistence+0.2*structure_alignment)
