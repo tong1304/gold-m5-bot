@@ -79,7 +79,7 @@ def analyze_e1(bars):
         if not isinstance(raw,dict):problems.append(f"bar_{index}_not_mapping");continue
         values={key:_num(raw.get(key)) for key in ("open","high","low","close")}
         if any(value is None for value in values.values()):problems.append(f"bar_{index}_ohlc_invalid");continue
-        open_,high,low,close=values["open"],values["high"],values["close"],values["close"]
+        open_,high,low,close=values["open"],values["high"],values["low"],values["close"]
         if high<low or high<max(open_,close) or low>min(open_,close):problems.append(f"bar_{index}_ohlc_inconsistent");continue
         valid.append({**raw,**values})
     if len(valid)<MIN_BARS:return _incomplete(problems[:6],["valid_candles_below_minimum"],"insufficient reliable candles; classification withheld")
