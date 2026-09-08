@@ -34,21 +34,24 @@ from .p0_opportunity_integrity import install as _install_p0_opportunity_integri
 from .opportunity_lifecycle_contract_surgery import install as _install_lifecycle_contract_surgery
 
 _install_bootstrap_surgery(_pipeline_module)
-_install_mtf_runtime(_pipeline_module, _market_data_module)
+try:
+    _install_mtf_runtime(_pipeline_module, _market_data_module)
+except ModuleNotFoundError as exc:
+    # Pure engine/unit tests must be able to import production_v2 without the
+    # optional LSE transport package. Production with LSE installed follows
+    # the normal MTF runtime path above.
+    if getattr(exc, "name", None) != "lse":
+        raise
 _install_e2_opportunity_book(_pipeline_module, _e2_module)
 _install_e6_runtime_authority(_e6_module)
 _pipeline_module.analyze_e6 = _e6_module.analyze_e6
 _pipeline_module._E6_RUNTIME_OVERRIDE = _e6_module.analyze_e6
 _install_e8_applicability_boundary(_e8_module)
 _pipeline_module.analyze_e8 = _e8_module.analyze_e8
-
-# Complete E9 callable chain first; bind the final callable only after every
-# E9 membrane has been installed so pipeline.py and e9_brain share one runtime.
 _install_e9_watch_boundary(_e9_module)
 _install_e9_thesis_contract(_e9_module)
 _install_evidence_collaboration(_e6_module, _e9_module)
 _pipeline_module.analyze_e9 = _e9_module.analyze_e9
-
 _install_e7_thesis_boundary(_pipeline_module)
 _install_final_runtime_binding(_pipeline_module, _e6_module, _e8_module, _e9_module)
 _install_runtime_trace_boundary(_pipeline_module)
@@ -61,9 +64,7 @@ _install_opportunity_lifecycle_timing(_pipeline_module)
 _install_opportunity_lifecycle_promotion()
 _install_p0_opportunity_integrity(_pipeline_module)
 
-# Compatibility metadata for the historical directional lifecycle surface.
-# The adapter is observational: E6 supplies the candidate and missing proof,
-# while execution remains exclusively controlled by E9.
+# Compatibility adapter for the historical directional lifecycle surface.
 if not getattr(_pipeline_module, "_LIFECYCLE_COMPATIBILITY_ADAPTER", False):
     def _lifecycle_current_compat(results, decision, gate_passed, candle):
         e6_result = results.get("E6") if isinstance(results, dict) else None
@@ -71,19 +72,26 @@ if not getattr(_pipeline_module, "_LIFECYCLE_COMPATIBILITY_ADAPTER", False):
         direction = str(e6.get("direction") or "NEUTRAL").upper().strip()
         missing = list(e6.get("missing_proof") or [])
         event_id = e6.get("event_id") or e6.get("origin_event_id")
-        return {
-            "candidate": bool(e6.get("setup") or e6.get("setup_family") or e6.get("setup_exists") or missing),
-            "direction": direction,
-            "setup": str(e6.get("setup") or e6.get("setup_family") or "OPPORTUNITY_WATCH").upper().strip(),
-            "event_id": event_id,
-            "wait_for": missing,
-            "candle": candle,
-            "ready": bool(decision == "TRADE" and gate_passed),
-            "trade_authorized": False,
-            "lifecycle_source": "E6_SETUP",
-        }
+        return {"candidate": bool(e6.get("setup") or e6.get("setup_family") or e6.get("setup_exists") or missing), "direction": direction, "setup": str(e6.get("setup") or e6.get("setup_family") or "OPPORTUNITY_WATCH").upper().strip(), "event_id": event_id, "wait_for": missing, "candle": candle, "ready": bool(decision == "TRADE" and gate_passed), "trade_authorized": False, "lifecycle_source": "E6_SETUP"}
     _pipeline_module._lifecycle_current = _lifecycle_current_compat
     _pipeline_module._LIFECYCLE_COMPATIBILITY_ADAPTER = True
+
+# E8 -> E9 execution-boundary compatibility surface.
+if not getattr(_pipeline_module, "_E8_EXECUTION_BOUNDARY_ADAPTER", False):
+    def _normalize_e8_execution_boundary(result):
+        if result is None:
+            return None
+        output = dict(getattr(result, "output", {}) or {})
+        specialists = output.get("specialists") if isinstance(output.get("specialists"), dict) else {}
+        specialist_8g = specialists.get("8G") if isinstance(specialists.get("8G"), dict) else {}
+        specialist_output = specialist_8g.get("output") if isinstance(specialist_8g.get("output"), dict) else {}
+        if specialist_output:
+            for key in ("trade_plan", "plan_status", "risk_gate", "risk_basis", "direction"):
+                if key in specialist_output:
+                    output[key] = specialist_output[key]
+        return type(result)(result.engine_id, result.name, result.gate_passed, result.confidence, output, result.reason_codes)
+    _pipeline_module._normalize_e8_execution_boundary = _normalize_e8_execution_boundary
+    _pipeline_module._E8_EXECUTION_BOUNDARY_ADAPTER = True
 
 if not getattr(_pipeline_module, "_LIFECYCLE_SOURCE_METADATA", False):
     _original_directional_lifecycle_current = _pipeline_module._directional_lifecycle_current
