@@ -246,15 +246,21 @@ def analyze_e5(snapshot: dict[str, Any], permitted: dict[str, Any] | None = None
     else: preferred = "NONE"
 
     if preferred == "NONE":
-        if value_response in {"ACCEPTED_ABOVE_VALUE", "ACCEPTED_BELOW_VALUE"}: location_state = "ACCEPTED_AUCTION_NO_REVERSAL_EDGE"
+        # Extension is a location penalty even when the auction is accepted.
+        # An extended aligned market is not a reversal edge and should wait for
+        # normalization/repricing rather than being labeled as location-ready.
+        if extension_state in {"EXTENDED", "EXCESSIVE"}:
+            location_state = "WAIT_REPRICING"
+        elif value_response in {"ACCEPTED_ABOVE_VALUE", "ACCEPTED_BELOW_VALUE"}: location_state = "ACCEPTED_AUCTION_NO_REVERSAL_EDGE"
         elif value_response == "ACCEPTING_VALUE": location_state = "WAIT_REPRICING"
         elif repricing_state == "REPRICING_FAILED": location_state = "WAIT_CONFIRMATION"
         else: location_state = "WAIT_REPRICING"
-    else: location_state = "FAVORABLE_LOCATION"
+    else:
+        location_state = "WAIT_REPRICING" if extension_state in {"EXTENDED","EXCESSIVE"} else "FAVORABLE_LOCATION"
 
     quality_score = max(long_side["score"], short_side["score"]); confidence = round(max(0.0, min(1.0, quality_score)), 4)
     counter_evidence = []
-    if extension_state in {"EXTENDED", "EXCESSIVE"}: counter_evidence.append("EXTENSION_RISK")
+    if extension_state in {"EXTENDED","EXCESSIVE"}: counter_evidence.append("EXTENSION_RISK")
     if not high_sweep and not low_sweep: counter_evidence.append("NO_FRESH_LIQUIDITY_CONFIRMATION")
     if long_space is not None and long_space < 1: counter_evidence.append("LONG_SPACE_CONSTRAINED")
     if short_space is not None and short_space < 1: counter_evidence.append("SHORT_SPACE_CONSTRAINED")
