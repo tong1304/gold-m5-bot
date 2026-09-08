@@ -28,28 +28,17 @@ def test_lifecycle_input_preserves_full_e6_missing_proof():
 
 def test_watch_preserves_concrete_missing_proof_across_closed_candles():
     first = advance_opportunity(None, {
-        "direction": "SELL",
-        "setup": "OPPORTUNITY_WATCH",
-        "event_id": "evt-1",
-        "candle": "2026-09-06T07:10:00Z",
-        "candidate": True,
-        "ready": False,
-        "invalidated": False,
-        "thesis_proven": False,
+        "direction": "SELL", "setup": "OPPORTUNITY_WATCH", "event_id": "evt-1",
+        "candle": "2026-09-06T07:10:00Z", "candidate": True, "ready": False,
+        "invalidated": False, "thesis_proven": False,
         "wait_for": ["E4_AUCTION_FOLLOW_THROUGH", "E3_INTERNAL_STRUCTURE_ALIGNMENT"],
     })
     assert first["state"] == "WATCHING"
     assert first["bars_waited"] == 0
-
     second = advance_opportunity(first, {
-        "direction": "SELL",
-        "setup": "OPPORTUNITY_WATCH",
-        "event_id": "evt-1",
-        "candle": "2026-09-06T07:15:00Z",
-        "candidate": True,
-        "ready": False,
-        "invalidated": False,
-        "thesis_proven": False,
+        "direction": "SELL", "setup": "OPPORTUNITY_WATCH", "event_id": "evt-1",
+        "candle": "2026-09-06T07:15:00Z", "candidate": True, "ready": False,
+        "invalidated": False, "thesis_proven": False,
         "wait_for": ["E4_AUCTION_FOLLOW_THROUGH", "E3_INTERNAL_STRUCTURE_ALIGNMENT"],
     })
     assert second["state"] == "WATCHING"
@@ -59,7 +48,7 @@ def test_watch_preserves_concrete_missing_proof_across_closed_candles():
     assert second["wait_for"] == ["E4_AUCTION_FOLLOW_THROUGH", "E3_INTERNAL_STRUCTURE_ALIGNMENT"]
 
 
-def test_new_causal_event_gets_new_opportunity_identity():
+def test_new_causal_event_gets_new_active_watch_identity():
     first = advance_opportunity(None, {
         "direction": "SELL", "setup": "OPPORTUNITY_WATCH", "event_id": "evt-1",
         "candle": "2026-09-06T07:10:00Z", "candidate": True, "ready": False,
@@ -74,9 +63,10 @@ def test_new_causal_event_gets_new_opportunity_identity():
     })
     assert first["opportunity_id"] != second["opportunity_id"]
     assert second["event_id"] == "evt-2"
-    assert second["state"] == "REPLACED"
+    assert second["state"] == "WATCHING"
     assert second["previous_opportunity_id"] == first["opportunity_id"]
     assert second["bars_waited"] == 0
+    assert second["trade_authorized"] is False
 
 
 def test_watch_promotes_only_when_real_setup_exists():
