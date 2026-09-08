@@ -6,6 +6,11 @@ from typing import Any
 class EngineResult:
     engine_id:str; name:str; gate_passed:bool|None; score:float; output:dict[str,Any]=field(default_factory=dict); reason_codes:tuple[str,...]=()
 
+    @property
+    def confidence(self)->float:
+        """Backward-compatible alias for the engine score."""
+        return float(self.score)
+
 @dataclass(frozen=True)
 class DecisionResult:
     symbol:str="UNKNOWN"; timeframe:str="M5"; decision:str="NO_TRADE"; gate_passed:bool=False; score:float=0.0; engines:tuple[EngineResult,...]|dict[str,EngineResult]=(); risk:dict[str,Any]=field(default_factory=dict); reason_codes:tuple[str,...]=(); state:str="ANALYSIS_COMPLETE_NO_TRADE"; blocked_by:Any=None; wait_bars:int=0; execution_state:dict[str,Any]=field(default_factory=lambda:{"state":"NOT_REQUESTED","order_id":None,"position_id":None,"error":None})
@@ -30,8 +35,6 @@ class DecisionResult:
         if self.decision in {"BUY","SELL"} and self.gate_passed and self.state in {"ANALYSIS_COMPLETE_NO_TRADE","",None}:object.__setattr__(self,"state","SIGNAL_READY")
         execution=dict(self.execution_state or {}); valid={"NOT_REQUESTED","ORDER_INTENT","ORDER_SUBMITTED","ACCEPTED","BROKER_ACCEPTED","REJECTED","POSITION_OPEN","POSITION_CLOSED"}
         if execution.get("state") not in valid:execution={"state":"NOT_REQUESTED","order_id":None,"position_id":None,"error":"INVALID_EXECUTION_STATE"}
-        # Production V2 is alert-only: a BUY/SELL decision never implies broker execution.
-        # Any legacy execution metadata supplied by a caller is preserved for compatibility.
         object.__setattr__(self,"execution_state",execution)
 
     @property
