@@ -1,4 +1,4 @@
-from trading_system.engines import run_engine
+from production_v2.e2_brain import analyze_e2
 
 
 def _bars(n=80):
@@ -39,36 +39,40 @@ def _balanced_range_bars(n=100):
     return bars
 
 
+def _result(bars, e1=None):
+    snapshot = {"bars": bars}
+    if e1 is not None:
+        snapshot["E1"] = e1
+    return analyze_e2(snapshot)
+
+
 def test_e2_uses_core_brain_without_running_subengines():
     e1 = {
         "engine_id": "E1",
         "evidence": {"output": {"directional_pressure": "BEARISH", "market_state": "TREND_DOWN", "confidence": 0.9}},
         "reason_codes": [],
     }
-    result = run_engine("E2", {"bars": _bars()}, {"E1": e1})
-    assert result.engine_id == "E2"
-    assert result.output["architecture"] == "E2_PROFESSIONAL_CORE_ONLY"
-    assert result.output["sub_engines_active"] is False
-    assert result.output["specialists"] == {}
-    assert result.output["direction"] in {"UP", "DOWN", "NEUTRAL"}
-    assert result.output["decision"] is None
-    assert result.output["gate"] is None
+    output = _result(_bars(), e1)
+    assert output["architecture"] == "E2_PROFESSIONAL_OPPORTUNITY_CORE_V9"
+    assert output["sub_engines_active"] is False
+    assert output["direction"] in {"BUY", "SELL", "NEUTRAL"}
+    assert output["decision"] is None
+    assert output["gate"] is None
 
 
 def test_e2_does_not_convert_market_thesis_into_trade_decision():
-    result = run_engine("E2", {"bars": _bars()}, {})
-    assert result.output["decision"] is None
-    assert result.output["entry"] is None
-    assert result.output["trigger"] is None
-    assert result.output["risk"] is None
-    assert result.output["gate"] is None
+    output = _result(_bars())
+    assert output["decision"] is None
+    assert output["entry"] is None
+    assert output["trigger"] is None
+    assert output.get("risk") is None
+    assert output["gate"] is None
 
 
 def test_e2_professional_brain_publishes_a_complete_independent_thesis():
-    result = run_engine("E2", {"bars": _uptrend_bars()}, {})
-    output = result.output
+    output = _result(_uptrend_bars())
     assert output["regime"] in {"TREND", "BREAKOUT"}
-    assert output["direction"] == "UP"
+    assert output["direction"] == "BUY"
     assert output["opportunity"] in {"TREND_CONTINUATION", "BREAKOUT_CONTINUATION"}
     assert output["opportunity_state"] in {"ACTIONABLE_CONTEXT", "DEVELOPING"}
     assert output["professional_reasoning"]["question"] == "What opportunity is the market offering right now?"
@@ -82,8 +86,7 @@ def test_e2_professional_brain_publishes_a_complete_independent_thesis():
 
 
 def test_e2_does_not_turn_old_ema_bias_into_a_false_trend_during_repricing():
-    result = run_engine("E2", {"bars": _transition_bars()}, {})
-    output = result.output
+    output = _result(_transition_bars())
     assert output["regime"] in {"TRANSITION", "BREAKOUT"}
     if output["regime"] == "TRANSITION":
         assert output["direction"] == "NEUTRAL"
@@ -92,8 +95,7 @@ def test_e2_does_not_turn_old_ema_bias_into_a_false_trend_during_repricing():
 
 
 def test_e2_never_calls_the_middle_of_a_range_a_range_rotation_entry_opportunity():
-    result = run_engine("E2", {"bars": _balanced_range_bars()}, {})
-    output = result.output
+    output = _result(_balanced_range_bars())
     assert output["regime"] == "RANGE"
     assert output["location_context"] == "MID_RANGE"
     assert output["opportunity"] == "WAIT_FOR_RANGE_EDGE"
@@ -107,8 +109,7 @@ def test_e2_e1_is_only_cross_check_not_a_direction_override():
         "evidence": {"output": {"directional_pressure": "BEARISH", "market_state": "TREND_DOWN", "structure": "BEARISH"}},
         "reason_codes": [],
     }
-    result = run_engine("E2", {"bars": _uptrend_bars()}, {"E1": bearish_e1})
-    output = result.output
-    assert output["direction"] == "UP"
+    output = _result(_uptrend_bars(), bearish_e1)
+    assert output["direction"] == "BUY"
     assert output["alignment_with_e1"] == "CONFLICT"
     assert output["professional_reasoning"]["reasoning_mode"] == "INDEPENDENT_E2_THESIS_FIRST"
