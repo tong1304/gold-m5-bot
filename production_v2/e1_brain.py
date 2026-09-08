@@ -114,7 +114,7 @@ def analyze_e1(bars):
     elif trend_confirmed:market_state,final_direction,classification_reason=("TREND_UP" if internal_pressure=="UP" else "TREND_DOWN"),internal_pressure,"persistent_multi_horizon_direction_with_ema_and_structure_coherence"
     elif expansion and internal_pressure in {"UP","DOWN"} and efficiency10>=0.25:market_state,final_direction,classification_reason="EXPANSION",internal_pressure,"volatility_expansion_with_directional_displacement"
     else:market_state,final_direction,classification_reason="UNCLEAR",internal_pressure,"directional_evidence_exists_but_regime_confirmation_is_insufficient"
-    directional_pressure="NEUTRAL" if market_state in {"RANGE","COMPRESSION"} else "BULLISH" if internal_pressure=="UP" else "BEARISH" if internal_pressure=="DOWN" else "NEUTRAL"
+    directional_pressure="BULLISH" if internal_pressure=="UP" else "BEARISH" if internal_pressure=="DOWN" else "NEUTRAL"
     trend_state="UP" if market_state=="TREND_UP" else "DOWN" if market_state=="TREND_DOWN" else "NONE";transition="PRESENT" if transition_present else "ABSENT";volatility_state="EXPANDING" if expansion else "CONTRACTING" if compression else "NORMAL";maturity="ESTABLISHED" if trend_confirmed else "DEVELOPING" if consensus and ema_ok else "DIRECTIONAL_ONLY" if internal_pressure in {"UP","DOWN"} else "NONE"
     pressure_score=_clamp((max(up_count,down_count)/3.0)*(0.5+0.5*persistence));structure_alignment=structure_quality if structure_direction==internal_pressure else 0.0;trend_score=_clamp(0.5*float(ema_ok)+0.3*persistence+0.2*structure_alignment)
     confidence=round(_clamp(0.45+0.25*structure_quality+0.20*persistence+0.10*min(1.0,efficiency20/0.70)+0.10*float(ema_ok)-0.05*len(conflicts)),3)
