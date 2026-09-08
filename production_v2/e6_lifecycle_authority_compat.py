@@ -3,6 +3,9 @@ from __future__ import annotations
 from typing import Any
 
 
+_PLACEHOLDERS = {"", "UNKNOWN", "NONE", "NO_SETUP", "UNRESOLVED", "NO_PLAUSIBLE_SETUP"}
+
+
 def _direction(value: Any) -> str:
     text = str(value or "").upper().strip()
     if text in {"BUY", "UP", "BULLISH", "TREND_UP"} or text.startswith("BUY ") or text.startswith("BUY_"):
@@ -10,6 +13,11 @@ def _direction(value: Any) -> str:
     if text in {"SELL", "DOWN", "BEARISH", "TREND_DOWN"} or text.startswith("SELL ") or text.startswith("SELL_"):
         return "SELL"
     return "NEUTRAL"
+
+
+def _meaningful(value: Any) -> str:
+    text = str(value or "").upper().strip()
+    return "" if text in _PLACEHOLDERS else text
 
 
 def install(pipeline_module: Any) -> None:
@@ -24,7 +32,7 @@ def install(pipeline_module: Any) -> None:
         e6 = dict(getattr(e6_result, "output", {}) or {}) if e6_result is not None else {}
         direction = _direction(e6.get("direction") or e6.get("direction_thesis") or e6.get("thesis_direction") or e6.get("finding"))
         setup = str(e6.get("setup") or e6.get("setup_family") or e6.get("setup_type") or "").upper().strip()
-        setup_state = str(e6.get("thesis_status") or e6.get("setup_state") or e6.get("opportunity_stage") or "FORMING").upper().strip()
+        setup_state = _meaningful(e6.get("thesis_status")) or _meaningful(e6.get("setup_state")) or _meaningful(e6.get("opportunity_stage")) or "FORMING"
         concrete = bool(e6.get("setup_exists")) or setup not in {"", "UNKNOWN", "NONE", "NO_SETUP", "OPPORTUNITY_WATCH", "OPPORTUNITY_CANDIDATE", "OPPORTUNITY_THESIS"}
         if not concrete or direction not in {"BUY", "SELL"}:
             return current, leader, competition
@@ -55,8 +63,15 @@ def install(pipeline_module: Any) -> None:
             current[direction] = payload
         else:
             payload.setdefault("lifecycle_source", "E6_SETUP")
-            payload.setdefault("thesis_status", setup_state)
-            payload.setdefault("setup_state", setup_state)
+            if not _meaningful(payload.get("thesis_status")):
+                payload["thesis_status"] = setup_state
+            if not _meaningful(payload.get("setup_state")):
+                payload["setup_state"] = setup_state
+            payload.setdefault("setup", setup)
+            payload.setdefault("setup_family", setup)
+            payload.setdefault("direction", direction)
+            payload.setdefault("event_id", e6.get("event_id") or e6.get("origin_event_id"))
+            payload.setdefault("origin_event_id", e6.get("origin_event_id") or e6.get("event_id"))
         if leader == "NEUTRAL":
             leader = direction
         return current, leader, competition
