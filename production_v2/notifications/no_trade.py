@@ -39,13 +39,13 @@ def _main_reason(result: Any) -> str:
 def _engines(result: Any) -> list[Any]:
     engines = getattr(result, "engines", None)
     if engines:
-        return list(engines)
+        return list(engines.values()) if isinstance(engines, dict) else list(engines)
     if isinstance(result, dict):
         raw = result.get("engines") or result.get("engine_results") or []
-        return list(raw) if isinstance(raw, (list, tuple)) else []
+        return list(raw.values()) if isinstance(raw, dict) else list(raw) if isinstance(raw, (list, tuple)) else []
     try:
         raw = result.as_dict().get("engines") or []
-        return list(raw) if isinstance(raw, (list, tuple)) else []
+        return list(raw.values()) if isinstance(raw, dict) else list(raw) if isinstance(raw, (list, tuple)) else []
     except Exception:
         return []
 
@@ -112,7 +112,6 @@ def _engine_compact(engine: Any, expected_id: str) -> str:
             finding = f"{direction} opportunity is developing based on closed-candle evidence"
         elif decision:
             finding = f"{direction + ' ' if direction else ''}{decision}"
-        # WAIT is a valid E2 conclusion. Do not turn it into an executable setup.
         if decision == "WAIT":
             finding = _text(output.get("finding") or finding or "WAIT")
     elif engine_id == "E4":
@@ -128,8 +127,6 @@ def _engine_compact(engine: Any, expected_id: str) -> str:
                 f"repricing={repricing}" if repricing else "",
             ) if x)
     elif engine_id == "E6":
-        # A NONE/NO_SETUP field is not a semantic finding. Prefer E6's actual
-        # conclusion so Telegram never emits phrases such as "BUY NONE is absent".
         explicit_finding = _text(output.get("finding") or output.get("analyst_conclusion") or output.get("conclusion"))
         setup = _text(output.get("setup") or output.get("setup_family") or output.get("setup_type"))
         state = _text(output.get("setup_state") or output.get("opportunity_state") or output.get("opportunity_stage"))
@@ -158,20 +155,46 @@ def _engine_compact(engine: Any, expected_id: str) -> str:
 def _lifecycle_lines(result: Any) -> list[str]:
     risk = getattr(result, "risk", {}) or {}
     lifecycle = risk.get("opportunity_lifecycle") or {}
-    if not isinstance(lifecycle, dict) or not lifecycle.get("state"):
+    if not isinstance(lifecycle, dict):
+        lifecycle = {}
+    engines = _engines(result)
+    e9 = next((e for e in engines if getattr(e, "engine_id", None) == "E9"), None)
+    e9o = _output(e9) if e9 is not None else {}
+    if not lifecycle:
+        lifecycle = e9o.get("opportunity_lifecycle") if isinstance(e9o.get("opportunity_lifecycle"), dict) else {}
+    professional = e9o.get("professional_opportunity") if isinstance(e9o.get("professional_opportunity"), dict) else {}
+    if not lifecycle.get("state") and not professional.get("stage"):
         return []
-    state = _text(lifecycle.get("state"))
+    state = _text(professional.get("stage") or lifecycle.get("state"))
     continuity = _text(lifecycle.get("continuity"))
-    bars_waited = int(lifecycle.get("bars_waited", 0) or 0)
-    opportunity_id = _text(lifecycle.get("opportunity_id"))
-    next_event = _text(risk.get("next_required_event") or lifecycle.get("next_required_event"))
+    bars_waited = int(lifecycle.get("bars_waited", professional.get("canonical_event_clock", {}).get("age_bars", 0)) or 0)
+    opportunity_id = _text(professional.get("opportunity_id") or lifecycle.get("opportunity_id"))
+    next_event = _text(professional.get("wait_for") or risk.get("next_required_event") or lifecycle.get("next_required_event"))
+    clock = professional.get("canonical_event_clock") if isinstance(professional.get("canonical_event_clock"), dict) else lifecycle.get("causal_event_anchor", {})
+    event_id = _text(professional.get("causal_event_id") or lifecycle.get("causal_event_id") or clock.get("event_id"))
+    confirmation = _text(professional.get("confirmation_state") or lifecycle.get("e7_confirmation_state"))
+    economics = _text(professional.get("economic_state") or lifecycle.get("e8_economic_state"))
+    tradeability = _text(professional.get("tradeability"))
+    execution = bool(professional.get("execution_authorized") or lifecycle.get("trade_authorized"))
     lines = ["🔄 OPPORTUNITY LIFECYCLE", f"สถานะ: {state}"]
-    if continuity: lines.append(f"continuity={continuity}")
     if opportunity_id: lines.append(f"opportunity_id={opportunity_id}")
+    if event_id: lines.append(f"causal_event_id={event_id}")
+    if clock.get("age_bars") is not None: lines.append(f"canonical_event_age={clock.get('age_bars')} bars")
+    if continuity: lines.append(f"continuity={continuity}")
     lines.append(f"bars_waited={bars_waited}")
+    if confirmation: lines.append(f"confirmation={confirmation}")
+    if economics: lines.append(f"economics={economics}")
+    if tradeability: lines.append(f"tradeability={tradeability}")
+    lines.append(f"execution_authorized={'YES' if execution else 'NO'}")
     if next_event: lines.append(f"next={next_event}")
-    if state == "WAITING":
-        lines.append("ความหมาย: เฝ้ารอหลักฐานยืนยัน ไม่ใช่คำสั่งเปิด Position")
+    if state == "WATCH":
+        lines.append("ความหมาย: พบโอกาส แต่ยังไม่เป็น Trade Setup")
+    elif state == "THESIS_FORMED":
+        lines.append("ความหมาย: Thesis เกิดแล้ว รอ E7 confirmation และ E8 economics")
+    elif state == "ARMED":
+        lines.append("ความหมาย: ARMED แล้ว แต่ยังไม่อนุญาตเปิด Position; รอ E7 confirmation")
+    elif state == "CONFIRMED":
+        lines.append("ความหมาย: Confirmation ผ่านแล้ว รอ E9 execution authorization")
     return lines
 
 
