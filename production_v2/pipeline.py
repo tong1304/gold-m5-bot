@@ -48,9 +48,6 @@ def finalize_e6_output(output: dict[str, Any]) -> dict[str, Any]:
     timing = normalized.get("opportunity_timing") if isinstance(normalized.get("opportunity_timing"), dict) else {}
     phase = str(normalized.get("opportunity_phase_speed") or timing.get("phase") or "").upper().strip()
     candidate_type = str(normalized.get("candidate_type") or "").upper().strip()
-    # V4 deliberately promotes every EARLY opportunity to an E7 confirmation candidate.
-    # The generic watch normalizer historically rewrote it back to OPPORTUNITY_CANDIDATE,
-    # creating the exact E6 -> E7 deadlock this membrane is designed to prevent.
     if phase == "EARLY_OPPORTUNITY" and candidate_type == "OPPORTUNITY_CANDIDATE":
         normalized["candidate_type"] = "EARLY_OPPORTUNITY_CANDIDATE"
         normalized["confirmation_window"] = normalized.get("confirmation_window") or "NEXT_CLOSED_M5_CANDLE"
@@ -179,15 +176,17 @@ def _directional_lifecycle_current(results: dict[str, EngineResult], decision: s
     e2 = results.get("E2").output if results.get("E2") else {}; e4 = results.get("E4").output if results.get("E4") else {}; e6 = results.get("E6").output if results.get("E6") else {}
     book = e2.get("opportunity_book") if isinstance(e2.get("opportunity_book"), dict) else {}; candidates = book.get("candidates") if isinstance(book.get("candidates"), list) else []
     by_direction: dict[str, dict[str, Any]] = {}
-    e6_direction = _direction(e6.get("direction") or e6.get("direction_thesis") or e6.get("thesis_direction") or e6.get("finding")); thesis_proven = bool(e6.get("e6_thesis_proven") or e6.get("setup_exists") or e6.get("trade_ready")); setup = str(e6.get("setup") or e6.get("setup_family") or e6.get("setup_type") or "OPPORTUNITY_WATCH").upper().strip(); ready = bool(decision == "TRADE" and gate_passed)
+    e6_direction = _direction(e6.get("direction") or e6.get("direction_thesis") or e6.get("thesis_direction") or e6.get("finding")); thesis_proven = bool(e6.get("e6_thesis_proven") or e6.get("setup_exists") or e6.get("trade_ready")); setup = str(e6.get("setup") or e6.get("setup_family") or e6.get("setup_type") or "OPPORTUNITY_WATCH").upper().strip(); thesis_status = str(e6.get("thesis_status") or e6.get("setup_state") or e6.get("opportunity_stage") or ("PROVEN" if thesis_proven else "FORMING")).upper().strip(); ready = bool(decision == "TRADE" and gate_passed)
     for direction in ("BUY", "SELL"):
         candidate = next((item for item in candidates if _direction(item.get("direction")) == direction and str(item.get("state") or "").upper() not in {"INVALIDATED","EXPIRED","REPLACED","EXECUTED"}), None)
         if candidate:
             event_id = candidate.get("event_id") or candidate.get("origin_event_id")
             if not event_id and direction == e6_direction: event_id = e4.get("event_id") or e4.get("auction_event_id") or (causal_anchor or {}).get("event_id")
-            by_direction[direction] = {"candidate":True,"direction":direction,"setup":setup if direction == e6_direction and thesis_proven and setup not in {"", "UNKNOWN", "NONE", "NO_SETUP", "OPPORTUNITY_WATCH"} else "OPPORTUNITY_WATCH","event_id":event_id,"origin_event_id":candidate.get("origin_event_id") or event_id,"candle":candle,"ready":ready if direction == e6_direction else False,"invalidated":False,"thesis_proven":thesis_proven if direction == e6_direction else False,"wait_for":candidate.get("wait_for") or ["NEXT_CLOSED_M5_CANDLE"],"causal_event_anchor":dict(causal_anchor or {})}
+            candidate_setup = setup if direction == e6_direction and thesis_proven and setup not in {"", "UNKNOWN", "NONE", "NO_SETUP", "OPPORTUNITY_WATCH"} else "OPPORTUNITY_WATCH"
+            candidate_thesis = thesis_status if direction == e6_direction else str(candidate.get("thesis_status") or candidate.get("setup_state") or "FORMING").upper().strip()
+            by_direction[direction] = {"candidate":True,"direction":direction,"setup":candidate_setup,"setup_state":candidate_thesis,"thesis_status":candidate_thesis,"event_id":event_id,"origin_event_id":candidate.get("origin_event_id") or event_id,"candle":candle,"ready":ready if direction == e6_direction else False,"invalidated":False,"thesis_proven":thesis_proven if direction == e6_direction else False,"wait_for":candidate.get("wait_for") or ["NEXT_CLOSED_M5_CANDLE"],"causal_event_anchor":dict(causal_anchor or {})}
         else:
-            by_direction[direction] = {"candidate":False,"direction":direction,"setup":"OPPORTUNITY_WATCH","ready":False,"invalidated":False,"thesis_proven":False,"candle":candle,"causal_event_anchor":dict(causal_anchor or {})}
+            by_direction[direction] = {"candidate":False,"direction":direction,"setup":"OPPORTUNITY_WATCH","setup_state":"NONE","thesis_status":"NONE","ready":False,"invalidated":False,"thesis_proven":False,"candle":candle,"causal_event_anchor":dict(causal_anchor or {})}
     return by_direction, str(book.get("leader") or "NEUTRAL").upper(), str(book.get("competition") or "UNCONTESTED").upper()
 
 
