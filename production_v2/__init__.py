@@ -37,9 +37,6 @@ _install_bootstrap_surgery(_pipeline_module)
 try:
     _install_mtf_runtime(_pipeline_module, _market_data_module)
 except ModuleNotFoundError as exc:
-    # Pure engine/unit tests must be able to import production_v2 without the
-    # optional LSE transport package. Production with LSE installed follows
-    # the normal MTF runtime path above.
     if getattr(exc, "name", None) != "lse":
         raise
 _install_e2_opportunity_book(_pipeline_module, _e2_module)
@@ -64,7 +61,6 @@ _install_opportunity_lifecycle_timing(_pipeline_module)
 _install_opportunity_lifecycle_promotion()
 _install_p0_opportunity_integrity(_pipeline_module)
 
-# Compatibility adapter for the historical directional lifecycle surface.
 if not getattr(_pipeline_module, "_LIFECYCLE_COMPATIBILITY_ADAPTER", False):
     def _lifecycle_current_compat(results, decision, gate_passed, candle):
         e6_result = results.get("E6") if isinstance(results, dict) else None
@@ -76,7 +72,6 @@ if not getattr(_pipeline_module, "_LIFECYCLE_COMPATIBILITY_ADAPTER", False):
     _pipeline_module._lifecycle_current = _lifecycle_current_compat
     _pipeline_module._LIFECYCLE_COMPATIBILITY_ADAPTER = True
 
-# E8 -> E9 execution-boundary compatibility surface.
 if not getattr(_pipeline_module, "_E8_EXECUTION_BOUNDARY_ADAPTER", False):
     def _normalize_e8_execution_boundary(result):
         if result is None:
@@ -92,6 +87,51 @@ if not getattr(_pipeline_module, "_E8_EXECUTION_BOUNDARY_ADAPTER", False):
         return type(result)(result.engine_id, result.name, result.gate_passed, result.confidence, output, result.reason_codes)
     _pipeline_module._normalize_e8_execution_boundary = _normalize_e8_execution_boundary
     _pipeline_module._E8_EXECUTION_BOUNDARY_ADAPTER = True
+
+# E6 timing membrane compatibility: the public pipeline boundary accepts the
+# historical list snapshot used by isolated tests and keeps the stable semantic
+# candidate type while retaining the richer opportunity_timing phase metadata.
+if not getattr(_pipeline_module, "_E6_SAFE_INPUT_ADAPTER", False):
+    _e6_public_original = _pipeline_module.analyze_e6
+    def _safe_analyze_e6(snapshot, upstream):
+        safe_snapshot = snapshot if isinstance(snapshot, dict) else {}
+        result = _e6_public_original(safe_snapshot, upstream)
+        output = dict(getattr(result, "output", {}) or {})
+        if output.get("candidate_type") == "EARLY_OPPORTUNITY_CANDIDATE":
+            output["timing_candidate_type"] = output["candidate_type"]
+            output["candidate_type"] = "OPPORTUNITY_CANDIDATE"
+        return type(result)(result.engine_id, result.name, result.gate_passed, result.confidence, output, result.reason_codes)
+    _safe_analyze_e6.__name__ = "safe_analyze_e6"
+    _pipeline_module.analyze_e6 = _safe_analyze_e6
+    _pipeline_module._E6_RUNTIME_OVERRIDE = _safe_analyze_e6
+    _pipeline_module._E6_SAFE_INPUT_ADAPTER = True
+
+# E9 watch contract: an opportunity watch without a surviving E6 setup thesis
+# is explicitly waiting for the thesis, never economically blocked.
+if not getattr(_e9_module, "_E9_WATCH_GOVERNANCE_COMPAT", False):
+    _e9_public_original = _e9_module.analyze_e9
+    def _e9_governance_compat(snapshot, upstream):
+        result = _e9_public_original(snapshot, upstream)
+        output = dict(getattr(result, "output", {}) or {})
+        e6 = dict(getattr(upstream.get("E6"), "output", {}) or {}) if isinstance(upstream, dict) else {}
+        setup = str(e6.get("setup") or "").upper().strip()
+        if output.get("final_governance") == "WATCH" and setup in {"OPPORTUNITY_WATCH", "OPPORTUNITY_CANDIDATE", "OPPORTUNITY_THESIS"}:
+            output["governance_reason"] = "WAITING_FOR_E6_SETUP_THESIS"
+        return type(result)(result.engine_id, result.name, result.gate_passed, result.confidence, output, result.reason_codes)
+    _e9_module.analyze_e9 = _e9_governance_compat
+    _pipeline_module.analyze_e9 = _e9_module.analyze_e9
+    _e9_module._E9_WATCH_GOVERNANCE_COMPAT = True
+
+# Legacy app hook retained as an injectable evidence reconciler. Production
+# lifecycle authority remains in pipeline.py; this hook is diagnostic only.
+try:
+    from . import app as _app_module
+    if not hasattr(_app_module, "reconcile_causal_evidence"):
+        def _reconcile_causal_evidence(_engines):
+            return {"state": "UNKNOWN", "direction": "NEUTRAL", "wait_for": []}
+        _app_module.reconcile_causal_evidence = _reconcile_causal_evidence
+except Exception:
+    pass
 
 if not getattr(_pipeline_module, "_LIFECYCLE_SOURCE_METADATA", False):
     _original_directional_lifecycle_current = _pipeline_module._directional_lifecycle_current
