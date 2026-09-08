@@ -79,7 +79,7 @@ def analyze_e1(bars):
         if not isinstance(raw,dict):problems.append(f"bar_{index}_not_mapping");continue
         values={key:_num(raw.get(key)) for key in ("open","high","low","close")}
         if any(value is None for value in values.values()):problems.append(f"bar_{index}_ohlc_invalid");continue
-        open_,high,low,close=values["open"],values["high"],values["low"],values["close"]
+        open_,high,low,close=values["open"],values["high"],values["close"],values["close"]
         if high<low or high<max(open_,close) or low>min(open_,close):problems.append(f"bar_{index}_ohlc_inconsistent");continue
         valid.append({**raw,**values})
     if len(valid)<MIN_BARS:return _incomplete(problems[:6],["valid_candles_below_minimum"],"insufficient reliable candles; classification withheld")
@@ -123,7 +123,8 @@ def analyze_e1(bars):
     elif trend_confirmed:market_state,final_direction,classification_reason=("TREND_UP" if internal_pressure=="UP" else "TREND_DOWN"),internal_pressure,"persistent_multi_horizon_direction_with_ema_and_structure_coherence"
     elif expansion and internal_pressure in {"UP","DOWN"} and efficiency10>=0.25:market_state,final_direction,classification_reason="EXPANSION",internal_pressure,"volatility_expansion_with_directional_displacement"
     else:market_state,final_direction,classification_reason="UNCLEAR",internal_pressure,"directional_evidence_exists_but_regime_confirmation_is_insufficient"
-    pressure_is_directional=internal_pressure in {"UP","DOWN"} and (consensus or strong_structure or persistence==1.0)
+    long_medium_coherent=internal_pressure in {"UP","DOWN"} and directions[1]==internal_pressure and directions[2]==internal_pressure
+    pressure_is_directional=internal_pressure in {"UP","DOWN"} and (consensus or strong_structure or persistence==1.0 or long_medium_coherent)
     if market_state in {"RANGE","COMPRESSION"} and not pressure_is_directional:final_direction="NEUTRAL"
     directional_pressure="BULLISH" if internal_pressure=="UP" and pressure_is_directional else "BEARISH" if internal_pressure=="DOWN" and pressure_is_directional else "NEUTRAL"
     trend_state="UP" if market_state=="TREND_UP" else "DOWN" if market_state=="TREND_DOWN" else "NONE";transition="PRESENT" if transition_present else "ABSENT";volatility_state="EXPANDING" if expansion else "CONTRACTING" if compression else "NORMAL";maturity="ESTABLISHED" if trend_confirmed else "DEVELOPING" if consensus and ema_ok else "DIRECTIONAL_ONLY" if pressure_is_directional else "NONE"
