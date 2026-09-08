@@ -32,6 +32,7 @@ from .opportunity_lifecycle_timing import install as _install_opportunity_lifecy
 from .opportunity_lifecycle_promotion import install as _install_opportunity_lifecycle_promotion
 from .p0_opportunity_integrity import install as _install_p0_opportunity_integrity
 from .opportunity_lifecycle_contract_surgery import install as _install_lifecycle_contract_surgery
+from .e6_lifecycle_authority_compat import install as _install_e6_lifecycle_authority_compat
 
 _install_bootstrap_surgery(_pipeline_module)
 try:
@@ -59,6 +60,7 @@ _install_opportunity_timing_hotfix(_pipeline_module)
 _install_opportunity_lifecycle_timing(_pipeline_module)
 _install_opportunity_lifecycle_promotion()
 _install_p0_opportunity_integrity(_pipeline_module)
+_install_e6_lifecycle_authority_compat(_pipeline_module)
 
 if not getattr(_e3_module, "_E3_CAUSAL_V8_COMPAT", False):
     _e3_public_original = _e3_module.analyze_e3
