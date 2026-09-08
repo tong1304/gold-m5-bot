@@ -43,9 +43,14 @@ def test_pipeline_is_the_only_orchestrator_and_does_not_use_brain_dispatcher():
     source = (ROOT / "pipeline.py").read_text(encoding="utf-8")
     assert "from .engines import" not in source
     assert "run_engine(" not in source
-    for engine_id in ENGINE_IDS:
+    for engine_id in range(1, 9):
         assert f"from .e{engine_id}_brain import analyze_e{engine_id}" in source
         assert f"analyze_e{engine_id}(" in source
+
+    # E9 is intentionally the sole final-authority boundary. It is recovered
+    # through the governance/opportunity layer rather than called as a peer
+    # specialist, so it must not be treated as another independent analyzer.
+    assert "recover_e9" in source
 
 
 def test_legacy_brain_dispatcher_is_removed():
