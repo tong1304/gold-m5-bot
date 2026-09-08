@@ -11,7 +11,7 @@ QUESTION="What is the market doing right now?"
 MIN_BARS=80
 PIVOT_WING=2
 MARKET_STATES={"TREND_UP","TREND_DOWN","RANGE","COMPRESSION","EXPANSION","TRANSITION","UNCLEAR"}
-EVIDENCE_HIERARCHY="DATA_QUALITY -> STRUCTURE -> PRESSURE -> PERSISTENCE -> MULTI_HORIZON -> VOLATILITY -> TRANSITION -> STABILITY -> MARKET_STATE"
+EVIDENCE_HIERARCHY="DATA_QUALITY -> VOLATILITY -> STRUCTURE -> PRESSURE -> PERSISTENCE -> STATE -> TRANSITION"
 OWNERSHIP={"owns":["data_integrity","volatility_regime","market_structure_context","directional_pressure","multi_horizon_alignment","trend_persistence","range_regime","compression_regime","expansion_regime","regime_transition","state_stability","counter_evidence","market_state_invalidation","market_regime"],"does_not_own":["opportunity_setup","trade_location","entry_confirmation","trade_economics","risk_management","trade_execution","BUY","SELL"]}
 
 def _num(value: Any):
@@ -32,6 +32,14 @@ def _atr(bars:list[dict[str,Any]],period:int=14)->float:
         high,low,close=bar["high"],bar["low"],bar["close"]
         trs.append(high-low if previous_close is None else max(high-low,abs(high-previous_close),abs(low-previous_close)));previous_close=close
     return mean(trs) if trs else 0.0
+
+def _true_ranges(bars:list[dict[str,Any]])->list[float]:
+    result=[];previous_close=None
+    for bar in bars:
+        high,low,close=bar["high"],bar["low"],bar["close"]
+        result.append(high-low if previous_close is None else max(high-low,abs(high-previous_close),abs(low-previous_close)))
+        previous_close=close
+    return result
 
 def _slope(values:list[float],atr:float,period:int)->float:return 0.0 if len(values)<=period or atr<=0 else (values[-1]-values[-1-period])/atr
 def _efficiency(values:list[float],period:int)->float:
@@ -91,7 +99,7 @@ def analyze_e1(bars):
     consensus=internal_pressure in {"UP","DOWN"} and max(up_count,down_count)>=2 and persistence>=2/3;strong_structure=structure_direction==internal_pressure and structure_quality>=0.55
     trend_confirmed=consensus and ema_ok and abs(ema_gap)>=0.10 and not ema_conflict and not structure_conflict and (strong_structure or persistence==1.0)
     transition_present=(not trend_confirmed) and ((ema_conflict and persistence>=1/3) or (structure_conflict and persistence>=1/3) or (horizon_conflict and _efficiency(closes,20)<0.45))
-    atr_ratio=atr14/max(mean([max(bar["high"]-bar["low"],0.0) for bar in valid[-64:-14]]) if len(valid)>=64 else atr14,1e-12);compression=atr_ratio<0.78;expansion=atr_ratio>1.18;efficiency10=_efficiency(closes,10);efficiency20=_efficiency(closes,20)
+    trs=_true_ranges(valid);recent_atr=atr14;baseline_trs=trs[-64:-14];baseline_atr=mean(baseline_trs) if baseline_trs else recent_atr;atr_ratio=recent_atr/max(baseline_atr,1e-12);compression=atr_ratio<0.78;expansion=atr_ratio>1.18;efficiency10=_efficiency(closes,10);efficiency20=_efficiency(closes,20)
     compression_regime=compression and efficiency20<0.35 and not trend_confirmed
     range_regime=efficiency20<0.35 and not trend_confirmed and (internal_pressure=="BALANCED" or persistence<=1/3) and not compression_regime
     if compression_regime:market_state,final_direction,classification_reason="COMPRESSION","NEUTRAL","volatility_compression_with_low_directional_efficiency"
@@ -102,6 +110,8 @@ def analyze_e1(bars):
     else:market_state,final_direction,classification_reason="UNCLEAR",internal_pressure,"directional_evidence_exists_but_regime_confirmation_is_insufficient"
     directional_pressure="NEUTRAL" if market_state in {"RANGE","COMPRESSION"} else "BULLISH" if internal_pressure=="UP" else "BEARISH" if internal_pressure=="DOWN" else "NEUTRAL"
     trend_state="UP" if market_state=="TREND_UP" else "DOWN" if market_state=="TREND_DOWN" else "NONE";transition="PRESENT" if transition_present else "ABSENT";volatility_state="EXPANDING" if expansion else "CONTRACTING" if compression else "NORMAL";maturity="ESTABLISHED" if trend_confirmed else "DEVELOPING" if consensus and ema_ok else "DIRECTIONAL_ONLY" if internal_pressure in {"UP","DOWN"} else "NONE"
+    single_counter_candle=len(closes)>=3 and ((closes[-1]-closes[-2])*(closes[-2]-closes[-3])<0)
+    pressure_score=_clamp((max(up_count,down_count)/3.0)*(0.5+0.5*persistence))
     confidence=round(_clamp(0.45+0.25*structure_quality+0.20*persistence+0.10*min(1.0,efficiency20/0.70)+0.10*float(ema_ok)-0.05*len(conflicts)),3)
     if market_state=="UNCLEAR":confidence=min(confidence,0.49)
     if market_state=="TRANSITION":confidence=min(confidence,0.75)
@@ -109,4 +119,4 @@ def analyze_e1(bars):
     reasons=list(conflicts)
     if market_state=="UNCLEAR":reasons.append("REGIME_CONFIRMATION_INSUFFICIENT")
     if market_state=="TRANSITION":reasons.append("REGIME_CONFLICT_ACTIVE")
-    return {**_base_output(),"market_state":market_state,"directional_pressure":directional_pressure,"trend_state":trend_state,"volatility_state":volatility_state,"structure_state":structure_state,"structure_quality":round(structure_quality,3),"compression":"PRESENT" if compression else "ABSENT","expansion":"PRESENT" if expansion else "ABSENT","transition":transition,"confidence":confidence,"evidence":[f"ema20_vs_ema50={ema_relation}",f"ema_gap_atr={ema_gap:.3f}",f"ema20_slope_atr={ema20_slope:.3f}",f"ema50_slope_atr={ema50_slope:.3f}",f"price_slope_atr={short_slope:.3f}",f"price_medium_slope_atr={medium_slope:.3f}",f"price_long_slope_atr={long_slope:.3f}",f"structure={structure_state}",f"structure_quality={structure_quality:.3f}",f"directional_pressure={directional_pressure}",f"price_consensus={max(up_count,down_count)}/3",f"trend_persistence={persistence:.3f}",f"price_efficiency_10={efficiency10:.3f}",f"price_efficiency_20={efficiency20:.3f}",f"trend_maturity={maturity}"],"conflicts":conflicts,"reasons":reasons,"reasoning_trace":reasoning_trace,"professional_reasoning":{"task":"DESCRIBE_MARKET_STATE_ONLY","primary_state":market_state,"market_state":market_state,"direction":final_direction,"directional_pressure":directional_pressure,"trend_maturity":maturity,"trend_confirmed":trend_confirmed,"conflict_detected":bool(conflicts),"conflict_count":len(conflicts),"classification_reason":classification_reason,"directional_consensus":{"ema":ema_relation,"short":directions[0],"medium":directions[1],"long":directions[2],"confirmed":bool(ema_ok and consensus),"count":max(up_count,down_count),"required_count":2},"independent_evidence":{"ema_gap_atr":round(ema_gap,4),"structure":structure_state,"structure_quality":round(structure_quality,3),"efficiency_10":round(efficiency10,4),"efficiency_20":round(efficiency20,4)},"evidence_hierarchy":EVIDENCE_HIERARCHY,"ownership_boundaries":OWNERSHIP},"analysis_status":"COMPLETE"}
+    return {**_base_output(),"market_state":market_state,"directional_pressure":directional_pressure,"trend_state":trend_state,"volatility_state":volatility_state,"structure_state":structure_state,"structure_quality":round(structure_quality,3),"compression":"PRESENT" if compression else "ABSENT","expansion":"PRESENT" if expansion else "ABSENT","transition":transition,"confidence":confidence,"evidence":[f"ema20_vs_ema50={ema_relation}",f"ema_gap_atr={ema_gap:.3f}",f"ema20_slope_atr={ema20_slope:.3f}",f"ema50_slope_atr={ema50_slope:.3f}",f"price_slope_atr={short_slope:.3f}",f"price_medium_slope_atr={medium_slope:.3f}",f"price_long_slope_atr={long_slope:.3f}",f"structure={structure_state}",f"structure_quality={structure_quality:.3f}",f"directional_pressure={directional_pressure}",f"price_consensus={max(up_count,down_count)}/3",f"trend_persistence={persistence:.3f}",f"price_efficiency_10={efficiency10:.3f}",f"price_efficiency_20={efficiency20:.3f}",f"trend_maturity={maturity}"],"conflicts":conflicts,"reasons":reasons,"reasoning_trace":reasoning_trace,"professional_reasoning":{"task":"DESCRIBE_MARKET_STATE_ONLY","primary_state":market_state,"market_state":market_state,"direction":final_direction,"directional_pressure":directional_pressure,"trend_maturity":maturity,"trend_confirmed":trend_confirmed,"conflict_detected":bool(conflicts),"conflict_count":len(conflicts),"single_counter_candle":single_counter_candle,"pressure_score":pressure_score,"classification_reason":classification_reason,"directional_consensus":{"ema":ema_relation,"short":directions[0],"medium":directions[1],"long":directions[2],"confirmed":bool(ema_ok and consensus),"count":max(up_count,down_count),"required_count":2},"independent_evidence":{"ema_gap_atr":round(ema_gap,4),"structure":structure_state,"structure_quality":round(structure_quality,3),"efficiency_10":round(efficiency10,4),"efficiency_20":round(efficiency20,4)},"evidence_hierarchy":EVIDENCE_HIERARCHY,"ownership_boundaries":OWNERSHIP},"analysis_status":"COMPLETE"}
