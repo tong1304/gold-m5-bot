@@ -85,6 +85,8 @@ def analyze_e1(bars):
     up_count,down_count=directions.count("UP"),directions.count("DOWN")
     if medium_slope>0.05 and long_slope>0.05:internal_pressure="UP"
     elif medium_slope<-0.05 and long_slope<-0.05:internal_pressure="DOWN"
+    elif long_slope>0.05:internal_pressure="UP"
+    elif long_slope<-0.05:internal_pressure="DOWN"
     elif directions[1]==directions[2] and directions[1] in {"UP","DOWN"}:internal_pressure=directions[1]
     else:internal_pressure="UP" if up_count>down_count else "DOWN" if down_count>up_count else "BALANCED"
     persistence_hits=sum((value>=threshold if internal_pressure=="UP" else value<=-threshold) for value,threshold in ((short_slope,0.20),(medium_slope,0.30),(long_slope,0.45))) if internal_pressure in {"UP","DOWN"} else 0
