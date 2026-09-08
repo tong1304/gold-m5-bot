@@ -111,15 +111,15 @@ def analyze_e1(bars):
     trend_confirmed=consensus and ema_ok and abs(ema_gap)>=0.10 and not ema_conflict and not structure_conflict and (strong_structure or persistence==1.0)
     transition_present=(not trend_confirmed) and ((ema_conflict and persistence>=1/3) or (structure_conflict and persistence>=1/3) or (horizon_conflict and _efficiency(closes,20)<0.45))
     atr_ratio=_atr(valid,14)/max(_atr(valid,50),1e-12); compression=atr_ratio<0.78; expansion=atr_ratio>1.18; efficiency10=_efficiency(closes,10); efficiency20=_efficiency(closes,20)
-    # A balanced, low-efficiency tape is a range even when individual short
-    # horizon slopes alternate. Compression remains a higher-priority state.
-    if compression and internal_pressure=="BALANCED":market_state,final_direction,classification_reason="COMPRESSION","NEUTRAL","volatility_compression_with_balanced_direction"
-    elif internal_pressure=="BALANCED" and efficiency20<0.35 and not compression:market_state,final_direction,classification_reason="RANGE","NEUTRAL","balanced_pressure_and_low_directional_efficiency"
+    # Volatility contraction plus poor directional efficiency is compression even
+    # when the short-horizon vote is mildly directional; it must not become trend.
+    compression_regime=compression and efficiency20<0.35 and not trend_confirmed and not transition_present
+    range_regime=efficiency20<0.35 and not trend_confirmed and not transition_present
+    if compression_regime:market_state,final_direction,classification_reason="COMPRESSION","NEUTRAL","volatility_compression_with_low_directional_efficiency"
+    elif range_regime:market_state,final_direction,classification_reason="RANGE","NEUTRAL","balanced_or_rotational_pressure_with_low_directional_efficiency"
     elif transition_present:market_state,final_direction,classification_reason="TRANSITION",internal_pressure,"material_conflict_between_regime_dimensions"
     elif trend_confirmed:market_state,final_direction,classification_reason=("TREND_UP" if internal_pressure=="UP" else "TREND_DOWN"),internal_pressure,"persistent_multi_horizon_direction_with_ema_and_structure_coherence"
     elif expansion and internal_pressure in {"UP","DOWN"} and efficiency10>=0.25:market_state,final_direction,classification_reason="EXPANSION",internal_pressure,"volatility_expansion_with_directional_displacement"
-    elif internal_pressure=="BALANCED" and efficiency20<0.35:market_state,final_direction,classification_reason="RANGE","NEUTRAL","balanced_pressure_and_low_directional_efficiency"
-    elif internal_pressure in {"UP","DOWN"} and consensus and ema_ok and efficiency20>=0.12:market_state,final_direction,classification_reason="UNCLEAR",internal_pressure,"directional_regime_developing_without_full_confirmation"
     else:market_state,final_direction,classification_reason="UNCLEAR",internal_pressure,"directional_evidence_exists_but_regime_confirmation_is_insufficient"
     directional_pressure="BULLISH" if internal_pressure=="UP" else "BEARISH" if internal_pressure=="DOWN" else "NEUTRAL"; trend_state="UP" if market_state=="TREND_UP" else "DOWN" if market_state=="TREND_DOWN" else "NONE"; transition="PRESENT" if transition_present else "ABSENT"; volatility_state="EXPANDING" if expansion else "CONTRACTING" if compression else "NORMAL"; maturity="ESTABLISHED" if trend_confirmed else "DEVELOPING" if consensus and ema_ok else "DIRECTIONAL_ONLY" if internal_pressure in {"UP","DOWN"} else "NONE"
     confidence=round(_clamp(0.45+0.25*structure_quality+0.20*persistence+0.10*min(1.0,efficiency20/0.70)+0.10*float(ema_ok)-0.05*len(conflicts)),3)
