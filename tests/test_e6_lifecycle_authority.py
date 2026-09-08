@@ -41,7 +41,9 @@ def test_concrete_e6_thesis_is_lifecycle_candidate_even_with_reconciliation_bloc
     assert buy["lifecycle_source"] == "E6_SETUP"
     assert buy["direction"] == "BUY"
     assert buy["setup"] == "BREAKOUT_RETEST"
-    assert buy["thesis_status"] == "VALIDATING"
+    # setup_state is the canonical E6 field at the pipeline boundary; accept
+    # thesis_status as a compatibility alias when a producer supplies it.
+    assert buy.get("thesis_status", buy.get("setup_state")) == "VALIDATING"
     assert "E4_AUCTION_FOLLOW_THROUGH" in buy["wait_for"]
     assert buy["ready"] is False
     assert leader == "BUY"
