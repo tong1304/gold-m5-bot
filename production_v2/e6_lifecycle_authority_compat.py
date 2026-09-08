@@ -20,6 +20,23 @@ def _meaningful(value: Any) -> str:
     return "" if text in _PLACEHOLDERS else text
 
 
+def _e6_state(e6: dict[str, Any]) -> str:
+    # setup_state is the canonical lifecycle field; thesis_status is an alias.
+    # Never let a placeholder producer value erase a meaningful E6 state.
+    return (
+        _meaningful(e6.get("setup_state"))
+        or _meaningful(e6.get("thesis_status"))
+        or _meaningful(e6.get("opportunity_stage"))
+        or "FORMING"
+    )
+
+
+def _merge_meaningful(payload: dict[str, Any], key: str, value: Any) -> None:
+    value_text = _meaningful(value)
+    if value_text and not _meaningful(payload.get(key)):
+        payload[key] = value_text
+
+
 def install(pipeline_module: Any) -> None:
     if getattr(pipeline_module, "_E6_LIFECYCLE_AUTHORITY_COMPAT", False):
         return
@@ -31,9 +48,9 @@ def install(pipeline_module: Any) -> None:
         e6_result = results.get("E6") if isinstance(results, dict) else None
         e6 = dict(getattr(e6_result, "output", {}) or {}) if e6_result is not None else {}
         direction = _direction(e6.get("direction") or e6.get("direction_thesis") or e6.get("thesis_direction") or e6.get("finding"))
-        setup = str(e6.get("setup") or e6.get("setup_family") or e6.get("setup_type") or "").upper().strip()
-        setup_state = _meaningful(e6.get("thesis_status")) or _meaningful(e6.get("setup_state")) or _meaningful(e6.get("opportunity_stage")) or "FORMING"
-        concrete = bool(e6.get("setup_exists")) or setup not in {"", "UNKNOWN", "NONE", "NO_SETUP", "OPPORTUNITY_WATCH", "OPPORTUNITY_CANDIDATE", "OPPORTUNITY_THESIS"}
+        setup = _meaningful(e6.get("setup")) or _meaningful(e6.get("setup_family")) or _meaningful(e6.get("setup_type"))
+        setup_state = _e6_state(e6)
+        concrete = bool(e6.get("setup_exists")) or setup not in {"OPPORTUNITY_WATCH", "OPPORTUNITY_CANDIDATE", "OPPORTUNITY_THESIS"}
         if not concrete or direction not in {"BUY", "SELL"}:
             return current, leader, competition
 
@@ -63,15 +80,16 @@ def install(pipeline_module: Any) -> None:
             current[direction] = payload
         else:
             payload.setdefault("lifecycle_source", "E6_SETUP")
-            if not _meaningful(payload.get("thesis_status")):
-                payload["thesis_status"] = setup_state
-            if not _meaningful(payload.get("setup_state")):
-                payload["setup_state"] = setup_state
-            payload.setdefault("setup", setup)
-            payload.setdefault("setup_family", setup)
+            _merge_meaningful(payload, "thesis_status", setup_state)
+            _merge_meaningful(payload, "setup_state", setup_state)
+            _merge_meaningful(payload, "setup", setup)
+            _merge_meaningful(payload, "setup_family", setup)
             payload.setdefault("direction", direction)
-            payload.setdefault("event_id", e6.get("event_id") or e6.get("origin_event_id"))
-            payload.setdefault("origin_event_id", e6.get("origin_event_id") or e6.get("event_id"))
+            if e6.get("event_id") or e6.get("origin_event_id"):
+                payload.setdefault("event_id", e6.get("event_id") or e6.get("origin_event_id"))
+                payload.setdefault("origin_event_id", e6.get("origin_event_id") or e6.get("event_id"))
+            if e6.get("missing_proof") and not payload.get("wait_for"):
+                payload["wait_for"] = list(e6["missing_proof"])
         if leader == "NEUTRAL":
             leader = direction
         return current, leader, competition
