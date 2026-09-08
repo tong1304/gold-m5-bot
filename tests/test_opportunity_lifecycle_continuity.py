@@ -39,12 +39,12 @@ def test_new_causal_event_rekeys_same_direction_watch_without_authorizing_trade(
         "candle": "2026-09-04T14:40:00Z",
         "candidate": True,
     })
-    assert second["state"] == "REPLACED"
+    assert second["state"] == "WATCHING"
     assert second["continuity"] == "NEW_CAUSAL_EVENT_REPLACED_ACTIVE_OPPORTUNITY"
     assert second["opportunity_id"] != first["opportunity_id"]
     assert second["previous_opportunity_id"] == first["opportunity_id"]
     assert second["bars_waited"] == 0
-    assert second["invalidation_reason"] == "NEW_CAUSAL_EVENT"
+    assert second["invalidation_reason"] is None
     assert second["trade_authorized"] is False
 
 
