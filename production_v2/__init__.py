@@ -61,11 +61,32 @@ _install_opportunity_lifecycle_timing(_pipeline_module)
 _install_opportunity_lifecycle_promotion()
 _install_p0_opportunity_integrity(_pipeline_module)
 
-# Contract metadata: lifecycle candidates retain the causal source that made
-# them actionable. This is observational only and cannot authorize execution.
+# Compatibility metadata for the historical directional lifecycle surface.
+# The adapter is observational: E6 supplies the candidate and missing proof,
+# while execution remains exclusively controlled by E9.
+if not getattr(_pipeline_module, "_LIFECYCLE_COMPATIBILITY_ADAPTER", False):
+    def _lifecycle_current_compat(results, decision, gate_passed, candle):
+        e6_result = results.get("E6") if isinstance(results, dict) else None
+        e6 = e6_result.output if hasattr(e6_result, "output") and isinstance(e6_result.output, dict) else {}
+        direction = str(e6.get("direction") or "NEUTRAL").upper().strip()
+        missing = list(e6.get("missing_proof") or [])
+        event_id = e6.get("event_id") or e6.get("origin_event_id")
+        return {
+            "candidate": bool(e6.get("setup") or e6.get("setup_family") or e6.get("setup_exists") or missing),
+            "direction": direction,
+            "setup": str(e6.get("setup") or e6.get("setup_family") or "OPPORTUNITY_WATCH").upper().strip(),
+            "event_id": event_id,
+            "wait_for": missing,
+            "candle": candle,
+            "ready": bool(decision == "TRADE" and gate_passed),
+            "trade_authorized": False,
+            "lifecycle_source": "E6_SETUP",
+        }
+    _pipeline_module._lifecycle_current = _lifecycle_current_compat
+    _pipeline_module._LIFECYCLE_COMPATIBILITY_ADAPTER = True
+
 if not getattr(_pipeline_module, "_LIFECYCLE_SOURCE_METADATA", False):
     _original_directional_lifecycle_current = _pipeline_module._directional_lifecycle_current
-
     def _directional_lifecycle_current_with_source(*args, **kwargs):
         current, leader, competition = _original_directional_lifecycle_current(*args, **kwargs)
         for direction, payload in current.items():
@@ -74,7 +95,6 @@ if not getattr(_pipeline_module, "_LIFECYCLE_SOURCE_METADATA", False):
             setup_name = str(payload.get("setup") or "").upper().strip()
             payload["lifecycle_source"] = "E6_SETUP" if setup_name not in {"", "OPPORTUNITY_WATCH", "UNKNOWN", "NONE", "NO_SETUP"} else "E2_OPPORTUNITY_BOOK"
         return current, leader, competition
-
     _pipeline_module._directional_lifecycle_current = _directional_lifecycle_current_with_source
     _pipeline_module._LIFECYCLE_SOURCE_METADATA = True
 
