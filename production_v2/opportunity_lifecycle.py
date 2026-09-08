@@ -93,14 +93,35 @@ def _anchor(previous: dict[str, Any], current: dict[str, Any]) -> dict[str, Any]
 
 def advance_opportunity(previous: dict[str, Any] | None, current: dict[str, Any]) -> dict[str, Any]:
     p, c = dict(previous or {}), dict(current or {})
-    d = _text(c.get("direction")); setup = _text(c.get("setup") or c.get("setup_family")); candle = _text(c.get("candle")); event_id = c.get("event_id") or c.get("origin_event_id")
-    oid = _stable_identity(p, d, setup, event_id); pid = _event_key(p.get("opportunity_id")); ps = _text(p.get("state")); pd = _text(p.get("direction")); previous_setup = _text(p.get("setup")); active = _active_previous(p)
-    previous_event = p.get("event_id") or p.get("origin_event_id"); same_event = _same_event(previous_event, event_id); previous_candle = _text(p.get("last_evaluated_candle")); same_candle = bool(active and candle and previous_candle and candle == previous_candle)
+    d = _text(c.get("direction"))
+    setup = _text(c.get("setup") or c.get("setup_family"))
+    candle = _text(c.get("candle"))
+    event_id = c.get("event_id") or c.get("origin_event_id")
+    oid = _stable_identity(p, d, setup, event_id)
+    pid = _event_key(p.get("opportunity_id"))
+    ps = _text(p.get("state"))
+    pd = _text(p.get("direction"))
+    previous_setup = _text(p.get("setup"))
+    active = _active_previous(p)
+    previous_event = p.get("event_id") or p.get("origin_event_id")
+    same_event = _same_event(previous_event, event_id)
+    previous_candle = _text(p.get("last_evaluated_candle"))
+    same_candle = bool(active and candle and previous_candle and candle == previous_candle)
     event_continuity = same_event or (active and previous_event and not event_id and pd == d and previous_setup in WATCH_SETUPS) or (active and not previous_event and not event_id and pd == d and previous_setup in WATCH_SETUPS)
     age = int(p.get("bars_waited", 0) or 0) + (1 if active and not same_candle and event_continuity else 0)
-    invalidated = bool(c.get("invalidated")); candidate = bool(c.get("candidate")); ready = bool(c.get("ready")); thesis_proven = bool(c.get("thesis_proven"))
+    invalidated = bool(c.get("invalidated"))
+    candidate = bool(c.get("candidate"))
+    ready = bool(c.get("ready"))
+    thesis_proven = bool(c.get("thesis_proven"))
     causal_anchor = _anchor(p, c)
-    base = {**p, "last_evaluated_candle": candle, "trade_authorized": False, "event_id": event_id or p.get("event_id"), "origin_event_id": p.get("origin_event_id") or event_id or p.get("origin_event_id"), "causal_event_anchor": causal_anchor}
+    base = {
+        **p,
+        "last_evaluated_candle": candle,
+        "trade_authorized": False,
+        "event_id": event_id or p.get("event_id"),
+        "origin_event_id": p.get("origin_event_id") or event_id or p.get("origin_event_id"),
+        "causal_event_anchor": causal_anchor,
+    }
 
     if c.get("execution_state") == "POSITION_OPEN":
         return {**base, "state": "EXECUTED", "lifecycle_state": "EXECUTED", "opportunity_phase": "EXECUTED", "continuity": "POSITION_OPEN", "execution_state": "POSITION_OPEN"}
@@ -108,10 +129,32 @@ def advance_opportunity(previous: dict[str, Any] | None, current: dict[str, Any]
         if not active:
             return {"state":"IDLE","lifecycle_state":"IDLE","opportunity_phase":"IDLE","continuity":"NO_ACTIVE_PENDING_OPPORTUNITY","opportunity_id":None,"direction":"NEUTRAL","setup":"UNKNOWN","bars_waited":0,"origin_candle":candle,"last_evaluated_candle":candle,"trade_authorized":False,"invalidation_reason":None,"event_id":event_id,"origin_event_id":event_id,"causal_event_anchor":causal_anchor}
         return {**base,"state":"INVALIDATED","lifecycle_state":"INVALIDATED","opportunity_phase":"INVALIDATED","continuity":"OPPORTUNITY_INVALIDATED","opportunity_id":pid,"direction":pd,"setup":previous_setup,"bars_waited":age,"invalidation_reason":c.get("invalidation_reason") or "CURRENT_CANDLE_INVALIDATED"}
+
     if active and pd in VALID_DIRECTIONS and d in VALID_DIRECTIONS and d != pd:
         return {**c,"state":"REPLACED","lifecycle_state":"REPLACED","opportunity_phase":"REPLACED","continuity":"DIRECTION_CHANGED_REPLACED_OPPORTUNITY","previous_opportunity_id":pid,"opportunity_id":oid or _identity(d,setup,event_id),"event_id":event_id,"origin_event_id":event_id,"bars_waited":0,"origin_candle":candle,"last_evaluated_candle":candle,"trade_authorized":False,"invalidation_reason":"DIRECTION_CHANGED","causal_event_anchor":causal_anchor}
+
+    # A same-direction new causal event starts a fresh ACTIVE watch. The predecessor
+    # is represented by previous_opportunity_id; REPLACED is not used as the active
+    # state because the successor is immediately watchable and must continue through
+    # the normal WATCHING -> WAITING -> READY lifecycle.
     if active and not same_event and oid and pid and oid != pid:
-        return {**c,"state":"REPLACED","lifecycle_state":"REPLACED","opportunity_phase":"REPLACED","continuity":"NEW_CAUSAL_EVENT_REPLACED_ACTIVE_OPPORTUNITY","previous_opportunity_id":pid,"opportunity_id":oid,"event_id":event_id,"origin_event_id":event_id,"bars_waited":0,"origin_candle":candle,"last_evaluated_candle":candle,"trade_authorized":False,"invalidation_reason":"NEW_CAUSAL_EVENT","causal_event_anchor":causal_anchor}
+        return {
+            **c,
+            "state":"WATCHING",
+            "lifecycle_state":"OPPORTUNITY_WATCH",
+            "opportunity_phase":"OPPORTUNITY_WATCH",
+            "continuity":"NEW_CAUSAL_EVENT_REPLACED_ACTIVE_OPPORTUNITY",
+            "previous_opportunity_id":pid,
+            "opportunity_id":oid,
+            "event_id":event_id,
+            "origin_event_id":event_id,
+            "bars_waited":0,
+            "origin_candle":candle,
+            "last_evaluated_candle":candle,
+            "trade_authorized":False,
+            "invalidation_reason":None,
+            "causal_event_anchor":causal_anchor,
+        }
 
     pending_watch = active and previous_setup in WATCH_SETUPS
     if pending_watch and age >= MAX_WATCH_BARS:
