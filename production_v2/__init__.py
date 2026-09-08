@@ -50,13 +50,11 @@ _pipeline_module._E6_RUNTIME_OVERRIDE = _e6_module.analyze_e6
 _install_e8_applicability_boundary(_e8_module)
 _pipeline_module.analyze_e8 = _e8_module.analyze_e8
 
+# Build the complete E9 callable chain before binding it into pipeline.py.
 _install_e9_watch_boundary(_e9_module)
 _install_e9_thesis_contract(_e9_module)
-_pipeline_module.analyze_e9 = _e9_module.analyze_e9
-
-# Evidence collaboration may enrich E9's ledger but never grants E6/E7/E8
-# execution authority.
 _install_evidence_collaboration(_e6_module, _e9_module)
+_pipeline_module.analyze_e9 = _e9_module.analyze_e9
 
 _install_e7_thesis_boundary(_pipeline_module)
 _install_final_runtime_binding(_pipeline_module, _e6_module, _e8_module, _e9_module)
