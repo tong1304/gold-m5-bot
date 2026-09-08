@@ -91,7 +91,7 @@ def analyze_e1(bars):
     consensus=internal_pressure in {"UP","DOWN"} and max(up_count,down_count)>=2 and persistence>=2/3;strong_structure=structure_direction==internal_pressure and structure_quality>=0.55
     trend_confirmed=consensus and ema_ok and abs(ema_gap)>=0.10 and not ema_conflict and not structure_conflict and (strong_structure or persistence==1.0)
     transition_present=(not trend_confirmed) and ((ema_conflict and persistence>=1/3) or (structure_conflict and persistence>=1/3) or (horizon_conflict and _efficiency(closes,20)<0.45))
-    atr_ratio=_atr(valid,14)/max(_atr(valid,50),1e-12);compression=atr_ratio<0.78;expansion=atr_ratio>1.18;efficiency10=_efficiency(closes,10);efficiency20=_efficiency(closes,20)
+    atr_ratio=atr14/max(mean([max(bar["high"]-bar["low"],0.0) for bar in valid[-64:-14]]) if len(valid)>=64 else atr14,1e-12);compression=atr_ratio<0.78;expansion=atr_ratio>1.18;efficiency10=_efficiency(closes,10);efficiency20=_efficiency(closes,20)
     compression_regime=compression and efficiency20<0.35 and not trend_confirmed
     range_regime=efficiency20<0.35 and not trend_confirmed and not compression_regime
     if compression_regime:market_state,final_direction,classification_reason="COMPRESSION","NEUTRAL","volatility_compression_with_low_directional_efficiency"
