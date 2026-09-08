@@ -56,7 +56,7 @@ _install_opportunity_lifecycle_runtime(_pipeline_module)
 _install_terminal_opportunity_runtime(_pipeline_module)
 _install_lifecycle_contract_surgery(_opportunity_lifecycle_module, _pipeline_module)
 _install_professional_opportunity(_professional_opportunity_module, _pipeline_module)
-_install_opportunity_timing_runtime_hotfix(_pipeline_module)
+_install_opportunity_timing_hotfix(_pipeline_module)
 _install_opportunity_lifecycle_timing(_pipeline_module)
 _install_opportunity_lifecycle_promotion()
 _install_p0_opportunity_integrity(_pipeline_module)
@@ -64,7 +64,8 @@ _install_p0_opportunity_integrity(_pipeline_module)
 if not getattr(_e3_module, "_E3_CAUSAL_V8_COMPAT", False):
     _e3_public_original = _e3_module.analyze_e3
     def _e3_causal_v8_compat(bars):
-        output = dict(_e3_public_original(bars) or {}); output.setdefault("analysis_status", "COMPLETE" if output.get("status") in {"OK","COMPLETE"} else output.get("status","INCOMPLETE")); output.setdefault("reasoning_role","MARKET_STRUCTURE_ANALYST"); output["trade_decision_authority"]=False; output["decision_authority"]="E9_ONLY"; output["decision"]=None; output["gate"]=None
+        output = dict(_e3_public_original(bars) or {})
+        output.setdefault("analysis_status", "COMPLETE" if output.get("status") in {"OK","COMPLETE"} else output.get("status","INCOMPLETE")); output.setdefault("reasoning_role","MARKET_STRUCTURE_ANALYST"); output["trade_decision_authority"]=False; output["decision_authority"]="E9_ONLY"; output["decision"]=None; output["gate"]=None
         trace=dict(output.get("reasoning_trace") or {}); protected=dict(output.get("protected_structure") or {}); internal_state=str(output.get("internal_state") or "").upper(); current_state=str(output.get("structure_state") or output.get("market_state") or protected.get("active_regime") or internal_state or "UNKNOWN")
         trace.setdefault("current_state",current_state); trace.setdefault("historical_context",output.get("historical_context") or output.get("structure_context") or "STRUCTURE_HISTORY_SEPARATE_FROM_CURRENT_AUTHORITY"); trace.setdefault("invalidation_rule","PROTECTED_EXTERNAL_STRUCTURE_BREAK_INVALIDATES_CURRENT_THESIS"); trace.setdefault("structure_narrative",output.get("structure_narrative") or current_state); trace.setdefault("internal_bos_has_market_authority",False); trace.setdefault("upstream_inputs_used",False); trace.setdefault("slope_is_structural_authority",False); output["reasoning_trace"]=trace
         output["upstream_direction_used"]=False; output["upstream_decisions_used"]=False; output["upstream_gates_used"]=False; bos=dict(output.get("bos") or {}); output["break_lifecycle"]={"current":bool(bos.get("current",False))}; invalidation=dict(output.get("invalidation") or {}); output["structural_invalidation"]={**invalidation,"confirmed":bool(invalidation.get("invalidated")),"invalidates_current_external_thesis":bool(invalidation.get("invalidated")),"does_not_confirm_reversal":True}; active=str(protected.get("active_regime") or "").upper(); output["authority_detail"]={"authority_basis":"EXTERNAL_STRUCTURE" if active in {"UP","DOWN"} else "INTERNAL_STRUCTURE" if internal_state in {"UP","DOWN"} else "NONE","decision_rule":"E3_REPORTS_STRUCTURE;E9_OWNS_TRADE_DECISION"}
