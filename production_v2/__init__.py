@@ -3,7 +3,6 @@
 E6 is the single authoritative opportunity/setup specialist. Compatibility
 membranes may enrich its output, but E9 remains the sole execution authority.
 """
-
 from .pipeline import ProductionPipeline
 from . import pipeline as _pipeline_module
 from . import e2_brain as _e2_module
@@ -73,6 +72,16 @@ if not getattr(_e3_module, "_E3_CAUSAL_V8_COMPAT", False):
             event=str(output.get("liquidity_event") or output.get("event") or "").upper(); output["liquidity_type"]="STRUCTURAL_SWING_HIGH" if "HIGH" in event or str(output.get("sweep_direction") or "").upper()=="HIGH" else "STRUCTURAL_SWING_LOW" if "LOW" in event or str(output.get("sweep_direction") or "").upper()=="LOW" else "STRUCTURAL_SWING_HIGH"
         return output
     _e3_module.analyze_e3=_e3_causal_v8_compat; _e3_module._E3_CAUSAL_V8_COMPAT=True
+
+if not getattr(_e3_module,"_E3_SWEEP_COMPAT",False):
+    _sweep_original=_e3_module._sweep_reclaim
+    def _sweep_reclaim_compat(bars,highs,lows,atr):
+        result=dict(_sweep_original(bars,highs,lows,atr) or {})
+        if result.get("confirmed") and result.get("event")=="SWEEP_RECLAIM" and result.get("liquidity_type")=="STRUCTURAL_SWING":
+            try: result["liquidity_type"]="STRUCTURAL_SWING_HIGH" if bars[-1]["high"]>max(p["price"] for p in highs) else "STRUCTURAL_SWING_LOW"
+            except Exception: result["liquidity_type"]="STRUCTURAL_SWING_HIGH"
+        return result
+    _e3_module._sweep_reclaim=_sweep_reclaim_compat; _e3_module._E3_SWEEP_COMPAT=True
 
 if not getattr(_pipeline_module,"_LIFECYCLE_COMPATIBILITY_ADAPTER",False):
     def _lifecycle_current_compat(results,decision,gate_passed,candle):
