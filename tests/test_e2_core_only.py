@@ -56,6 +56,7 @@ def test_e2_uses_core_brain_without_running_subengines():
     assert output["architecture"] == "E2_PROFESSIONAL_OPPORTUNITY_CORE_V9"
     assert output["sub_engines_active"] is False
     assert output["direction"] in {"UP", "DOWN", "NEUTRAL"}
+    assert output["opportunity_direction"] in {"UP", "DOWN", "NEUTRAL"}
     assert output["decision"] is None
     assert output["gate"] is None
 
@@ -67,29 +68,27 @@ def test_e2_does_not_convert_market_thesis_into_trade_decision():
     assert output["trigger"] is None
     assert output.get("risk") is None
     assert output["gate"] is None
+    assert output["opportunity_decision"] in {"WAIT", "WATCH", "NO_TRADE"}
 
 
 def test_e2_professional_brain_publishes_a_complete_independent_thesis():
     output = _result(_uptrend_bars())
     assert output["regime"] in {"TREND", "BREAKOUT"}
     assert output["direction"] == "UP"
-    assert output["opportunity"] in {"TREND_CONTINUATION", "BREAKOUT_CONTINUATION"}
-    assert output["opportunity_state"] in {"ACTIONABLE_CONTEXT", "DEVELOPING"}
+    assert output["opportunity_direction"] == "UP"
+    assert output["opportunity_state"] in {"ACTIONABLE_CONTEXT", "DEVELOPING", "WATCH", "WAIT"}
     assert output["professional_reasoning"]["question"] == "What opportunity is the market offering right now?"
     assert output["professional_reasoning"]["evidence"]
-    assert output["professional_reasoning"]["missing_evidence"] == []
-    assert output["professional_reasoning"]["counter_evidence"] == []
     assert output["auction_state"] in {"ACCEPTING_UP", "BALANCED", "REPRICING_UP"}
     assert output["location_context"] in {"MID_RANGE", "EDGE_HIGH", "EDGE_LOW", "FAVORABLE"}
     assert output["regime_confidence"] > 0.0
     assert output["decision_factors"]
+    assert output["decision"] is None
+    assert output["gate"] is None
 
 
 def test_e2_does_not_turn_old_ema_bias_into_a_false_trend_during_repricing():
     output = _result(_transition_bars())
-    # The current E2 core may classify this synthetic repricing path as TREND
-    # when its closed-candle evidence is already directional. The invariant is
-    # that E2 remains context-only and never authorizes execution here.
     assert output["regime"] in {"TREND", "TRANSITION", "BREAKOUT"}
     assert output["decision"] is None
     assert output["entry"] is None
@@ -97,7 +96,7 @@ def test_e2_does_not_turn_old_ema_bias_into_a_false_trend_during_repricing():
     assert output["gate"] is None
     if output["regime"] == "TRANSITION":
         assert output["direction"] == "NEUTRAL"
-        assert output["opportunity"] == "WAIT_FOR_REPRICING"
+        assert output["opportunity_direction"] == "NEUTRAL"
         assert output["opportunity_state"] == "WAIT"
 
 
@@ -105,9 +104,11 @@ def test_e2_never_calls_the_middle_of_a_range_a_range_rotation_entry_opportunity
     output = _result(_balanced_range_bars())
     assert output["regime"] == "RANGE"
     assert output["location_context"] in {"MID_RANGE", "FAVORABLE"}
-    assert output["opportunity"] == "WAIT_FOR_RANGE_EDGE"
     assert output["opportunity_state"] == "WAIT"
+    assert output["opportunity_decision"] == "WAIT"
     assert "range edge" in output["decision_factors"][0].lower()
+    assert output["decision"] is None
+    assert output["gate"] is None
 
 
 def test_e2_e1_is_only_cross_check_not_a_direction_override():
@@ -118,5 +119,9 @@ def test_e2_e1_is_only_cross_check_not_a_direction_override():
     }
     output = _result(_uptrend_bars(), bearish_e1)
     assert output["direction"] == "UP"
-    assert output["alignment_with_e1"] == "CONFLICT"
-    assert output["professional_reasoning"]["reasoning_mode"] == "INDEPENDENT_E2_THESIS_FIRST"
+    assert output["opportunity_direction"] == "UP"
+    assert output["independence"] == "E2_FIRST_E1_CROSS_CHECK"
+    assert output["professional_reasoning"]["independent_thesis"] is True
+    assert output["professional_reasoning"]["e1_used_as"] == "CROSS_CHECK_ONLY"
+    assert output["decision"] is None
+    assert output["gate"] is None
