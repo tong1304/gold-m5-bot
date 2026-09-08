@@ -82,13 +82,16 @@ def _directional_helper_compat(original):
         structure = direction(e3.get("external_state", e3.get("internal_state", e3.get("direction"))))
         auction_state = text(e4.get("auction_state", e4.get("state")))
         event = text(e4.get("event", e4.get("finding")))
+        response_actor = direction(e4.get("response_actor"))
         auction_direction = direction(e4.get("direction"))
         if auction_direction == "NEUTRAL" and "FAILED_BREAK_RECLAIM" in event:
-            auction_direction = direction(e4.get("response_actor"))
-        if auction_direction == "NEUTRAL" and "HIGH" in event and any(x in event for x in ("REJECTION", "SWEEP")):
+            auction_direction = response_actor
+        if auction_direction == "NEUTRAL" and ("HIGH" in event and any(x in event for x in ("REJECTION", "SWEEP"))):
             auction_direction = "SELL"
-        if auction_direction == "NEUTRAL" and "LOW" in event and any(x in event for x in ("REJECTION", "SWEEP")):
+        if auction_direction == "NEUTRAL" and ("LOW" in event and any(x in event for x in ("REJECTION", "SWEEP"))):
             auction_direction = "BUY"
+        if auction_direction == "NEUTRAL" and "LOW_ACCEPTANCE" in event and response_actor in {"BUY", "SELL"}:
+            auction_direction = response_actor
         if auction_direction in {"BUY", "SELL"} and auction_state in {"CONFIRMED", "TERMINALLY_CONFIRMED", "ACCEPTED", "RECLAIMED"} and core == "NEUTRAL" and structure == "NEUTRAL":
             return auction_direction, ["E4_TERMINAL_AUCTION"], [], "E4_TERMINAL_AUCTION"
         chosen = core if core in {"BUY", "SELL"} else structure if structure in {"BUY", "SELL"} else auction_direction
