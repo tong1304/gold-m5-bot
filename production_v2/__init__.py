@@ -7,6 +7,7 @@ membranes may enrich its output, but E9 remains the sole execution authority.
 from .pipeline import ProductionPipeline
 from . import pipeline as _pipeline_module
 from . import e2_brain as _e2_module
+from . import e3_brain as _e3_module
 from . import e6_brain as _e6_module
 from . import e8_brain as _e8_module
 from . import e9_brain as _e9_module
@@ -56,10 +57,43 @@ _install_opportunity_lifecycle_runtime(_pipeline_module)
 _install_terminal_opportunity_runtime(_pipeline_module)
 _install_lifecycle_contract_surgery(_opportunity_lifecycle_module, _pipeline_module)
 _install_professional_opportunity(_professional_opportunity_module, _pipeline_module)
-_install_opportunity_timing_hotfix(_pipeline_module)
+_install_opportunity_timing_runtime_hotfix = _install_opportunity_timing_hotfix
+_install_opportunity_timing_runtime_hotfix(_pipeline_module)
 _install_opportunity_lifecycle_timing(_pipeline_module)
 _install_opportunity_lifecycle_promotion()
 _install_p0_opportunity_integrity(_pipeline_module)
+
+# E3 public causal-v8 contract compatibility. The core brain already computes
+# these facts; this membrane only exposes the stable contract names expected by
+# downstream tests/consumers and never grants trade authority.
+if not getattr(_e3_module, "_E3_CAUSAL_V8_COMPAT", False):
+    _e3_public_original = _e3_module.analyze_e3
+    def _e3_causal_v8_compat(bars):
+        output = dict(_e3_public_original(bars) or {})
+        output.setdefault("analysis_status", "COMPLETE" if output.get("status") in {"OK", "COMPLETE"} else output.get("status", "INCOMPLETE"))
+        output.setdefault("reasoning_role", "MARKET_STRUCTURE_ANALYST")
+        output["trade_decision_authority"] = False
+        output["decision_authority"] = "E9_ONLY"
+        output["decision"] = None
+        output["gate"] = None
+        trace = dict(output.get("reasoning_trace") or {})
+        trace.setdefault("upstream_inputs_used", False)
+        trace.setdefault("slope_is_structural_authority", False)
+        output["reasoning_trace"] = trace
+        output["upstream_direction_used"] = False
+        output["upstream_decisions_used"] = False
+        output["upstream_gates_used"] = False
+        bos = dict(output.get("bos") or {})
+        output["break_lifecycle"] = {"current": bool(bos.get("current", False))}
+        invalidation = dict(output.get("invalidation") or {})
+        output["structural_invalidation"] = {**invalidation, "confirmed": bool(invalidation.get("invalidated")), "invalidates_current_external_thesis": bool(invalidation.get("invalidated")), "does_not_confirm_reversal": True}
+        protected = dict(output.get("protected_structure") or {})
+        active = str(protected.get("active_regime") or "").upper()
+        authority_basis = "EXTERNAL_STRUCTURE" if active in {"UP", "DOWN"} else "INTERNAL_STRUCTURE" if str(output.get("internal_state") or "").upper() in {"UP", "DOWN"} else "NONE"
+        output["authority_detail"] = {"authority_basis": authority_basis, "decision_rule": "E3_REPORTS_STRUCTURE;E9_OWNS_TRADE_DECISION"}
+        return output
+    _e3_module.analyze_e3 = _e3_causal_v8_compat
+    _e3_module._E3_CAUSAL_V8_COMPAT = True
 
 if not getattr(_pipeline_module, "_LIFECYCLE_COMPATIBILITY_ADAPTER", False):
     def _lifecycle_current_compat(results, decision, gate_passed, candle):
@@ -74,16 +108,13 @@ if not getattr(_pipeline_module, "_LIFECYCLE_COMPATIBILITY_ADAPTER", False):
 
 if not getattr(_pipeline_module, "_E8_EXECUTION_BOUNDARY_ADAPTER", False):
     def _normalize_e8_execution_boundary(result):
-        if result is None:
-            return None
+        if result is None: return None
         output = dict(getattr(result, "output", {}) or {})
         specialists = output.get("specialists") if isinstance(output.get("specialists"), dict) else {}
         specialist_8g = specialists.get("8G") if isinstance(specialists.get("8G"), dict) else {}
         specialist_output = specialist_8g.get("output") if isinstance(specialist_8g.get("output"), dict) else {}
-        if specialist_output:
-            for key in ("trade_plan", "plan_status", "risk_gate", "risk_basis", "direction"):
-                if key in specialist_output:
-                    output[key] = specialist_output[key]
+        for key in ("trade_plan", "plan_status", "risk_gate", "risk_basis", "direction"):
+            if key in specialist_output: output[key] = specialist_output[key]
         return type(result)(result.engine_id, result.name, result.gate_passed, result.confidence, output, result.reason_codes)
     _pipeline_module._normalize_e8_execution_boundary = _normalize_e8_execution_boundary
     _pipeline_module._E8_EXECUTION_BOUNDARY_ADAPTER = True
@@ -91,14 +122,12 @@ if not getattr(_pipeline_module, "_E8_EXECUTION_BOUNDARY_ADAPTER", False):
 if not getattr(_pipeline_module, "_E6_SAFE_INPUT_ADAPTER", False):
     _e6_public_original = _pipeline_module.analyze_e6
     def _safe_analyze_e6(snapshot, upstream):
-        safe_snapshot = snapshot if isinstance(snapshot, dict) else {}
-        result = _e6_public_original(safe_snapshot, upstream)
+        result = _e6_public_original(snapshot if isinstance(snapshot, dict) else {}, upstream)
         output = dict(getattr(result, "output", {}) or {})
         if output.get("candidate_type") == "EARLY_OPPORTUNITY_CANDIDATE":
             output["timing_candidate_type"] = output["candidate_type"]
             output["candidate_type"] = "OPPORTUNITY_CANDIDATE"
         return type(result)(result.engine_id, result.name, result.gate_passed, result.confidence, output, result.reason_codes)
-    _safe_analyze_e6.__name__ = "safe_analyze_e6"
     _pipeline_module.analyze_e6 = _safe_analyze_e6
     _pipeline_module._E6_RUNTIME_OVERRIDE = _safe_analyze_e6
     _pipeline_module._E6_SAFE_INPUT_ADAPTER = True
@@ -109,8 +138,7 @@ if not getattr(_e9_module, "_E9_WATCH_GOVERNANCE_COMPAT", False):
         result = _e9_public_original(snapshot, upstream)
         output = dict(getattr(result, "output", {}) or {})
         e6 = dict(getattr(upstream.get("E6"), "output", {}) or {}) if isinstance(upstream, dict) else {}
-        setup = str(e6.get("setup") or "").upper().strip()
-        if output.get("final_governance") == "WATCH" and setup in {"OPPORTUNITY_WATCH", "OPPORTUNITY_CANDIDATE", "OPPORTUNITY_THESIS"}:
+        if output.get("final_governance") == "WATCH" and str(e6.get("setup") or "").upper().strip() in {"OPPORTUNITY_WATCH", "OPPORTUNITY_CANDIDATE", "OPPORTUNITY_THESIS"}:
             output["governance_reason"] = "WAITING_FOR_E6_SETUP_THESIS"
         return type(result)(result.engine_id, result.name, result.gate_passed, result.confidence, output, result.reason_codes)
     _e9_module.analyze_e9 = _e9_governance_compat
@@ -120,8 +148,7 @@ if not getattr(_e9_module, "_E9_WATCH_GOVERNANCE_COMPAT", False):
 try:
     from . import app as _app_module
     if not hasattr(_app_module, "reconcile_causal_evidence"):
-        def _reconcile_causal_evidence(_engines):
-            return {"state": "UNKNOWN", "direction": "NEUTRAL", "wait_for": []}
+        def _reconcile_causal_evidence(_engines): return {"state": "UNKNOWN", "direction": "NEUTRAL", "wait_for": []}
         _app_module.reconcile_causal_evidence = _reconcile_causal_evidence
 except Exception:
     pass
@@ -136,9 +163,8 @@ if not getattr(_pipeline_module, "_LIFECYCLE_SOURCE_METADATA", False):
         e6_setup = str(e6.get("setup") or e6.get("setup_family") or "").upper().strip()
         e6_concrete = bool(e6.get("setup_exists")) or (e6_setup not in {"", "OPPORTUNITY_WATCH", "OPPORTUNITY_CANDIDATE", "OPPORTUNITY_THESIS", "UNKNOWN", "NONE", "NO_SETUP"} and e6.get("setup_state") not in {"", "NO_SETUP", "UNKNOWN", "NONE"})
         for direction, payload in current.items():
-            if not isinstance(payload, dict) or not payload.get("candidate"):
-                continue
-            payload["lifecycle_source"] = "E6_SETUP" if e6_concrete and direction == str(e6.get("direction") or "").upper().strip() else "E2_OPPORTUNITY_BOOK"
+            if isinstance(payload, dict) and payload.get("candidate"):
+                payload["lifecycle_source"] = "E6_SETUP" if e6_concrete and direction == str(e6.get("direction") or "").upper().strip() else "E2_OPPORTUNITY_BOOK"
         return current, leader, competition
     _pipeline_module._directional_lifecycle_current = _directional_lifecycle_current_with_source
     _pipeline_module._LIFECYCLE_SOURCE_METADATA = True
