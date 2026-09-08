@@ -3,7 +3,8 @@ from production_v2.opportunity_core import OpportunityRecord, canonical_stage
 
 def test_canonical_stage_maps_watch_and_waiting_to_distinct_states():
     assert canonical_stage({"state": "WATCHING", "setup": "OPPORTUNITY_WATCH"}) == "WATCH"
-    assert canonical_stage({"state": "WAITING", "setup": "TREND"}) == "CONFIRMING"
+    assert canonical_stage({"state": "WAITING", "setup": "TREND"}) == "THESIS"
+    assert canonical_stage({"state": "WAITING", "setup": "TREND", "thesis_proven": True}) == "CONFIRMING"
 
 
 def test_canonical_stage_maps_ready_and_e9_trade():
@@ -18,6 +19,7 @@ def test_record_preserves_causal_anchor_and_required_fields():
         "direction": "BUY",
         "setup": "TREND",
         "state": "WAITING",
+        "thesis_proven": True,
         "bars_waited": 2,
         "origin_candle": "2026-09-08T10:00:00+00:00",
         "last_evaluated_candle": "2026-09-08T10:10:00+00:00",
