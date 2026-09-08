@@ -82,7 +82,9 @@ def analyze_e1(bars):
     ema_gap=(ema20[-1]-ema50[-1])/atr14;ema20_slope=_slope(ema20,atr14,5);ema50_slope=_slope(ema50,atr14,5)
     short_slope=_slope(closes,atr14,5);medium_slope=_slope(closes,atr14,10);long_slope=_slope(closes,atr14,20)
     directions=["UP" if short_slope>0.15 else "DOWN" if short_slope<-0.15 else "FLAT","UP" if medium_slope>0.20 else "DOWN" if medium_slope<-0.20 else "FLAT","UP" if long_slope>0.30 else "DOWN" if long_slope<-0.30 else "FLAT"]
-    up_count,down_count=directions.count("UP"),directions.count("DOWN");internal_pressure="UP" if up_count>down_count else "DOWN" if down_count>up_count else "BALANCED"
+    up_count,down_count=directions.count("UP"),directions.count("DOWN")
+    if directions[1]==directions[2] and directions[1] in {"UP","DOWN"}:internal_pressure=directions[1]
+    else:internal_pressure="UP" if up_count>down_count else "DOWN" if down_count>up_count else "BALANCED"
     persistence_hits=sum((value>=threshold if internal_pressure=="UP" else value<=-threshold) for value,threshold in ((short_slope,0.20),(medium_slope,0.30),(long_slope,0.45))) if internal_pressure in {"UP","DOWN"} else 0
     persistence=persistence_hits/3.0;structure_state,structure_quality=_structure(valid);structure_direction="UP" if structure_state=="BULLISH" else "DOWN" if structure_state=="BEARISH" else "NONE"
     ema_ok=internal_pressure in {"UP","DOWN"} and ema_relation==internal_pressure and ((internal_pressure=="UP" and ema20_slope>=-0.05 and ema50_slope>=-0.10) or (internal_pressure=="DOWN" and ema20_slope<=0.05 and ema50_slope<=0.10))
