@@ -59,8 +59,17 @@ def test_legacy_watch_is_rekeyed_when_new_causal_event_arrives():
         "wait_for": ["E4_AUCTION_FOLLOW_THROUGH"],
     }
     result = advance_opportunity(previous, current)
-    assert result["state"] == "REPLACED"
-    assert result["previous_opportunity_id"] == "SELL|OPPORTUNITY_WATCH"
+    # A same-direction causal event creates a new ACTIVE successor. The
+    # predecessor is identified through previous_opportunity_id; REPLACED is
+    # reserved for an actual direction/thesis replacement.
+    assert result["state"] == "WATCHING"
+    assert result["lifecycle_state"] == "OPPORTUNITY_WATCH"
+    assert result["opportunity_phase"] == "OPPORTUNITY_WATCH"
+    assert result["continuity"] == "NEW_CAUSAL_EVENT_REPLACED_ACTIVE_OPPORTUNITY"
+    assert result["previous_opportunity_id"] == previous["opportunity_id"]
     assert result["opportunity_id"].startswith("SELL|OPPORTUNITY_WATCH|")
+    assert result["opportunity_id"] != previous["opportunity_id"]
     assert result["event_id"] == current["event_id"]
+    assert result["origin_event_id"] == current["event_id"]
     assert result["bars_waited"] == 0
+    assert result["trade_authorized"] is False
