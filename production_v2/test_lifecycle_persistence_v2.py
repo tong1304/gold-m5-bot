@@ -33,7 +33,7 @@ def test_e7_confirming_persists_without_a_new_trigger():
         "direction": "SELL",
         "event_id": "evt-2",
         "origin_event_id": "evt-2",
-        "lifecycle_stage": "CONFIRMING",
+        "lifecycle_stage": "E7_CONFIRMED",
         "thesis_state": "VALIDATING",
         "e7_confirmation_state": "CONFIRMING",
     }
@@ -48,5 +48,5 @@ def test_e7_confirming_persists_without_a_new_trigger():
     }
     progressed = advance_lifecycle_stage(previous, current)
     assert progressed["opportunity_id"] == previous["opportunity_id"]
-    assert progressed["lifecycle_stage"] == "CONFIRMING"
+    assert progressed["lifecycle_stage"] == "E7_CONFIRMED"
     assert progressed["e7_confirmation_state"] == "CONFIRMING"
