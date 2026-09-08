@@ -105,7 +105,7 @@ def analyze_e1(bars):
     trend_confirmed=consensus and ema_ok and abs(ema_gap)>=0.10 and not ema_conflict and not structure_conflict and (strong_structure or persistence==1.0)
     transition_present=(not trend_confirmed) and ((ema_conflict and persistence>=1/3) or (structure_conflict and persistence>=1/3) or (horizon_conflict and _efficiency(closes,20)<0.45))
     trs=_true_ranges(valid);recent_atr=atr14;baseline_trs=trs[-64:-14];baseline_atr=mean(baseline_trs) if baseline_trs else recent_atr;atr_ratio=recent_atr/max(baseline_atr,1e-12);compression=atr_ratio<0.78;expansion=atr_ratio>1.10;efficiency10=_efficiency(closes,10);efficiency20=_efficiency(closes,20)
-    deltas=[closes[i]-closes[i-1] for i in range(1,len(closes))];prior_abs=mean(abs(x) for x in deltas[-6:-1]) if len(deltas)>=6 else 0.0;last_delta=deltas[-1] if deltas else 0.0;single_counter_candle=bool(len(deltas)>=2 and deltas[-2]*last_delta<0 and abs(last_delta)>1.5*max(prior_abs,1e-12))
+    deltas=[closes[i]-closes[i-1] for i in range(1,len(closes))];prior_mean=mean(deltas[-6:-1]) if len(deltas)>=6 else 0.0;prior_abs=mean(abs(x) for x in deltas[-6:-1]) if len(deltas)>=6 else 0.0;last_delta=deltas[-1] if deltas else 0.0;single_counter_candle=bool(prior_mean and last_delta and prior_mean*last_delta<0 and abs(last_delta)>1.5*max(prior_abs,1e-12))
     compression_regime=compression and efficiency20<0.35 and not trend_confirmed
     range_regime=efficiency20<0.35 and structure_state=="MIXED" and not trend_confirmed and not single_counter_candle and not compression_regime
     if compression_regime:market_state,final_direction,classification_reason="COMPRESSION","NEUTRAL","volatility_compression_with_low_directional_efficiency"
