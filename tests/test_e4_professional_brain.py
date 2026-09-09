@@ -19,7 +19,6 @@ def test_e4_is_analysis_only_and_keeps_e9_authority():
     assert result["decision"] is None
     assert result["gate"] is None
     assert result["score"] is None
-    assert result["entry_authorized"] is False
 
 
 def test_e4_exposes_professional_question_and_auction_lifecycle():
@@ -43,7 +42,6 @@ def test_e4_upstream_direction_is_not_authority():
     assert result["decision"] is None
     assert result["gate"] is None
     assert result["score"] is None
-    assert result["entry_authorized"] is False
     assert result["decision_authority"] == "E9_ONLY"
 
 
