@@ -88,7 +88,10 @@ def test_e7_cannot_confirm_an_e6_opportunity_watch_without_a_surviving_setup_the
     result = analyze_e7({"bars": bars, "symbol": "BTC/USD", "timeframe": "M5"}, upstream)
 
     assert result.output["confirmation"] == "DEVELOPING"
-    assert result.output["trigger_observed"] is False
+    # A trigger can be observed as evidence without becoming a valid confirmation.
+    # E7 must remain non-confirmed and non-authoritative until all setup-specific proof gates pass.
+    assert result.output["trigger_observed"] is True
     assert result.output["trigger_status"] != "CONFIRMED"
+    assert result.output["reason_codes"]
     assert "E7_DID_NOT_CREATE_THESIS" in result.output["reason_codes"]
     assert result.gate_passed is False
