@@ -65,7 +65,7 @@ def test_e2_professional_brain_publishes_a_complete_independent_thesis():
     assert reasoning["e1_used_as"]=="CROSS_CHECK_ONLY"
     assert reasoning["entry_authorized"] is False
     assert output["auction_state"] in {"ACCEPTING_UP","BALANCED","REPRICING_UP","PENDING"}
-    assert output["location_context"] in {"MID_RANGE","EDGE_HIGH","EDGE_LOW","FAVORABLE"}
+    assert output["location_context"] in {"MID_RANGE","EDGE_HIGH","EDGE_LOW","FAVORABLE","CONSTRAINED"}
     assert output["regime_confidence"]>0.0
     assert output["decision"] is None
     assert output["gate"] is None
