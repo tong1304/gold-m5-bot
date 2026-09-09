@@ -64,11 +64,21 @@ def test_e2_professional_brain_publishes_a_complete_independent_thesis():
     assert reasoning["independent_thesis"] is True
     assert reasoning["e1_used_as"]=="CROSS_CHECK_ONLY"
     assert reasoning["entry_authorized"] is False
-    assert output["auction_state"] in {"ACCEPTING_UP","BALANCED","REPRICING_UP"}
+    assert output["auction_state"] in {"ACCEPTING_UP","BALANCED","REPRICING_UP","PENDING"}
     assert output["location_context"] in {"MID_RANGE","EDGE_HIGH","EDGE_LOW","FAVORABLE"}
     assert output["regime_confidence"]>0.0
     assert output["decision"] is None
     assert output["gate"] is None
+
+def test_e2_pending_auction_cannot_authorize_entry():
+    output=_result(_uptrend_bars())
+    if output["auction_state"]=="PENDING":
+        assert output["professional_reasoning"]["entry_authorized"] is False
+        assert output["decision"] is None
+        assert output["entry"] is None
+        assert output["trigger"] is None
+        assert output.get("risk") is None
+        assert output["gate"] is None
 
 def test_e2_does_not_turn_old_ema_bias_into_a_false_trend_during_repricing():
     output=_result(_transition_bars())
