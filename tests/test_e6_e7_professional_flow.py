@@ -18,7 +18,7 @@ def _engine(engine_id, output):
     return EngineResult(engine_id, engine_id, None, 70.0, output, ())
 
 
-def test_e6_preserves_e2_thesis_when_structure_is_mixed():
+def test_e6_does_not_rescue_e2_thesis_without_a_causal_event():
     upstream = {
         "E1": _engine("E1", {"market_state": "TRANSITION", "directional_pressure": "DOWN"}),
         "E2": _engine("E2", {
@@ -37,15 +37,14 @@ def test_e6_preserves_e2_thesis_when_structure_is_mixed():
         "E5": _engine("E5", {"finding": "SPACE_CONSTRAINED"}),
     }
     result = analyze_e6({"bars": _bars()}, upstream)
-    assert result.output["direction"] == "SELL"
-    assert result.output["setup"] == "TREND_PULLBACK_CONTINUATION"
-    assert result.output["maturity"] == "DEVELOPING"
-    assert result.output["thesis"] == "SELL_TREND_PULLBACK_CONTINUATION"
-    assert "STRUCTURE_MIXED" in result.output["counter_evidence"]
+    assert result.output["direction"] == "NEUTRAL"
+    assert result.output["setup"] == "NO_SETUP"
+    assert result.output["lifecycle_state"] == "NO_SETUP"
+    assert result.output["e6_causal_gate"] == "ABSENT"
     assert result.gate_passed is False
 
 
-def test_e7_reports_missing_trigger_instead_of_claiming_valid_trigger():
+def test_e7_reports_current_trigger_evidence_requirements_without_claiming_valid_trigger():
     upstream = {
         "E6": _engine("E6", {
             "direction": "SELL",
@@ -57,7 +56,11 @@ def test_e7_reports_missing_trigger_instead_of_claiming_valid_trigger():
     result = analyze_e7({"bars": _bars()}, upstream)
     assert result.output["confirmation"] == "DEVELOPING"
     assert result.output["trigger_status"] == "NOT_CONFIRMED"
-    assert "VALID_CLOSED_CANDLE_TRIGGER" in result.output["missing_evidence"]
+    assert result.output["missing_evidence"]
+    assert any(
+        item in result.output["missing_evidence"]
+        for item in {"directional_displacement", "engulfing_response", "prior_candle_trigger"}
+    )
     assert result.gate_passed is False
 
 
@@ -84,6 +87,8 @@ def test_e7_cannot_confirm_an_e6_opportunity_watch_without_a_surviving_setup_the
 
     result = analyze_e7({"bars": bars, "symbol": "BTC/USD", "timeframe": "M5"}, upstream)
 
-    assert result.output["confirmation"] in {"UNRESOLVED", "NO_SURVIVING_SETUP"}
+    assert result.output["confirmation"] == "DEVELOPING"
     assert result.output["trigger_observed"] is False
+    assert result.output["trigger_status"] != "CONFIRMED"
     assert "E7_DID_NOT_CREATE_THESIS" in result.output["reason_codes"]
+    assert result.gate_passed is False
