@@ -22,12 +22,12 @@ def test_e1_to_e8_use_declared_evidence_dependencies_without_local_authority():
     assert pipeline_module.ENGINE_ORDER == tuple(expected)
     assert pipeline_module.EVIDENCE_INPUTS == expected
 
-    # The production architecture uses explicit specialist dependencies;
-    # the obsolete generic run_engine/evidence-bus API must not be required.
-    source = inspect.getsource(pipeline_module.ProductionPipeline.run)
+    # ProductionPipeline.run is wrapped by the pipeline's runtime decorator;
+    # unwrap it before inspecting the actual implementation contract.
+    source = inspect.getsource(inspect.unwrap(pipeline_module.ProductionPipeline.run))
     assert "run_engine(" not in source
     for engine_id in pipeline_module.ENGINE_ORDER:
-        assert f"analyze_{engine_id[1:].lower()}(" in source
+        assert f"analyze_{engine_id.lower()}(" in source
 
 
 def test_specialist_gate_is_not_a_boolean_authority():
