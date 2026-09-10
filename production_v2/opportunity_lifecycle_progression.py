@@ -5,6 +5,7 @@ from typing import Any
 STAGES = ("WATCH", "CONFIRMED", "E6_THESIS", "E7_CONFIRMED", "E8_READY", "TRADE")
 STAGE_RANK = {stage: index for index, stage in enumerate(STAGES)}
 TERMINAL_STAGES = {"TOO_LATE", "EXPIRED", "INVALIDATED", "REPLACED"}
+_PLACEHOLDERS = {"", "NONE", "UNKNOWN", "NO_SETUP", "NO_PLAUSIBLE_SETUP", "UNRESOLVED", "NOT_APPLICABLE", "PENDING"}
 
 
 def _text(value: Any) -> str:
@@ -13,6 +14,11 @@ def _text(value: Any) -> str:
 
 def _truth(value: Any) -> bool:
     return _text(value) in {"1", "TRUE", "YES", "PASS", "PASSED", "CONFIRMED", "READY", "TRADE"} if isinstance(value, str) else bool(value)
+
+
+def _meaningful(value: Any) -> str:
+    value = _text(value)
+    return "" if value in _PLACEHOLDERS else value
 
 
 def _requested_stage(current: dict[str, Any]) -> str:
@@ -104,6 +110,28 @@ def _timing_fields(current: dict[str, Any]) -> dict[str, Any]:
     return {"opportunity_phase": phase, "opportunity_speed": speed, "confirmation_window": confirmation_window, "wait_for": wait_for, "chase_prohibited": chase_prohibited}
 
 
+def _persist_evidence(result: dict[str, Any], previous: dict[str, Any], current: dict[str, Any]) -> None:
+    """Carry live E6/E7 evidence forward unless explicitly invalidated or replaced."""
+    previous_thesis = _meaningful(previous.get("thesis_state") or previous.get("e6_thesis_state"))
+    current_thesis = _meaningful(current.get("thesis_state") or current.get("e6_thesis_state"))
+    if previous_thesis and not current_thesis:
+        result["thesis_state"] = previous_thesis
+    elif current_thesis:
+        result["thesis_state"] = current_thesis
+
+    prior_missing = [str(x).strip() for x in (previous.get("missing_proof") or previous.get("missing_evidence") or []) if str(x).strip()]
+    current_missing = [str(x).strip() for x in (current.get("missing_proof") or current.get("missing_evidence") or []) if str(x).strip()]
+    if prior_missing and not _truth(current.get("invalidated")):
+        result["missing_proof"] = list(dict.fromkeys(prior_missing + current_missing))
+
+    prior_e7 = _meaningful(previous.get("e7_confirmation_state") or previous.get("confirmation_state"))
+    current_e7 = _meaningful(current.get("e7_confirmation_state") or current.get("confirmation_state"))
+    if prior_e7 in {"CONFIRMING", "DEVELOPING"} and current_e7 not in {"CONFIRMED", "PROVEN", "VALIDATED", "TRADE_READY", "INVALIDATED"}:
+        result["e7_confirmation_state"] = prior_e7
+    elif current_e7:
+        result["e7_confirmation_state"] = current_e7
+
+
 def advance_lifecycle_stage(previous: dict[str, Any] | None, current: dict[str, Any] | None) -> dict[str, Any]:
     previous = dict(previous or {}); current = dict(current or {}); requested = _requested_stage(current); previous_stage = _text(previous.get("lifecycle_stage")) or "IDLE"
     if requested in TERMINAL_STAGES: return _terminal_result(previous, requested, current)
@@ -126,6 +154,7 @@ def advance_lifecycle_stage(previous: dict[str, Any] | None, current: dict[str, 
     identity = _identity(previous, current); new_identity = bool(identity and identity != str(previous.get("opportunity_id") or "").strip())
     result = {**previous, "opportunity_id": identity, "lifecycle_stage": stage, "last_evaluated_candle": current.get("candle") or previous.get("last_evaluated_candle"), "trade_authorized": stage == "TRADE", "terminal_stage": None, "terminal_reason": None, "direction": _text(current.get("direction")) or previous.get("direction")}
     result = _with_event(result, current, new_identity=new_identity)
+    _persist_evidence(result, previous, current)
     timing = _timing_fields(current)
     result.update({key: value for key, value in timing.items() if value not in (None, "")})
     if stage == "WATCH":

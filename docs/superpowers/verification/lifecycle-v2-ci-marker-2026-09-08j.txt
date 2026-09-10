@@ -1,0 +1,1 @@
+Trigger full CI after E1 counter-candle persistence fix.

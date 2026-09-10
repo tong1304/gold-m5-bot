@@ -76,23 +76,17 @@ def _direction(output: dict[str, Any]) -> str:
 
 
 def _age_bars(output: dict[str, Any]) -> int:
-    """Use the causal event clock first; never let a stale E4 age override it.
-
-    When both event and current candle timestamps are present, age is derived
-    from the canonical five-minute candle clock. The explicit numeric age is
-    only a fallback for legacy callers that do not provide timestamps.
-    """
+    """Use the causal event clock first; never let a stale E4 age override it."""
     anchor = output.get("causal_event_anchor")
     if isinstance(anchor, dict):
         event_ts = _parse_time(anchor.get("event_candle") or anchor.get("event_timestamp"))
         current_ts = _parse_time(anchor.get("last_evaluated_candle") or anchor.get("current_candle"))
         if event_ts is not None and current_ts is not None and current_ts >= event_ts:
             return max(0, int((current_ts - event_ts).total_seconds() // 300))
-        for value in (anchor.get("age_bars"),):
-            try:
-                return max(0, int(value))
-            except (TypeError, ValueError):
-                pass
+        try:
+            return max(0, int(anchor.get("age_bars")))
+        except (TypeError, ValueError):
+            pass
     for value in (output.get("event_age_bars"), output.get("bars_waited")):
         try:
             return max(0, int(value))
@@ -126,6 +120,36 @@ def _directional_space(output: dict[str, Any], direction: str) -> float:
     return 0.0
 
 
+def _execution_zone(output: dict[str, Any]) -> tuple[float | None, float | None]:
+    for key in ("execution_zone", "entry_zone", "valid_execution_zone"):
+        zone = output.get(key)
+        if isinstance(zone, dict):
+            low = _num(zone, "low", "min", "lower", "entry_low")
+            high = _num(zone, "high", "max", "upper", "entry_high")
+            if low is not None and high is not None and low <= high:
+                return low, high
+    return None, None
+
+
+def _zone_timing(output: dict[str, Any], direction: str, price: float | None, atr: float | None) -> tuple[bool | None, float | None, bool]:
+    low, high = _execution_zone(output)
+    if price is None or low is None or high is None:
+        return None, None, False
+    inside = low <= price <= high
+    if inside:
+        return True, 0.0, False
+    if direction == "BUY":
+        displacement = (price - high) / atr if atr and atr > 0 else None
+        adverse = price > high
+    elif direction == "SELL":
+        displacement = (low - price) / atr if atr and atr > 0 else None
+        adverse = price < low
+    else:
+        displacement = None
+        adverse = False
+    return False, displacement, bool(adverse)
+
+
 def classify_opportunity_timing(output: dict[str, Any]) -> dict[str, Any]:
     out = dict(output or {})
     direction = _direction(out)
@@ -143,13 +167,14 @@ def classify_opportunity_timing(output: dict[str, Any]) -> dict[str, Any]:
     price = _num(out, "price", "current_price", "last_price")
     event_atr = _num(out, "event_atr_frozen", "event_atr", "atr")
     displacement_atr = abs(price - event_level) / event_atr if event_level is not None and price is not None and event_atr and event_atr > 0 else None
-    late_by_age = age >= 2
-    # Displacement is a valid late signal only after at least one completed
-    # candle has elapsed. A same-candle event is still actionable evidence;
-    # this prevents a stale/incorrect displacement clock from converting age=0
-    # into a no-chase state.
+    in_zone, zone_displacement_atr, adverse_zone_move = _zone_timing(out, direction, price, event_atr)
+    # Age is only a decay signal when the price is no longer inside a valid
+    # execution zone. A mature opportunity can remain active for many candles
+    # if price is still offering the intended entry location.
+    late_by_age = age >= 2 and in_zone is not True
     late_by_displacement = age >= 1 and displacement_atr is not None and displacement_atr >= LATE_DISPLACEMENT_ATR
-    late = late_by_age or late_by_displacement
+    late_by_execution_zone = bool(adverse_zone_move and zone_displacement_atr is not None and zone_displacement_atr >= LATE_DISPLACEMENT_ATR)
+    late = late_by_age or late_by_displacement or late_by_execution_zone
     if direction not in DIRECTIONS:
         phase, speed, reasons = NEUTRAL, STANDARD, ["NO_DIRECTIONAL_EVIDENCE"]
     elif hard_block:
@@ -163,6 +188,8 @@ def classify_opportunity_timing(output: dict[str, Any]) -> dict[str, Any]:
             reasons.append("EVENT_AGE_REACHED_LATE_WINDOW")
         if late_by_displacement:
             reasons.append("PRICE_DISPLACEMENT_REACHED_LATE_WINDOW")
+        if late_by_execution_zone:
+            reasons.append("PRICE_LEFT_VALID_EXECUTION_ZONE")
         if confirmed:
             reasons.append("CONFIRMED_BUT_ENTRY_WINDOW_IS_LATE")
     elif strong_event and confidence >= FAST_MIN_QUALITY and space >= FAST_MIN_SPACE_ATR:
@@ -184,6 +211,10 @@ def classify_opportunity_timing(output: dict[str, Any]) -> dict[str, Any]:
         "evidence_quality": round(confidence, 2),
         "available_space_atr": round(space, 4),
         "displacement_atr": round(displacement_atr, 4) if displacement_atr is not None else None,
+        "execution_zone": {"low": _execution_zone(out)[0], "high": _execution_zone(out)[1]},
+        "in_execution_zone": in_zone,
+        "zone_displacement_atr": round(zone_displacement_atr, 4) if zone_displacement_atr is not None else None,
+        "late_by_execution_zone": late_by_execution_zone,
         "confirmed": confirmed,
         "late_by_age": late_by_age,
         "late_by_displacement": late_by_displacement,

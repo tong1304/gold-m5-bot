@@ -22,6 +22,8 @@ def test_e9_watch_waits_for_setup_proof_before_e7_trigger():
             "thesis_state": "HYPOTHESIS",
             "finding": "SELL opportunity is being watched; causal setup is not yet proven.",
             "missing_proof": ["E4_AUCTION_FOLLOW_THROUGH", "E3_INTERNAL_STRUCTURE_ALIGNMENT"],
+            "opportunity_id": "SELL|EVENT-A",
+            "event_id": "EVENT-A",
         }),
         "E7": _engine("E7", {"confirmation_state": "NOT_APPLICABLE", "reason_codes": ["CONFIRMATION_NOT_APPLICABLE"]}),
         "E8": _engine("E8", {"finding": "NOT_APPLICABLE", "applicability": "NOT_APPLICABLE_WITHOUT_SURVIVING_E6_THESIS"}),
@@ -30,6 +32,13 @@ def test_e9_watch_waits_for_setup_proof_before_e7_trigger():
     result = analyze_e9({}, upstream)
 
     assert result.output["decision"] == "NO_TRADE"
+    assert result.output["decision_semantics"] == "WAIT"
+    assert result.output["pipeline_decision"] == "WAIT"
+    assert result.output["live_opportunity"] is True
+    assert result.output["opportunity_id"] == "SELL|EVENT-A"
+    assert result.output["event_id"] == "EVENT-A"
+    assert result.output["direction"] == "SELL"
+    assert result.output["setup"] == "OPPORTUNITY_WATCH"
     assert result.output["governance_decision"] == "WATCH"
     assert "E7_VALID_CLOSED_CANDLE_TRIGGER_REQUIRED" not in result.output["next_required_events"]
     assert "E6_SETUP_THESIS_REQUIRED" in result.output["next_required_events"]

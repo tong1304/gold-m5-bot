@@ -1,0 +1,1 @@
+CI verification marker for Opportunity Lifecycle V2 compatibility fix.

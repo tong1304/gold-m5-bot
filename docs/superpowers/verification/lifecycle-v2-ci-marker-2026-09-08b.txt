@@ -1,0 +1,1 @@
+Trigger CI after lifecycle compatibility state binding fix.

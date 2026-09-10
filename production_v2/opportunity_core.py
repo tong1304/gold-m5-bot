@@ -12,10 +12,17 @@ from typing import Any
 
 from .opportunity_state_machine import VALID_STAGES
 
+_PLACEHOLDER = {"", "NONE", "UNKNOWN", "NO_SETUP", "NO_PLAUSIBLE_SETUP", "UNRESOLVED"}
+
 
 def _text(value: Any, default: str = "") -> str:
     text = str(value if value is not None else default).strip()
     return text.upper() if text else default
+
+
+def _meaningful(value: Any) -> str:
+    text = _text(value)
+    return "" if text in _PLACEHOLDER else text
 
 
 def canonical_stage(lifecycle: dict[str, Any] | None, *, e9_decision: str | None = None) -> str:
@@ -75,12 +82,25 @@ class OpportunityRecord:
     ) -> "OpportunityRecord":
         data = dict(lifecycle or {})
         stage = canonical_stage(data, e9_decision=e9_decision)
-        thesis = _text(data.get("thesis_state"))
+
+        # Compatibility dictionaries frequently carry placeholders from a
+        # downstream brain. Never let those placeholders erase meaningful
+        # lifecycle evidence already present in the same record.
+        thesis = _meaningful(data.get("thesis_state"))
+        if not thesis:
+            for key in ("thesis_lifecycle", "maturity", "setup_state", "opportunity_stage"):
+                thesis = _meaningful(data.get(key))
+                if thesis:
+                    break
         if not thesis:
             thesis = "PROVEN" if bool(data.get("thesis_proven") or data.get("e6_thesis_proven")) else (
                 "INVALIDATED" if stage == "INVALIDATED" else "PENDING"
             )
-        confirmation = _text(data.get("confirmation_state") or data.get("e7_confirmation_state"), "PENDING")
+
+        confirmation = _meaningful(data.get("confirmation_state"))
+        if not confirmation:
+            confirmation = _meaningful(data.get("e7_confirmation_state")) or "PENDING"
+
         zone = data.get("execution_zone")
         if not isinstance(zone, dict):
             zone = data.get("entry_zone") if isinstance(data.get("entry_zone"), dict) else {}
@@ -99,12 +119,21 @@ class OpportunityRecord:
         anchor = data.get("causal_event_anchor")
         if not isinstance(anchor, dict):
             anchor = {}
+
+        setup = _meaningful(data.get("setup"))
+        if not setup:
+            for key in ("candidate_setup", "setup_family", "setup_type", "thesis_setup", "selected_hypothesis"):
+                setup = _meaningful(data.get(key))
+                if setup:
+                    break
+        setup = setup or "UNKNOWN"
+
         return cls(
             opportunity_id=data.get("opportunity_id"),
             symbol=_text(symbol, "UNKNOWN"),
             timeframe=_text(timeframe, "M5"),
             direction=_text(data.get("direction"), "NEUTRAL"),
-            setup=_text(data.get("setup"), "UNKNOWN"),
+            setup=setup,
             event_anchor=dict(anchor),
             origin_candle=data.get("origin_candle"),
             last_evaluated_candle=data.get("last_evaluated_candle"),
