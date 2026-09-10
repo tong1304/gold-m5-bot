@@ -1,51 +1,33 @@
 from __future__ import annotations
 
-from production_v2.contracts import EngineResult
+import inspect
+
 from production_v2 import pipeline as pipeline_module
 from production_v2.nine_brain_surgery import harden_engine
 
 
-def test_e1_to_e8_share_observations_without_sequential_decision_flow(monkeypatch):
-    calls: list[tuple[str, tuple[str, ...], bool, bool]] = []
+def test_e1_to_e8_use_declared_evidence_dependencies_without_local_authority():
+    expected = {
+        "E1": (),
+        "E2": ("E1",),
+        "E3": (),
+        "E4": ("E1", "E3"),
+        "E5": ("E1", "E3", "E4"),
+        "E6": ("E1", "E2", "E3", "E4", "E5"),
+        "E7": ("E4", "E6"),
+        "E8": ("E5", "E6", "E7"),
+        "E9": ("E1", "E2", "E3", "E4", "E5", "E6", "E7", "E8"),
+    }
 
-    def fake_run_engine(engine_id, snapshot, evidence_bus=None):
-        evidence_bus = evidence_bus or {}
-        calls.append(
-            (
-                engine_id,
-                tuple(sorted(evidence_bus)),
-                any(v.get("decision") is not None for v in evidence_bus.values() if isinstance(v, dict)),
-                any(v.get("gate") is not None for v in evidence_bus.values() if isinstance(v, dict)),
-            )
-        )
-        return EngineResult(
-            engine_id,
-            engine_id,
-            None,
-            80.0,
-            {"specialists": {f"{engine_id}A": {"output": {"state": "OBSERVED"}}}},
-            (),
-        )
+    assert pipeline_module.ENGINE_ORDER == tuple(expected)
+    assert pipeline_module.EVIDENCE_INPUTS == expected
 
-    def fake_e9(context, upstream, calibration=None):
-        return EngineResult("E9", "Master Decision Brain", False, 0.0, {"decision": "NO_TRADE", "trade_plan": {}}, ())
-
-    monkeypatch.setattr(pipeline_module, "run_engine", fake_run_engine)
-    monkeypatch.setattr(pipeline_module, "run_professional_e9", fake_e9)
-
-    result = pipeline_module.ProductionPipeline().run({"symbol": "GOLD", "timeframe": "M5", "bars": [{"close": 1.0}]})
-
-    assert result.decision == "NO_TRADE"
-    assert len(calls) == 16
-    first_pass = calls[:8]
-    second_pass = calls[8:]
-    assert {x[0] for x in first_pass} == set(pipeline_module.ENGINE_ORDER)
-    assert {x[0] for x in second_pass} == set(pipeline_module.ENGINE_ORDER)
-    assert all(received == () for _, received, _, _ in first_pass)
-    for engine_id, received, decisions, gates in second_pass:
-        assert set(received) == set(pipeline_module.ENGINE_ORDER) - {engine_id}
-        assert decisions is False
-        assert gates is False
+    # The production architecture uses explicit specialist dependencies;
+    # the obsolete generic run_engine/evidence-bus API must not be required.
+    source = inspect.getsource(pipeline_module.ProductionPipeline.run)
+    assert "run_engine(" not in source
+    for engine_id in pipeline_module.ENGINE_ORDER:
+        assert f"analyze_{engine_id[1:].lower()}(" in source
 
 
 def test_specialist_gate_is_not_a_boolean_authority():
