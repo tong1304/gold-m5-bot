@@ -14,7 +14,7 @@ def apply_opportunity_repricing(lifecycle: dict[str, Any], *, e4: dict[str, Any]
     e8 = dict(e8 or {})
     if _text(state.get("direction")) not in {"BUY", "SELL"}:
         return state
-    if _text(state.get("state")) in {"INVALIDATED", "EXPIRED", "REPLACED", "EXECUTED"}:
+    if _text(state.get("state")) in {"INVALIDATED", "EXPIRED", "REPLACED", "EXECUTED"} or _text(state.get("lifecycle_stage")) in {"INVALIDATED", "EXPIRED", "REPLACED", "EXECUTED", "TRADE"}:
         return state
     economic_stage = _text(e8.get("economic_stage"))
     reasons = {_text(item) for item in (e8.get("reason_codes") or e8.get("reasons") or [])}
@@ -28,6 +28,7 @@ def apply_opportunity_repricing(lifecycle: dict[str, Any], *, e4: dict[str, Any]
     space = e5.get("available_space_atr_long" if direction == "BUY" else "available_space_atr_short")
     updated = dict(state)
     updated.update({
+        "lifecycle_stage": "REPRICE_WAIT",
         "state": "REPRICE_WAIT",
         "lifecycle_state": "REPRICE_WAIT",
         "opportunity_phase": "REPRICE_WAIT",
