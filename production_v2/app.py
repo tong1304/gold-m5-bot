@@ -13,7 +13,9 @@ from .e4_event_lifecycle_surgery import install as install_e4_event_lifecycle_su
 from .e6_pending_event_surgery import install as install_e6_pending_event_surgery
 from .runtime_compatibility import install as install_runtime_compatibility, fingerprint as runtime_fingerprint
 from .execution_geometry_surgery import install as install_execution_geometry
+from .e8_early_opportunity_surgery import install as install_e8_early_opportunity
 from .opportunity_lifecycle_progression_surgery import install as install_opportunity_lifecycle_progression
+from .opportunity_state_reconciliation import install as install_opportunity_state_reconciliation
 from .brain_handoff import attach_result_chain
 from .professional_opportunity_surgery import enrich_decision
 from .opportunity_intelligence import build_opportunity_intelligence
@@ -33,7 +35,9 @@ install_bootstrap_surgery(pipeline_module)
 install_e4_event_lifecycle_surgery(pipeline_module)
 install_e6_pending_event_surgery(pipeline_module)
 install_execution_geometry(pipeline_module)
+install_e8_early_opportunity(pipeline_module)
 install_opportunity_lifecycle_progression(pipeline_module)
+install_opportunity_state_reconciliation(pipeline_module)
 pipeline = ProductionPipeline()
 app.config["PRODUCTION_V2_LIVE_REQUIRED"] = True
 _runtime_started = False
@@ -79,8 +83,6 @@ def _connect_brains(result):
         )
         risk["wait_bars"] = int(lifecycle.get("bars_waited", 0) or 0)
 
-    # Opportunity intelligence is observational and ranking-only. It must
-    # never bypass E8 risk controls or E9 final authority.
     try:
         intelligence = build_opportunity_intelligence(
             {engine.engine_id: engine for engine in result.engines},
@@ -156,6 +158,8 @@ def index():
             "opportunity_lifecycle_progression": True,
             "opportunity_intelligence": "OPPORTUNITY_FIRST_V1",
             "opportunity_execution_boundary": "PREPARE_ONLY_V1",
+            "e8_early_opportunity_screen": "EARLY_ECONOMICS_SCREEN_ONLY",
+            "opportunity_state_reconciliation": "STALE_STAGE_REPAIR_V1",
         }
     )
 
@@ -180,6 +184,8 @@ def health():
             "opportunity_lifecycle_progression": True,
             "opportunity_intelligence": "OPPORTUNITY_FIRST_V1",
             "opportunity_execution_boundary": "PREPARE_ONLY_V1",
+            "e8_early_opportunity_screen": "EARLY_ECONOMICS_SCREEN_ONLY",
+            "opportunity_state_reconciliation": "STALE_STAGE_REPAIR_V1",
         }
     ), (200 if _runtime_started else 503)
 
