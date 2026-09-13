@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
-STAGES = ("WATCH", "CONFIRMED", "E6_THESIS", "E7_CONFIRMED", "E8_READY", "TRADE")
+STAGES = ("WATCH", "REPRICE_WAIT", "CONFIRMED", "E6_THESIS", "E7_CONFIRMED", "E8_READY", "TRADE")
 STAGE_RANK = {stage: index for index, stage in enumerate(STAGES)}
 TERMINAL_STAGES = {"TOO_LATE", "EXPIRED", "INVALIDATED", "REPLACED"}
 
@@ -115,7 +115,11 @@ def advance_lifecycle_stage(previous: dict[str, Any] | None, current: dict[str, 
         identity = _identity(previous, current); new_identity = bool(identity and identity != str(previous.get("opportunity_id") or "").strip())
         result = {**previous, "opportunity_id": identity, "lifecycle_stage": previous_stage if previous_stage in STAGES else "IDLE", "trade_authorized": False, "last_evaluated_candle": current.get("candle") or previous.get("last_evaluated_candle")}
         result = _with_event(result, current, new_identity=new_identity)
-        if previous_stage in STAGES: result["wait_for_stage"] = STAGES[min(STAGE_RANK[previous_stage] + 1, len(STAGES) - 1)]; return _record_stage(result, previous_stage, current.get("candle"))
+        if previous_stage in STAGES:
+            result["wait_for_stage"] = {"REPRICE_WAIT": "NEXT_CLOSED_M5_CANDLE_REPRICE"}.get(previous_stage, STAGES[min(STAGE_RANK[previous_stage] + 1, len(STAGES) - 1)])
+            if previous_stage == "REPRICE_WAIT":
+                result.update(state="REPRICE_WAIT", lifecycle_state="REPRICE_WAIT", opportunity_phase="REPRICE_WAIT", reprice_required=True, trade_authorized=False)
+            return _record_stage(result, previous_stage, current.get("candle"))
         result["wait_for_stage"] = "WATCH"; return result
     if requested == "TRADE" and not (_truth(current.get("e8_ready")) and _truth(current.get("e9_trade"))): requested = "E8_READY"
     current_rank = STAGE_RANK.get(requested, -1); previous_rank = STAGE_RANK.get(previous_stage, -1)
@@ -130,6 +134,8 @@ def advance_lifecycle_stage(previous: dict[str, Any] | None, current: dict[str, 
     result.update({key: value for key, value in timing.items() if value not in (None, "")})
     if stage == "WATCH":
         result.update(wait_for_stage=timing.get("wait_for") or "CONFIRMED", state="WATCHING", opportunity_phase=timing.get("opportunity_phase") or "OPPORTUNITY_WATCH", execution_state="NONE")
+    elif stage == "REPRICE_WAIT":
+        result.update(wait_for_stage="NEXT_CLOSED_M5_CANDLE_REPRICE", wait_for="NEXT_CLOSED_M5_CANDLE_REPRICE", state="REPRICE_WAIT", lifecycle_state="REPRICE_WAIT", opportunity_phase="REPRICE_WAIT", execution_state="NONE", reprice_required=True, reprice_at_next_candle=True, trade_authorized=False)
     elif stage == "CONFIRMED": result.update(wait_for_stage="E6_THESIS", state="WAITING", opportunity_phase="CONFIRMED", execution_state="NONE")
     elif stage == "E6_THESIS": result.update(wait_for_stage="E7_CONFIRMED", state="WAITING", opportunity_phase="E6_THESIS", execution_state="NONE")
     elif stage == "E7_CONFIRMED": result.update(wait_for_stage="E8_READY", state="WAITING", opportunity_phase="E7_CONFIRMED", execution_state="NONE")
