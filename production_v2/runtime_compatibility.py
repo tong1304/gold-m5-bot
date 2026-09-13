@@ -1,37 +1,44 @@
 from __future__ import annotations
 
 import inspect
+from functools import wraps
 from typing import Any
 
 EXPECTED_MIN_POSITIONAL = 4
 LEGACY_SIGNATURE_ERROR = "takes 4 positional arguments but 5 were given"
 
 
-def install(pipeline_module: Any) -> None:
-    """Normalize the lifecycle call boundary across mixed runtime wrappers.
+def _signature_supports_anchor(fn: Any) -> bool:
+    """Inspect through compatibility/decorator layers when possible."""
+    current = fn
+    seen: set[int] = set()
+    while callable(current) and id(current) not in seen:
+        seen.add(id(current))
+        try:
+            signature = inspect.signature(current)
+            positional = [
+                p for p in signature.parameters.values()
+                if p.kind in (p.POSITIONAL_ONLY, p.POSITIONAL_OR_KEYWORD)
+            ]
+            if len(positional) >= 5:
+                return True
+        except (TypeError, ValueError):
+            pass
+        current = getattr(current, "__wrapped__", None)
+    return False
 
-    A previous compatibility wrapper (or another decorator) may expose *args,
-    making signature inspection report false support for causal_anchor even when
-    the wrapped legacy helper still accepts only four positional arguments.
-    Therefore the boundary first attempts the modern five-argument call and, for
-    the exact legacy arity error, retries with the original four-argument API.
-    """
+
+def install(pipeline_module: Any) -> None:
+    """Normalize the lifecycle call boundary without hiding the real signature."""
     if getattr(pipeline_module, "_RUNTIME_COMPATIBILITY_INSTALLED", False):
         return
     original = getattr(pipeline_module, "_directional_lifecycle_current", None)
     if not callable(original):
         return
 
-    try:
-        signature = inspect.signature(original)
-        positional = [
-            p for p in signature.parameters.values()
-            if p.kind in (p.POSITIONAL_ONLY, p.POSITIONAL_OR_KEYWORD)
-        ]
-        supports_anchor = len(positional) >= 5
-    except (TypeError, ValueError):
-        supports_anchor = False
+    supports_anchor = _signature_supports_anchor(original)
 
+    @wraps(original)
     def compatible(*args, **kwargs):
         try:
             return original(*args, **kwargs)
@@ -40,8 +47,10 @@ def install(pipeline_module: Any) -> None:
                 return original(*args[:EXPECTED_MIN_POSITIONAL])
             raise
 
-    compatible.__name__ = getattr(original, "__name__", "_directional_lifecycle_current")
-    compatible.__module__ = getattr(original, "__module__", __name__)
+    try:
+        compatible.__signature__ = inspect.signature(original)
+    except (TypeError, ValueError):
+        pass
     pipeline_module._directional_lifecycle_current = compatible
     pipeline_module._RUNTIME_LIFECYCLE_SUPPORTS_CAUSAL_ANCHOR = supports_anchor
     pipeline_module._RUNTIME_COMPATIBILITY_INSTALLED = True
