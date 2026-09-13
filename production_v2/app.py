@@ -16,6 +16,7 @@ from .execution_geometry_surgery import install as install_execution_geometry
 from .e8_early_opportunity_surgery import install as install_e8_early_opportunity
 from .opportunity_lifecycle_progression_surgery import install as install_opportunity_lifecycle_progression
 from .opportunity_state_reconciliation import install as install_opportunity_state_reconciliation
+from .opportunity_repricing_runtime import install as install_opportunity_repricing
 from .brain_handoff import attach_result_chain
 from .professional_opportunity_surgery import enrich_decision
 from .opportunity_intelligence import build_opportunity_intelligence
@@ -38,6 +39,7 @@ install_execution_geometry(pipeline_module)
 install_e8_early_opportunity(pipeline_module)
 install_opportunity_lifecycle_progression(pipeline_module)
 install_opportunity_state_reconciliation(pipeline_module)
+install_opportunity_repricing(pipeline_module)
 pipeline = ProductionPipeline()
 app.config["PRODUCTION_V2_LIVE_REQUIRED"] = True
 _runtime_started = False
@@ -130,7 +132,7 @@ def start_production_runtime():
         f"opportunity_memory_backend={opportunity_memory_backend()}; "
         f"records={len(_last_opportunity_lifecycle)}; "
         f"runtime={runtime_fingerprint(pipeline_module)}; "
-        f"lifecycle_progression=True; alert_delivery_boundary=True; execution_mode=MANUAL",
+        f"lifecycle_progression=True; repricing_continuation=True; alert_delivery_boundary=True; execution_mode=MANUAL",
         flush=True,
     )
 
@@ -160,6 +162,7 @@ def index():
             "opportunity_execution_boundary": "PREPARE_ONLY_V1",
             "e8_early_opportunity_screen": "EARLY_ECONOMICS_SCREEN_ONLY",
             "opportunity_state_reconciliation": "STALE_STAGE_REPAIR_V1",
+            "opportunity_repricing_continuation": "REPRICE_WAIT_V1",
         }
     )
 
@@ -186,6 +189,7 @@ def health():
             "opportunity_execution_boundary": "PREPARE_ONLY_V1",
             "e8_early_opportunity_screen": "EARLY_ECONOMICS_SCREEN_ONLY",
             "opportunity_state_reconciliation": "STALE_STAGE_REPAIR_V1",
+            "opportunity_repricing_continuation": "REPRICE_WAIT_V1",
         }
     ), (200 if _runtime_started else 503)
 
