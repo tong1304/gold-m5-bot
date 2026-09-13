@@ -16,6 +16,7 @@ from .execution_geometry_surgery import install as install_execution_geometry
 from .opportunity_lifecycle_progression_surgery import install as install_opportunity_lifecycle_progression
 from .brain_handoff import attach_result_chain
 from .professional_opportunity_surgery import enrich_decision
+from .opportunity_intelligence import build_opportunity_intelligence
 from .opportunity_memory import (
     load_all as load_opportunity_memory,
     backend as opportunity_memory_backend,
@@ -76,6 +77,18 @@ def _connect_brains(result):
             else None
         )
         risk["wait_bars"] = int(lifecycle.get("bars_waited", 0) or 0)
+
+    # Opportunity intelligence is observational and ranking-only. It must
+    # never bypass E8 risk controls or E9 final authority.
+    try:
+        intelligence = build_opportunity_intelligence(
+            {engine.engine_id: engine for engine in result.engines},
+            lifecycle if isinstance(lifecycle, dict) else None,
+        )
+        risk["opportunity_intelligence"] = intelligence
+    except Exception:
+        logger.exception("[PRODUCTION V2] opportunity intelligence synthesis failed")
+
     return result.__class__(
         result.symbol,
         result.timeframe,
@@ -140,6 +153,7 @@ def index():
             "opportunity_memory_error": opportunity_memory_last_error(),
             "runtime_fingerprint": runtime_fingerprint(pipeline_module),
             "opportunity_lifecycle_progression": True,
+            "opportunity_intelligence": "OPPORTUNITY_FIRST_V1",
         }
     )
 
@@ -162,6 +176,7 @@ def health():
             "opportunity_memory_error": opportunity_memory_last_error(),
             "runtime_fingerprint": runtime_fingerprint(pipeline_module),
             "opportunity_lifecycle_progression": True,
+            "opportunity_intelligence": "OPPORTUNITY_FIRST_V1",
         }
     ), (200 if _runtime_started else 503)
 
