@@ -5,10 +5,11 @@ from typing import Any
 
 from .contracts import DecisionResult, EngineResult
 from . import opportunity_memory
+from .opportunity_repricing_continuation import apply_opportunity_repricing
 
 logger = logging.getLogger(__name__)
 
-_STAGE_RANK = {"WATCH": 0, "CONFIRMED": 1, "E6_THESIS": 2, "E7_CONFIRMED": 3, "E8_READY": 4, "TRADE": 5}
+_STAGE_RANK = {"WATCH": 0, "REPRICE_WAIT": 1, "CONFIRMED": 2, "E6_THESIS": 3, "E7_CONFIRMED": 4, "E8_READY": 5, "TRADE": 6}
 
 
 def _text(value: Any) -> str:
@@ -72,6 +73,53 @@ def _bool_trade(lifecycle: dict[str, Any]) -> bool:
     return bool(lifecycle.get("trade_authorized")) or _text(lifecycle.get("lifecycle_stage")) == "TRADE"
 
 
+def _apply_reprice_result(result: DecisionResult, lifecycle: dict[str, Any], candle: Any) -> DecisionResult:
+    engines = []
+    for engine in result.engines:
+        if engine.engine_id != "E9":
+            engines.append(engine)
+            continue
+        out = dict(engine.output or {})
+        out.update({
+            "opportunity_lifecycle": lifecycle,
+            "lifecycle_stage": "REPRICE_WAIT",
+            "lifecycle_state": "REPRICE_WAIT",
+            "state": "REPRICE_WAIT",
+            "wait_for": "NEXT_CLOSED_M5_CANDLE_REPRICE",
+            "continuation_state": "REPRICE_WAIT",
+            "economic_blockers_deferred": True,
+            "trade_authorized": False,
+            "candle": candle,
+        })
+        reasons = list(engine.reason_codes or ())
+        for code in ("OPPORTUNITY_REPRICE_WAIT", "ECONOMIC_BLOCKERS_DEFERRED"):
+            if code not in reasons:
+                reasons.append(code)
+        out["reason_codes"] = reasons
+        out["reason"] = "Opportunity remains alive; current economics are deferred for next-candle repricing."
+        engines.append(EngineResult(engine.engine_id, engine.name, False, engine.score, out, tuple(reasons)))
+    risk = dict(result.risk or {})
+    risk["opportunity_lifecycle"] = lifecycle
+    risk["opportunity_continuation"] = {
+        "state": "REPRICE_WAIT",
+        "lifecycle_stage": "REPRICE_WAIT",
+        "reprice_required": True,
+        "wait_for": "NEXT_CLOSED_M5_CANDLE_REPRICE",
+        "trade_authorized": False,
+        "economic_blockers_deferred": True,
+    }
+    risk["next_required_event"] = "NEXT_CLOSED_M5_CANDLE_REPRICE"
+    risk["trade_authorized"] = False
+    symbol = str(candle or "")
+    return DecisionResult(
+        result.symbol, result.timeframe, "NO_TRADE", False, result.score,
+        tuple(engines), risk,
+        tuple(dict.fromkeys(list(result.reason_codes) + ["OPPORTUNITY_REPRICE_WAIT", "ECONOMIC_BLOCKERS_DEFERRED"])),
+        "ANALYSIS_COMPLETE_NO_TRADE", result.blocked_by,
+        result.wait_bars, result.execution_state,
+    )
+
+
 def install(pipeline_module: Any) -> None:
     if getattr(pipeline_module, "_OPPORTUNITY_STATE_RECONCILIATION_INSTALLED", False):
         return
@@ -80,7 +128,24 @@ def install(pipeline_module: Any) -> None:
     def wrapped(self, market_data, *, wait_bars=0, resume_state=None, historical_calibration=None):
         result = original(self, market_data, wait_bars=wait_bars, resume_state=resume_state, historical_calibration=historical_calibration)
         lifecycle = result.risk.get("opportunity_lifecycle") if isinstance(result.risk, dict) else None
-        if not isinstance(lifecycle, dict) or not _needs_repair(lifecycle, result):
+        if not isinstance(lifecycle, dict):
+            return result
+
+        candle = market_data.get("candle_close_timestamp") or market_data.get("candle")
+        repriced = apply_opportunity_repricing(
+            lifecycle,
+            e4=_out(result, "E4"),
+            e5=_out(result, "E5"),
+            e8=_out(result, "E8"),
+        )
+        if _text(repriced.get("lifecycle_stage")) == "REPRICE_WAIT":
+            symbol = str(market_data.get("symbol") or market_data.get("asset") or result.symbol or "UNKNOWN").upper()
+            self._opportunity_lifecycle[symbol] = repriced
+            opportunity_memory.save(symbol, repriced)
+            logger.info("[PRODUCTION V2] OPPORTUNITY_REPRICE_WAIT symbol=%s candle=%s reason=%s", symbol, candle, repriced.get("reprice_reason"))
+            return _apply_reprice_result(result, repriced, candle)
+
+        if not _needs_repair(lifecycle, result):
             return result
 
         direction = _text(lifecycle.get("direction"))
@@ -88,7 +153,6 @@ def install(pipeline_module: Any) -> None:
         item = dict(opportunities.get(direction) or {}) if direction in {"BUY", "SELL"} else {}
         if not item:
             item = dict(lifecycle)
-        candle = market_data.get("candle_close_timestamp") or market_data.get("candle")
         repaired = _repair_item(item, candle=candle)
         if direction in {"BUY", "SELL"}:
             opportunities[direction] = repaired
@@ -142,4 +206,4 @@ def install(pipeline_module: Any) -> None:
 
     pipeline_module.ProductionPipeline.run = wrapped
     pipeline_module._OPPORTUNITY_STATE_RECONCILIATION_INSTALLED = True
-    print("[PRODUCTION V2] OPPORTUNITY_STATE_RECONCILIATION binding=STALE_STAGE_REPAIR", flush=True)
+    print("[PRODUCTION V2] OPPORTUNITY_STATE_RECONCILIATION binding=STALE_STAGE_REPAIR + REPRICE_WAIT", flush=True)
