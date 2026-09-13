@@ -28,6 +28,10 @@ def _direction(*values: Any) -> str:
             return "BUY"
         if text in {"SELL", "BEARISH", "DOWN", "SHORT", "SELLERS", "SELLER", "TREND_DOWN"} or text.startswith(("SELL ", "SELL_")):
             return "SELL"
+        if text.startswith(("UP ", "UP_")):
+            return "BUY"
+        if text.startswith(("DOWN ", "DOWN_")):
+            return "SELL"
     return "NEUTRAL"
 
 
@@ -53,6 +57,25 @@ def _event_strength(event: str) -> float:
         if token in event:
             score = max(score, float(points))
     return score
+
+
+def _event_direction(e4: dict[str, Any]) -> str:
+    return _direction(
+        e4.get("direction"),
+        e4.get("directional_implication"),
+        e4.get("response_actor"),
+        e4.get("response_direction"),
+    )
+
+
+def _causal_score(e4: dict[str, Any], event: str, direction: str) -> float:
+    strength = _event_strength(event)
+    if strength <= 0:
+        return 0.0
+    event_direction = _event_direction(e4)
+    if event_direction in DIRECTIONS:
+        return 25.0 if event_direction == direction else 0.0
+    return strength
 
 
 def _space(e5: dict[str, Any], direction: str) -> float:
@@ -87,7 +110,7 @@ def _pressure_score(e1: dict[str, Any], direction: str) -> float:
 
 
 def _regime_score(e1: dict[str, Any], e2: dict[str, Any], direction: str) -> float:
-    d = _direction(e2.get("direction") or e2.get("opportunity_direction"))
+    d = _direction(e2.get("direction") or e2.get("opportunity_direction") or e2.get("finding"))
     state = _text(e1.get("market_state") or e1.get("trend_state") or e1.get("state"))
     if d == direction:
         return 5.0
@@ -129,7 +152,7 @@ def build_opportunity_intelligence(results: dict[str, Any], previous: dict[str, 
         regime = _regime_score(e1, e2, direction)
         space = _space(e5, direction)
         space_score = min(10.0, max(0.0, space * 5.0))
-        causal = 25.0 if event_score > 0 and _direction(e4.get("direction"), e4.get("response_actor")) == direction else event_score
+        causal = _causal_score(e4, event, direction)
         score = min(100.0, round(causal + structure + pressure + location + regime + space_score, 2))
         if score < 40.0 and not (event_score and (structure or pressure or location)):
             continue
@@ -163,7 +186,7 @@ def build_opportunity_intelligence(results: dict[str, Any], previous: dict[str, 
     persistence = "NEW" if not leader or leader["event_id"] != previous_id else "PERSISTING"
     return {
         "architecture": "OPPORTUNITY_FIRST_PROFESSIONAL_TRADER_BRAIN",
-        "version": "1.0",
+        "version": "1.1",
         "authority": "NON_AUTHORITATIVE_UNTIL_E9",
         "principle": "INCOMPLETE_PROOF_IS_NOT_ABSENCE_OF_OPPORTUNITY",
         "candidates": candidates,
