@@ -4,6 +4,8 @@ from production_v2.contracts import DecisionResult, EngineResult
 from production_v2.e8_early_opportunity_surgery import install as install_e8_early
 from production_v2.opportunity_state_reconciliation import install as install_reconciliation
 from production_v2.opportunity_intelligence import build_opportunity_intelligence
+from production_v2.opportunity_repricing_continuation import apply_opportunity_repricing
+from production_v2.opportunity_lifecycle_progression import advance_lifecycle_stage
 
 
 def _engine(engine_id, output, gate=False):
@@ -117,3 +119,70 @@ def test_cross_direction_opportunity_intelligence_keeps_both_candidates():
     directions = {item["direction"] for item in intelligence["candidates"]}
     assert directions == {"BUY", "SELL"}
     assert intelligence["leader_direction"] == "SELL"
+
+
+def test_early_economics_defers_geometry_to_reprice_wait():
+    lifecycle = {
+        "lifecycle_stage": "WATCH",
+        "state": "WATCHING",
+        "direction": "BUY",
+        "opportunity_id": "BUY|OPPORTUNITY_WATCH|event-1",
+        "trade_authorized": False,
+    }
+    e4 = {"auction_state": "PENDING"}
+    e5 = {"available_space_atr_long": 0.89}
+    e8 = {
+        "economic_stage": "EARLY_OPPORTUNITY_SCREEN",
+        "trade_authorized": False,
+        "reason_codes": ["REAL_RR_BELOW_MINIMUM", "NO_USABLE_STRUCTURAL_TARGET"],
+    }
+    result = apply_opportunity_repricing(lifecycle, e4=e4, e5=e5, e8=e8)
+    assert result["lifecycle_stage"] == "REPRICE_WAIT"
+    assert result["state"] == "REPRICE_WAIT"
+    assert result["wait_for"] == "NEXT_CLOSED_M5_CANDLE_REPRICE"
+    assert result["reprice_required"] is True
+    assert result["trade_authorized"] is False
+    assert result["economic_blockers_deferred"] is True
+
+
+def test_terminal_lifecycle_is_never_repriced():
+    lifecycle = {"lifecycle_stage": "INVALIDATED", "state": "INVALIDATED", "direction": "BUY", "trade_authorized": False}
+    e8 = {"economic_stage": "EARLY_OPPORTUNITY_SCREEN", "reason_codes": ["REAL_RR_BELOW_MINIMUM"]}
+    result = apply_opportunity_repricing(lifecycle, e4={"auction_state": "PENDING"}, e8=e8)
+    assert result == lifecycle
+
+
+def test_reprice_wait_is_preserved_until_new_confirmation():
+    previous = {
+        "lifecycle_stage": "REPRICE_WAIT",
+        "state": "REPRICE_WAIT",
+        "direction": "BUY",
+        "opportunity_id": "BUY|OPPORTUNITY_WATCH|event-1",
+        "event_id": "event-1",
+        "reprice_required": True,
+    }
+    current = {"direction": "BUY", "event_id": "event-1", "candidate": True, "candle": "2026-09-14T00:05:00Z"}
+    result = advance_lifecycle_stage(previous, current)
+    assert result["lifecycle_stage"] == "REPRICE_WAIT"
+    assert result["trade_authorized"] is False
+
+
+def test_confirmed_auction_can_resume_normal_progression():
+    previous = {
+        "lifecycle_stage": "REPRICE_WAIT",
+        "state": "REPRICE_WAIT",
+        "direction": "BUY",
+        "opportunity_id": "BUY|OPPORTUNITY_WATCH|event-1",
+        "event_id": "event-1",
+    }
+    current = {
+        "direction": "BUY",
+        "event_id": "event-1",
+        "candidate": True,
+        "confirmed": True,
+        "e4_state": "CONFIRMED",
+        "candle": "2026-09-14T00:10:00Z",
+    }
+    result = advance_lifecycle_stage(previous, current)
+    assert result["lifecycle_stage"] == "CONFIRMED"
+    assert result["trade_authorized"] is False
