@@ -17,6 +17,7 @@ from .opportunity_lifecycle_progression_surgery import install as install_opport
 from .brain_handoff import attach_result_chain
 from .professional_opportunity_surgery import enrich_decision
 from .opportunity_intelligence import build_opportunity_intelligence
+from .opportunity_execution_boundary import apply_opportunity_execution_boundary
 from .opportunity_memory import (
     load_all as load_opportunity_memory,
     backend as opportunity_memory_backend,
@@ -154,6 +155,7 @@ def index():
             "runtime_fingerprint": runtime_fingerprint(pipeline_module),
             "opportunity_lifecycle_progression": True,
             "opportunity_intelligence": "OPPORTUNITY_FIRST_V1",
+            "opportunity_execution_boundary": "PREPARE_ONLY_V1",
         }
     )
 
@@ -177,6 +179,7 @@ def health():
             "runtime_fingerprint": runtime_fingerprint(pipeline_module),
             "opportunity_lifecycle_progression": True,
             "opportunity_intelligence": "OPPORTUNITY_FIRST_V1",
+            "opportunity_execution_boundary": "PREPARE_ONLY_V1",
         }
     ), (200 if _runtime_started else 503)
 
@@ -197,6 +200,7 @@ def signal():
         )
         result = _connect_brains(result)
         result = enrich_decision(result)
+        result = apply_opportunity_execution_boundary(result)
         price = market_data["bars"][-1]["close"] if market_data["bars"] else None
         store.record(result, price)
         return jsonify(result.as_dict())
