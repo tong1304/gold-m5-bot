@@ -1,0 +1,1 @@
+Trigger full CI after final E1 professional contract compatibility fix.

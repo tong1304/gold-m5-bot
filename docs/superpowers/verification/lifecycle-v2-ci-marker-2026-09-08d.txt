@@ -1,0 +1,1 @@
+Trigger native and full Opportunity Lifecycle V2 checks after E6 directional compatibility fix.

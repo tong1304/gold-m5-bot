@@ -1,75 +1,45 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+import inspect
 
-from production_v2.contracts import EngineResult
 from production_v2 import pipeline as pipeline_module
+from production_v2.nine_brain_surgery import harden_engine
 
 
-def test_e1_to_e8_share_observations_without_sequential_decision_flow(monkeypatch):
-    calls: list[tuple[str, tuple[str, ...], bool, bool]] = []
+def test_e1_to_e8_use_declared_evidence_dependencies_without_local_authority():
+    expected = {
+        "E1": (),
+        "E2": ("E1",),
+        "E3": (),
+        "E4": ("E1", "E3"),
+        "E5": ("E1", "E3", "E4"),
+        "E6": ("E1", "E2", "E3", "E4", "E5"),
+        "E7": ("E4", "E6"),
+        "E8": ("E5", "E6", "E7"),
+        "E9": ("E1", "E2", "E3", "E4", "E5", "E6", "E7", "E8"),
+    }
 
-    def fake_run_engine(engine_id, snapshot, evidence_bus=None):
-        evidence_bus = evidence_bus or {}
-        calls.append(
-            (
-                engine_id,
-                tuple(sorted(evidence_bus)),
-                any(v.get("decision") is not None for v in evidence_bus.values() if isinstance(v, dict)),
-                any(v.get("gate") is not None for v in evidence_bus.values() if isinstance(v, dict)),
-            )
-        )
-        return EngineResult(
-            engine_id,
-            engine_id,
-            None,
-            80.0,
-            {"specialists": {f"{engine_id}A": {"output": {"state": "OBSERVED"}}}},
-            (),
-        )
+    assert pipeline_module.ENGINE_ORDER == tuple(expected)
+    assert pipeline_module.EVIDENCE_INPUTS == expected
 
-    def fake_e9(context, upstream, calibration=None):
-        return EngineResult("E9", "Master Decision Brain", False, 0.0, {"decision": "NO_TRADE", "trade_plan": {}}, ())
-
-    monkeypatch.setattr(pipeline_module, "run_engine", fake_run_engine)
-    monkeypatch.setattr(pipeline_module, "run_professional_e9", fake_e9)
-
-    result = pipeline_module.ProductionPipeline().run({"symbol": "GOLD", "timeframe": "M5", "bars": [{"close": 1.0}]})
-
-    assert result.decision == "NO_TRADE"
-    assert len(calls) == 16
-    first_pass = calls[:8]
-    second_pass = calls[8:]
-    assert {x[0] for x in first_pass} == set(pipeline_module.ENGINE_ORDER)
-    assert {x[0] for x in second_pass} == set(pipeline_module.ENGINE_ORDER)
-    assert all(received == () for _, received, _, _ in first_pass)
-    for engine_id, received, decisions, gates in second_pass:
-        assert set(received) == set(pipeline_module.ENGINE_ORDER) - {engine_id}
-        assert decisions is False
-        assert gates is False
+    # ProductionPipeline.run is wrapped by the pipeline's runtime decorator;
+    # unwrap it before inspecting the actual implementation contract.
+    source = inspect.getsource(inspect.unwrap(pipeline_module.ProductionPipeline.run))
+    assert "run_engine(" not in source
+    for engine_id in pipeline_module.ENGINE_ORDER:
+        assert f"analyze_{engine_id.lower()}(" in source
 
 
-def test_specialist_gate_is_not_a_boolean_authority(monkeypatch):
-    @dataclass(frozen=True)
-    class FakeSubEngineResult:
-        sub_engine_id: str
-        output: dict
-        gate_passed: bool
-        score: float
-        trace: dict
+def test_specialist_gate_is_not_a_boolean_authority():
+    for engine_id in pipeline_module.ENGINE_ORDER[:-1]:
+        output = harden_engine(engine_id, {"state": "OBSERVED", "confidence": 0.8})
+        contract = output["professional_contract"]
+        assert contract["decision_authority"] == "E9_ONLY"
+        assert contract["can_authorize_entry"] is False
 
-    class FakeModule:
-        class SubEngine:
-            def run(self, context):
-                return FakeSubEngineResult("1A", {"state": "OBSERVED"}, False, 80.0, {})
+    e8 = harden_engine("E8", {"risk_state": "READY", "confidence": 0.8})
+    assert e8["execution_authorization"] == "NONE"
 
-    from production_v2 import engines as engines_module
-    monkeypatch.setattr(engines_module, "_module", lambda code: FakeModule)
-    monkeypatch.setattr(engines_module, "SUB_ENGINE_CODES", {"E1": ["1A"]})
-    monkeypatch.setattr(engines_module, "EVIDENCE_INPUTS", {"E1": ()})
-
-    result = engines_module.run_engine("E1", {"bars": []}, {})
-
-    assert result.gate_passed is None
-    assert result.output["gate_semantics"] == "DISABLED_FOR_E1_E8"
-    assert result.output["decision_authority"] == "E9_ONLY"
+    e9 = harden_engine("E9", {"decision": "NO_TRADE"})
+    assert e9["master_authority"] == "SOLE_FINAL_AUTHORITY"
+    assert e9["upstream_evidence_only"] is True

@@ -82,3 +82,17 @@ def test_e1_keeps_liquidity_analysis_out_of_market_state_ownership():
     evidence = out["professional_reasoning"]["independent_evidence"]
     assert "liquidity_event" not in evidence
     assert "liquidity" not in out["professional_reasoning"]["ownership_boundaries"]
+
+
+def test_e1_coherent_slow_downtrend_survives_noisy_short_pullback():
+    closes = [100.0]
+    for _ in range(65):
+        closes.append(closes[-1] - 0.30)
+    for _ in range(10):
+        closes.append(closes[-1] - 0.25)
+    for _ in range(5):
+        closes.append(closes[-1] + 0.15)
+    out = analyze_e1(_bars_from_closes(closes, spread=0.08))
+    assert out["directional_pressure"] == "BEARISH"
+    assert out["professional_reasoning"]["directional_consensus"]["medium"] == "DOWN"
+    assert out["professional_reasoning"]["directional_consensus"]["long"] == "DOWN"

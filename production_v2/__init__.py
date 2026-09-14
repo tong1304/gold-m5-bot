@@ -133,4 +133,52 @@ if not getattr(_pipeline_module,"_LIFECYCLE_SOURCE_METADATA",False):
         return current,leader,competition
     _pipeline_module._directional_lifecycle_current=_directional_lifecycle_current_with_source; _pipeline_module._LIFECYCLE_SOURCE_METADATA=True
 
+if not getattr(_opportunity_lifecycle_module, "_LIFECYCLE_RESULT_COMPAT_V2", False):
+    _opportunity_lifecycle_original = _opportunity_lifecycle_module.advance_opportunity
+    _LIFECYCLE_TIMING_FIELDS = ("opportunity_phase", "opportunity_speed", "confirmation_window", "chase_prohibited")
+    _THESIS_PROMOTION_STATES = {"VALIDATING", "VALIDATED", "CONFIRMED"}
+
+    def _advance_opportunity_compat(previous, current):
+        result = dict(_opportunity_lifecycle_original(previous, current))
+        current = dict(current or {})
+        previous = dict(previous or {})
+
+        # Timing is descriptive state produced by the timing membrane. Preserve it
+        # through the lifecycle boundary; it must never authorize a trade.
+        for key in _LIFECYCLE_TIMING_FIELDS:
+            if key in current:
+                result[key] = current[key]
+        if "wait_for" in current and current.get("wait_for"):
+            result["wait_for"] = current["wait_for"]
+        if "trade_authorized" in current:
+            result["trade_authorized"] = bool(result.get("trade_authorized", False)) and bool(current["trade_authorized"])
+        else:
+            result["trade_authorized"] = False
+
+        # A concrete E6 setup with a validating/validated thesis is a promotion of
+        # the same pending opportunity, not a reset to upstream WATCHING. This is a
+        # lifecycle compatibility boundary only; E9 still owns trade authorization.
+        previous_state = str(previous.get("state") or "").upper().strip()
+        current_setup = str(current.get("setup") or current.get("setup_family") or "").upper().strip()
+        current_thesis = str(current.get("thesis_status") or "").upper().strip()
+        concrete_setup = current_setup not in {"", "OPPORTUNITY_WATCH", "AUCTION_WATCH", "REGIME_WATCH", "UNKNOWN", "NONE", "NO_SETUP"}
+        if (previous_state in ACTIVE_STATES and result.get("state") == "WATCHING" and bool(current.get("candidate")) and concrete_setup and current_thesis in _THESIS_PROMOTION_STATES):
+            result.update({
+                "state": "WAITING",
+                "lifecycle_state": "TRIGGER_PENDING",
+                "opportunity_phase": "TRIGGER_PENDING",
+                "canonical_stage": "THESIS",
+                "direction": str(current.get("direction") or previous.get("direction") or "").upper().strip(),
+                "setup": current_setup,
+                "opportunity_id": result.get("opportunity_id") or previous.get("opportunity_id"),
+                "bars_waited": result.get("bars_waited", 0),
+                "trade_authorized": False,
+                "wait_for": current.get("wait_for") or "E7_SETUP_SPECIFIC_CLOSED_CANDLE_CONFIRMATION",
+                "continuity": "PROMOTED_PENDING_OPPORTUNITY",
+            })
+        return result
+
+    _opportunity_lifecycle_module.advance_opportunity = _advance_opportunity_compat
+    _opportunity_lifecycle_module._LIFECYCLE_RESULT_COMPAT_V2 = True
+
 __all__=["ProductionPipeline"]

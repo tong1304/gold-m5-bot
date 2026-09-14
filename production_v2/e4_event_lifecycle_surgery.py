@@ -261,7 +261,10 @@ def install_enrichment_hook(pipeline_module: Any) -> None:
         return _repair_result(enriched, snapshot)
     pipeline_module._enrich = patched_enrich
     pipeline_module._E4_EVENT_LIFECYCLE_ENRICHMENT_HOOK_INSTALLED = True
-    print(f"[PRODUCTION V2] E4_ENRICHMENT_HOOK version={VERSION} module={pipeline_module.__name__} enrich={pipeline_module._enrich.__module__}.{pipeline_module._enrich.__name__}", flush=True)
+    module_name = getattr(pipeline_module, "__name__", pipeline_module.__class__.__name__)
+    enrich_module = getattr(pipeline_module._enrich, "__module__", pipeline_module.__class__.__name__)
+    enrich_name = getattr(pipeline_module._enrich, "__name__", pipeline_module._enrich.__class__.__name__)
+    print(f"[PRODUCTION V2] E4_ENRICHMENT_HOOK version={VERSION} module={module_name} enrich={enrich_module}.{enrich_name}", flush=True)
 
 
 def install(pipeline_module: Any) -> None:
@@ -273,4 +276,7 @@ def install(pipeline_module: Any) -> None:
     pipeline_module.analyze_e4 = patched_analyze_e4
     pipeline_module._E4_EVENT_LIFECYCLE_SURGERY_INSTALLED = True
     install_enrichment_hook(pipeline_module)
-    print(f"[PRODUCTION V2] E4_BINDING version={VERSION} module={pipeline_module.__name__} analyze={pipeline_module.analyze_e4.__module__}.{pipeline_module.analyze_e4.__name__}", flush=True)
+    module_name = getattr(pipeline_module, "__name__", pipeline_module.__class__.__name__)
+    analyze_module = getattr(pipeline_module.analyze_e4, "__module__", pipeline_module.__class__.__name__)
+    analyze_name = getattr(pipeline_module.analyze_e4, "__name__", pipeline_module.analyze_e4.__class__.__name__)
+    print(f"[PRODUCTION V2] E4_BINDING version={VERSION} module={module_name} analyze={analyze_module}.{analyze_name}", flush=True)

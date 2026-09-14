@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from typing import Any
+import sys
 
 from .opportunity_core import OpportunityRecord
 
@@ -38,6 +39,14 @@ def _canonical(result: dict[str, Any], previous: dict[str, Any], current: dict[s
 def install(lifecycle_module: Any, pipeline_module: Any | None = None) -> None:
     if getattr(lifecycle_module, "_CONTRACT_SURGERY_INSTALLED", False):
         return
+
+    # The legacy result-compatibility membrane in package __init__ references
+    # ACTIVE_STATES from its own module globals. Publish the canonical lifecycle
+    # constant there so that compatibility code and the lifecycle module share
+    # exactly one state definition; this is not a second authority.
+    package_module = sys.modules.get(getattr(lifecycle_module, "__package__", ""))
+    if package_module is not None:
+        package_module.ACTIVE_STATES = ACTIVE_STATES
 
     original_advance = lifecycle_module.advance_opportunity
 

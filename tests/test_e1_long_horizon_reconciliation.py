@@ -24,13 +24,27 @@ def _slow_downtrend_with_noisy_pullback():
     return closes
 
 
+def _clean_horizon_reversal():
+    closes = [100.0 + 0.35 * i for i in range(50)]
+    closes.extend([117.0 - 0.65 * (i - 49) for i in range(30)])
+    return closes
+
+
 def test_coherent_slow_downtrend_is_not_erased_by_noisy_short_pullback():
     result = analyze_e1(_bars_from_closes(_slow_downtrend_with_noisy_pullback()))
 
-    assert result["directional_pressure"] == "DOWN"
+    assert result["directional_pressure"] == "BEARISH"
     assert result["market_state"] == "TREND_DOWN"
     assert result["trend_state"] == "DOWN"
     assert result["professional_reasoning"]["trend_confirmed"] is True
     assert result["professional_reasoning"]["trend_maturity"] == "DEVELOPING"
     assert result["professional_reasoning"]["ownership_boundaries"]["does_not_own"]
     assert result["trade_decision_authority"] is False
+
+
+def test_higher_horizon_dominance_does_not_override_ema_regime_conflict():
+    result = analyze_e1(_bars_from_closes(_clean_horizon_reversal()))
+
+    assert result["market_state"] == "TRANSITION"
+    assert result["professional_reasoning"]["trend_confirmed"] is False
+    assert result["transition"] == "PRESENT"

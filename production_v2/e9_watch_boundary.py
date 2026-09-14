@@ -68,15 +68,18 @@ def _watch_result(direction: str, setup: str, e6: dict[str, Any]) -> EngineResul
         if early_candidate else
         f"{direction} opportunity watch is active; E6 thesis proof is not complete. E7 confirmation remains gated."
     )
+    opportunity_id = e6.get("opportunity_id") or e6.get("candidate_opportunity_id")
+    event_id = e6.get("event_id") or e6.get("origin_event_id") or e6.get("causal_event_id")
     output = {
-        "decision":"NO_TRADE","final_governance":"WATCH","governance_decision":"WATCH","governance_reason":timing_reason,
+        "decision":"NO_TRADE","decision_semantics":"WAIT","pipeline_decision":"WAIT","live_opportunity":True,"wait_state":True,
+        "final_governance":"WATCH","governance_decision":"WATCH","governance_reason":timing_reason,
         "governance_blockers":["E7_CONFIRMATION_PENDING" if early_candidate else "E6_SETUP_THESIS_REQUIRED"],"next_required_events":wait_events,"execution_state":"BLOCKED",
-        "all_gates_pass":False,"direction":direction,"thesis_direction":direction,"setup":setup,
+        "all_gates_pass":False,"direction":direction,"thesis_direction":direction,"setup":setup,"opportunity_id":opportunity_id,"event_id":event_id,
         "thesis":thesis_text,
         "thesis_state":"HYPOTHESIS","thesis_lifecycle_source":"E6","setup_state":"FORMING","confirmation_state":"PENDING" if early_candidate else "NOT_APPLICABLE","economic_state":"NOT_APPLICABLE","economic_blockers":[],"economic_pending":[],"hard_conflicts":[],
         "proof_summary":{"core_thesis":False,"e6_thesis":"EARLY_OPPORTUNITY_CANDIDATE" if early_candidate else "OPPORTUNITY_WATCH","e7_trigger":"PENDING" if early_candidate else "NOT_APPLICABLE","e8_economics":"NOT_APPLICABLE"},
         "mandatory_gates":{"core_thesis":False,"closed_candle_trigger":False,"survivable_economics":False,"fatal_veto_clear":True},
-        "opportunity_state":"EARLY" if early_candidate else "WATCH","opportunity":{"direction":direction,"setup":setup,"state":"EARLY" if early_candidate else "WATCH","do_not_execute":True},
+        "opportunity_state":"EARLY" if early_candidate else "WATCH","opportunity":{"direction":direction,"setup":setup,"state":"EARLY" if early_candidate else "WATCH","do_not_execute":True,"opportunity_id":opportunity_id,"event_id":event_id},
         "reason_codes":list(dict.fromkeys(reasons)),"reasons":list(dict.fromkeys(reasons)),"reason_scope":"E6_WATCH_BOUNDARY_ONLY",
         "opportunity_timing":timing,"opportunity_lifecycle_state":"DECAYING" if timing_phase == "LATE_OPPORTUNITY" else "EARLY" if timing_phase == "EARLY_OPPORTUNITY" else "CONFIRMED" if timing_phase == "CONFIRMED_OPPORTUNITY" else "FORMING",
         "authority_contract":{"market_evidence_owner":"E1-E5","trade_thesis_owner":"E6","trigger_owner":"E7","trade_economics_owner":"E8","final_decision_owner":"E9","e9_may_rewrite_e6_thesis":False,"e9_may_bypass_e7":False,"e9_may_bypass_e8":False},
